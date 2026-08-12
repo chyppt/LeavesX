@@ -123,21 +123,33 @@
          attributes(
              "Main-Class" to "org.bukkit.craftbukkit.Main",
 -            "Implementation-Title" to "Paper",
-+            "Implementation-Title" to "Leaves", // Leaves - build change
++            "Implementation-Title" to "LeavesX",
              "Implementation-Version" to implementationVersion,
              "Implementation-Vendor" to date,
 -            "Specification-Title" to "Paper",
-+            "Specification-Title" to "Leaves", // Leaves - build change
++            "Specification-Title" to "LeavesX",
              "Specification-Version" to project.version,
 -            "Specification-Vendor" to "Paper Team",
 -            "Brand-Id" to "papermc:paper",
 -            "Brand-Name" to "Paper",
-+            "Specification-Vendor" to "Leaves Team", // Leaves - build change
-+            "Brand-Id" to "leavesmc:leaves", // Leaves - build change
-+            "Brand-Name" to "Leaves", // Leaves - build change
++            "Specification-Vendor" to "LeavesX Team",
++            "Brand-Id" to "leavesx:leavesx",
++            "Brand-Name" to "LeavesX",
              "Build-Number" to (build ?: ""),
              "Build-Time" to buildTime.toString(),
              "Git-Branch" to gitBranch,
+@@ -190,6 +_,11 @@
+     }
+ }
+
++tasks.named<io.papermc.paperweight.tasks.CreateLeavesclipJar>("createLeavesclipJar") {
++    val minecraftVersion = rootProject.providers.gradleProperty("mcVersion")
++    outputZip.set(layout.buildDirectory.file(minecraftVersion.map { "libs/leavesx-$it.jar" }))
++}
++
+ // Compile tests with -parameters for better junit parameterized test names
+ tasks.compileTestJava {
+     options.compilerArgs.add("-parameters")
 @@ -237,7 +_,7 @@
      jvmArgumentProviders.add(provider)
  }
