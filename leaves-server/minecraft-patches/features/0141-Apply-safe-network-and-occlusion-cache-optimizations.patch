@@ -1,0 +1,158 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 12 Aug 2026 20:31:01 +0800
+Subject: [PATCH] Apply safe network and occlusion cache optimizations
+
+
+diff --git a/net/minecraft/network/VarInt.java b/net/minecraft/network/VarInt.java
+index 1428ce80e8316a24cfca7b6aafdea8588a5a790e..1ab233d20c1946761c26d71a64c85f9b806bea2d 100644
+--- a/net/minecraft/network/VarInt.java
++++ b/net/minecraft/network/VarInt.java
+@@ -1,6 +1,8 @@
+ package net.minecraft.network;
+ 
+ import io.netty.buffer.ByteBuf;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.leavesx.leavesx.performance.ProtocolIntegerEncoding;
+ 
+ public class VarInt {
+     public static final int MAX_VARINT_SIZE = 5;
+@@ -51,6 +53,9 @@ public class VarInt {
+     }
+ 
+     public static ByteBuf write(final ByteBuf output, int value) {
++        if (LeavesXRuntime.optimizedVarInt()) {
++            return ProtocolIntegerEncoding.writeVarInt(output, value);
++        }
+         // Paper start - Optimize VarInts
+         // Peel the one and two byte count cases explicitly as they are the most common VarInt sizes
+         // that the proxy will write, to improve inlining.
+diff --git a/net/minecraft/network/VarLong.java b/net/minecraft/network/VarLong.java
+index 913442a641134fed4ad5669f190c508c3109ab6a..9182290d5a1407f41825d1891bb9ab68ee181b3f 100644
+--- a/net/minecraft/network/VarLong.java
++++ b/net/minecraft/network/VarLong.java
+@@ -1,6 +1,8 @@
+ package net.minecraft.network;
+ 
+ import io.netty.buffer.ByteBuf;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.leavesx.leavesx.performance.ProtocolIntegerEncoding;
+ 
+ public class VarLong {
+     private static final int MAX_VARLONG_SIZE = 10;
+@@ -9,6 +11,9 @@ public class VarLong {
+     private static final int DATA_BITS_PER_BYTE = 7;
+ 
+     public static int getByteSize(final long value) {
++        if (LeavesXRuntime.optimizedVarInt()) {
++            return ProtocolIntegerEncoding.getVarLongByteSize(value);
++        }
+         for (int i = 1; i < MAX_VARLONG_SIZE; i++) {
+             if ((value & -1L << i * DATA_BITS_PER_BYTE) == 0L) {
+                 return i;
+@@ -39,6 +44,9 @@ public class VarLong {
+     }
+ 
+     public static ByteBuf write(final ByteBuf output, long value) {
++        if (LeavesXRuntime.optimizedVarInt()) {
++            return ProtocolIntegerEncoding.writeVarLong(output, value);
++        }
+         while ((value & -128L) != 0L) {
+             output.writeByte((int)(value & DATA_BITS_MASK) | CONTINUATION_BIT_MASK);
+             value >>>= DATA_BITS_PER_BYTE;
+diff --git a/net/minecraft/world/level/block/Block.java b/net/minecraft/world/level/block/Block.java
+index 6060f30488e92c3481f6aa7a4f7968ff25d9e52f..dd8f3cf2c637eac3d565f0a133a2be4143a0ec6b 100644
+--- a/net/minecraft/world/level/block/Block.java
++++ b/net/minecraft/world/level/block/Block.java
+@@ -72,6 +72,7 @@ import net.minecraft.world.phys.Vec3;
+ import net.minecraft.world.phys.shapes.BooleanOp;
+ import net.minecraft.world.phys.shapes.Shapes;
+ import net.minecraft.world.phys.shapes.VoxelShape;
++import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.jspecify.annotations.Nullable;
+ import org.slf4j.Logger;
+ 
+@@ -140,6 +141,9 @@ public class Block extends BlockBehaviour implements ItemLike {
+         map.defaultReturnValue((byte)127);
+         return map;
+     });
++    // LeavesX - reuses only a non-stored lookup key; persisted cache keys remain immutable.
++    private static final ThreadLocal<MutableShapePairKey> OCCLUSION_QUERY_KEY =
++        ThreadLocal.withInitial(MutableShapePairKey::new);
+ 
+     @Override
+     protected MapCodec<? extends Block> codec() {
+@@ -338,7 +342,9 @@ public class Block extends BlockBehaviour implements ItemLike {
+             return true;
+         }
+ 
+-        Block.ShapePairKey key = new Block.ShapePairKey(shape, occluder);
++        final Block.ShapePairKey key = LeavesXRuntime.immutableCacheOptimizations()
++            ? OCCLUSION_QUERY_KEY.get().set(shape, occluder)
++            : new Block.ShapePairKey(shape, occluder);
+         Object2ByteLinkedOpenHashMap<Block.ShapePairKey> cache = OCCLUSION_CACHE.get();
+         byte cached = cache.getAndMoveToFirst(key);
+         if (cached != 127) {
+@@ -350,7 +356,11 @@ public class Block extends BlockBehaviour implements ItemLike {
+             cache.removeLastByte();
+         }
+ 
+-        cache.putAndMoveToFirst(key, (byte)(result ? 1 : 0));
++        // Mutable lookup keys are thread-local scratch objects and must never be retained by the LRU.
++        final Block.ShapePairKey storedKey = key instanceof MutableShapePairKey
++            ? new Block.ShapePairKey(shape, occluder)
++            : key;
++        cache.putAndMoveToFirst(storedKey, (byte)(result ? 1 : 0));
+         return result;
+     }
+ 
+@@ -732,15 +742,45 @@ public class Block extends BlockBehaviour implements ItemLike {
+     }
+     // Leaves end - reset push reaction
+ 
+-    private record ShapePairKey(VoxelShape first, VoxelShape second) {
++    private static class ShapePairKey {
++
++        private VoxelShape first;
++        private VoxelShape second;
++        private int hash;
++
++        private ShapePairKey(final VoxelShape first, final VoxelShape second) {
++            this.reset(first, second);
++        }
++
++        protected final void reset(final VoxelShape first, final VoxelShape second) {
++            this.first = first;
++            this.second = second;
++            this.hash = System.identityHashCode(first) * 31 + System.identityHashCode(second);
++        }
+         @Override
+-        public boolean equals(final Object o) {
+-            return o instanceof Block.ShapePairKey that && this.first == that.first && this.second == that.second;
++        public boolean equals(final Object other) {
++            return other instanceof Block.ShapePairKey that
++                && this.first == that.first
++                && this.second == that.second;
+         }
+ 
+         @Override
+         public int hashCode() {
+-            return System.identityHashCode(this.first) * 31 + System.identityHashCode(this.second);
++            return LeavesXRuntime.immutableCacheOptimizations()
++                ? this.hash
++                : System.identityHashCode(this.first) * 31 + System.identityHashCode(this.second);
++        }
++    }
++
++    private static final class MutableShapePairKey extends ShapePairKey {
++
++        private MutableShapePairKey() {
++            super(null, null);
++        }
++
++        private ShapePairKey set(final VoxelShape first, final VoxelShape second) {
++            this.reset(first, second);
++            return this;
+         }
+     }
+ 

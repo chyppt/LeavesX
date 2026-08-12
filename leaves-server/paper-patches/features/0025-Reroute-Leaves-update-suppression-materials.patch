@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 12 Aug 2026 23:34:36 +0800
+Subject: [PATCH] Reroute Leaves update suppression materials
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/legacy/MaterialRerouting.java b/src/main/java/org/bukkit/craftbukkit/legacy/MaterialRerouting.java
+index a76e89c12afdf68aadc2742136d008a3f1b2e9aa..5c4798fa595161f53cc8109e5d7c4e9a1a55b715 100644
+--- a/src/main/java/org/bukkit/craftbukkit/legacy/MaterialRerouting.java
++++ b/src/main/java/org/bukkit/craftbukkit/legacy/MaterialRerouting.java
+@@ -282,6 +282,13 @@ public class MaterialRerouting {
+         return MaterialRerouting.transformFromItemType(playerInteractEvent.getMaterial(), version);
+     }
+ 
++    public static Material getMaterial(
++        final org.leavesmc.leaves.event.player.UpdateSuppressionEvent event,
++        @InjectPluginVersion final ApiVersion version
++    ) {
++        return MaterialRerouting.transformFromBlockType(event.getMaterial(), version);
++    }
++
+     public static Material getMaterial(PlayerStatisticIncrementEvent playerStatisticIncrementEvent, @InjectPluginVersion ApiVersion version) {
+         if (playerStatisticIncrementEvent.getStatistic().getType() == Statistic.Type.BLOCK) {
+             return MaterialRerouting.transformFromBlockType(playerStatisticIncrementEvent.getMaterial(), version);

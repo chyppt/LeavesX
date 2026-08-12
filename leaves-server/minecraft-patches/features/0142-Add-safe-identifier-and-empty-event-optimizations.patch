@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 12 Aug 2026 21:47:27 +0800
+Subject: [PATCH] Add safe identifier and empty-event optimizations
+
+
+diff --git a/net/minecraft/resources/Identifier.java b/net/minecraft/resources/Identifier.java
+index 4f9846374845efba36be9c39ff8c783ef6018b68..1dc1ee82ba1154bc721d4a5f891d237a27cc9271 100644
+--- a/net/minecraft/resources/Identifier.java
++++ b/net/minecraft/resources/Identifier.java
+@@ -12,6 +12,7 @@ import net.minecraft.IdentifierException;
+ import net.minecraft.network.chat.Component;
+ import net.minecraft.network.codec.ByteBufCodecs;
+ import net.minecraft.network.codec.StreamCodec;
++import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.jspecify.annotations.Nullable;
+ 
+ public final class Identifier implements Comparable<Identifier> {
+@@ -25,6 +26,10 @@ public final class Identifier implements Comparable<Identifier> {
+     public static final String PAPER_NAMESPACE = "paper"; // Paper
+     private final String namespace;
+     private final String path;
++    // LeavesX start - benign races can only repeat the same immutable computation
++    private @Nullable String cachedString;
++    private int cachedHash;
++    // LeavesX end - lazy immutable caches
+ 
+     private Identifier(final String namespace, final String path) {
+         assert isValidNamespace(namespace);
+@@ -130,7 +135,15 @@ public final class Identifier implements Comparable<Identifier> {
+ 
+     @Override
+     public String toString() {
+-        return this.namespace + ":" + this.path;
++        if (!LeavesXRuntime.resourceIdentifierCache()) {
++            return this.namespace + ":" + this.path;
++        }
++        String value = this.cachedString;
++        if (value == null) {
++            value = this.namespace + ":" + this.path;
++            this.cachedString = value;
++        }
++        return value;
+     }
+ 
+     @Override
+@@ -140,7 +153,15 @@ public final class Identifier implements Comparable<Identifier> {
+ 
+     @Override
+     public int hashCode() {
+-        return 31 * this.namespace.hashCode() + this.path.hashCode();
++        if (!LeavesXRuntime.resourceIdentifierCache()) {
++            return 31 * this.namespace.hashCode() + this.path.hashCode();
++        }
++        int value = this.cachedHash;
++        if (value == 0) {
++            value = 31 * this.namespace.hashCode() + this.path.hashCode();
++            this.cachedHash = value;
++        }
++        return value;
+     }
+ 
+     @Override
+diff --git a/net/minecraft/world/level/NaturalSpawner.java b/net/minecraft/world/level/NaturalSpawner.java
+index 4f08a4eeafaaa4ac7db078019cab15232b3ba6c8..dd91c1e5ef80aa3710adcf95cfb22bba7b5ca2c9 100644
+--- a/net/minecraft/world/level/NaturalSpawner.java
++++ b/net/minecraft/world/level/NaturalSpawner.java
+@@ -394,15 +394,18 @@ public final class NaturalSpawner {
+     ) {
+         // Paper start - PreCreatureSpawnEvent
+         EntityType<?> type = currentSpawnData.type();
+-        com.destroystokyo.paper.event.entity.PreCreatureSpawnEvent event = new com.destroystokyo.paper.event.entity.PreCreatureSpawnEvent(
++        if (!org.leavesx.leavesx.config.LeavesXRuntime.skipEmptyEvents()
++            || com.destroystokyo.paper.event.entity.PreCreatureSpawnEvent.getHandlerList().getRegisteredListeners().length != 0) {
++            com.destroystokyo.paper.event.entity.PreCreatureSpawnEvent event = new com.destroystokyo.paper.event.entity.PreCreatureSpawnEvent(
+                 org.bukkit.craftbukkit.util.CraftLocation.toBukkit(pos, level),
+                 org.bukkit.craftbukkit.entity.CraftEntityType.minecraftToBukkit(type), org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.NATURAL
+-        );
+-        if (!event.callEvent()) {
+-            if (event.shouldAbortSpawn()) {
+-                return PreSpawnStatus.ABORT;
++            );
++            if (!event.callEvent()) {
++                if (event.shouldAbortSpawn()) {
++                    return PreSpawnStatus.ABORT;
++                }
++                return PreSpawnStatus.CANCELLED;
+             }
+-            return PreSpawnStatus.CANCELLED;
+         }
+         final boolean success = type.getCategory() != MobCategory.MISC
+         // Paper end - PreCreatureSpawnEvent
+diff --git a/net/minecraft/world/level/gameevent/GameEventDispatcher.java b/net/minecraft/world/level/gameevent/GameEventDispatcher.java
+index f8c4b24e603abb85c804cccec2c34c47f2670aba..a099f7f0051b76a538e50c4f4a33691d8c3cd1cc 100644
+--- a/net/minecraft/world/level/gameevent/GameEventDispatcher.java
++++ b/net/minecraft/world/level/gameevent/GameEventDispatcher.java
+@@ -23,13 +23,16 @@ public class GameEventDispatcher {
+         int radius = gameEvent.value().notificationRadius();
+         BlockPos center = BlockPos.containing(position);
+         // CraftBukkit start
+-        org.bukkit.event.world.GenericGameEvent apiEvent = new org.bukkit.event.world.GenericGameEvent(
+-            org.bukkit.craftbukkit.CraftGameEvent.minecraftHolderToBukkit(gameEvent), org.bukkit.craftbukkit.util.CraftLocation.toBukkit(center, this.level),
+-            (context.sourceEntity() == null) ? null : context.sourceEntity().getBukkitEntity(), radius, !org.bukkit.Bukkit.isPrimaryThread());
+-        if (!apiEvent.callEvent()) {
+-            return;
++        if (!org.leavesx.leavesx.config.LeavesXRuntime.skipEmptyEvents()
++            || org.bukkit.event.world.GenericGameEvent.getHandlerList().getRegisteredListeners().length != 0) {
++            org.bukkit.event.world.GenericGameEvent apiEvent = new org.bukkit.event.world.GenericGameEvent(
++                org.bukkit.craftbukkit.CraftGameEvent.minecraftHolderToBukkit(gameEvent), org.bukkit.craftbukkit.util.CraftLocation.toBukkit(center, this.level),
++                (context.sourceEntity() == null) ? null : context.sourceEntity().getBukkitEntity(), radius, !org.bukkit.Bukkit.isPrimaryThread());
++            if (!apiEvent.callEvent()) {
++                return;
++            }
++            radius = apiEvent.getRadius();
+         }
+-        radius = apiEvent.getRadius();
+         // CraftBukkit end
+         int sectionMinX = SectionPos.blockToSectionCoord(center.getX() - radius);
+         int sectionMinY = SectionPos.blockToSectionCoord(center.getY() - radius);
