@@ -1,0 +1,1792 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 12 Aug 2026 18:41:48 +0800
+Subject: [PATCH] Preserve Leaves configuration during separated migration
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index c74344e6eeaf992681660df34065f6cb92b16653..9ac8040a272459ee16f7f57d5789b1e403f98069 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -9,11 +9,8 @@ import java.nio.file.Path;
+ import java.nio.file.StandardOpenOption;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+-import org.spongepowered.configurate.CommentedConfigurationNode;
+ import org.spongepowered.configurate.ConfigurateException;
+ import org.spongepowered.configurate.ConfigurationNode;
+-import org.spongepowered.configurate.loader.HeaderMode;
+-import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
+ 
+ /** Loads and validates the LeavesX global configuration at bootstrap. */
+ public final class LeavesXConfigLoader {
+@@ -114,15 +111,11 @@ public final class LeavesXConfigLoader {
+             Files.createDirectories(parent);
+         }
+         AtomicFiles.atomicWrite(path, temporary -> {
+-            final CommentedConfigurationNode node = CommentedConfigurationNode.root(
+-                ConfigurationLoaders.naturallySorted().build().defaultOptions().header(HEADER)
++            Files.writeString(
++                temporary,
++                LeavesXConfigWriter.render(config, HEADER),
++                java.nio.charset.StandardCharsets.UTF_8
+             );
+-            LeavesXConfigWriter.write(node, config);
+-            final YamlConfigurationLoader loader = ConfigurationLoaders.naturallySorted()
+-                .headerMode(HeaderMode.PRESET)
+-                .path(temporary)
+-                .build();
+-            loader.save(node);
+             try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
+                 channel.force(true);
+             }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index c21d8248a6fdb7df20ef56f436cd5fd4a0da9b99..43bdbf805c5d94fbf421203c6d8d19fc356c6887 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -1,58 +1,97 @@
+ package org.leavesx.leavesx.config;
+ 
++import io.papermc.paper.configuration.ConfigurationLoaders;
++import java.util.LinkedHashMap;
++import java.util.Map;
+ import org.spongepowered.configurate.CommentedConfigurationNode;
++import org.spongepowered.configurate.ConfigurateException;
++import org.spongepowered.configurate.loader.HeaderMode;
+ 
+ /** Writes the supported LeavesX runtime tree into a Configurate document. */
+ public final class LeavesXConfigWriter {
+ 
++    private static final Map<String, String> COMMENTS = createComments();
++
+     private LeavesXConfigWriter() {
+     }
+ 
+     /**
+-     * Writes every supported runtime key, overriding colliding imported keys with validated LeavesX values.
++     * Writes every supported LeavesX runtime key into a dedicated document.
+      *
+-     * <p>This method is shared by default-file creation and Leaves migration so both paths publish the same safe
+-     * compatibility contract.</p>
++     * <p>This method is shared by default-file creation and Leaves migration. It must never receive or copy a Leaves
++     * settings tree; {@code leaves.yml} and {@code leavesx.yml} have separate ownership and schemas.</p>
+      *
+      * @param node target document root
+      * @param config validated runtime values
+      */
+     public static void write(final CommentedConfigurationNode node, final LeavesXConfig config) {
+         node.node("config-version")
+-            .comment("LeavesX schema version. Newer versions are rejected to prevent destructive downgrades.")
++            .comment(COMMENTS.get("config-version"))
+             .raw(config.configVersion());
+         node.node("threading", "mode")
+-            .comment("Safe default. technical-strict remains unavailable until ownership and epoch barriers are complete.")
++            .comment(COMMENTS.get("threading.mode"))
+             .raw(config.threadingMode().serializedName());
+         node.node("threading", "legacy-plugin-policy")
+-            .comment("How unmarked Bukkit plugins will be handled once strict multi-domain mode is enabled.")
++            .comment(COMMENTS.get("threading.legacy-plugin-policy"))
+             .raw(config.legacyPluginPolicy().serializedName());
+         node.node("threading", "workers", "tick-threads")
+-            .comment("Future strict-mode worker request. legacy-compatible always uses one tick worker.")
++            .comment(COMMENTS.get("threading.workers.tick-threads"))
+             .raw(config.tickThreads() == 0 ? "auto" : config.tickThreads());
+         node.node("threading", "workers", "reserve-cores")
+-            .comment("Future strict-mode capacity reserved for networking, chunk I/O and the JVM.")
++            .comment(COMMENTS.get("threading.workers.reserve-cores"))
+             .raw(config.reserveCores());
+         node.node("threading", "workers", "max-physical-core-utilization")
+-            .comment("Future strict-mode upper bound for automatically selected tick workers.")
++            .comment(COMMENTS.get("threading.workers.max-physical-core-utilization"))
+             .raw(config.maxPhysicalCoreUtilization());
+         node.node("threading", "epoch", "target-tps")
+-            .comment("Behavior-compatible modes require the vanilla 20 TPS logical clock.")
++            .comment(COMMENTS.get("threading.epoch.target-tps"))
+             .raw(config.targetTps());
+         node.node("threading", "epoch", "warn-after-ms")
+-            .comment("Log a rate-limited warning when a completed global epoch exceeds this duration.")
++            .comment(COMMENTS.get("threading.epoch.warn-after-ms"))
+             .raw(config.epochWarnAfterMillis());
+         node.node("threading", "epoch", "watchdog-after-ms")
+-            .comment("Reserved fail-stop threshold for the future unified-epoch watchdog.")
++            .comment(COMMENTS.get("threading.epoch.watchdog-after-ms"))
+             .raw(config.epochWatchdogAfterMillis());
+         node.node("technical-strict", "unified-epochs")
+-            .comment("Mandatory for the future technical-strict mode.")
++            .comment(COMMENTS.get("technical-strict.unified-epochs"))
+             .raw(config.unifiedEpochs());
+         node.node("determinism", "stable-task-ordering")
+-            .comment("Mandatory compatibility invariant; wall-clock worker completion never decides game order.")
++            .comment(COMMENTS.get("determinism.stable-task-ordering"))
+             .raw(config.deterministicTaskOrdering());
+         node.node("determinism", "preserve-vanilla-rng")
+-            .comment("Mandatory compatibility invariant; RNG types, seeds and consumption order remain unchanged.")
++            .comment(COMMENTS.get("determinism.preserve-vanilla-rng"))
+             .raw(config.preserveVanillaRng());
+     }
++
++    /** Returns the same path-keyed comments used for emitted {@code leavesx.yml} files. */
++    public static Map<String, String> comments() {
++        return COMMENTS;
++    }
++
++    /** Serializes a fully documented LeavesX configuration without relying on Configurate node-comment output. */
++    public static String render(final LeavesXConfig config, final String header) throws ConfigurateException {
++        final CommentedConfigurationNode node = CommentedConfigurationNode.root();
++        write(node, config);
++        final String yaml = ConfigurationLoaders.naturallySorted()
++            .headerMode(HeaderMode.NONE)
++            .buildAndSaveString(node);
++        return YamlCommentInjector.injectGenerated(yaml, header, COMMENTS).text();
++    }
++
++    private static Map<String, String> createComments() {
++        final Map<String, String> comments = new LinkedHashMap<>();
++        comments.put("config-version", "用途：LeavesX 配置结构版本。默认值：1。兼容性：更高版本会拒绝启动，防止降级损坏。实现状态：已实现。");
++        comments.put("threading.mode", "用途：选择线程兼容契约。默认值：legacy-compatible。兼容性：保持 Bukkit 传统同步语义。实现状态：仅 legacy-compatible 已实现。");
++        comments.put("threading.legacy-plugin-policy", "用途：未来严格模式处理未声明区域安全插件的策略。默认值：single-domain。兼容性：当前模式不改变插件行为。实现状态：已校验，严格模式尚未开放。");
++        comments.put("threading.workers.tick-threads", "用途：请求未来严格模式的 tick 工作线程数。默认值：auto。兼容性：legacy-compatible 始终强制一个 tick worker。实现状态：已解析和校验，当前不启用多 worker。");
++        comments.put("threading.workers.reserve-cores", "用途：为网络、区块 I/O 和 JVM 预留核心。默认值：2。兼容性：当前不改变游戏逻辑。实现状态：已解析和校验，自动选线程尚未启用。");
++        comments.put("threading.workers.max-physical-core-utilization", "用途：限制未来自动选择的 tick worker 物理核心占用比例。默认值：0.80。兼容性：当前不改变 Bukkit 或原版行为。实现状态：已解析和校验，自动选线程尚未启用。");
++        comments.put("threading.epoch.target-tps", "用途：统一逻辑纪元的目标 TPS。默认值：20。兼容性：行为兼容模式必须保持原版 20 TPS。实现状态：已实现并强制校验。");
++        comments.put("threading.epoch.warn-after-ms", "用途：全局逻辑纪元超过此耗时时输出限频警告。默认值：50 毫秒。兼容性：仅诊断，不改变 tick。实现状态：已实现。");
++        comments.put("threading.epoch.watchdog-after-ms", "用途：未来统一纪元 watchdog 的停止阈值。默认值：10000 毫秒。兼容性：不会跳过或重入 tick。实现状态：已校验，专用 watchdog 尚未启用。");
++        comments.put("technical-strict.unified-epochs", "用途：要求所有模拟域使用统一逻辑纪元。默认值：true。兼容性：数据安全底线，不允许关闭。实现状态：基础纪元已实现，完整多域屏障尚未实现。");
++        comments.put("determinism.stable-task-ordering", "用途：禁止由工作线程完成时间决定游戏任务顺序。默认值：true。兼容性：保护原版及生电确定性，不允许关闭。实现状态：契约已实现，多域提交器尚未实现。");
++        comments.put("determinism.preserve-vanilla-rng", "用途：保持原版 RNG 类型、种子和消耗顺序。默认值：true。兼容性：保护原版及生电行为，不允许关闭。实现状态：已强制校验。");
++        return Map.copyOf(comments);
++    }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/YamlCommentInjector.java b/src/main/java/org/leavesx/leavesx/config/YamlCommentInjector.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..0104eba934287c6b70262f04a7ee846f0558ae4f
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/config/YamlCommentInjector.java
+@@ -0,0 +1,229 @@
++package org.leavesx.leavesx.config;
++
++import java.io.StringReader;
++import java.util.ArrayList;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Objects;
++import org.yaml.snakeyaml.DumperOptions;
++import org.yaml.snakeyaml.LoaderOptions;
++import org.yaml.snakeyaml.Yaml;
++import org.yaml.snakeyaml.comments.CommentLine;
++import org.yaml.snakeyaml.nodes.AnchorNode;
++import org.yaml.snakeyaml.nodes.MappingNode;
++import org.yaml.snakeyaml.nodes.Node;
++import org.yaml.snakeyaml.nodes.NodeTuple;
++import org.yaml.snakeyaml.nodes.ScalarNode;
++
++/**
++ * Inserts path-keyed comments into block-style YAML without reserializing user data.
++ *
++ * <p>SnakeYAML is used only to locate mapping keys and inspect existing comments. The original text is retained
++ * byte-for-byte apart from inserted UTF-8 comment lines, so key order, quoting, unknown fields, inline comments and
++ * line endings remain under user control.</p>
++ */
++public final class YamlCommentInjector {
++
++    private YamlCommentInjector() {
++    }
++
++    public static Result inject(final String yamlText, final Map<String, String> comments) {
++        Objects.requireNonNull(yamlText, "yamlText");
++        Objects.requireNonNull(comments, "comments");
++
++        final boolean hasByteOrderMark = hasByteOrderMark(yamlText);
++        final String yamlBody = hasByteOrderMark ? yamlText.substring(1) : yamlText;
++        final LoaderOptions options = new LoaderOptions().setProcessComments(true);
++        options.setCodePointLimit(Math.max(options.getCodePointLimit(), yamlBody.length() + 1));
++        final Node root = new Yaml(options).compose(new StringReader(yamlBody));
++        if (root == null) {
++            return new Result(yamlText, 0);
++        }
++
++        final Map<Integer, List<Insertion>> insertions = new HashMap<>();
++        final Counter documentedKeys = new Counter();
++        collectInsertions(unwrap(root), "", comments, insertions, documentedKeys);
++        if (insertions.isEmpty()) {
++            return new Result(yamlText, documentedKeys.value);
++        }
++
++        final String lineSeparator = detectLineSeparator(yamlBody);
++        final List<String> sourceLines = splitLinesPreservingSeparators(yamlBody);
++        final StringBuilder output = new StringBuilder(yamlText.length() + documentedKeys.value * 96);
++        if (hasByteOrderMark) {
++            output.append('\uFEFF');
++        }
++        for (int line = 0; line < sourceLines.size(); line++) {
++            final List<Insertion> lineInsertions = insertions.get(line);
++            if (lineInsertions != null) {
++                for (final Insertion insertion : lineInsertions) {
++                    appendComment(output, insertion.indent(), insertion.description(), lineSeparator);
++                }
++            }
++            output.append(sourceLines.get(line));
++        }
++        return new Result(output.toString(), documentedKeys.value);
++    }
++
++    /** Prefixes a generated YAML document with a header before inserting path-keyed comments. */
++    public static Result injectGenerated(
++        final String yamlText,
++        final String header,
++        final Map<String, String> comments
++    ) {
++        Objects.requireNonNull(header, "header");
++        final boolean hasByteOrderMark = hasByteOrderMark(yamlText);
++        final String yamlBody = hasByteOrderMark ? yamlText.substring(1) : yamlText;
++        final String lineSeparator = detectLineSeparator(yamlBody);
++        final StringBuilder prefixed = new StringBuilder(header.length() + yamlText.length() + 8);
++        if (hasByteOrderMark) {
++            prefixed.append('\uFEFF');
++        }
++        appendComment(prefixed, 0, header, lineSeparator);
++        prefixed.append(lineSeparator).append(yamlBody);
++        return inject(prefixed.toString(), comments);
++    }
++
++    private static boolean hasByteOrderMark(final String text) {
++        return !text.isEmpty() && text.charAt(0) == '\uFEFF';
++    }
++
++    private static void collectInsertions(
++        final Node candidate,
++        final String parentPath,
++        final Map<String, String> comments,
++        final Map<Integer, List<Insertion>> insertions,
++        final Counter documentedKeys
++    ) {
++        final Node node = unwrap(candidate);
++        if (!(node instanceof MappingNode mapping) || mapping.getFlowStyle() == DumperOptions.FlowStyle.FLOW) {
++            return;
++        }
++
++        for (final NodeTuple tuple : mapping.getValue()) {
++            final Node keyNode = unwrap(tuple.getKeyNode());
++            if (!(keyNode instanceof ScalarNode scalarKey)) {
++                continue;
++            }
++            final String key = scalarKey.getValue();
++            final String path = parentPath.isEmpty() ? key : parentPath + '.' + key;
++            final String description = comments.get(path);
++            if (description != null && !description.isBlank()) {
++                documentedKeys.value++;
++                if (!containsEquivalentComment(tuple, description)) {
++                    final int line = scalarKey.getStartMark().getLine();
++                    final int indent = scalarKey.getStartMark().getColumn();
++                    insertions.computeIfAbsent(line, ignored -> new ArrayList<>(1))
++                        .add(new Insertion(indent, description));
++                }
++            }
++            collectInsertions(tuple.getValueNode(), path, comments, insertions, documentedKeys);
++        }
++    }
++
++    private static boolean containsEquivalentComment(final NodeTuple tuple, final String description) {
++        final List<String> existingLines = new ArrayList<>();
++        collectCommentLines(tuple.getKeyNode(), existingLines);
++        collectCommentLines(tuple.getValueNode(), existingLines);
++        if (existingLines.isEmpty()) {
++            return false;
++        }
++
++        for (final String requiredLine : description.lines().map(String::trim).filter(line -> !line.isEmpty()).toList()) {
++            if (!existingLines.contains(requiredLine)) {
++                return false;
++            }
++        }
++        return true;
++    }
++
++    private static void collectCommentLines(final Node candidate, final List<String> destination) {
++        final Node node = unwrap(candidate);
++        addComments(node.getBlockComments(), destination);
++        addComments(node.getInLineComments(), destination);
++        addComments(node.getEndComments(), destination);
++    }
++
++    private static void addComments(final List<CommentLine> comments, final List<String> destination) {
++        if (comments == null) {
++            return;
++        }
++        for (final CommentLine comment : comments) {
++            final String value = comment.getValue().trim();
++            if (!value.isEmpty()) {
++                destination.add(value);
++            }
++        }
++    }
++
++    private static Node unwrap(final Node node) {
++        Node current = node;
++        while (current instanceof AnchorNode anchor) {
++            current = anchor.getRealNode();
++        }
++        return current;
++    }
++
++    private static void appendComment(
++        final StringBuilder output,
++        final int indent,
++        final String description,
++        final String lineSeparator
++    ) {
++        final String prefix = " ".repeat(indent);
++        for (final String line : description.split("\\R", -1)) {
++            output.append(prefix).append('#');
++            if (!line.isBlank()) {
++                output.append(' ').append(line.strip());
++            }
++            output.append(lineSeparator);
++        }
++    }
++
++    private static List<String> splitLinesPreservingSeparators(final String text) {
++        final List<String> lines = new ArrayList<>();
++        int lineStart = 0;
++        for (int index = 0; index < text.length(); index++) {
++            final char character = text.charAt(index);
++            if (character == '\r') {
++                if (index + 1 < text.length() && text.charAt(index + 1) == '\n') {
++                    index++;
++                }
++                lines.add(text.substring(lineStart, index + 1));
++                lineStart = index + 1;
++            } else if (character == '\n') {
++                lines.add(text.substring(lineStart, index + 1));
++                lineStart = index + 1;
++            }
++        }
++        if (lineStart < text.length() || text.isEmpty()) {
++            lines.add(text.substring(lineStart));
++        }
++        return lines;
++    }
++
++    private static String detectLineSeparator(final String text) {
++        for (int index = 0; index < text.length(); index++) {
++            final char character = text.charAt(index);
++            if (character == '\r') {
++                return index + 1 < text.length() && text.charAt(index + 1) == '\n' ? "\r\n" : "\r";
++            }
++            if (character == '\n') {
++                return "\n";
++            }
++        }
++        return System.lineSeparator();
++    }
++
++    public record Result(String text, int documentedKeys) {
++    }
++
++    private record Insertion(int indent, String description) {
++    }
++
++    private static final class Counter {
++
++        private int value;
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/AtomicMigrationOutput.java b/src/main/java/org/leavesx/leavesx/config/migration/AtomicMigrationOutput.java
+index be671837420f597cd45b8fd20012f9caeb4e0614..3cac559a9e621a5f9f1456f46d45078c0534a3ab 100644
+--- a/src/main/java/org/leavesx/leavesx/config/migration/AtomicMigrationOutput.java
++++ b/src/main/java/org/leavesx/leavesx/config/migration/AtomicMigrationOutput.java
+@@ -8,6 +8,7 @@ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.nio.file.StandardCopyOption;
+ import java.nio.file.StandardOpenOption;
++import java.nio.charset.StandardCharsets;
+ import org.spongepowered.configurate.ConfigurationNode;
+ import org.spongepowered.configurate.loader.HeaderMode;
+ import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
+@@ -30,6 +31,16 @@ final class AtomicMigrationOutput implements MigrationOutput {
+         }
+     }
+ 
++    @Override
++    public void saveText(final Path target, final String content) throws IOException {
++        AtomicFiles.atomicWrite(target, temporary -> {
++            Files.writeString(temporary, content, StandardCharsets.UTF_8);
++            try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
++                channel.force(true);
++            }
++        });
++    }
++
+     @Override
+     public void saveYaml(
+         final Path target,
+@@ -48,6 +59,16 @@ final class AtomicMigrationOutput implements MigrationOutput {
+         });
+     }
+ 
++    @Override
++    public void restoreBackup(final Path backup, final Path target) throws IOException {
++        AtomicFiles.atomicWrite(target, temporary -> {
++            Files.copy(backup, temporary, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
++            try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
++                channel.force(true);
++            }
++        });
++    }
++
+     @Override
+     public void deleteIfExists(final Path path) throws IOException {
+         Files.deleteIfExists(path);
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigCommentCatalog.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigCommentCatalog.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3674a2eec7e44c3b5ab06dac1a87847381d49ce2
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigCommentCatalog.java
+@@ -0,0 +1,111 @@
++package org.leavesx.leavesx.config.migration;
++
++import io.papermc.paper.configuration.ConfigurationLoaders;
++import java.io.BufferedReader;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.InputStreamReader;
++import java.io.Reader;
++import java.nio.charset.StandardCharsets;
++import java.util.Base64;
++import java.util.HashMap;
++import java.util.Map;
++import org.spongepowered.configurate.ConfigurationNode;
++import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
++
++/**
++ * Adds verified Leaves configuration descriptions without changing configuration values.
++ *
++ * <p>The catalog is intentionally keyed by the complete YAML path. Unknown keys are left untouched, while known
++ * Leaves 26.1.2 keys receive text derived from the official simplified-Chinese configuration reference. Keeping the
++ * catalog in code makes startup deterministic and avoids network access while the server is booting.</p>
++ */
++final class LeavesConfigCommentCatalog {
++
++    static final String DOCUMENTATION_COMMIT = "43404de621bb648ae7bc7557ed9fa5e0986ec3c7";
++    static final String DOCUMENTATION_URL = "https://docs.leavesmc.org/zh_Hans/leaves/reference/configuration";
++
++    private static final String DOCUMENTATION_RESOURCE =
++        "/leavesx/leaves-26.1.2-configuration-zh_Hans.yml.b64";
++
++    private static final Map<String, String> COMMENTS = loadOfficialComments();
++
++    static {
++        if (!COMMENTS.containsKey("settings.modify.fakeplayer.enable") || COMMENTS.size() < 100) {
++            throw new ExceptionInInitializerError("Bundled Leaves 26.1.2 documentation catalog is incomplete");
++        }
++    }
++
++    private LeavesConfigCommentCatalog() {
++    }
++
++    static Map<String, String> comments() {
++        return COMMENTS;
++    }
++
++    /**
++     * Reads the complete official catalog bundled with LeavesX.
++     *
++     * <p>The resource is base64 encoded only so its MPL-2.0 source document remains byte-for-byte auditable while
++     * avoiding YAML resource filtering. Missing or incomplete resources are rejected so migration can never emit
++     * partial or unverified documentation.</p>
++     */
++    private static Map<String, String> loadOfficialComments() {
++        try (InputStream encoded = LeavesConfigCommentCatalog.class.getResourceAsStream(DOCUMENTATION_RESOURCE)) {
++            if (encoded == null) {
++                throw new IllegalStateException("Missing Leaves documentation resource " + DOCUMENTATION_RESOURCE);
++            }
++            try (
++                InputStream decoded = Base64.getMimeDecoder().wrap(encoded);
++                Reader reader = new InputStreamReader(decoded, StandardCharsets.UTF_8);
++                BufferedReader bufferedReader = new BufferedReader(reader)
++            ) {
++                final YamlConfigurationLoader loader = ConfigurationLoaders.naturallySorted()
++                    .source(() -> bufferedReader)
++                    .build();
++                final ConfigurationNode documentation = loader.load();
++                final HashMap<String, String> comments = new HashMap<>(256);
++                collectOfficialDescriptions(documentation, "", comments);
++                if (!comments.isEmpty()) {
++                    return Map.copyOf(comments);
++                }
++            }
++        } catch (final IOException ex) {
++            throw new IllegalStateException("Unable to load the bundled Leaves documentation catalog", ex);
++        }
++        throw new IllegalStateException("Bundled Leaves documentation catalog did not contain any descriptions");
++    }
++
++    private static void collectOfficialDescriptions(
++        final ConfigurationNode node,
++        final String path,
++        final Map<String, String> comments
++    ) {
++        if (!path.isEmpty()) {
++            final String description = node.node("description").getString();
++            if (description != null && !description.isBlank()) {
++                comments.put(path, normalizeOfficialDescription(description));
++                return;
++            }
++        }
++        for (final Map.Entry<Object, ? extends ConfigurationNode> child : node.childrenMap().entrySet()) {
++            final String key = child.getKey().toString();
++            if (key.equals("default") || key.equals("description")) {
++                continue;
++            }
++            collectOfficialDescriptions(child.getValue(), path.isEmpty() ? key : path + '.' + key, comments);
++        }
++    }
++
++    private static String normalizeOfficialDescription(final String description) {
++        return description
++            .replaceAll("(?s)```.*?```", "")
++            .replaceAll("(?m)^\\s*:::[^\\n]*$", "")
++            .replaceAll("\\[([^]]+)]\\([^)]+\\)", "$1")
++            .replace("**", "")
++            .replace('`', '\'')
++            .replaceAll("(?m)^[ \\t]+", "")
++            .replaceAll("\\n{3,}", "\\n\\n")
++            .trim();
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationBootstrap.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationBootstrap.java
+index 77d16f6dfa4850b18275ffa2a36ae852880ca8b0..0e744053d2b940768023529aa7ec7af241182d37 100644
+--- a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationBootstrap.java
+@@ -26,8 +26,9 @@ public final class LeavesConfigMigrationBootstrap {
+             case ALREADY_MIGRATED -> LOGGER.info("Leaves configuration migration is already current at {}", result.target());
+             case MIGRATED -> {
+                 LOGGER.info(
+-                    "Migrated Leaves configuration version {} to {} (backup: {}, report: {})",
+-                    result.sourceConfigVersion(), result.target(), result.backup(), result.report()
++                    "Documented Leaves configuration version {} in place and created separate LeavesX configuration {} "
++                        + "(documented keys: {}, backup: {}, report: {})",
++                    result.sourceConfigVersion(), result.target(), result.documentedKeys(), result.backup(), result.report()
+                 );
+                 result.warnings().forEach(warning -> LOGGER.warn("Leaves config migration: {}", warning));
+             }
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationResult.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationResult.java
+index 5215f4bd10b0fdf4f07e3bf417b4f77b072ea61b..c936b95ea7e805bcf6795aff7234aef7a2ac00fc 100644
+--- a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationResult.java
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationResult.java
+@@ -15,6 +15,7 @@ public record LeavesConfigMigrationResult(
+     @Nullable Path report,
+     int sourceConfigVersion,
+     int preservedTopLevelKeys,
++    int documentedKeys,
+     List<String> warnings
+ ) {
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java
+index c95db6b1b003c1f0130ac97bee1a5970d65cd9dc..37a5141b59c3e716d7b7cdd2d491c046c96110cb 100644
+--- a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java
+@@ -2,6 +2,8 @@ package org.leavesx.leavesx.config.migration;
+ 
+ import io.papermc.paper.configuration.ConfigurationLoaders;
+ import java.io.IOException;
++import java.io.StringReader;
++import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.security.MessageDigest;
+@@ -17,15 +19,18 @@ import java.util.Map;
+ import java.util.Objects;
+ import org.leavesx.leavesx.config.LeavesXConfig;
+ import org.leavesx.leavesx.config.LeavesXConfigWriter;
++import org.leavesx.leavesx.config.YamlCommentInjector;
+ import org.spongepowered.configurate.CommentedConfigurationNode;
+ import org.spongepowered.configurate.ConfigurateException;
+ import org.spongepowered.configurate.ConfigurationNode;
++import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
+ 
+ /**
+- * Imports a Leaves {@code leaves.yml} into LeavesX without modifying the source file.
++ * Documents an existing Leaves configuration and creates a separate LeavesX runtime configuration.
+  *
+- * <p>The complete Leaves tree is retained, including unknown keys. Future Leaves feature ports can therefore consume
+- * their original {@code settings.*} paths. Output is published only after parsing, hashing and serialization succeed.</p>
++ * <p>The source tree is never copied into {@code leavesx.yml}. Existing Leaves values and unknown keys remain in
++ * {@code leaves.yml}; only verified comments are added. The original bytes are backed up before publication, and any
++ * failure restores those bytes before startup continues.</p>
+  */
+ public final class LeavesConfigMigrator {
+ 
+@@ -35,8 +40,8 @@ public final class LeavesConfigMigrator {
+     public static final String DEFAULT_TARGET_FILE_NAME = "leavesx.yml";
+     public static final String DEFAULT_REPORT_FILE_NAME = "leavesx-migration-report.yml";
+ 
+-    private static final String MIGRATION_ID = "leaves-26.1.2-to-leavesx-26.1.2-v1";
+-    private static final String CONFIG_HEADER = "LeavesX configuration. Leaves settings are preserved for compatibility.";
++    private static final String MIGRATION_ID = "leaves-26.1.2-to-leavesx-26.1.2-v2-separated-configs";
++    private static final String LEAVESX_HEADER = "LeavesX global configuration. Leaves settings remain exclusively in leaves.yml.";
+     private static final DateTimeFormatter BACKUP_TIMESTAMP = DateTimeFormatter
+         .ofPattern("uuuuMMdd-HHmmss-SSS")
+         .withZone(ZoneOffset.UTC);
+@@ -54,9 +59,9 @@ public final class LeavesConfigMigrator {
+     }
+ 
+     /**
+-     * Migrates {@code source} to {@code target}, preserving the source and producing a durable backup and report.
++     * Documents {@code source} and creates {@code target} while preserving Leaves and LeavesX ownership boundaries.
+      *
+-     * @throws LeavesConfigMigrationException when the source is invalid or output cannot be safely published
++     * @throws LeavesConfigMigrationException when YAML is invalid, a target conflicts, or output cannot be rolled back
+      */
+     public LeavesConfigMigrationResult migrate(final Path source, final Path target) {
+         final Path absoluteSource = source.toAbsolutePath().normalize();
+@@ -65,53 +70,57 @@ public final class LeavesConfigMigrator {
+ 
+         if (Files.notExists(absoluteSource)) {
+             return new LeavesConfigMigrationResult(
+-                MigrationStatus.NO_SOURCE, absoluteSource, absoluteTarget, null, null, 0, 0, List.of()
++                MigrationStatus.NO_SOURCE, absoluteSource, absoluteTarget, null, null, 0, 0, 0, List.of()
+             );
+         }
+         if (!Files.isRegularFile(absoluteSource)) {
+             throw new LeavesConfigMigrationException("Leaves configuration is not a regular file: " + absoluteSource);
+         }
++        if (absoluteSource.equals(absoluteTarget)) {
++            throw new LeavesConfigMigrationException("Leaves and LeavesX configuration paths must be different");
++        }
+ 
+         try {
+-            final String sourceHash = sha256(absoluteSource);
+-            final ConfigurationNode sourceNode = loadRequiredMap(absoluteSource, "Leaves source configuration");
++            final CommentedConfigurationNode sourceNode = loadRequiredMap(
++                absoluteSource, "Leaves source configuration"
++            );
+             final int sourceVersion = sourceNode.node("config-version").getInt(0);
++            final int topLevelKeys = sourceNode.childrenMap().size();
+ 
+-            if (Files.exists(absoluteTarget)) {
+-                final ConfigurationNode existingTarget = loadRequiredMap(absoluteTarget, "LeavesX target configuration");
+-                if (isSameMigration(existingTarget, absoluteSource, sourceHash)) {
++            if (Files.exists(report)) {
++                final ConfigurationNode existingReport = loadRequiredMap(report, "LeavesX migration report");
++                if (isSameMigration(existingReport, absoluteSource, absoluteTarget)) {
+                     return new LeavesConfigMigrationResult(
+                         MigrationStatus.ALREADY_MIGRATED,
+                         absoluteSource,
+                         absoluteTarget,
+-                        null,
+-                        Files.exists(report) ? report : null,
++                        existingBackup(existingReport),
++                        report,
+                         sourceVersion,
+-                        sourceNode.childrenMap().size(),
++                        topLevelKeys,
++                        existingReport.node("leaves", "documented-keys").getInt(0),
+                         List.of()
+                     );
+                 }
+                 throw new LeavesConfigMigrationException(
+-                    "LeavesX target already exists and was not generated from the current Leaves configuration: " + absoluteTarget
++                    "Migration report already exists for a different Leaves configuration: " + report
++                );
++            }
++            if (Files.exists(absoluteTarget)) {
++                throw new LeavesConfigMigrationException(
++                    "LeavesX target already exists; refusing to overwrite user configuration: " + absoluteTarget
+                 );
+             }
+ 
+             final Instant migratedAt = this.clock.instant();
+             final Path backup = nextBackupPath(absoluteSource, migratedAt);
+             final List<String> warnings = buildWarnings(sourceVersion);
+-            final CommentedConfigurationNode migratedNode = createMigratedNode(
+-                sourceNode, absoluteSource, sourceHash, migratedAt, warnings
+-            );
+-            final CommentedConfigurationNode reportNode = createReportNode(
+-                absoluteSource,
+-                absoluteTarget,
+-                backup,
+-                sourceHash,
+-                sourceVersion,
+-                sourceNode.childrenMap(),
+-                migratedAt,
+-                warnings
++            final String sourceText = Files.readString(absoluteSource, StandardCharsets.UTF_8);
++            final YamlCommentInjector.Result documentedLeaves = YamlCommentInjector.inject(
++                sourceText, LeavesConfigCommentCatalog.comments()
+             );
++            verifyValuesUnchanged(sourceNode, documentedLeaves.text(), absoluteSource);
++            final String leavesXText = LeavesXConfigWriter.render(LeavesXConfig.safeDefaults(), LEAVESX_HEADER);
+ 
+             final Path targetParent = absoluteTarget.getParent();
+             if (targetParent != null) {
+@@ -119,12 +128,22 @@ public final class LeavesConfigMigrator {
+             }
+             this.output.copyBackup(absoluteSource, backup);
+             try {
+-                this.output.saveYaml(absoluteTarget, migratedNode, true);
++                this.output.saveText(absoluteSource, documentedLeaves.text());
++                this.output.saveText(absoluteTarget, leavesXText);
++                final CommentedConfigurationNode reportNode = createReportNode(
++                    absoluteSource,
++                    absoluteTarget,
++                    backup,
++                    sha256(absoluteSource),
++                    sourceVersion,
++                    topLevelKeys,
++                    documentedLeaves.documentedKeys(),
++                    migratedAt,
++                    warnings
++                );
+                 this.output.saveYaml(report, reportNode, false);
+             } catch (final IOException ex) {
+-                deleteCreatedOutput(report, ex);
+-                deleteCreatedOutput(absoluteTarget, ex);
+-                deleteCreatedOutput(backup, ex);
++                rollback(absoluteSource, absoluteTarget, report, backup, ex);
+                 throw ex;
+             }
+ 
+@@ -135,7 +154,8 @@ public final class LeavesConfigMigrator {
+                 backup,
+                 report,
+                 sourceVersion,
+-                sourceNode.childrenMap().size(),
++                topLevelKeys,
++                documentedLeaves.documentedKeys(),
+                 warnings
+             );
+         } catch (final LeavesConfigMigrationException ex) {
+@@ -145,72 +165,82 @@ public final class LeavesConfigMigrator {
+         }
+     }
+ 
+-    private static ConfigurationNode loadRequiredMap(final Path path, final String description) throws ConfigurateException {
+-        final ConfigurationNode node = ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
+-        if (node.virtual() || !node.isMap()) {
++    private static CommentedConfigurationNode loadRequiredMap(final Path path, final String description)
++        throws ConfigurateException {
++        final ConfigurationNode loaded = ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
++        if (loaded.virtual() || !loaded.isMap()) {
+             throw new LeavesConfigMigrationException(description + " must contain a YAML mapping: " + path);
+         }
+-        return node;
+-    }
+-
+-    private static boolean isSameMigration(final ConfigurationNode target, final Path source, final String sourceHash) {
+-        return target.node("migration", "id").getString("").equals(MIGRATION_ID)
+-            && target.node("migration", "source-sha256").getString("").equals(sourceHash)
+-            && target.node("migration", "source-file").getString("").equals(source.toString())
+-            && target.node("config-version").getInt(0) == LEAVESX_CONFIG_VERSION;
++        final CommentedConfigurationNode copy = CommentedConfigurationNode.root(loaded.options());
++        copy.from(loaded);
++        return copy;
+     }
+ 
+-    private static CommentedConfigurationNode createMigratedNode(
+-        final ConfigurationNode sourceNode,
++    private static boolean isSameMigration(
++        final ConfigurationNode report,
+         final Path source,
+-        final String sourceHash,
+-        final Instant migratedAt,
+-        final List<String> warnings
++        final Path target
+     ) {
+-        final CommentedConfigurationNode target = CommentedConfigurationNode.root(
+-            sourceNode.options().header(CONFIG_HEADER)
+-        );
+-        target.from(sourceNode);
++        return report.node("migration-id").getString("").equals(MIGRATION_ID)
++            && report.node("source", "file").getString("").equals(source.toString())
++            && report.node("target", "file").getString("").equals(target.toString())
++            && report.node("target", "config-version").getInt(0) == LEAVESX_CONFIG_VERSION
++            && Files.isRegularFile(target);
++    }
++
++    private static Path existingBackup(final ConfigurationNode report) {
++        final String value = report.node("source", "backup").getString();
++        return value == null || value.isBlank() ? null : Path.of(value);
++    }
+ 
+-        final int sourceConfigVersion = sourceNode.node("config-version").getInt(0);
+-        final ConfigurationNode migration = target.node("migration");
+-        LeavesXConfigWriter.write(target, LeavesXConfig.safeDefaults());
+-        migration.node("id").raw(MIGRATION_ID);
+-        migration.node("source-type").raw("Leaves");
+-        migration.node("source-file").raw(source.toString());
+-        migration.node("source-config-version").raw(sourceConfigVersion);
+-        migration.node("source-sha256").raw(sourceHash);
+-        migration.node("migrated-at").raw(migratedAt.toString());
+-        migration.node("warnings").raw(warnings);
+-        return target;
++    private static void verifyValuesUnchanged(
++        final ConfigurationNode original,
++        final String documentedText,
++        final Path source
++    ) throws ConfigurateException {
++        final YamlConfigurationLoader loader = ConfigurationLoaders.naturallySorted()
++            .source(() -> new java.io.BufferedReader(new StringReader(documentedText)))
++            .build();
++        final ConfigurationNode documented = loader.load();
++        if (!Objects.equals(original.raw(), documented.raw())) {
++            throw new LeavesConfigMigrationException(
++                "Adding Leaves documentation would change configuration values: " + source
++            );
++        }
+     }
+ 
+     private static CommentedConfigurationNode createReportNode(
+         final Path source,
+         final Path target,
+         final Path backup,
+-        final String sourceHash,
++        final String documentedSourceHash,
+         final int sourceVersion,
+-        final Map<Object, ? extends ConfigurationNode> topLevelKeys,
++        final int topLevelKeys,
++        final int documentedKeys,
+         final Instant migratedAt,
+         final List<String> warnings
+-    ) {
++    ) throws IOException {
+         final CommentedConfigurationNode report = CommentedConfigurationNode.root();
+-        report.node("report-version").raw(1);
++        report.node("report-version").raw(2);
+         report.node("status").raw("migrated");
+         report.node("migration-id").raw(MIGRATION_ID);
+         report.node("migrated-at").raw(migratedAt.toString());
+         report.node("source", "file").raw(source.toString());
+         report.node("source", "backup").raw(backup.toString());
+         report.node("source", "config-version").raw(sourceVersion);
+-        report.node("source", "sha256").raw(sourceHash);
++        report.node("source", "original-sha256").raw(sha256(backup));
++        report.node("source", "documented-sha256").raw(documentedSourceHash);
+         report.node("target", "file").raw(target.toString());
+         report.node("target", "config-version").raw(LEAVESX_CONFIG_VERSION);
+-        report.node("preservation", "strategy").raw("copy-complete-tree");
+-        report.node("preservation", "unknown-keys").raw("preserved");
+-        report.node("preservation", "top-level-keys").raw(
+-            topLevelKeys.keySet().stream().map(Object::toString).sorted().toList()
+-        );
++        report.node("separation", "leaves-settings-file").raw(source.toString());
++        report.node("separation", "leavesx-settings-file").raw(target.toString());
++        report.node("separation", "leaves-tree-copied-to-leavesx").raw(false);
++        report.node("leaves", "unknown-keys").raw("preserved");
++        report.node("leaves", "values").raw("preserved");
++        report.node("leaves", "top-level-keys").raw(topLevelKeys);
++        report.node("leaves", "documented-keys").raw(documentedKeys);
++        report.node("leaves", "documentation-source").raw(LeavesConfigCommentCatalog.DOCUMENTATION_URL);
++        report.node("leaves", "documentation-commit").raw(LeavesConfigCommentCatalog.DOCUMENTATION_COMMIT);
+         report.node("warnings").raw(warnings);
+         return report;
+     }
+@@ -218,19 +248,19 @@ public final class LeavesConfigMigrator {
+     private static List<String> buildWarnings(final int sourceVersion) {
+         final List<String> warnings = new ArrayList<>();
+         if (sourceVersion == 0) {
+-            warnings.add("The Leaves config has no config-version; all values were preserved without schema validation.");
++            warnings.add("The Leaves config has no config-version; values were preserved without schema conversion.");
+         } else if (sourceVersion > LEAVES_26_1_2_CONFIG_VERSION) {
+             warnings.add(
+-                "The Leaves config version " + sourceVersion + " is newer than the tested 26.1.2 schema version "
+-                    + LEAVES_26_1_2_CONFIG_VERSION + "; all values were preserved without destructive conversion."
++                "The Leaves config version " + sourceVersion + " is newer than tested schema version "
++                    + LEAVES_26_1_2_CONFIG_VERSION + "; only matching official comments were added."
+             );
+         } else if (sourceVersion < LEAVES_26_1_2_CONFIG_VERSION) {
+             warnings.add(
+-                "The Leaves config version " + sourceVersion + " is older than the tested 26.1.2 schema version "
+-                    + LEAVES_26_1_2_CONFIG_VERSION + "; legacy paths were preserved for feature-level migration."
++                "The Leaves config version " + sourceVersion + " is older than tested schema version "
++                    + LEAVES_26_1_2_CONFIG_VERSION + "; no value or key was upgraded."
+             );
+         }
+-        warnings.add("Leaves feature settings are preserved but only become active as their LeavesX features are ported.");
++        warnings.add("Leaves settings remain in leaves.yml and are not copied into leavesx.yml.");
+         return List.copyOf(warnings);
+     }
+ 
+@@ -240,7 +270,7 @@ public final class LeavesConfigMigrator {
+         Path candidate = source.resolveSibling(baseName);
+         int suffix = 1;
+         while (Files.exists(candidate)) {
+-            candidate = source.resolveSibling(baseName + "-" + suffix++);
++            candidate = source.resolveSibling(baseName + '-' + suffix++);
+         }
+         return candidate;
+     }
+@@ -263,6 +293,24 @@ public final class LeavesConfigMigrator {
+         return HexFormat.of().formatHex(digest.digest());
+     }
+ 
++    private void rollback(
++        final Path source,
++        final Path target,
++        final Path report,
++        final Path backup,
++        final Exception parent
++    ) {
++        deleteCreatedOutput(report, parent);
++        deleteCreatedOutput(target, parent);
++        try {
++            this.output.restoreBackup(backup, source);
++        } catch (final IOException restoreFailure) {
++            parent.addSuppressed(restoreFailure);
++            return;
++        }
++        deleteCreatedOutput(backup, parent);
++    }
++
+     private void deleteCreatedOutput(final Path path, final Exception parent) {
+         try {
+             this.output.deleteIfExists(path);
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/MigrationOutput.java b/src/main/java/org/leavesx/leavesx/config/migration/MigrationOutput.java
+index a341fdb22be9e9477af2770b1fcb17f0095e6c2a..dc9ec29cd3debd3c1c891a17f4f82dc095cc76a4 100644
+--- a/src/main/java/org/leavesx/leavesx/config/migration/MigrationOutput.java
++++ b/src/main/java/org/leavesx/leavesx/config/migration/MigrationOutput.java
+@@ -11,7 +11,11 @@ interface MigrationOutput {
+ 
+     void copyBackup(Path source, Path backup) throws IOException;
+ 
++    void saveText(Path target, String content) throws IOException;
++
+     void saveYaml(Path target, ConfigurationNode node, boolean includeHeader) throws IOException;
+ 
++    void restoreBackup(Path backup, Path target) throws IOException;
++
+     void deleteIfExists(Path path) throws IOException;
+ }
+diff --git a/src/main/resources/META-INF/leavesx-third-party-notices.txt b/src/main/resources/META-INF/leavesx-third-party-notices.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..004e30a738d0ce51f58d80286322731adec386a7
+--- /dev/null
++++ b/src/main/resources/META-INF/leavesx-third-party-notices.txt
+@@ -0,0 +1,28 @@
++LeavesX third-party notices
++
++LeavesMC Documentation configuration reference
++------------------------------------------------
++
++Upstream repository: https://github.com/LeavesMC/Documentation
++Upstream commit: 43404de621bb648ae7bc7557ed9fa5e0986ec3c7
++Upstream source path: src/config-spec/leaves/zh_Hans.yml
++Bundled resource: leavesx/leaves-26.1.2-configuration-zh_Hans.yml.b64
++Decoded UTF-8 length: 37262 bytes
++Decoded SHA-256: a07fbbaed6a6e36ae428250728d7dc016ff34a14d9bd17875ffe446a327b0c10
++
++The bundled YAML source is preserved byte-for-byte before Base64 encoding.
++LeavesX decodes it at startup and derives path-keyed configuration comments.
++Markdown links, fenced examples, and documentation directives are normalized
++only in the derived in-memory comment text; the bundled upstream source is not
++rewritten.
++
++License: Mozilla Public License Version 2.0
++License file: META-INF/licenses/leaves-documentation-MPL-2.0.txt
++Upstream license path: LICENSE
++Upstream license UTF-8 length: 16724 bytes
++Upstream license SHA-256: 4b89d4518bd135ab4ee154a7bce722246b57a98c3d7efc1a09409898160c2bd1
++Bundled license normalization: one trailing LF added; legal text is unchanged
++Bundled license UTF-8 length: 16725 bytes
++Bundled license SHA-256: 1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5
++
++Copyright remains with the contributors to LeavesMC/Documentation.
+diff --git a/src/main/resources/META-INF/licenses/leaves-documentation-MPL-2.0.txt b/src/main/resources/META-INF/licenses/leaves-documentation-MPL-2.0.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..a612ad9813b006ce81d1ee438dd784da99a54007
+--- /dev/null
++++ b/src/main/resources/META-INF/licenses/leaves-documentation-MPL-2.0.txt
+@@ -0,0 +1,373 @@
++Mozilla Public License Version 2.0
++==================================
++
++1. Definitions
++--------------
++
++1.1. "Contributor"
++    means each individual or legal entity that creates, contributes to
++    the creation of, or owns Covered Software.
++
++1.2. "Contributor Version"
++    means the combination of the Contributions of others (if any) used
++    by a Contributor and that particular Contributor's Contribution.
++
++1.3. "Contribution"
++    means Covered Software of a particular Contributor.
++
++1.4. "Covered Software"
++    means Source Code Form to which the initial Contributor has attached
++    the notice in Exhibit A, the Executable Form of such Source Code
++    Form, and Modifications of such Source Code Form, in each case
++    including portions thereof.
++
++1.5. "Incompatible With Secondary Licenses"
++    means
++
++    (a) that the initial Contributor has attached the notice described
++        in Exhibit B to the Covered Software; or
++
++    (b) that the Covered Software was made available under the terms of
++        version 1.1 or earlier of the License, but not also under the
++        terms of a Secondary License.
++
++1.6. "Executable Form"
++    means any form of the work other than Source Code Form.
++
++1.7. "Larger Work"
++    means a work that combines Covered Software with other material, in
++    a separate file or files, that is not Covered Software.
++
++1.8. "License"
++    means this document.
++
++1.9. "Licensable"
++    means having the right to grant, to the maximum extent possible,
++    whether at the time of the initial grant or subsequently, any and
++    all of the rights conveyed by this License.
++
++1.10. "Modifications"
++    means any of the following:
++
++    (a) any file in Source Code Form that results from an addition to,
++        deletion from, or modification of the contents of Covered
++        Software; or
++
++    (b) any new file in Source Code Form that contains any Covered
++        Software.
++
++1.11. "Patent Claims" of a Contributor
++    means any patent claim(s), including without limitation, method,
++    process, and apparatus claims, in any patent Licensable by such
++    Contributor that would be infringed, but for the grant of the
++    License, by the making, using, selling, offering for sale, having
++    made, import, or transfer of either its Contributions or its
++    Contributor Version.
++
++1.12. "Secondary License"
++    means either the GNU General Public License, Version 2.0, the GNU
++    Lesser General Public License, Version 2.1, the GNU Affero General
++    Public License, Version 3.0, or any later versions of those
++    licenses.
++
++1.13. "Source Code Form"
++    means the form of the work preferred for making modifications.
++
++1.14. "You" (or "Your")
++    means an individual or a legal entity exercising rights under this
++    License. For legal entities, "You" includes any entity that
++    controls, is controlled by, or is under common control with You. For
++    purposes of this definition, "control" means (a) the power, direct
++    or indirect, to cause the direction or management of such entity,
++    whether by contract or otherwise, or (b) ownership of more than
++    fifty percent (50%) of the outstanding shares or beneficial
++    ownership of such entity.
++
++2. License Grants and Conditions
++--------------------------------
++
++2.1. Grants
++
++Each Contributor hereby grants You a world-wide, royalty-free,
++non-exclusive license:
++
++(a) under intellectual property rights (other than patent or trademark)
++    Licensable by such Contributor to use, reproduce, make available,
++    modify, display, perform, distribute, and otherwise exploit its
++    Contributions, either on an unmodified basis, with Modifications, or
++    as part of a Larger Work; and
++
++(b) under Patent Claims of such Contributor to make, use, sell, offer
++    for sale, have made, import, and otherwise transfer either its
++    Contributions or its Contributor Version.
++
++2.2. Effective Date
++
++The licenses granted in Section 2.1 with respect to any Contribution
++become effective for each Contribution on the date the Contributor first
++distributes such Contribution.
++
++2.3. Limitations on Grant Scope
++
++The licenses granted in this Section 2 are the only rights granted under
++this License. No additional rights or licenses will be implied from the
++distribution or licensing of Covered Software under this License.
++Notwithstanding Section 2.1(b) above, no patent license is granted by a
++Contributor:
++
++(a) for any code that a Contributor has removed from Covered Software;
++    or
++
++(b) for infringements caused by: (i) Your and any other third party's
++    modifications of Covered Software, or (ii) the combination of its
++    Contributions with other software (except as part of its Contributor
++    Version); or
++
++(c) under Patent Claims infringed by Covered Software in the absence of
++    its Contributions.
++
++This License does not grant any rights in the trademarks, service marks,
++or logos of any Contributor (except as may be necessary to comply with
++the notice requirements in Section 3.4).
++
++2.4. Subsequent Licenses
++
++No Contributor makes additional grants as a result of Your choice to
++distribute the Covered Software under a subsequent version of this
++License (see Section 10.2) or under the terms of a Secondary License (if
++permitted under the terms of Section 3.3).
++
++2.5. Representation
++
++Each Contributor represents that the Contributor believes its
++Contributions are its original creation(s) or it has sufficient rights
++to grant the rights to its Contributions conveyed by this License.
++
++2.6. Fair Use
++
++This License is not intended to limit any rights You have under
++applicable copyright doctrines of fair use, fair dealing, or other
++equivalents.
++
++2.7. Conditions
++
++Sections 3.1, 3.2, 3.3, and 3.4 are conditions of the licenses granted
++in Section 2.1.
++
++3. Responsibilities
++-------------------
++
++3.1. Distribution of Source Form
++
++All distribution of Covered Software in Source Code Form, including any
++Modifications that You create or to which You contribute, must be under
++the terms of this License. You must inform recipients that the Source
++Code Form of the Covered Software is governed by the terms of this
++License, and how they can obtain a copy of this License. You may not
++attempt to alter or restrict the recipients' rights in the Source Code
++Form.
++
++3.2. Distribution of Executable Form
++
++If You distribute Covered Software in Executable Form then:
++
++(a) such Covered Software must also be made available in Source Code
++    Form, as described in Section 3.1, and You must inform recipients of
++    the Executable Form how they can obtain a copy of such Source Code
++    Form by reasonable means in a timely manner, at a charge no more
++    than the cost of distribution to the recipient; and
++
++(b) You may distribute such Executable Form under the terms of this
++    License, or sublicense it under different terms, provided that the
++    license for the Executable Form does not attempt to limit or alter
++    the recipients' rights in the Source Code Form under this License.
++
++3.3. Distribution of a Larger Work
++
++You may create and distribute a Larger Work under terms of Your choice,
++provided that You also comply with the requirements of this License for
++the Covered Software. If the Larger Work is a combination of Covered
++Software with a work governed by one or more Secondary Licenses, and the
++Covered Software is not Incompatible With Secondary Licenses, this
++License permits You to additionally distribute such Covered Software
++under the terms of such Secondary License(s), so that the recipient of
++the Larger Work may, at their option, further distribute the Covered
++Software under the terms of either this License or such Secondary
++License(s).
++
++3.4. Notices
++
++You may not remove or alter the substance of any license notices
++(including copyright notices, patent notices, disclaimers of warranty,
++or limitations of liability) contained within the Source Code Form of
++the Covered Software, except that You may alter any license notices to
++the extent required to remedy known factual inaccuracies.
++
++3.5. Application of Additional Terms
++
++You may choose to offer, and to charge a fee for, warranty, support,
++indemnity or liability obligations to one or more recipients of Covered
++Software. However, You may do so only on Your own behalf, and not on
++behalf of any Contributor. You must make it absolutely clear that any
++such warranty, support, indemnity, or liability obligation is offered by
++You alone, and You hereby agree to indemnify every Contributor for any
++liability incurred by such Contributor as a result of warranty, support,
++indemnity or liability terms You offer. You may include additional
++disclaimers of warranty and limitations of liability specific to any
++jurisdiction.
++
++4. Inability to Comply Due to Statute or Regulation
++---------------------------------------------------
++
++If it is impossible for You to comply with any of the terms of this
++License with respect to some or all of the Covered Software due to
++statute, judicial order, or regulation then You must: (a) comply with
++the terms of this License to the maximum extent possible; and (b)
++describe the limitations and the code they affect. Such description must
++be placed in a text file included with all distributions of the Covered
++Software under this License. Except to the extent prohibited by statute
++or regulation, such description must be sufficiently detailed for a
++recipient of ordinary skill to be able to understand it.
++
++5. Termination
++--------------
++
++5.1. The rights granted under this License will terminate automatically
++if You fail to comply with any of its terms. However, if You become
++compliant, then the rights granted under this License from a particular
++Contributor are reinstated (a) provisionally, unless and until such
++Contributor explicitly and finally terminates Your grants, and (b) on an
++ongoing basis, if such Contributor fails to notify You of the
++non-compliance by some reasonable means prior to 60 days after You have
++come back into compliance. Moreover, Your grants from a particular
++Contributor are reinstated on an ongoing basis if such Contributor
++notifies You of the non-compliance by some reasonable means, this is the
++first time You have received notice of non-compliance with this License
++from such Contributor, and You become compliant prior to 30 days after
++Your receipt of the notice.
++
++5.2. If You initiate litigation against any entity by asserting a patent
++infringement claim (excluding declaratory judgment actions,
++counter-claims, and cross-claims) alleging that a Contributor Version
++directly or indirectly infringes any patent, then the rights granted to
++You by any and all Contributors for the Covered Software under Section
++2.1 of this License shall terminate.
++
++5.3. In the event of termination under Sections 5.1 or 5.2 above, all
++end user license agreements (excluding distributors and resellers) which
++have been validly granted by You or Your distributors under this License
++prior to termination shall survive termination.
++
++************************************************************************
++*                                                                      *
++*  6. Disclaimer of Warranty                                           *
++*  -------------------------                                           *
++*                                                                      *
++*  Covered Software is provided under this License on an "as is"       *
++*  basis, without warranty of any kind, either expressed, implied, or  *
++*  statutory, including, without limitation, warranties that the       *
++*  Covered Software is free of defects, merchantable, fit for a        *
++*  particular purpose or non-infringing. The entire risk as to the     *
++*  quality and performance of the Covered Software is with You.        *
++*  Should any Covered Software prove defective in any respect, You     *
++*  (not any Contributor) assume the cost of any necessary servicing,   *
++*  repair, or correction. This disclaimer of warranty constitutes an   *
++*  essential part of this License. No use of any Covered Software is   *
++*  authorized under this License except under this disclaimer.         *
++*                                                                      *
++************************************************************************
++
++************************************************************************
++*                                                                      *
++*  7. Limitation of Liability                                          *
++*  --------------------------                                          *
++*                                                                      *
++*  Under no circumstances and under no legal theory, whether tort      *
++*  (including negligence), contract, or otherwise, shall any           *
++*  Contributor, or anyone who distributes Covered Software as          *
++*  permitted above, be liable to You for any direct, indirect,         *
++*  special, incidental, or consequential damages of any character      *
++*  including, without limitation, damages for lost profits, loss of    *
++*  goodwill, work stoppage, computer failure or malfunction, or any    *
++*  and all other commercial damages or losses, even if such party      *
++*  shall have been informed of the possibility of such damages. This   *
++*  limitation of liability shall not apply to liability for death or   *
++*  personal injury resulting from such party's negligence to the       *
++*  extent applicable law prohibits such limitation. Some               *
++*  jurisdictions do not allow the exclusion or limitation of           *
++*  incidental or consequential damages, so this exclusion and          *
++*  limitation may not apply to You.                                    *
++*                                                                      *
++************************************************************************
++
++8. Litigation
++-------------
++
++Any litigation relating to this License may be brought only in the
++courts of a jurisdiction where the defendant maintains its principal
++place of business and such litigation shall be governed by laws of that
++jurisdiction, without reference to its conflict-of-law provisions.
++Nothing in this Section shall prevent a party's ability to bring
++cross-claims or counter-claims.
++
++9. Miscellaneous
++----------------
++
++This License represents the complete agreement concerning the subject
++matter hereof. If any provision of this License is held to be
++unenforceable, such provision shall be reformed only to the extent
++necessary to make it enforceable. Any law or regulation which provides
++that the language of a contract shall be construed against the drafter
++shall not be used to construe this License against a Contributor.
++
++10. Versions of the License
++---------------------------
++
++10.1. New Versions
++
++Mozilla Foundation is the license steward. Except as provided in Section
++10.3, no one other than the license steward has the right to modify or
++publish new versions of this License. Each version will be given a
++distinguishing version number.
++
++10.2. Effect of New Versions
++
++You may distribute the Covered Software under the terms of the version
++of the License under which You originally received the Covered Software,
++or under the terms of any subsequent version published by the license
++steward.
++
++10.3. Modified Versions
++
++If you create software not governed by this License, and you want to
++create a new license for such software, you may create and use a
++modified version of this License if you rename the license and remove
++any references to the name of the license steward (except to note that
++such modified license differs from this License).
++
++10.4. Distributing Source Code Form that is Incompatible With Secondary
++Licenses
++
++If You choose to distribute Source Code Form that is Incompatible With
++Secondary Licenses under the terms of this version of the License, the
++notice described in Exhibit B of this License must be attached.
++
++Exhibit A - Source Code Form License Notice
++-------------------------------------------
++
++  This Source Code Form is subject to the terms of the Mozilla Public
++  License, v. 2.0. If a copy of the MPL was not distributed with this
++  file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++If it is not possible or desirable to put the notice in a particular
++file, then You may include the notice in a location (such as a LICENSE
++file in a relevant directory) where a recipient would be likely to look
++for such a notice.
++
++You may add additional accurate notices of copyright ownership.
++
++Exhibit B - "Incompatible With Secondary Licenses" Notice
++---------------------------------------------------------
++
++  This Source Code Form is "Incompatible With Secondary Licenses", as
++  defined by the Mozilla Public License, v. 2.0.
+diff --git a/src/main/resources/leavesx/leaves-26.1.2-configuration-zh_Hans.yml.b64 b/src/main/resources/leavesx/leaves-26.1.2-configuration-zh_Hans.yml.b64
+new file mode 100644
+index 0000000000000000000000000000000000000000..47cde31c1e1d4b311761eb73eb43b5898fe1ba3a
+--- /dev/null
++++ b/src/main/resources/leavesx/leaves-26.1.2-configuration-zh_Hans.yml.b64
+@@ -0,0 +1 @@
++Y29uZmlnLXZlcnNpb246CiAgZGVmYXVsdDogIjYiCiAgZGVzY3JpcHRpb246IExlYXZlcyDphY3nva7mlofku7bniYjmnKzlj7fjgILor7fli7/kv67mlLnvvIEKc2V0dGluZ3M6CiAgbW9kaWZ5OgogICAgZmFrZXBsYXllcjoKICAgICAgZW5hYmxlOgogICAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKblvIDlkK/lgYfkurrnm7jlhbPlip/og73jgIIKICAgICAgdW5hYmxlLWZha2VwbGF5ZXItbmFtZXM6CiAgICAgICAgZGVmYXVsdDoKICAgICAgICAgIC0gcGxheWVyLW5hbWUKICAgICAgICBkZXNjcmlwdGlvbjog56aB5q2i5YGH5Lq65L2/55So55qE5ZCN56ew5YiX6KGo44CCCiAgICAgIGxpbWl0OgogICAgICAgIGRlZmF1bHQ6ICIxMCIKICAgICAgICBkZXNjcmlwdGlvbjog5oyH5a6a5YGH5Lq655qE5pyA5aSn5pWw6YeP44CCCiAgICAgIHByZWZpeDoKICAgICAgICBkZWZhdWx0OiAiJyciCiAgICAgICAgZGVzY3JpcHRpb246IOaMh+WumuWBh+S6uuWQjeensOWJjee8gOOAgumcgOimgeespuWQiCBNaW5lY3JhZnQg55So5oi35ZCN6KeE6IyD44CCCiAgICAgIHN1ZmZpeDoKICAgICAgICBkZWZhdWx0OiAiJyciCiAgICAgICAgZGVzY3JpcHRpb246IOaMh+WumuWBh+S6uuWQjeensOWQjue8gOOAgumcgOimgeespuWQiCBNaW5lY3JhZnQg55So5oi35ZCN6KeE6IyD44CCCiAgICAgIHJlZ2VuLWFtb3VudDoKICAgICAgICBkZWZhdWx0OiAiMC4wIgogICAgICAgIGRlc2NyaXB0aW9uOiDlgYfkurrmr4/muLjmiI/liLvmgaLlpI3nmoTnlJ/lkb3lgLzjgIIKICAgICAgcmVzaWRlbnQtZmFrZXBsYXllcjoKICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuWcqOacjeWKoeWZqOWFs+mXreaXtuS/neWtmOWBh+S6uuW5tuWcqOS4i+asoeW8gOWQr+acjeWKoeWZqOaXtuaBouWkjeOAggogICAgICBvcGVuLWZha2VwbGF5ZXItaW52ZW50b3J5OgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5YWB6K64546p5a625oyJ5LiL5L2/55So6ZSu5omT5byA5YGH5Lq66IOM5YyF44CCCiAgICAgIHVzZS1hY3Rpb246CiAgICAgICAgZGVmYXVsdDogInRydWUiCiAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuWFgeiuuOWBh+S6uuS9v+eUqFvliqjkvZxdKGZha2VwbGF5ZXIj5YGH5Lq65Yqo5L2cKeOAggogICAgICBtb2RpZnktY29uZmlnOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5YWB6K645L+u5pS5W+WBh+S6uumFjee9rl0oZmFrZXBsYXllciPlgYfkurrphY3nva4p44CCCiAgICAgIG1hbnVhbC1zYXZlLWFuZC1sb2FkOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5YWB6K64W+aJi+WKqOS/neWtmOWSjOWKoOi9veWBh+S6ul0oZmFrZXBsYXllciPlgYfkurrliqDovb0t5L+d5a2YKQogICAgICBjYWNoZS1za2luOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm57yT5a2Y5YGH5Lq655qu6IKk5Lul5Yqg5b+r5YGH5Lq65LqM5qyh5Yib5bu655qE6YCf5bqm77yM57yT5a2Y5Y+q5Lya5Zyo6YeN5ZCv5pyN5Yqh5Zmo5ZCO5aSx5pWI44CCCiAgICAgIGluLWdhbWU6CiAgICAgICAgYWx3YXlzLXNlbmQtZGF0YToKICAgICAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuS4gOebtOWQkeS4juWBh+S6uuWkhOS6juWQjOS4gOe7tOW6pueahOeOqeWutuWPkemAgeivpeWBh+S6uueahOaVsOaNruOAgui/meWwhui3s+i/h+i/vei4qui3neemu+eahOmZkOWItuOAggogICAgICAgIHNraXAtc2xlZXAtY2hlY2s6CiAgICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCmKirkuI0qKuWwhuWBh+S6uuiuoeWFpei3s+i/h+WknOaZmuaJgOmcgOedoeecoOeahOS6uuaVsOOAggogICAgICAgIHNwYXduLXBoYW50b206CiAgICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5YWB6K645YGH5Lq655Sf5oiQ5bm757+844CCCiAgICAgICAgdGljay10eXBlOgogICAgICAgICAgZGVmYXVsdDogTkVUV09SSwogICAgICAgICAgZGVzY3JpcHRpb246IOWBh+S6uueahOm7mOiupFvlrp7kvZPliLvnsbvlnotdKGZha2VwbGF5ZXIj5a6e5L2T5Yi757G75Z6LKeOAggogICAgICAgIHNpbXVsYXRpb24tZGlzdGFuY2U6CiAgICAgICAgICBkZWZhdWx0OiAiLTEiCiAgICAgICAgICBkZXNjcmlwdGlvbjog5YGH5Lq655qE5qih5ouf6Led56a777yM6L+Z5bCG5b2x5ZON5Yy65Z2X5pu05paw5ZKM55Sf54mp55Sf5oiQCiAgICAgICAgZW5hYmxlLWxvY2F0b3ItYmFyOgogICAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuWwhuWBh+S6uua3u+WKoOWIsOeOqeWutueahOWumuS9jeagj+S4reOAggogICAgbWluZWNyYWZ0LW9sZDoKICAgICAgYmxvY2stdXBkYXRlcjoKICAgICAgICBpbnN0YW50LWJsb2NrLXVwZGF0ZXItcmVpbnRyb2R1Y2VkOgogICAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICAgICAg5piv5ZCm6YeN5paw5byV5YWlIDEuMTkg54mI5pys5YmN55qE556s5pe25pa55Z2X5pu05paw5py65Yi244CCCiAgICAgICAgICAgIAogICAgICAgICAgICA6OjogdGlwCiAgICAgICAgICAgIOacieWFs+atpOWKn+iDveabtOivpue7hueahOivtOaYju+8jOivt+WPgumYhSBb44CQ5oiR55qE5LiW55WM44CR556s5pe256eR5oqA55u45YWz5LuL57uNXShodHRwczovL3d3dy5iaWxpYmlsaS5jb20vb3B1cy84MDU1NzIyNDM5MjA3ODE0MjYvKeOAggogICAgICAgICAgICA6OjoKICAgICAgICBjY2UtdXBkYXRlLXN1cHByZXNzaW9uOgogICAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICAgICAg5piv5ZCm5YWB6K645Yip55SoIENsYXNzQ2FzdEV4Y2VwdGlvbiDov5vooYzmm7TmlrDmipHliLbjgIIKICAgICAgICAgICAgCiAgICAgICAgICAgIDo6OiB0aXAKICAgICAgICAgICAg5pyJ5YWz5q2k5Yqf6IO95pu06K+m57uG55qE6K+05piO77yM6K+35Y+C6ZiFIFvlhbPkuo7lvLrovazmipHliLblmajnmoTnrJTorrBdKGh0dHBzOi8vd3d3LmJpbGliaWxpLmNvbS9yZWFkL2N2MjQzMjM3NDkvKeOAggogICAgICAgICAgICA6OjoKICAgICAgICBzb3VuZC11cGRhdGUtc3VwcHJlc3Npb246CiAgICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgICBkZXNjcmlwdGlvbjogfAogICAgICAgICAgICDmmK/lkKblhYHorrjliKnnlKggSWxsZWdhbEFyZ3VtZW50RXhjZXB0aW9uIOi/m+ihjOabtOaWsOaKkeWItuOAggoKICAgICAgICAgICAgOjo6IHRpcAogICAgICAgICAgICDmnInlhbPmraTlip/og73mm7Tor6bnu4bnmoTor7TmmI7vvIzor7flj4LpmIUgW+OAkE1D44CR5paw55qE5pu05paw5oqR5Yi25Zmo77ya5aOw6Z+z5oqR5Yi2IFsxLjE5fjEuMjFd44CQSWduYTc3OOOAkV0oaHR0cHM6Ly93d3cuYmlsaWJpbGkuY29tL3ZpZGVvL0JWMUZ4NHkxczdqVy8p44CCCiAgICAgICAgICAgIDo6OgogICAgICAgIHJlZHN0b25lLWlnbm9yZS11cHdhcmRzLXVwZGF0ZToKICAgICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICAgIGRlc2NyaXB0aW9uOiB8CiAgICAgICAgICAgIOaYr+WQpumHjeaWsOW8leWFpQogICAgICAgICAgICAKICAgICAgICAgICAgLSAxLjIwIOeJiOacrOWJjeeahOacuuWItu+8mue6ouefs+eyieS4jeS8mui/nuaOpeWbm+WRqOW8gOWQr+eahOa0u+adv+mXqOS4iueahOe6ouefs+eyieOAggogICAgICAgICAgICAtIDEuMjAuMiDniYjmnKzliY3nmoTmnLrliLbvvJrnuqLnn7PnsonjgIHnuqLnn7PkuK3nu6flmajlkoznuqLnn7Pmr5TovoPlmajmlLbliLDmnaXoh6rkuIvkvqfnmoTnirbmgIHmm7TmlrDml7bkuI3mo4Dmn6XpmYTnnYDjgIIKICAgICAgICBvbGQtYmxvY2stcmVtb3ZlLWJlaGF2aW91cjoKICAgICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICAgIGRlc2NyaXB0aW9uOiB8CiAgICAgICAgICAgIOaYr+WQpumHjeaWsOW8leWFpSAxLjIxIOeJiOacrOWJjeeahOaWueWdl+WunuS9k+ebuOWFs+ihjOS4uuOAggogICAgICAgICAgICAKICAgICAgICAgICAg6L+Z5bCG5YWB6K645pa55Z2X6KKr56C05Z2P5ZCO5L+d55WZ5YW25pa55Z2X5a6e5L2T77yM6L+b6KGM5pa55Z2X5a6e5L2T5pu/5o2i562J5pON5L2c44CCCiAgICAgICAgICAgIAogICAgICAgICAgICA6Ojp3YXJuaW5nCiAgICAgICAgICAgIOatpOWKn+iDveW5tuS4jeWujOWFqOS4jiAxLjIxIOWJjeebuOWQjO+8jOS6i+WunuS4iu+8jOW8gOWQr+WQjuWHoOS5juaJgOacieaWueWdl+WunuS9k+mDveWPr+S7peiiq+S/neeVmeOAguaVheatpOWKn+iDvei+g+S4uuWNsemZqe+8jOivt+iwqOaFjuW8gOWQr+OAggogICAgICAgICAgICA6OjoKCiAgICAgICAgICAgIDo6OiB0aXAKICAgICAgICAgICAg5pyJ5YWz5q2k5Yqf6IO95pu06K+m57uG55qE6K+05piO77yM6K+35Y+C6ZiFIFvjgJBKS03jgJHmlrnlnZflrp7kvZPmm7/mjaIgWzEuMTcuMV1dKGh0dHBzOi8vd3d3LmJpbGliaWxpLmNvbS92aWRlby9CVjFCODQxMVc3RGkvKeOAggogICAgICAgICAgICA6OjoKICAgICAgc2hlYXJzLWluLWRpc3BlbnNlci1jYW4temVyby1hbW91bnQ6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKbph43mlrDlvJXlhaUgMTh3NDRhIOeJiOacrOWJjeeahOacuuWItu+8muWPkeWwhOWZqOWPr+S7peWwhuWJquWIgOS9v+eUqOiHs+i0n+iAkOS5heW6puOAggogICAgICB2aWxsYWdlci1pbmZpbml0ZS1kaXNjb3VudHM6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKbph43mlrDlvJXlhaUgMS4yMC4yIOeJiOacrOWJjeeahOacuuWItu+8muadkeawkeiiq+WkmuasoeaEn+afk+W5tuayu+aEiOaXtu+8jOaJgOaPkOS+m+eahOaKmOaJo+e/u+WAjeOAggogICAgICBjb3BwZXItYnVsYi0xZ3QtZGVsYXk6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKbph43mlrDlvJXlhaUgMjN3NDZhIOeJiOacrOWJjeeahOacuuWItu+8mumTnOeBr+WcqOe6ouefs+S/oeWPt+WPmOWMluaXtuW7tui/nyAxIOa4uOaIj+WIu+S5i+WQjuWIh+aNoueKtuaAgeOAggogICAgICBjcmFmdGVyLTFndC1kZWxheToKICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpumHjeaWsOW8leWFpSAyM3c0MmEg54mI5pys5YmN55qE5py65Yi277ya5ZCI5oiQ5Zmo6L6T5Ye654mp5ZOB55qE6aKR546H5Li6IDEg5ri45oiP5Yi744CCCiAgICAgIHplcm8tdGljay1wbGFudHM6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiB8CiAgICAgICAgICDmmK/lkKbph43mlrDlvJXlhaUgMS41IOeJiOacrOWJjeeahCBb6Zu25Yi75L2c54mp5YKs54af5oqA5pyvXShodHRwczovL3poLm1pbmVjcmFmdC53aWtpL3cvVHV0b3JpYWw6JUU5JTlCJUI2JUU1JTg4JUJCJUU0JUJEJTlDJUU3JTg5JUE5JUU1JTgyJUFDJUU3JTg2JTlGJUU2JThBJTgwJUU2JTlDJUFGKeOAggogICAgICBybmctZmlzaGluZzoKICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpumHjeaWsOW8leWFpSAxLjIwIOeJiOacrOWJjeeahOacuuWItu+8muWIqeeUqCBSTkcg5pON5L2c5oiY5Yip5ZOB6KGo44CC6L+Z5bCG5YWB6K6456C06Kej6ZKT6bG86ZqP5py65Y+R55Sf5Zmo44CCCiAgICAgIGFsbG93LWdyaW5kc3RvbmUtb3ZlcnN0YWNraW5nOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjogfAogICAgICAgICAg5piv5ZCm6YeN5paw5byV5YWlIDEuMjAuNSDniYjmnKzliY3nmoTmnLrliLbvvJrkvb/nlKjnoILova7og73lsIbor4XlkpLpmYTprZTkuabloIblj6DjgIIKCiAgICAgICAgICA6OjogdGlwCiAgICAgICAgICDmr5TovoPlmajmo4DmtYvlrrnlmajkuK3nmoTnianlk4HmlbDph4/ml7bvvIzkvJrlsIbloIblj6DlkI7nmoTor4XlkpLpmYTprZTkuabop4bkvZzkuLoy57uE54mp5ZOB44CC5YWz5LqO5q2k5Yqf6IO955qE5pu06K+m57uG6Kej6YeK5ZKM5L2c55So6K+35Y+C6ZiFIFvjgJBNaW5lY3JhZnR844CM5a655Zmo5LiO6L+Q6L6T44CN6KGl5YWF5p2Q5paZ44CR5a655Zmo6YCa5byP5LiO5by65qih5L+h5Y+3XShodHRwczovL3d3dy5iaWxpYmlsaS5jb20vb3B1cy80MDU5NzM5MTk1NzYwNjA1MzMvKeOAggogICAgICAgICAgOjo6CiAgICAgIGFsbG93LWVudGl0eS1wb3J0YWwtd2l0aC1wYXNzZW5nZXI6CiAgICAgICAgZGVmYXVsdDogInRydWUiCiAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuWFgeiuuOW4puacieS5mOWuoueahOWunuS9k+epv+i/h+S8oOmAgemXqOOAguWFs+mXreWQju+8jOWunuS9k+epv+i/h+S8oOmAgemXqOeahOmAu+i+keWwhuaBouWkjeiHsyAxLjIxIOeJiOacrOWJjeOAggogICAgICBkaXNhYmxlLWdhdGV3YXktcG9ydGFsLWVudGl0eS10aWNraW5nOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm56aB55SoIDEuMjEg54mI5pys5byV5YWl55qE5py65Yi277ya5a6e5L2T56m/6L+H5oqY6LeD6Zeo5pe277yM5oqY6LeD6Zeo5pa55Z2X5Y+v5Lul5Yqg6L295Yy65Z2X44CCCiAgICAgIGRpc2FibGUtTGl2aW5nRW50aXR5LWFpLXN0ZXAtYWxpdmUtY2hlY2s6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiB8CiAgICAgICAgICDmmK/lkKbnpoHnlKggTGl2aW5nRW50aXR5IOS4rSBBaXN0ZXAg55qE5a2Y5rS75qOA5p+l44CCCgogICAgICAgICAgOjo6IHRpcAogICAgICAgICAg5pyJ5YWz5q2k5Yqf6IO95pu06K+m57uG55qE6K+05piO77yM6K+35Y+C6ZiFIFtbTUNd6bmm6bmJ5aSN5Yi277yB5rS75L2T5YWL6ZqG5oqA5pyv5aSn56qB56C077yBXShodHRwczovL3d3dy5iaWxpYmlsaS5jb20vdmlkZW8vQlYxYVo0MjFXN3QzLynjgIIKICAgICAgICAgIDo6OgogICAgICBzcGF3bi1pbnZ1bG5lcmFibGUtdGltZToKICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpumHjeaWsOW8leWFpSAxLjIxLjQg54mI5pys5YmN55qE5py65Yi277ya5YWB6K64546p5a625Zyo6L+b5YWl5ri45oiP5ZCO55qE5Yeg56eS5YaF5YWN55ar5Lyk5a6z44CCCiAgICAgIG9sZC1ob3BwZXItc3Vjay1pbi1iZWhhdmlvcjoKICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICAgIOaYr+WQpumHjeaWsOW8leWFpSAxLjIwLjUg54mI5pys5YmN55qE5py65Yi277ya5ryP5paX5LiK5pa55pyJ56Kw5pKe566x5a6M5pW055qE5pa55Z2X5pe277yM5LuN54S25Lya5qOA5rWL54mp5ZOB5a6e5L2T44CCCgogICAgICAgICAgOjo6IHdhcm5pbmcKICAgICAgICAgIOW8gOWQr+WQjuWPr+iDveS8mumZjeS9juaAp+iDveOAggogICAgICAgICAgOjo6CiAgICAgIG9sZC16b21iaWUtcGlnbGluLWRyb3A6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKbph43mlrDlvJXlhaUgMS4yMS41IOeJiOacrOWJjeeahOacuuWItu+8muWkhOS6juWPkeaAkueKtuaAgeeahOWDteWwuOeMqueBteiiq+S7u+S9leWboOe0oOadgOatu+mDveS8muaOieiQvee7j+mqjOWSjOeogOacieaOieiQveeJqeOAggogICAgICBvbGQtcmFpZC1iZWhhdmlvcjoKICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpumHjeaWsOW8leWFpSAxLjIxIOeJiOacrOWJjeeahOiireWHu+acuuWItuOAgui/meWwhuS9v+Wkp+mDqOWIhuiireWHu+WhlOaBouWkjei/kOS9nOOAggogICAgICBvbGQtem9tYmllLXJlaW5mb3JjZW1lbnQ6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKbph43mlrDlvJXlhaUgMS4yMS4yIOeJiOacrOWJjeeahOacuuWItu+8muW9k+WDteWwuOadkeawkeOAgeWwuOWjs+OAgea6uuWwuOaIluWDteWwuOeMqueBteiiq+S8pOWus+aXtu+8jOWug+S7rOeUn+aIkOaZrumAmuWDteWwuOWinuaPtOOAggogICAgICBhbGxvdy1hbnZpbC1kZXN0cm95LWl0ZW0tZW50aXRpZXM6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKbph43mlrDlvJXlhaUgMS4yMCDniYjmnKzliY3nmoTmnLrliLbvvJrkuIvokL3nmoTpk4HnoKfog73mkafmr4HlnLDkuIrnmoTnianlk4Hlrp7kvZPjgIIKICAgICAgdHJpcHdpcmUtYW5kLWhvb2stYmVoYXZpb3I6CiAgICAgICAgc3RyaW5nLXRyaXB3aXJlLWhvb2stZHVwbGljYXRlOgogICAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICAgICAg5piv5ZCm6YeN5paw5byV5YWlIDEuMjEuMiDniYjmnKzliY3nmoTluLjkuq7nu4rnur/lkoznu4rnur/lpI3liLbmioDmnK/jgIIKCiAgICAgICAgICAgIDo6OiB0aXAKICAgICAgICAgICAg5pyJ5YWz5q2k5Yqf6IO95pu06K+m57uG55qE6K+05piO77yM6K+35Y+C6ZiFIFvov5nnjqnmhI/lhL/llb7nq5/mgI7kuYjliLfnmoTvvJ/liLfnur/mnLrljp/nkIbmjqLorqggLSDlkKvmiYvliqjliLfnur/mnLrlkozjgJDnmb7kuIfjgJHml6DkurrliLfnur/mnLpdKGh0dHBzOi8vd3d3LmJpbGliaWxpLmNvbS9vcHVzLzcwNDgyMDU4NzQwNDQ2MDA3MS8p44CCCiAgICAgICAgICAgIDo6OgogICAgICAgIHRyaXB3aXJlLWJlaGF2aW9yOgogICAgICAgICAgZGVmYXVsdDogVkFOSUxMQV8yMQogICAgICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICAgICAg5oyH5a6a5pyr5Zyw6buR5puc55+z5bmz5Y+w5LiO5bi45Lqu57uK57q/5LmL6Ze055qE5LqS5Yqo6KGM5Li644CCCiAgICAgICAgICAgIAogICAgICAgICAgICAtIGBWQU5JTExBXzIxYCDkvb/nlKggMS4yMSDniYjmnKzlkI7nmoTmnLrliLbvvJrluLjkuq7nu4rnur/ml6Dms5XpmLvmraLlubPlj7DnlJ/miJDvvIzlubPlj7DkvJrkvb/ooqvlhbbmm7/ku6PnmoTmlrnlnZfmjonokL3jgIIKICAgICAgICAgICAgLSBgVkFOSUxMQV8yMGAg5L2/55SoIDEuMjEg54mI5pys5YmN55qE5py65Yi277ya5bi45Lqu57uK57q/5Y+v5Lul6Zi75q2i5bmz5Y+w55Sf5oiQ77yM6KKr5bmz5Y+w5pu/5Luj55qE5pa55Z2X5LiN5Lya5o6J6JC944CCCiAgICAgICAgICAgIC0gYE1JWEVEYCDkvb/nlKjlpI3lkIjmnLrliLbvvJrluLjkuq7nu4rnur/lj6/ku6XpmLvmraLlubPlj7DnlJ/miJDvvIzlubPlj7DkvJrkvb/ooqvlhbbmm7/ku6PnmoTmlrnlnZfmjonokL3jgIIKCiAgICAgICAgICAgIDo6OiB0aXAKICAgICAgICAgICAg5pyJ5YWz5q2k5Yqf6IO95pu06K+m57uG55qE6K+05piO77yM6K+35Y+C6ZiFIFvjgJBNQ+OAkTEuMTMtMS4xOS4zK+S9v+eUqOW4uOS6rue7iue6v+WIoOmZpOm7keabnOefs+W5s+WPsOOAkGVuYnlk44CRXShodHRwczovL3d3dy5iaWxpYmlsaS5jb20vdmlkZW8vQlYxek00MTF4N1pxLynjgIIKICAgICAgICAgICAgOjo6CiAgICAgIHZvaWQtdHJhZGU6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKbph43mlrDlvJXlhaUgMS4yMS40IOeJiOacrOWJjeeahOacuuWItu+8muadkeawkeemu+W8gOS6pOS6kuiMg+WbtOaXtu+8jOadkeawkeS6pOaYk+eql+WPo+S4jeWFs+mXreOAggogICAgICBkaXNhYmxlLWl0ZW0tZGFtYWdlLWNoZWNrOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog56aB55SoIFvnianlk4Hkv67lpI1dKGh0dHBzOi8vemgubWluZWNyYWZ0Lndpa2kvdy8lRTclODklQTklRTUlOTMlODElRTQlQkYlQUUlRTUlQTQlOEQpIOeahOiAkOS5heW6puajgOafpeOAggogICAgICBvbGQtdGhyb3dhYmxlLXByb2plY3RpbGUtdGljay1vcmRlcjoKICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICAgIOaYr+WQpuaBouWkjSAxLjIxLjQg5YmN55qE5oqV5o6354mp5q6L55WZ5Yi75aSN5Yi26KGM5Li644CCCgogICAgICAgICAgOjo6IHRpcAogICAgICAgICAg5pyJ5YWz5q6L55WZ5Yi755qE5pu06K+m57uG55qE6K+05piO77yM6K+35Y+C6ZiFIFvjgJBNQ+OAkei/meS5n+iDveWkjeWItu+8n++8gV0oaHR0cHM6Ly93d3cuYmlsaWJpbGkuY29tL3ZpZGVvL0JWMVByNDIxTTd0ai8pCiAgICAgICAgICA6OjoKICAgICAga2VlcC1sZWFzaC1jb25uZWN0LXdoZW4tdXNlLWZpcmV3b3JrOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog5ou057uz5LiN5Lya5Zyo5L2/55So54Of6Iqx54Gr566t5Yqg6YCf5pe25pat5byA44CCCiAgICAgIHRudC13ZXQtZXhwbG9zaW9uLW5vLWl0ZW0tZGFtYWdlOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5oGi5aSNIDEuMjEuMi0xLjIxLjUg5LitIFROVCDmjqXop6bliLDmsLTkvYbniIbngrjkuK3lv4PkuI3lpITkuo7msLTkuK3ml7bvvIzlj6/ku6XnoLTlnY/mlrnlnZfkvYbkuI3kvJrngrjmr4HmjonokL3nianlrp7kvZPnmoTnibnmgKfjgIIKICAgICAgb2xkLXByb2plY3RpbGUtZXhwbG9zaW9uLWJlaGF2aW9yOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5oGi5aSNIDEuMjEuNCDlr7nnrq3nn6Lok4Tog73nmoTkv67lpI3jgIIKICAgICAgZW5kZXItZHJhZ29uLXBhcnQtY2FuLXVzZS1lbmQtcG9ydGFsOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5oGi5aSNIDEuMjEg5YmN5pyr5b2x6b6Z6YOo5Lu25Y+v56m/6L+H5pyr5Zyw6Zeo55qE54m55oCn44CCCiAgICBlbHl0cmEtYWVyb25hdXRpY3M6CiAgICAgIG5vLWNodW5rLWxvYWQ6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKblnKjnjqnlrrbkvb/nlKjpnpjnv4Xku6XmjIflrprnmoTpq5jluqbkuI7pgJ/luqbpo57ooYzml7bkuI3liqDovb3ljLrlnZfjgIIKICAgICAgbm8tY2h1bmstaGVpZ2h0OgogICAgICAgIGRlZmF1bHQ6ICI1MDAuMCIKICAgICAgICBkZXNjcmlwdGlvbjog546p5a626L+b5YWl5LiN5Yqg6L295Yy65Z2X54q25oCB6ZyA6KaB55qE6aOe6KGM6auY5bqm44CCCiAgICAgIG5vLWNodW5rLXNwZWVkOgogICAgICAgIGRlZmF1bHQ6ICItMS4wIgogICAgICAgIGRlc2NyaXB0aW9uOiDnjqnlrrbov5vlhaXkuI3liqDovb3ljLrlnZfnirbmgIHpnIDopoHnmoTpo57ooYzpgJ/luqbjgIIKICAgICAgbWVzc2FnZToKICAgICAgICBkZWZhdWx0OiAidHJ1ZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5Zyo546p5a626L+b5YWl5LiN5Yqg6L295Yy65Z2X54q25oCB5pe25pi+56S65o+Q56S644CCCiAgICAgIG1lc3NhZ2Utc3RhcnQ6CiAgICAgICAgZGVmYXVsdDogRmxpZ2h0IGVudGVyIGNydWlzZSBtb2RlCiAgICAgICAgZGVzY3JpcHRpb246IOWcqOeOqeWutui/m+WFpeS4jeWKoOi9veWMuuWdl+eKtuaAgeaXtuaYvuekuueahOaPkOekuuOAggogICAgICBtZXNzYWdlLWVuZDoKICAgICAgICBkZWZhdWx0OiBGbGlnaHQgZXhpdCBjcnVpc2UgbW9kZQogICAgICAgIGRlc2NyaXB0aW9uOiDlnKjnjqnlrrbohLHnprvkuI3liqDovb3ljLrlnZfnirbmgIHml7bmmL7npLrnmoTmj5DnpLrjgIIKICAgIHJlZHN0b25lLXNoZWFycy13cmVuY2g6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuWFgeiuuOeOqeWutuS9v+eUqOWJquWIgOiwg+aVtOmDqOWIhue6ouefs+WFg+S7tuaWueWdl+acneWQke+8jOW5tuS4lOS4jeS8muS6p+eUn+abtOaWsOOAggogICAgbW92YWJsZS1idWRkaW5nLWFtZXRoeXN0OgogICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKblhYHorrjmtLvloZ7mjqjliqjntKvmsLTmmbbmr43lsqnjgIIKICAgIHNwZWN0YXRvci1kb250LWdldC1hZHZhbmNlbWVudDoKICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm6Zi75q2i5peB6KeC6ICF5qih5byP5LiL55qE546p5a626I635Y+W6L+b5bqm44CCCiAgICBzdGljay1jaGFuZ2UtYXJtb3JzdGFuZC1hcm0tc3RhdHVzOgogICAgICBkZWZhdWx0OiAidHJ1ZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuWFgeiuuOeOqeWutuWcqOa9nOihjOeKtuaAgeS4i+aJi+aMgeacqOajjeWvueeblOeUsuaetuaMieS4i+S9v+eUqOmUruWIh+aNoueblOeUsuaetuaJi+iHgueahOaYvuekuueKtuaAgeOAggogICAgc25vd2JhbGwtYW5kLWVnZy1jYW4ta25vY2tiYWNrLXBsYXllcjoKICAgICAgZGVmYXVsdDogInRydWUiCiAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKblhYHorrjpuKHom4vlkozpm6rnkIPlh7vpgIDnjqnlrrbjgIIKICAgIGZsYXR0ZW4tdHJpYW5ndWxhci1kaXN0cmlidXRpb246CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuWwhumaj+acuuWPkeeUn+WZqOaUueS4uuW5s+Wdh+WIhuW4g+OAgui/meWwhuS9v+i+uee8mOS6i+S7tuabtOWuueaYk+WPkeeUn+OAggogICAgcGxheWVyLW9wZXJhdGlvbi1saW1pdGVyOgogICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKbpmZDliLbnjqnlrrbnmoTliqjkvZzmiafooYzpgJ/luqbjgILlvIDlkK/lkI7mr4/kuKrmuLjmiI/liLvlj6rog73noLTlnY8gMSDkuKrmlrnlnZfmiJbmlL7nva4gMiDkuKrmlrnlnZfjgIIKICAgIHJlbmV3YWJsZS1lbHl0cmE6CiAgICAgIGRlZmF1bHQ6ICItMS4wIgogICAgICBkZXNjcmlwdGlvbjog5b2T5r2c5b2x6LSd5Ye75p2A5bm757+85pe25o6J6JC956C05o2f55qE6Z6Y57+F55qE5qaC546H44CC6K6+572u5Li6IGAtMS4wYCDku6XnpoHnlKjmraTlip/og73jgIIKICAgIHNodWxrZXItYm94OgogICAgICBzdGFja2FibGUtc2h1bGtlci1ib3hlczoKICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICAgIOiuvue9rua9nOW9seebkueahOacgOWkp+WghuWPoOaVsOmHj+OAggogICAgICAgICAgLSBgZmFsc2Vg77ya5LiN5aCG5Y+gCiAgICAgICAgICAtIGAyYC1gOTlg77ya5oyH5a6a5pyA5aSn5aCG5Y+g5pWw6YePCgogICAgICAgICAgOjo6IHRpcAogICAgICAgICAg5q2k5Yqf6IO95LiN5Lya5b2x5ZON54mp5ZOB5pys6Lqr55qE5pWw5o2u44CC5aCG5Y+g55qE5r2c5b2x55uS5bCG5Zyo5ryP5paX5Lit5YiG56a777yM55CG6K665LiK5LiN5Lya5b2x5ZON57qi55+z5py65Zmo5q2j5bi45bel5L2c44CCCiAgICAgICAgICA6OjoKICAgICAgc2FtZS1uYnQtc3RhY2thYmxlOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog5L2/55u45ZCM5pWw5o2uIChOQlQpIOeahOa9nOW9seebkuiDvei/m+ihjOWghuWPoO+8jOiAjOS4jeaYr+S7heWghuWPoOepuuebkuWtkOOAggogICAgZm9yY2Utdm9pZC10cmFkZToKICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5YWB6K64546p5a625by65Yi26L+b6KGM6Jma56m65Lqk5piT44CC5byA5ZCv5ZCO77yM5bCG6YeN5paw5byV5YWlIDEuMjEuNAogICAgICAgIOeJiOacrOWJjeeahOacuuWItu+8muadkeawkeemu+W8gOS6pOS6kuiMg+WbtOaXtu+8jOadkeawkeS6pOaYk+eql+WPo+S4jeWFs+mXreOAguWQjOaXtueOqeWutuWcqOmAmui/h+aKmOi3g+mXqOWQju+8jOaXoOmcgOetieW+heWMuuWdl+WNuOi9ve+8jOWNs+WPr+i/m+ihjOiZmuepuuS6pOaYk+OAggogICAgbWMtdGVjaG5pY2FsLXN1cnZpdmFsLW1vZGU6CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjogfAogICAgICAgIOaYr+WQpuW8gOWQr+eUn+eUteaooeW8j+OAggogICAgICAgIAogICAgICAgIOW8gOWQr+WQjumDqOWIhuS4iua4uOS/ruaUueWwhuiiq+emgeeUqO+8jOS7peS4i+mFjee9rumhueWwhuiiq+W8uuWItuimhuebluS4uuS4i+aWueeahOWAvOW5tioq5b+955Wl5Y6f5aeL6YWN572u5paH5Lu25Lit55qE5YC8KirjgIIKICAgICAgICAKICAgICAgICBwYXBlci1nbG9iYWwueW1s77yaCiAgICAgICAgYGBgeWFtbAogICAgICAgIHVuc3VwcG9ydGVkLXNldHRpbmdzOgogICAgICAgICAgYWxsb3ctcGlzdG9uLWR1cGxpY2F0aW9uOiB0cnVlCiAgICAgICAgICBhbGxvdy1oZWFkbGVzcy1waXN0b25zOiB0cnVlCiAgICAgICAgICBhbGxvdy1wZXJtYW5lbnQtYmxvY2stYnJlYWstZXhwbG9pdHM6IHRydWUKICAgICAgICAgIGFsbG93LXVuc2FmZS1lbmQtcG9ydGFsLXRlbGVwb3J0YXRpb246IHRydWUKICAgICAgICAgIHNraXAtdHJpcHdpcmUtaG9vay1wbGFjZW1lbnQtdmFsaWRhdGlvbjogdHJ1ZQogICAgICAgIHBhY2tldC1saW1pdGVyOgogICAgICAgICAgYWxsLXBhY2tldHM6CiAgICAgICAgICAgIG1heC1wYWNrZXQtcmF0ZTogNTAwMC4wCiAgICAgICAgICBvdmVycmlkZXM6IHt9CiAgICAgICAgaXRlbS12YWxpZGF0aW9uOgogICAgICAgICAgcmVzb2x2ZS1zZWxlY3RvcnMtaW4tYm9va3M6IHRydWUKICAgICAgICBzY29yZWJvYXJkczoKICAgICAgICAgIHNhdmUtZW1wdHktc2NvcmVib2FyZC10ZWFtczogdHJ1ZQogICAgICAgIGBgYAogICAgICAgIAogICAgICAgIHBhcGVyLXdvcmxkLnltbO+8iOWvueaJgOaciee7tOW6pu+8ie+8mgogICAgICAgIGBgYHlhbWwKICAgICAgICBjb2xsaXNpb25zOgogICAgICAgICAgYWxsb3ctcGxheWVyLWNyYW1taW5nLWRhbWFnZTogdHJ1ZQogICAgICAgIGVudGl0aWVzOgogICAgICAgICAgc3Bhd25pbmc6CiAgICAgICAgICAgIGNvdW50LWFsbC1tb2JzLWZvci1zcGF3bmluZzogdHJ1CiAgICAgICAgICBiZWhhdmlvcjoKICAgICAgICAgICAgc3R1Y2stZW50aXR5LXBvaS1yZXRyeS1kZWxheTogZGlzYWJsZWQKICAgICAgICB1bnN1cHBvcnRlZC1zZXR0aW5nczoKICAgICAgICAgIGZpeC1pbnZ1bG5lcmFibGUtZW5kLWNyeXN0YWwtZXhwbG9pdDogZmFsc2UKICAgICAgICBob3BwZXI6CiAgICAgICAgICBjb29sZG93bi13aGVuLWZ1bGw6IGZhbHNlCiAgICAgICAgYGBgCiAgICAgICAgCiAgICAgICAgc3BpZ290LnltbO+8iHdvcmxkLXNldHRpbmdz5LiL77yM5a+55omA5pyJ57u05bqm77yJ77yaCiAgICAgICAgYGBgeWFtbAogICAgICAgIG1heC10bnQtcGVyLXRpY2s6IDIwMDAKICAgICAgICBgYGAKICAgIHJldHVybi1uZXRoZXItcG9ydGFsLWZpeDoKICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICBkZXNjcmlwdGlvbjogfAogICAgICAgIOaYr+WQpuS/ruWkjeeOqeWutuS7juS4i+eVjOi/lOWbnuS4u+S4lueVjOaXtuS8oOmAgemXqOS9jee9ruW8guW4uOeahOmXrumimOOAguWFtuWKn+iDveexu+S8vOS6jiBbTmV0aGVyUG9ydGFsRml4XShodHRwczovL21vZHJpbnRoLmNvbS9tb2QvbmV0aGVycG9ydGFsZml4KQoKICAgICAgICA6Ojogd2FybmluZwogICAgICAgIOi/meWPr+iDveS8muWvvOiHtOWOn+acieeahOS4i+eVjOS8oOmAgemXqOmTvuaOpeS4jeWPr+eUqOOAggogICAgICAgIDo6OgogICAgdXNlLXZhbmlsbGEtcmFuZG9tOgogICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKbkvb/nlKjljp/niYjpmo/mnLrmlbDjgILlvIDlkK/lkI7lsIbnlaXlvq7pmY3kvY7mgKfog73vvIzkvYblhYHorrjnjqnlrrbnoLTop6Ppmo/mnLrlj5HnlJ/lmajjgIIKICAgIGZpeC11cGRhdGUtc3VwcHJlc3Npb24tY3Jhc2g6CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm6Zi75q2i55Sx5LqO5pu05paw5oqR5Yi25a+86Ie055qE5bSp5rqD44CCCiAgICBiZWRyb2NrLWJyZWFrLWxpc3Q6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuW8gOWQr+egtOWfuuWyqeamnOOAguatpOWKn+iDveeahOihjOS4uuS4jiBbRlpCQkxdKGh0dHBzOi8vZ2l0ZWUuY29tL2hhcnZleS1odXNreS9ZSC1CQkwpIOS4gOiHtOOAggogICAgZGlzYWJsZS1kaXN0YW5jZS1jaGVjay1mb3ItdXNlLWl0ZW06CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuemgeeUqOS9v+eUqOeJqeWTgeaXtueahOi3neemu+ajgOa1i+OAggogICAgbm8tZmVhdGhlci1mYWxsaW5nLXRyYW1wbGU6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuWFgeiuuOeOqeWutuWcqOepv+aItOaLpeacieaRlOiQvee8k+WGsumtlOWSkueahOmdtOWtkOaXtuaOieiQveWcqOiAleWcsOS4iuS4jeS8muWvvOiHtOWFtumAgOWMluS4uuazpeWcn+OAggogICAgc2hhcmVkLXZpbGxhZ2VyLWRpc2NvdW50czoKICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5YWB6K645omA5pyJ546p5a625YWx5Lqr5ZCM5LiA5p2R5rCR5rK75oSI5oqY5omj44CCCiAgICBkaXNhYmxlLWNoZWNrLW91dC1vZi1vcmRlci1jb21tYW5kOgogICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKbnpoHnlKjogYrlpKnkv6Hmga/pobrluo/mo4Dmn6XjgILmraTpl67popjkuo7kvb/nlKggW0xpdGVtYXRpY2FdKGh0dHBzOi8vd3d3LmN1cnNlZm9yZ2UuY29tL21pbmVjcmFmdC9tYy1tb2RzL2xpdGVtYXRpY2EpIOeahOS4gOmUruaUvue9ruWKn+iDveaXtuW4uOS8muWPkeeUn+OAggogICAgZGVzcGF3bi1lbmRlcm1hbi13aXRoLWJsb2NrOgogICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKblhYHorrjmiYvmjIHmlrnlnZfnmoTmnKvlvbHkurroh6rnhLbmtojlpLHjgIIKICAgIGNyZWF0aXZlLW5vLWNsaXA6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICDmmK/lkKblhYHorrjnjqnlrrblnKjliJvpgKDmqKHlvI/kuIvpo57ooYzml7bnpoHnlKjnorDmkp7nrrHjgIIKCiAgICAgICAgOjo6IHRpcAogICAgICAgIOatpOWKn+iDvemcgOimgeWQr+eUqCBbYHNldHRpbmdzLnByb3RvY29sLmxlYXZlcy1jYXJwZXQtc3VwcG9ydGBdKCNzZXR0aW5ncy5wcm90b2NvbC5sZWF2ZXMtY2FycGV0LXN1cHBvcnQp44CCCiAgICAgICAg5LiU6ZyA6KaB5a6i5oi356uv5a6J6KOFIENhcnBldCBNb2TjgIIKICAgICAgICA6OjoKICAgIHNoYXZlLXNub3ctbGF5ZXJzOgogICAgICBkZWZhdWx0OiAidHJ1ZSIKICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICDmmK/lkKblhYHorrjlr7npm6rkvb/nlKjplLnml7blh4/lsJHpm6rlsYLlubbmjonokL3pm6rnkIPjgIIKCiAgICAgICAgOjo6IHRpcAogICAgICAgIOWwveeuoeWFq+WxgumbquS4jumbquWdl+WNgeWIhuebuOS8vO+8jOS9huatpOWKn+iDveS7heWvueWFq+WxgumbqueUn+aViOOAggogICAgICAgIDo6OgogICAgZGlzYWJsZS1wYWNrZXQtbGltaXQ6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuemgeeUqOWPkeWMhemZkOWItuOAggogICAgbGF2YS1yaXB0aWRlOgogICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgIGRlc2NyaXB0aW9uOiB8CiAgICAgICAg5piv5ZCm5YWB6K64546p5a625Zyo54aU5bKp5Lit5L2/55So5r+A5rWB44CCCgogICAgICAgIDo6OiB0aXAKICAgICAgICDmraTlip/og73pnIDopoHlkK/nlKggW2BzZXR0aW5ncy5wcm90b2NvbC5ibGFkZXJlbi5wcm90b2NvbGBdKCNzZXR0aW5ncy5wcm90b2NvbC5ibGFkZXJlbi5wcm90b2NvbCnjgIIKICAgICAgICAKICAgICAgICDkuJTpnIDopoHlrqLmiLfnq6/lronoo4UgQmxhZGVyZW4gTW9k44CCCiAgICAgICAgOjo6CiAgICBuby1ibG9jay11cGRhdGUtY29tbWFuZDoKICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5ZCv55SoIGAvbGVhdmVzIGJsb2NrdXBkYXRlYCDlkb3ku6TvvIzmraTlkb3ku6Torqnnjqnlrrblj6/ku6XmjqfliLbmnI3liqHlmajlhoXlhajlsYDmlrnlnZfmm7TmlrDmmK/lkKblj5HnlJ/jgIIKICAgIG5vLXRudC1wbGFjZS11cGRhdGU6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuWcqOaUvue9riBUTlQg5pe2KirkuI0qKui/m+ihjOaWueWdl+abtOaWsOOAggogICAgY29udGFpbmVyLXBhc3N0aHJvdWdoOgogICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgIGRlc2NyaXB0aW9uOiB8CiAgICAgICAg5piv5ZCm5YWB6K64546p5a625Zyo5L2/55SoIGDlkYrnpLrniYwv54mp5ZOB5bGV56S65qGGYCDml7blj6/ku6Xnm7TmjqXmiZPlvIDlkI7mlrnnmoTlrrnlmajjgILlkK/nlKjlkI7lsIbkvJrmlLnlj5jljp/mnInmk43kvZzpgLvovpHjgIIKICAgICAgICAKICAgICAgICDlr7nkuo7lkYrnpLrniYzvvIzlj6rmnInlnKjmiYvkuK3ml6Dnianlk4HkuJTmvZzooYzml7bmiY3lj6/nvJbovpHmloflrZfjgIIKICAgICAgICAKICAgICAgICDlr7nkuo7nianlk4HlsZXnpLrmoYbvvIzlj6rmnInlnKjmvZzooYzml7bmiY3lj6/mraPluLjml4vovaznianlk4HjgIIKICAgIGF2b2lkLWFudmlsLXRvby1leHBlbnNpdmU6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICDmmK/lkKblhYHorrjpk4HnoKfkv67lpI3oirHotLnlj6/ku6Xpq5jkuo4gNDAg5bm25LiU5LiN5Lya5Zug5Li66L+H5LqO5piC6LS15peg5rOV5L2/55So44CCCgogICAgICAgIDo6OiB0aXAKICAgICAgICDopoHmraPnoa7mmL7npLrnnJ/lrp7nmoTnu4/pqozmtojogJfnrYnnuqfvvIzpnIDopoHlkK/nlKggW2BzZXR0aW5ncy5wcm90b2NvbC5sZWF2ZXMtY2FycGV0LXN1cHBvcnRgXSgjc2V0dGluZ3MucHJvdG9jb2wubGVhdmVzLWNhcnBldC1zdXBwb3J0Ke+8jAogICAgICAgIAogICAgICAgIOS4lOmcgOimgeWuouaIt+err+WuieijhSBbUGx1c2xzIENhcnBldCBBZGRpdGlvbl0oaHR0cHM6Ly9naXRodWIuY29tL055YW4tV29yay9wbHVzbHMtY2FycGV0LWFkZGl0aW9uL2Jsb2Ivbnlhbi13b3JrL2Rldi9SRUFETUVfWkhfQ04ubWQp44CCCiAgICAgICAgOjo6CiAgICBib3ctaW5maW5pdHktZml4OgogICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKblhYHorrjnlJ/lrZjmqKHlvI/kuIvnmoTnjqnlrrblnKjnianlk4HmoI/kuK3ml6Dnrq3nn6Lml7bku43lj6/kvb/nlKjmi6XmnInml6DpmZDprZTlkpLnmoTlvJPjgIIKICAgIGhvcHBlci1jb3VudGVyOgogICAgICBlbmFibGU6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKblkK/nlKjmvI/mlpforqHmlbDlmajjgIIKICAgICAgdW5saW1pdGVkLXNwZWVkOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm6Kej6Zmk5ryP5paX6K6h5pWw5Zmo55qE6YCf5bqm6ZmQ5Yi277yM6L+Z5bCG5o+Q5Y2H5rWL6K+V6auY5pWI546H5py65Zmo55qE5YeG56Gu5oCn44CCCiAgICBzcGlkZXItam9ja2V5cy1kcm9wLWdhcHBsZXM6CiAgICAgIGRlZmF1bHQ6ICItMS4wIgogICAgICBkZXNjcmlwdGlvbjog5b2T6JyY6Jub6aqR5aOr5q275Lqh5pe25o6J6JC96ZmE6a2U6YeR6Iu55p6c55qE5qaC546H44CC6K6+572u5Li6IGAtMS4wYCDku6XnpoHnlKjmraTlip/og73jgIIKICAgIHJlbmV3YWJsZS1kZWVwc2xhdGU6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuS9v+W+l+WcqOS4u+S4lueVjCBgWSA8IDBgIOeahOWMuuWfn++8jOeGlOWyqea1geWcqOawtOW5s+aWueWQkeaIluS4iuaWueinpueisOawtOa6kOaIluawtOa1geaXtuWwhuS8muWPmOS4uua3seadv+WyqeWchuefs+iAjOS4jeaYr+aZrumAmuWchuefs++8jOWcqOmdnuawtOW5s+aWueWQkeS4iuWwhuWPmOaIkOa3seadv+WyqeiAjOS4jeaYr+efs+WktOOAggogICAgcmVuZXdhYmxlLXNwb25nZXM6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuWFgeiuuOWuiOWNq+iAheWcqOiiq+mXqueUteadn+WHu+S4reWQjui9rOWMluS4uui/nOWPpOWuiOWNq+iAheOAggogICAgcmVuZXdhYmxlLWNvcmFsOgogICAgICBkZWZhdWx0OiAiJ0ZBTFNFJyIKICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICDmmK/lkKblhYHorrjkvb/nlKjpqqjnsonlgqznhp/nj4rnkZrnsbvmpI3nianjgIIKICAgICAgICAKICAgICAgICAtIGBGQUxTRWAg5LiN5YWB6K645L2/55So6aqo57KJ5YKs54af54+K55Ga57G75qSN54mp44CCCiAgICAgICAgLSBgVFJVRWAg5YWB6K645L2/55So6aqo57KJ5YKs54af54+K55Ga44CCCiAgICAgICAgLSBgRVhQQU5ERURgIOWFgeiuuOS9v+eUqOmqqOeyieWCrOeGn+ePiueRmuWSjOePiueRmuaJh+OAggogICAgZGlzYWJsZS12YXVsdC1ibGFja2xpc3Q6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuemgeeUqOWuneW6k+m7keWQjeWNleezu+e7n+OAgui/meWwhuS9v+W+l+eOqeWutuWPr+S7peaXoOmZkOasoeaJk+W8gOWQjOS4gOS4quWuneW6k+OAggogICAgZXhwLW9yYi1hYnNvcmItbW9kZToKICAgICAgZGVmYXVsdDogVkFOSUxMQQogICAgICBkZXNjcmlwdGlvbjogfAogICAgICAgIOaYr+WQpuWFgeiuuOeOqeWutuabtOW/q+WcsOWQuOWPlue7j+mqjOeQg+OAggogICAgICAgIAogICAgICAgIC0gYEZBU1RgIOWFgeiuuOaJgOacieaooeW8j+S4i+eahOeOqeWutuW/q+mAn+WQuOWPlue7j+mqjOeQg+OAggogICAgICAgIC0gYEZBU1RfQ1JFQVRJVkVgIOS7heWFgeiuuOWIm+mAoOaooeW8j+eOqeWutuW/q+mAn+WQuOWPlue7j+mqjOeQg+OAggogICAgICAgIC0gYFZBTklMTEFgIOS9v+eUqOWOn+eJiOWQuOWPlumAn+W6pu+8jOWNs+eOqeWutuaXoOazleW/q+mAn+WQuOWPlue7j+mqjOeQg+OAggogIHBlcmZvcm1hbmNlOgogICAgcmVtb3ZlOgogICAgICB0aWNrLWd1YXJkLWxhbWJkYToKICAgICAgICBkZWZhdWx0OiAidHJ1ZSIKICAgICAgICBkZXNjcmlwdGlvbjogfAogICAgICAgICAg5piv5ZCm5Zyo6L+Q566X5a6e5L2T5YiX6KGo5pe2KirkuI0qKuS9v+eUqCBgTGFtYmRhYOOAggoKICAgICAgICAgIDo6OiB0aXAKICAgICAgICAgIOi/meS4quWKn+iDveS6p+eUn+eahOS8mOWMluW+ruS5juWFtuW+ruOAggogICAgICAgICAgOjo6CiAgICAgIGRhbWFnZS1sYW1iZGE6CiAgICAgICAgZGVmYXVsdDogInRydWUiCiAgICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICAgIOaYr+WQpuWcqOiuoeeul+S8pOWus+aXtioq5LiNKirkvb/nlKggYExhbWJkYWDjgIIKCiAgICAgICAgICA6OjogdGlwCiAgICAgICAgICDov5nkuKrlip/og73kuqfnlJ/nmoTkvJjljJblvq7kuY7lhbblvq7jgIIKICAgICAgICAgIDo6OgogICAgb3B0aW1pemVkLWRyYWdvbi1yZXNwYXduOgogICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKbkvJjljJbmnKvlvbHpvpnph43nlJ/vvIzlhbblip/og73nrYnlkIzkuo4gW09wdGltaXplZCBEcmFnb24gUmVzcGF3bl0oaHR0cHM6Ly9tb2RyaW50aC5jb20vbW9kL29wdGltaXplZC1kcmFnb24tcmVzcGF3bikKICAgIGRvbnQtc2VuZC11c2VsZXNzLWVudGl0eS1wYWNrZXRzOgogICAgICBkZWZhdWx0OiAidHJ1ZSIKICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICDmmK/lkKblh4/lsJHlj5HpgIHml6DnlKjlrp7kvZPljIXjgIIKCiAgICAgICAgOjo6IHdhcm5pbmcKICAgICAgICDov5nlj6/og73kvJrnoLTlnY/liKnnlKjov5nkupvml6DnlKjlrp7kvZPljIXnmoTmqKHnu4TjgIIKICAgICAgICA6OjoKICAgIGVuYWJsZS1zdWZmb2NhdGlvbi1vcHRpbWl6YXRpb246CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5bCG56qS5oGv5qOA5rWL6aKR546H5o+Q6auY5Li6IDIwIOa4uOaIj+WIu+OAgueOqeWutuW+iOmavu+8iOS9huS4jeaYr+S4jeWPr+iDve+8ieazqOaEj+WIsOi/meS4gOWPmOWMluOAggogICAgY2hlY2stc3Bvb2t5LXNlYXNvbi1vbmNlLWFuLWhvdXI6CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5bCG5LiH5Zyj6IqC5qOA5rWL6aKR546H6ZmN5L2O6IezIDEg5bCP5pe25LiA5qyh44CCCiAgICBpbmFjdGl2ZS1nb2FsLXNlbGVjdG9yLWRpc2FibGU6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICDmmK/lkKbpmZDliLbpnZ7mtLvot4Plrp7kvZPnmoTnm67moIfmn6Xmib7lmajnmoTov5DooYzjgIIKICAgICAgICAKICAgICAgICDlkK/nlKjmraTpobnnm67lkI7vvIzpnZ7mtLvot4Plrp7kvZPnmoTnm67moIfmn6Xmib7lmaggKEdvYWwgU2VsZWN0b3IpIOWwhuS8muavjyAyMCDmuLjmiI/liLvov5DooYzkuIDmrKHvvIzogIzkuI3mmK/mr4/liLvov5DooYzjgIIKICAgIHJlZHVjZS1lbnRpdHktYWxsb2NhdGlvbnM6CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm57yT5a2Y5a6e5L2T55qE5bGe5oCn5a6e5L6LIChBdHRyaWJ1dGUgSW5zdGFuY2Up77yM6L+Z5bCG55Wl5b6u5YeP5bCR5YaF5a2Y5YiG6YWN44CCCiAgICBjYWNoZS1jbGltYi1jaGVjazoKICAgICAgZGVmYXVsdDogInRydWUiCiAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKbnvJPlrZjmlIDniKzmo4Dmn6Xnu5PmnpzjgIIKICAgIHJlZHVjZS1jaHVjay1sb2FkLWFuZC1sb29rdXA6CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjogfAogICAgICAgIOaYr+WQpuWHj+Wwkeacq+W9seS6uuS8oOmAgeWkhOeQhueahOS4jeW/heimgeeahOWMuuWdl+afpeaJvuWSjOWKoOi9veOAggogICAgICAgIAogICAgICAgIOWQr+eUqOatpOWKn+iDveWQju+8jOacq+W9seS6uueahGDlhoXpg6jpmo/mnLrkvKDpgIFg5ZKMYOWQkeebruagh+mZhOi/keS8oOmAgWDlsIbkuI3lho3lsJ3or5XkvKDpgIHoh7PmnKrliqDovb3nmoTljLrlnZfjgIIKICAgICAgICAKICAgICAgICDmj5Lku7bmiJblpJbpg6jkuqfnlJ/nmoTkvKDpgIHmlYjmnpzkuI3lj5flvbHlk43jgIIKICAgIGNhY2hlLWlnbml0ZS1vZGRzOgogICAgICBkZWZhdWx0OiAidHJ1ZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuW8gOWQr+WvueeBq+eEsOiUk+W7tuajgOa1i+S4reWvueaWueWdl+eHg+eDp+amgueOh+eahOefreaague8k+WtmOOAggogICAgZmFzdGVyLWNodW5rLXNlcmlhbGl6YXRpb246CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5L2/55SoIFtMaXRoaXVtXShodHRwczovL21vZHJpbnRoLmNvbS9tb2QvbGl0aGl1bSkg55qE5b+r6YCf5Yy65Z2X5L+d5a2Y5bqP5YiX5YyW44CCCiAgICBza2lwLXNlY29uZGFyeS1QT0ktc2Vuc29yLWlmLWFic2VudDoKICAgICAgZGVmYXVsdDogInRydWUiCiAgICAgIGRlc2NyaXB0aW9uOiB8CiAgICAgICAg5piv5ZCm6Lez6L+H5a+75om+5LiN5a2Y5Zyo55qE5p2R5rCR5qyh6KaB5YW06Laj54K544CCCiAgICAgICAgCiAgICAgICAg5ZCv55So5q2k5Yqf6IO95ZCO77yM5aaC5p6c5p2R5rCR55qE5qyh6KaB5bel5L2c54K5IChTZWNvbmRhcnkgSm9iIFNpdGUpIOS4jeWtmOWcqO+8jOWwhuebtOaOpei3s+i/h+W5tua4hemZpOadkeawkeeahOi/memDqOWIhuiusOW/huOAggogICAgc3RvcmUtbW9iLWNvdW50cy1pbi1hcnJheToKICAgICAgZGVmYXVsdDogInRydWUiCiAgICAgIGRlc2NyaXB0aW9uOiB8CiAgICAgICAg5piv5ZCm5Zyo55Sf54mp55Sf5oiQ5LiK6ZmQ6K6h566X5pe25L2/55So5pWw57uE77yM6ICM5LiN5piv5pig5bCEIChNYXAp44CCCgogICAgICAgIDo6OiB0aXAKICAgICAgICAgIOi/meS4quWKn+iDveS6p+eUn+eahOS8mOWMluW+ruS5juWFtuW+ruOAggogICAgICAgIDo6OgogICAgb3B0aW1pemUtbm9pc2UtZ2VuZXJhdGlvbjoKICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICBkZXNjcmlwdGlvbjogfAogICAgICAgIOaYr+WQpuS9v+eUqCBbQ29uY3VycmVudCBDaHVuayBNYW5hZ2VtZW50IEVuZ2luZV0oaHR0cHM6Ly9tb2RyaW50aC5jb20vbW9kL2MybWUtZmFicmljKSDnmoTkuJbnlYznlJ/miJDlmarlo7DkvJjljJbvvIzov5nmnInliqnkuo7mj5Dpq5jlv6vpgJ/nlJ/miJDlpKfph4/ljLrlnZfnmoTpgJ/luqbjgIIKCiAgICAgICAgOjo6IHdhcm5pbmcKICAgICAgICDov5nmmK/kuIDkuKrlrp7pqozmgKflip/og73jgIIKICAgICAgICA6OjoKICAgIG9wdGltaXplLXN1bi1idXJuLXRpY2s6CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5LyY5YyW5a6e5L2T55qE6Ziz5YWJ54Wn5bCE5qOA5rWL44CCCiAgICBvcHRpbWl6ZWQtQ3ViZVBvaW50UmFuZ2U6CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5LyY5YyWIEN1YmVQb2ludFJhbmdl44CCCiAgICBjaGVjay1mcm96ZW4tdGlja3MtYmVmb3JlLWxhbmRpbmctYmxvY2s6CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5Zyo5bCd6K+V55Sf5oiQ5Yaw55qE5pe25YCZ5LyY5YWI5qOA5p+l5ri45oiP5Yi76ICM5LiN5piv5YWI5qOA5p+l5pa55Z2X5piv5ZCm5Li656m65rCU44CCCiAgICBza2lwLWVudGl0eS1tb3ZlLWlmLW1vdmVtZW50LWlzLXplcm86CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm6Lez6L+H5a6M5YWo5rKh5pyJ56e75Yqo55qE5a6e5L2T55qE5L2N56e76K6h566X44CCCiAgICBza2lwLWNsb25pbmctYWR2YW5jZW1lbnQtY3JpdGVyaWE6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpui3s+i/h+WIm+W7uui/m+W6puaXtuWvueWHhuWImSAoQ3JpdGVyaWEpIOeahOWkjeWItuOAggogICAgc2tpcC1uZWdsaWdpYmxlLXBsYW5hci1tb3ZlbWVudC1tdWx0aXBsaWNhdGlvbjoKICAgICAgZGVmYXVsdDogInRydWUiCiAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKbot7Pov4fnjqnlrrbnp7vliqjkuK3kuI3lv4XopoHnmoTkuZjms5XorqHnrpfjgIIKICAgIHNsZWVwaW5nLWJsb2NrLWVudGl0eToKICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICBkZXNjcmlwdGlvbjogfAogICAgICAgIOaYr+WQpuWQr+eUqCBbTGl0aGl1bV0oaHR0cHM6Ly9tb2RyaW50aC5jb20vbW9kL2xpdGhpdW0pIOeahOaWueWdl+WunuS9k+S8keecoOWKn+iDveOAggogICAgICAgIAogICAgICAgIOi/meWwhuWkp+Wkp+WHj+Wwj+W8gOWPo+a8j+aWl+eahOaAp+iDveW8gOmUgO+8jOW5tuS4gOWumueoi+W6puS4iuS8mOWMluWFtuS7luaWueWdl+WunuS9k+OAggogIHByb3RvY29sOgogICAgYmxhZGVyZW46CiAgICAgIHByb3RvY29sOgogICAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKblvIDlkK8KICAgICAgICAgIFtCbGFkZXJlbl0oaHR0cHM6Ly9naXRodWIuY29tL0xlYXZlc01DL0JsYWRlcmVuL2Jsb2IvbWFzdGVyL1JFQURNRV9jbi5tZCkg5Y2P6K6u5pSv5oyB44CCCiAgICAgIG1zcHQtc3luYy1wcm90b2NvbDoKICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuW8gOWQryBNU1BUIOWQjOatpeWNj+iuruOAggogICAgICBtc3B0LXN5bmMtdGljay1pbnRlcnZhbDoKICAgICAgICBkZWZhdWx0OiAiMjAiCiAgICAgICAgZGVzY3JpcHRpb246IE1TUFQg5ZCM5q2l6aKR546H77yI5Y2V5L2N77ya5ri45oiP5Yi777yJ44CCCiAgICBzeW5jbWF0aWNhOgogICAgICBlbmFibGU6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKblvIDlkK8gW1N5bmNtYXRpY2FdKGh0dHBzOi8vbW9kcmludGguY29tL21vZC9zeW5jbWF0aWNhKSDljY/orq7mlK/mjIHjgIIKICAgICAgcXVvdGE6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKbpmZDliLbmipXlvbHmlofku7blpKflsI/jgIIKICAgICAgcXVvdGEtbGltaXQ6CiAgICAgICAgZGVmYXVsdDogIjQwMDAwMDAwIgogICAgICAgIGRlc2NyaXB0aW9uOiDmipXlvbHmlofku7bkvZPnp6/kuIrpmZDvvIjljZXkvY3vvJrlrZfoioLvvInjgIIKICAgIHBjYToKICAgICAgcGNhLXN5bmMtcHJvdG9jb2w6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKblvIDlkK8gW1BsdXNscyBDYXJwZXQgQWRkaXRpb25dKGh0dHBzOi8vZ2l0aHViLmNvbS9OeWFuLVdvcmsvcGx1c2xzLWNhcnBldC1hZGRpdGlvbi9ibG9iL255YW4td29yay9kZXYvUkVBRE1FX1pIX0NOLm1kKeaVsOaNruWQjOatpe+8jOWFtuS9nOeUqOebuOW9k+S6juWcqOacjeWKoeerr+WuieijheS6hiBbUENBLVByb3RvY29sXShodHRwczovL2dpdGh1Yi5jb20vRmFsbGVuLUJyZWF0aC9wY2EtcHJvdG9jb2wp44CCCiAgICAgIHBjYS1zeW5jLXBsYXllci1lbnRpdHk6CiAgICAgICAgZGVmYXVsdDogT1BTCiAgICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICAgIOaMh+WumuWTquS6m+eOqeWutuWPr+S7peWQjOatpSBbUGx1c2xzIENhcnBldCBBZGRpdGlvbl0oaHR0cHM6Ly9naXRodWIuY29tL055YW4tV29yay9wbHVzbHMtY2FycGV0LWFkZGl0aW9uL2Jsb2Ivbnlhbi13b3JrL2Rldi9SRUFETUVfWkhfQ04ubWQpIOeahOaVsOaNruOAggogICAgICAgICAgCiAgICAgICAgICAtIGBOT0JPRFlgIOaJgOacieeOqeWutueahOaVsOaNrumDveaXoOazleWQjOatpeOAggogICAgICAgICAgLSBgQk9UYCDlj6rmnInlgYfkurrnmoTmlbDmja7lj6/ku6XooqvlkIzmraXliLDlrqLmiLfnq6/jgIIKICAgICAgICAgIC0gYE9QU2Ag5YGH5Lq655qE5pWw5o2u5Y+v5Lul6KKr5ZCM5q2l5Yiw5a6i5oi356uv77yMT1Ag5Y+v5Lul5ZCM5q2l5omA5pyJ546p5a6255qE5pWw5o2u44CCCiAgICAgICAgICAtIGBPUFNfQU5EX1NFTEZgIOeOqeWutuWPr+S7peWQjOatpeWBh+S6uueahOaVsOaNru+8jE9QIOWPr+S7peWQjOatpeaJgOacieeOqeWutueahOaVsOaNru+8jOavj+S4queOqeWutuWPr+S7peWQjOatpeiHquW3seeahOaVsOaNruOAggogICAgICAgICAgLSBgRVZFUllPTkVgIOaJgOacieeahOeOqeWutuaVsOaNrumDveWPr+S7peS6kuebuOWQjOatpeOAggogICAgYXBwbGVza2luOgogICAgICBwcm90b2NvbDoKICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuW8gOWQryBbQXBwbGVTa2luXShodHRwczovL21vZHJpbnRoLmNvbS9tb2QvYXBwbGVza2luKSDljY/orq7mlK/mjIHjgIIKICAgICAgc3luYy10aWNrLWludGVydmFsOgogICAgICAgIGRlZmF1bHQ6ICIyMCIKICAgICAgICBkZXNjcmlwdGlvbjog5oyH5a6aIEFwcGxlU2tpbiDlkIzmraXpopHnjofvvIjljZXkvY3vvJrmuLjmiI/liLvvvInjgIIKICAgIHNlcnZ1eDoKICAgICAgc3RydWN0dXJlLXByb3RvY29sOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5byA5ZCvIFtTZXJ2dXhdKGh0dHBzOi8vbW9kcmludGguY29tL21vZC9zZXJ2dXgpIOeahOe7k+aehOaOoua1i+WNj+iuruaUr+aMgeOAggogICAgICBlbnRpdHktcHJvdG9jb2w6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKblvIDlkK8gW1NlcnZ1eF0oaHR0cHM6Ly9tb2RyaW50aC5jb20vbW9kL3NlcnZ1eCkg55qE55Sf54mp5pWw5o2u5Y2P6K6u5pSv5oyB44CCCiAgICAgIGh1ZC1tZXRhZGF0YS1wcm90b2NvbDoKICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuW8gOWQryBbU2VydnV4XShodHRwczovL21vZHJpbnRoLmNvbS9tb2Qvc2VydnV4KSDnmoTkuJbnlYzlhYPmlbDmja7ljY/orq7mlK/mjIHjgIIKICAgICAgaHVkLWxvZ2dlci1wcm90b2NvbDoKICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuW8gOWQryBbU2VydnV4XShodHRwczovL21vZHJpbnRoLmNvbS9tb2Qvc2VydnV4KSDnmoTmnI3liqHlmajorrDlvZXlmajmlbDmja7ljY/orq7mlK/mjIHjgIIKICAgICAgaHVkLWVuYWJsZWQtbG9nZ2VyczoKICAgICAgICBkZWZhdWx0OgogICAgICAgICAgLSBUUFMKICAgICAgICAgIC0gTU9CX0NBUFMKICAgICAgICBkZXNjcmlwdGlvbjogfAogICAgICAgICAg5oyH5a6a5ZCv55So5ZOq5Lqb6K6w5b2V5ZmoCiAgICAgICAgICAKICAgICAgICAgIC0gYFRQU2Ag6K6w5b2V5pyN5Yqh5ZmoVFBT5ZKMTVNQVAogICAgICAgICAgLSBgTU9CX0NBUFNgIOiusOW9leacjeWKoeWZqOeUn+eJqeS4iumZkOWSjOW9k+WJjeaVsOmHjwogICAgICBodWQtdXBkYXRlLWludGVydmFsOgogICAgICAgIGRlZmF1bHQ6ICIxIgogICAgICAgIGRlc2NyaXB0aW9uOiDmjIflrpogU2VydnV4IOiusOW9leWZqOWQjOatpemikeeOh++8iOWNleS9je+8mua4uOaIj+WIu++8ieOAggogICAgICBodWQtbWV0YWRhdGEtcHJvdG9jb2wtc2hhcmUtc2VlZDoKICAgICAgICBkZWZhdWx0OiAidHJ1ZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5Zyo5Y+R6YCB5LiW55WM5YWD5pWw5o2u5pe25YyF5ZCr5LiW55WM56eN5a2Q44CCCiAgICAgIGxpdGVtYXRpY3M6CiAgICAgICAgZW5hYmxlOgogICAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuW8gOWQryBbU2VydnV4XShodHRwczovL21vZHJpbnRoLmNvbS9tb2Qvc2VydnV4KSDnmoTmipXlvbHljY/orq7mlK/mjIHjgIIKICAgICAgICBtYXgtbmJ0LXNpemU6CiAgICAgICAgICBkZWZhdWx0OiAiMjA5NzE1MiIKICAgICAgICAgIGRlc2NyaXB0aW9uOiDmipXlvbHmlofku7bkvZPnp6/kuIrpmZDvvIjljZXkvY3vvJrlrZfoioLvvInjgIIKICAgIGJib3ItcHJvdG9jb2w6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuW8gOWQryBbQkJPUl0oaHR0cHM6Ly9tb2RyaW50aC5jb20vbW9kL2Jib3IpIOWNj+iuruaUr+aMgeOAggogICAgamFkZS1wcm90b2NvbDoKICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5byA5ZCvIFtKYWRlXShodHRwczovL21vZHJpbnRoLmNvbS9tb2QvamFkZSkg5Y2P6K6u5pSv5oyB44CCCiAgICBhbHRlcm5hdGl2ZS1ibG9jay1wbGFjZW1lbnQ6CiAgICAgIGRlZmF1bHQ6IE5PTkUKICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICDmjIflrprnsr7noa7mlL7nva7ljY/orq7nsbvlnovjgIIKCiAgICAgICAgLSBgTk9ORWAg5YWz6Zet57K+56Gu5pS+572u5Y2P6K6u44CCCiAgICAgICAgLSBgQ0FSUEVUYCDnsr7noa7mlL7nva7ljY/orq7niYjmnKwgMuOAggogICAgICAgIC0gYENBUlBFVF9GSVhgIOabtOWlveeahOeyvuehruaUvue9ruWNj+iurueJiOacrCAy77yI6ZyA6KaB5a6i5oi356uv5a6J6KOFIFtNYXNhR2FkZ2V0XShodHRwczovL2dpdGh1Yi5jb20vcGx1c2xzL01hc2FHYWRnZXQp77yJ44CCCiAgICAgICAgLSBgTElURU1BVElDQWAg57K+56Gu5pS+572u5Y2P6K6u54mI5pysIDPjgIIKICAgIHhhZXJvLW1hcC1wcm90b2NvbDoKICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5byA5ZCvIFtYYWVybyDnmoTkuJbnlYzlnLDlm75dKGh0dHBzOi8vbW9kcmludGguY29tL21vZC94YWVyb3Mtd29ybGQtbWFwKSDljY/orq7mlK/mjIHjgIIKICAgIHhhZXJvLW1hcC1zZXJ2ZXItaWQ6CiAgICAgIGRlZmF1bHQ6ICRyYW5kb20kaW50CiAgICAgIGRlc2NyaXB0aW9uOiB8CiAgICAgICAgWGFlcm8g55qE5LiW55WM5Zyw5Zu+5L2/55So5q2k5ZSv5LiA5qCH6K+G56ym56Gu5a6a5pyN5Yqh5Zmo77yM6K+356Gu5L+d5q+P5Liq5pyN5Yqh5Zmo5L2/55So5ZSv5LiA55qE5qCH6K+G56ym44CCCgogICAgICAgIDo6OiB0aXAKICAgICAgICDov5nmmK/kuIDkuKogKippbnQqKiDojIPlm7TlhoXnmoTpmo/mnLrlgLzjgILlpoLmnpzkvaDkuI3muIXmpZrov5nkuKrojIPlm7TvvIzor7fkvb/nlKjmnI3liqHlmajnlJ/miJDnmoTpmo/mnLrlgLzjgIIKICAgICAgICA6OjoKICAgIGxlYXZlcy1jYXJwZXQtc3VwcG9ydDoKICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICBkZXNjcmlwdGlvbjogfAogICAgICAgIOaYr+WQpuW8gOWQryBbQ2FycGV0XShodHRwczovL21vZHJpbnRoLmNvbS9tb2QvY2FycGV0KSDljY/orq7mlK/mjIHjgILlrqLmiLfnq6/lj6/og73kvJrmhJ/nn6XmraTljY/orq7vvIzku6Xlrp7njrDmm7TlpJogQ2FycGV0IOWKn+iDveOAggoKICAgICAgICA6OjogdGlwCiAgICAgICAg5byA5ZCv5q2k5Yqf6IO95bm25LiN55u45b2T5LqO5Zyo5pyN5Yqh56uv5a6J6KOF5LqGIENhcnBldCBNb2TvvIzlroPlj6rkvJrlkJHlrqLmiLfnq6/lo7DmmI7mnI3liqHnq6/lronoo4XkuoYgQ2FycGV044CCCiAgICAgICAgOjo6CiAgICByZWktc2VydmVyLXByb3RvY29sOgogICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKblvIDlkK8gW1JvdWdobHkgRW5vdWdoIEl0ZW1zXShodHRwczovL2dpdGh1Yi5jb20vc2hlZGFuaWVsL1JvdWdobHlFbm91Z2hJdGVtcykg5Y2P6K6u5pSv5oyB44CCCiAgICBjaGF0LWltYWdlLXByb3RvY29sOgogICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgIGRlc2NyaXB0aW9uOiB8CiAgICAgICAg5piv5ZCm5byA5ZCvIFtDaGF0SW1hZ2VdKGh0dHBzOi8vZ2l0aHViLmNvbS9raXRVSU4vQ2hhdEltYWdlKSDljY/orq7mlK/mjIHjgIIKCiAgICAgICAgOjo6IHRpcAogICAgICAgIOatpOWKn+iDvemcgOimgeWQr+eUqCBbYHNldHRpbmdzLmZpeC52YW5pbGxhLWRpc3BsYXktbmFtZWBdKCNzZXR0aW5ncy5maXgudmFuaWxsYS1kaXNwbGF5LW5hbWUp44CCCiAgICAgICAgOjo6CiAgbWlzYzoKICAgIGF1dG8tdXBkYXRlOgogICAgICBlbmFibGU6CiAgICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICAgIGRlc2NyaXB0aW9uOiB8CiAgICAgICAgICDmmK/lkKblvIDlkK8gTGVhdmVzIOiHquWKqOabtOaWsOOAggoKICAgICAgICAgIDo6OiB0aXAKICAgICAgICAgIOaWsOeahCBMZWF2ZXMg5pu05paw5bCG5Zyo5pyN5Yqh5Zmo6YeN5paw5ZCv5Yqo5ZCO5a6J6KOF44CCCiAgICAgICAgICA6OjoKICAgICAgZG93bmxvYWQtc291cmNlOgogICAgICAgIGRlZmF1bHQ6IGFwcGxpY2F0aW9uCiAgICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICAgIOaMh+WumuiHquWKqOabtOaWsOS4i+i9vea6kOOAggogICAgICAgICAgCiAgICAgICAgICAtIGBhcHBsaWNhdGlvbmAgR2l0SHViIFJlbGVhc2VzCiAgICAgICAgICAtIGByYWlueXVuYCDpm6jkupHmj5DkvpvnmoTplZzlg4/kuIvovb3mupAKICAgICAgYWxsb3ctZXhwZXJpbWVudGFsOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5YWB6K645pu05paw5Yiw5a6e6aqM5oCn54mI5pys44CCCiAgICAgIHRpbWU6CiAgICAgICAgZGVmYXVsdDoKICAgICAgICAgIC0gIicxNDowMCciCiAgICAgICAgICAtICInMjowMCciCiAgICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICAgIExlYXZlcyDoh6rliqjmm7TmlrDnmoTml7bpl7TngrnvvIjmoLzlvI/vvJpISDptbe+8ieOAggogICAgICAgICAgCiAgICAgICAgICA6Ojp0aXAKICAgICAgICAgIOatpOWKn+iDveS7heS8muWcqOacjeWKoeWZqOaXtumXtOWIsOi+vuaMh+WumuaXtumXtOeCueaXtuajgOafpeabtOaWsO+8jOW5tuS4jeS8mumHjeWQr+acjeWKoeWZqOOAggogICAgICAgICAgOjo6CiAgICBleHRyYS15Z2dkcmFzaWwtc2VydmljZToKICAgICAgZW5hYmxlOgogICAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5byA5ZCv6aKd5aSW55qEIFlnZ2RyYXNpbCDpqozor4HmnI3liqHlmajjgIIKICAgICAgbG9naW4tcHJvdGVjdDoKICAgICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuW8gOWQr+eZu+W9leS/neaKpO+8jOW8gOWQr+WQjuWwhuS4jeWFgeiuuOeUqOaIt+WQjeebuOWQjOiAjCBVVUlEIOS4jeWQjOeahOeOqeWutuWKoOWFpeacjeWKoeWZqOOAggogICAgICB1cmxzOgogICAgICAgIGRlZmF1bHQ6CiAgICAgICAgICAtICInaHR0cHM6Ly91cmwud2l0aC5hdXRobGliLWluamVjdG9yLXlnZ2RyYXNpbCciCiAgICAgICAgZGVzY3JpcHRpb246IOaMh+WumiBZZ2dkcmFzaWwgQVBJIOWcsOWdgOOAggogICAgZGlzYWJsZS1tZXRob2QtcHJvZmlsZXI6CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm56aB55So5pa55rOV5qOA5p+l5Zmo44CC6L+Z5Y+v6IO95a+55pyN5Yqh56uv6LCD6K+V6YCg5oiQ5b2x5ZON77yM5L2G5LiN5b2x5ZON5a6e6ZmF55Sf5Lqn546v5aKD44CC5YWz6Zet5ZCO5Y+v5Lul6YOo5YiG5o+Q5Y2H5pyN5Yqh56uv5oCn6IO944CCCiAgICBuby1jaGF0LXNpZ246CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm56aB55So6IGK5aSp5Li+5oql44CCCiAgICBkb250LXJlc3BvbmQtcGluZy1iZWZvcmUtc3RhcnQtZnVsbHk6CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5Zyo5pyN5Yqh5Zmo5a6M5YWo5ZCv5Yqo5YmN5piv5ZCmKirkuI0qKuWTjeW6lOWuouaIt+err+ivt+axguOAggogICAgc2VydmVyLWxhbmc6CiAgICAgIGRlZmF1bHQ6IGVuX3VzCiAgICAgIGRlc2NyaXB0aW9uOiB8CiAgICAgICAg5oyH5a6a5pyN5Yqh56uv55qE6K+t6KiA44CCCiAgICAgICAgCiAgICAgICAgLSBgZW5fdXNgIOiLseivre+8iOe+juWbve+8iQogICAgICAgIC0gYHpoX2NuYCDnroDkvZPkuK3mlofvvIjkuK3lm73vvIkKICAgIHNlcnZlci1tb2QtbmFtZToKICAgICAgZGVmYXVsdDogTGVhdmVzCiAgICAgIGRlc2NyaXB0aW9uOiDmjIflrprmnI3liqHnq6/lkI3np7DjgIIKICAgIGJzdGF0cy1wcml2YWN5LW1vZGU6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IOaYr+WQpuW8gOWQryBiU3RhdHMg6ZqQ56eB5qih5byP44CC5byA5ZCv5ZCO77yMTGVhdmVzIOWwhuWBnOatouaUtumbhuacjeWKoeerr+eJiOacrOOAgea4uOeOqeS6uuaVsOOAgUphdmEg54mI5pys562J55So5oi35L+h5oGv44CCCiAgICBmb3JjZS1taW5lY3JhZnQtY29tbWFuZDoKICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5Luk5o+S5Lu25ZG95Luk5LiN6KaG55uW5Y6f54mI5oyH5Luk44CCCiAgICBsZWF2ZXMtcGFja2V0LWV2ZW50OgogICAgICBkZWZhdWx0OiAiZmFsc2UiCiAgICAgIGRlc2NyaXB0aW9uOiDmmK/lkKblkK/nlKggTGVhdmVzIOaPkOS+m+eahOWPkeWMheS6i+S7tuezu+e7n+OAgui/meWPr+iDveW9seWTjeWIsOacjeWKoeWZqOaAp+iDveOAggogICAgY2hhdC1jb21tYW5kLW1heC1sZW5ndGg6CiAgICAgIGRlZmF1bHQ6ICIzMjc2NyIKICAgICAgZGVzY3JpcHRpb246IOacgOWkp+WRveS7pOmVv+W6pu+8jOmDqOWIhuaooee7hOWPr+iDveS8muWPkemAgei/h+mVv+WRveS7pOOAguWQr+eUqOatpOmhueWPr+S7peS9v+i/meS6m+aooee7hOato+W4uOW3peS9nOOAggogIHJlZ2lvbjoKICAgIGZvcm1hdDoKICAgICAgZGVmYXVsdDogQU5WSUwKICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICDmjIflrprljLrln5/mlofku7bmoLzlvI/jgIIKICAgICAgICAKICAgICAgICAtIGBBTlZJTGAgW0FudmlsIOaWh+S7tuagvOW8j10oaHR0cHM6Ly96aC5taW5lY3JhZnQud2lraS93LyVFNSU4QyVCQSVFNSU5RiU5RiVFNiU5NiU4NyVFNCVCQiVCNiVFNiVBMCVCQyVFNSVCQyU4RinvvIgubWNh77yJCiAgICAgICAgLSBgTElORUFSYCBbTGluZWFyIOaWh+S7tuagvOW8j10oaHR0cHM6Ly9naXRodWIuY29tL3h5bWItZW5kY3J5c3RhbG1lL0xpbmVhclJlZ2lvbkZpbGVGb3JtYXRUb29scynvvIgubGluZWFy77yJCgogICAgICAgIDo6OiBkYW5nZXIKICAgICAgICBgTElORUFSYCDmoLzlvI/mmK/kuIDkuKrmnoHluqbljbHpmannmoTlrp7pqozmgKflip/og73vvIzlroPlj6/ku6XmnoHlpKfnqIvluqbljovnvKnlrZjmoaPljaDnlKjvvIzkvYbmoLnmja7miqXlkYrvvIzlroMqKuW+iOacieWPr+iDvSoq5a+86Ie05a2Y5qGj5ZKM546p5a625pWw5o2u5Lii5aSx562J6Zeu6aKY44CCCgogICAgICAgIOWmguaenOS9oOS4gOWumuimgeS9v+eUqCBgTElORUFSYCDmoLzlvI/vvIzor7flpIfku73kvaDnmoTlrZjmoaPlubbkvb/nlKggTGluZWFyIFtgVjJgXSgjc2V0dGluZ3MucmVnaW9uLmxpbmVhci52ZXJzaW9uKeOAggogICAgICAgIDo6OgogICAgbGluZWFyOgogICAgICB2ZXJzaW9uOgogICAgICAgIGRlZmF1bHQ6IFYyCiAgICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICAgIOS9v+eUqOeahCBMaW5lYXIg5qC85byP54mI5pys77yM6L+Z5Y+q5Lya5b2x5ZON5L+d5a2Y5qC85byP77yM5Lu75L2V54mI5pys55qEIExpbmVhciDmlofku7bpg73lj6/ku6XooqvmraPluLjliqDovb3jgIIKICAgICAgICAgIAogICAgICAgICAgLSBgVjJgCiAgICAgICAgICAtIGBWMWAg5q2k54mI5pys5bey6KKr5byD55So77yM6K+35LiN6KaB5L2/55So44CCCiAgICAgIGZsdXNoLW1heC10aHJlYWRzOgogICAgICAgIGRlZmF1bHQ6ICI2IgogICAgICAgIGRlc2NyaXB0aW9uOiDmjIflrprkv53lrZjljLrln5/ml7bkvb/nlKjnmoTmnIDlpKfnur/nqIvmlbDjgILorr7nva7kuLogYC0xYCDml7bvvIzliJnkvb/nlKjlhajpg6jnur/nqIvjgIIKICAgICAgZmx1c2gtZGVsYXktbXM6CiAgICAgICAgZGVmYXVsdDogIjEwMCIKICAgICAgICBkZXNjcmlwdGlvbjog5oyH5a6a5q+P5Liq5Yy65Z+f5ZCO5L+d5a2Y55qE562J5b6F5pe26Ze044CCCiAgICAgIHVzZS12aXJ0dWFsLXRocmVhZDoKICAgICAgICBkZWZhdWx0OiAidHJ1ZSIKICAgICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5Zyo5L+d5a2Y5Yy65Z+f5pe25L2/55So6Jma5ouf57q/56iL44CCCiAgICAgIGNvbXByZXNzaW9uLWxldmVsOgogICAgICAgIGRlZmF1bHQ6ICIxIgogICAgICAgIGRlc2NyaXB0aW9uOiDljLrln5/mlofku7bnmoTljovnvKnnrYnnuqfjgILlupTloavlhpkgYDFgIC0gYDIyYCDkuYvpl7TnmoTmlbDlrZfjgIIKICBmaXg6CiAgICB2YW5pbGxhLWhvcHBlcjoKICAgICAgZGVmYXVsdDogImZhbHNlIgogICAgICBkZXNjcmlwdGlvbjogfAogICAgICAgIOW8gOWQr+WQjuS8muS9v+eUqOi+g+S4uua/gOi/m+eahOaWueahiOWwhua8j+aWl+eahOi/kOihjOmAu+i+kei/mOWOn+S4uuWOn+eJiOihjOS4uuOAggoKICAgICAgICA6Ojogd2FybmluZwogICAgICAgIOW8gOWQr+WQjuWPr+iDveS8mui9u+W+rumZjeS9juaAp+iDveOAggogICAgICAgIDo6OgogICAgdmFuaWxsYS1kaXNwbGF5LW5hbWU6CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5bCG6IGK5aSp5Lit55qE546p5a625ZCN6Kej5p6Q5Li6IFvmlofmnKznu4Tku7ZdKGh0dHBzOi8vemgubWluZWNyYWZ0Lndpa2kvdy8lRTYlOTYlODclRTYlOUMlQUMlRTclQkIlODQlRTQlQkIlQjYp77yM6L+Z5Lya5b2x5ZON5Yiw546p5a625ZCN5pS55Y+Y6aKc6Imy562J5Yqf6IO944CCCiAgICB2YW5pbGxhLXBvcnRhbC1oYW5kbGU6CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5L2/55So5Y6f54mI5Y6f54mI5Zyw54ux6Zeo5Lyg6YCB5pe26Ze05Yik5a6a77yM5aaC5LiN5ZCv55So77yM5YiZ5a6e5L2T5o6l6Kem5Lyg6YCB6Zeo5ZCO6KKr5Lyg6YCB55qE5pe26Ze06L6D5Y6f54mI5b+rIDEg5ri45oiP5Yi777yM6L+Z5bCG55Wl5b6u5b2x5ZON5a6e5L2T6L+H6Zeo5ZCO55qE5L2N572u5ZKM6YCf5bqm77yM5Y+v6IO95a+86Ie05pe25bqP55u45b2T57K+56Gu55qE6Leo57u05bqm5py65Zmo5peg5rOV5L2/55So44CCCiAgICB2YW5pbGxhLWZsdWlkLXB1c2hpbmc6CiAgICAgIGRlZmF1bHQ6ICJ0cnVlIgogICAgICBkZXNjcmlwdGlvbjog5piv5ZCm5L2/55So5Y6f54mI5rWB5L2T5o6o5Yqo6KGM5Li644CC6L+Z5Liq5Yqf6IO95bCG5Lya5L2/6YOo5YiG5L2/55So5rWB5rC055qE5py65Zmo5oGi5aSN5bel5L2c44CCCiAgICBjb2xsaXNpb24tYmVoYXZpb3I6CiAgICAgIGRlZmF1bHQ6IEJMT0NLX1NIQVBFX1ZBTklMTEEKICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICDmjIflrprmnI3liqHlmajkvb/nlKjkvZXnp43lrp7kvZPnorDmkp7orqHnrpfmlrnlvI/jgIIKICAgICAgICAKICAgICAgICAtIGBCTE9DS19TSEFQRV9WQU5JTExBYCDlr7nkuo7mlrnlnZfkvb/nlKggUGFwZXIg55qE6K6h566X5pa55byP77yM5YW25a6D5L2/55So5Y6f54mI55qE6K6h566X5pa55byP77yM5YW86aG+5oCn6IO95LyY5YyW5ZKM6YG15b6q5Y6f54mI44CCCiAgICAgICAgLSBgUEFQRVJgIOWujOWFqOS9v+eUqCBQYXBlciDorqHnrpfmlrnlvI/vvIzmi6XmnInovoPlpb3nmoTkvJjljJbvvIzkvYbkvJrnoLTlnY/pg6jliIbljp/niYjooYzkuLrjgIIKICAgICAgICAtIGBWQU5JTExBYCDlrozlhajkvb/nlKjljp/niYjorqHnrpfmlrnlvI/vvIzlj6/og73kvJrpmY3kvY7mgKfog73vvIzkvYblrozlhajnrKblkIjljp/niYjooYzkuLrjgIIKICAgIHZhbmlsbGEtZW5kLXZvaWQtcmluZ3M6CiAgICAgIGRlZmF1bHQ6ICJmYWxzZSIKICAgICAgZGVzY3JpcHRpb246IHwKICAgICAgICDmmK/lkKbph43mlrDlvJXlhaXljp/niYjkuK3mnKvlnLDnmoTomZrnqbrnjq/nlJ/miJDjgILlt7Lnu4/nlJ/miJDnmoTlnLDlm77kuI3kvJrlj5fliLDlvbHlk43jgIIKICAgICAgICAKICAgICAgICDmraTnibnmgKflnKggW01DLTE1OTI4M10oaHR0cHM6Ly9idWdzLm1vamFuZy5jb20vYnJvd3NlL01DL2lzc3Vlcy9NQy0xNTkyODMpIOS4reacieaJgOiusOi9ve+8jOWOn+eJiOWwmuacquWvueWFtui/m+ihjOS/ruWkje+8jOS9hiBQYXBlciDlt7LlsIblhbbkvZzkuLogYnVnIOS/ruWkjeOAggo=
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index dec7d10287c140a3a023705895cb855b15ba12ed..61d4282e2afdfeeb053be6c9d7bc9d827fb2df81 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -29,22 +29,22 @@ class LeavesXConfigLoaderTest {
+         assertEquals(LeavesXConfig.safeDefaults(), created);
+         assertEquals(created, reloaded);
+         assertTrue(Files.isRegularFile(path));
+-        assertTrue(Files.readString(path).contains("mode: legacy-compatible"));
+-        assertFalse(Files.readString(path).contains("mode: technical-strict"));
++        final String generated = Files.readString(path);
++        assertTrue(generated.contains("mode: legacy-compatible"));
++        assertFalse(generated.contains("mode: technical-strict"));
++        for (final String comment : LeavesXConfigWriter.comments().values()) {
++            assertTrue(generated.contains("# " + comment), "Generated configuration must include every key comment");
++        }
+     }
+ 
+     @Test
+-    void loadsMigratedLeavesTreeWhileIgnoringPreservedKeys() throws IOException {
++    void ignoresUnknownKeysWithoutAcceptingLeavesSettingsAsLeavesXConfiguration() throws IOException {
+         final Path path = write("""
+             config-version: 1
+             threading:
+               mode: legacy-compatible
+-            settings:
+-              modify:
+-                fakeplayer:
+-                  enable: true
+-            migration:
+-              id: leaves-26.1.2-to-leavesx-26.1.2-v1
++            unknown-extension:
++              enabled: true
+             """);
+ 
+         final LeavesXConfig config = LeavesXConfigLoader.load(path);
+diff --git a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+index 3d9099bf21dd1070fe38862afaf9f9888ae0fa8e..4095c37d98e8f037543dd1a08547e590d338697d 100644
+--- a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+@@ -8,12 +8,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import io.papermc.paper.configuration.ConfigurationLoaders;
+ import java.io.IOException;
++import java.io.InputStream;
+ import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
++import java.security.MessageDigest;
+ import java.time.Clock;
+ import java.time.Instant;
+ import java.time.ZoneOffset;
++import java.util.Base64;
++import java.util.HexFormat;
++import java.util.Map;
++import org.leavesx.leavesx.config.LeavesXConfigWriter;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.io.TempDir;
+@@ -36,11 +42,11 @@ class LeavesConfigMigratorTest {
+ 
+         assertEquals(MigrationStatus.NO_SOURCE, result.status());
+         assertFalse(Files.exists(target));
+-        assertFalse(Files.exists(this.temporaryDirectory.resolve(LeavesConfigMigrator.DEFAULT_REPORT_FILE_NAME)));
++        assertFalse(Files.exists(reportPath()));
+     }
+ 
+     @Test
+-    void preservesCompleteLeavesTreeAndCreatesBackupAndReport() throws Exception {
++    void documentsLeavesAndCreatesStrictlySeparatedLeavesXConfiguration() throws Exception {
+         final Path source = writeSource("""
+             config-version: 6
+             settings:
+@@ -52,48 +58,181 @@ class LeavesConfigMigratorTest {
+             unknown-top-level:
+               retained: true
+             """);
++        final ConfigurationNode originalValues = load(source);
+         final byte[] originalBytes = Files.readAllBytes(source);
+         final Path target = this.temporaryDirectory.resolve("leavesx.yml");
+ 
+         final LeavesConfigMigrationResult result = migrator().migrate(source, target);
+-        final ConfigurationNode migrated = load(target);
++        final ConfigurationNode documentedLeaves = load(source);
++        final ConfigurationNode leavesX = load(target);
++        final ConfigurationNode report = load(reportPath());
+ 
+         assertEquals(MigrationStatus.MIGRATED, result.status());
+         assertEquals(6, result.sourceConfigVersion());
+-        assertFalse(migrated.node("settings", "modify", "fakeplayer", "enable").getBoolean());
+-        assertEquals(42, migrated.node("settings", "future-plugin-key", "value").getInt());
+-        assertTrue(migrated.node("unknown-top-level", "retained").getBoolean());
+-        assertEquals("legacy-compatible", migrated.node("threading", "mode").getString());
+-        assertEquals("single-domain", migrated.node("threading", "legacy-plugin-policy").getString());
+-        assertEquals("auto", migrated.node("threading", "workers", "tick-threads").getString());
+-        assertEquals(20, migrated.node("threading", "epoch", "target-tps").getInt());
+-        assertTrue(migrated.node("determinism", "stable-task-ordering").getBoolean());
+-        assertTrue(migrated.node("determinism", "preserve-vanilla-rng").getBoolean());
+-        assertEquals(LeavesConfigMigrator.LEAVESX_CONFIG_VERSION, migrated.node("config-version").getInt());
+-        assertEquals(6, migrated.node("migration", "source-config-version").getInt());
++        assertTrue(result.documentedKeys() >= 2);
++        assertEquals(originalValues.raw(), documentedLeaves.raw(), "Leaves values and unknown keys must not change");
++        final String documentedLeavesText = Files.readString(source);
++        assertCommentPresent(
++            documentedLeavesText,
++            LeavesConfigCommentCatalog.comments().get("settings.modify.fakeplayer.enable")
++        );
++        assertFalse(leavesX.hasChild("settings"));
++        assertFalse(leavesX.hasChild("migration"));
++        assertEquals("legacy-compatible", leavesX.node("threading", "mode").getString());
++        assertEquals("single-domain", leavesX.node("threading", "legacy-plugin-policy").getString());
++        assertEquals("auto", leavesX.node("threading", "workers", "tick-threads").getString());
++        assertEquals(20, leavesX.node("threading", "epoch", "target-tps").getInt());
++        assertTrue(leavesX.node("determinism", "stable-task-ordering").getBoolean());
++        assertTrue(leavesX.node("determinism", "preserve-vanilla-rng").getBoolean());
++        assertEquals(LeavesConfigMigrator.LEAVESX_CONFIG_VERSION, leavesX.node("config-version").getInt());
++        final String leavesXText = Files.readString(target);
++        for (final Map.Entry<String, String> comment : LeavesXConfigWriter.comments().entrySet()) {
++            assertTrue(comment.getValue().contains("用途："), comment.getKey() + " must document its purpose");
++            assertTrue(comment.getValue().contains("默认值："), comment.getKey() + " must document its default");
++            assertTrue(comment.getValue().contains("兼容性："), comment.getKey() + " must document compatibility");
++            assertTrue(comment.getValue().contains("实现状态："), comment.getKey() + " must document implementation status");
++            assertCommentPresent(leavesXText, comment.getValue());
++        }
++        assertFalse(report.node("separation", "leaves-tree-copied-to-leavesx").getBoolean(true));
++        assertEquals("preserved", report.node("leaves", "unknown-keys").getString());
++        assertEquals(LeavesConfigCommentCatalog.DOCUMENTATION_COMMIT,
++            report.node("leaves", "documentation-commit").getString());
+         assertNotNull(result.backup());
+         assertNotNull(result.report());
+         assertTrue(Files.exists(result.backup()));
+         assertTrue(Files.exists(result.report()));
+-        assertEquals(new String(originalBytes, StandardCharsets.UTF_8), Files.readString(source));
+         assertEquals(new String(originalBytes, StandardCharsets.UTF_8), Files.readString(result.backup()));
+     }
+ 
++    @Test
++    void preservesUserHeaderAndExistingKeyComments() throws Exception {
++        final Path source = writeSource("""
++            # User-managed Leaves header.
++            config-version: 6
++            settings:
++              modify:
++                fakeplayer:
++                  # Keep fake players disabled in production.
++                  enable: false
++            """);
++        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
++
++        migrator().migrate(source, target);
++
++        final String documentedLeaves = Files.readString(source);
++        assertTrue(documentedLeaves.contains("# User-managed Leaves header."));
++        assertTrue(documentedLeaves.contains("# Keep fake players disabled in production."));
++        assertCommentPresent(
++            documentedLeaves,
++            LeavesConfigCommentCatalog.comments().get("settings.modify.fakeplayer.enable")
++        );
++    }
++
++    @Test
++    void preservesUnknownKeysQuotingInlineCommentsAndCrLfLineEndings() throws Exception {
++        final String original = "# User header\r\n"
++            + "config-version: 6 # Keep inline version note\r\n"
++            + "settings:\r\n"
++            + "  modify:\r\n"
++            + "    fakeplayer:\r\n"
++            + "      enable: false # Keep inline setting note\r\n"
++            + "  unknown-extension:\r\n"
++            + "    quoted-value: \"0012\"\r\n";
++        final Path source = writeSource(original);
++        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
++
++        migrator().migrate(source, target);
++
++        final String documented = Files.readString(source);
++        assertTrue(documented.contains("config-version: 6 # Keep inline version note\r\n"));
++        assertTrue(documented.contains("enable: false # Keep inline setting note\r\n"));
++        assertTrue(documented.contains("quoted-value: \"0012\"\r\n"));
++        assertFalse(documented.replace("\r\n", "").contains("\n"), "Migration must retain CRLF line endings");
++    }
++
++    @Test
++    void preservesUtf8ByteOrderMarkAheadOfInsertedComments() throws Exception {
++        final Path source = writeSource("\uFEFFconfig-version: 6\nsettings:\n  modify:\n    fakeplayer:\n      enable: false\n");
++        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
++
++        migrator().migrate(source, target);
++
++        final byte[] documentedBytes = Files.readAllBytes(source);
++        assertEquals((byte) 0xEF, documentedBytes[0]);
++        assertEquals((byte) 0xBB, documentedBytes[1]);
++        assertEquals((byte) 0xBF, documentedBytes[2]);
++        assertTrue(Files.readString(source).startsWith("\uFEFF# "));
++        assertEquals(6, load(source).node("config-version").getInt());
++    }
++
++    @Test
++    void bundlesPinnedOfficialDocumentationLicenseAndNotice() throws Exception {
++        final byte[] encodedDocumentation = readResource(
++            "/leavesx/leaves-26.1.2-configuration-zh_Hans.yml.b64"
++        );
++        final byte[] documentation = Base64.getMimeDecoder().decode(encodedDocumentation);
++        assertEquals(37_262, documentation.length);
++        assertEquals(
++            "a07fbbaed6a6e36ae428250728d7dc016ff34a14d9bd17875ffe446a327b0c10",
++            sha256(documentation)
++        );
++
++        final byte[] license = readResource("/META-INF/licenses/leaves-documentation-MPL-2.0.txt");
++        assertEquals(16_725, license.length);
++        assertEquals(
++            "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5",
++            sha256(license)
++        );
++        final String licenseText = new String(license, StandardCharsets.UTF_8);
++        assertTrue(licenseText.startsWith("Mozilla Public License Version 2.0"));
++        assertTrue(licenseText.contains("10. Versions of the License"));
++        assertTrue(licenseText.contains("Exhibit A - Source Code Form License Notice"));
++        assertTrue(licenseText.contains("Exhibit B - \"Incompatible With Secondary Licenses\" Notice"));
++
++        final String notice = new String(
++            readResource("/META-INF/leavesx-third-party-notices.txt"),
++            StandardCharsets.UTF_8
++        );
++        assertTrue(notice.contains(LeavesConfigCommentCatalog.DOCUMENTATION_COMMIT));
++        assertTrue(notice.contains("src/config-spec/leaves/zh_Hans.yml"));
++        assertTrue(notice.contains("a07fbbaed6a6e36ae428250728d7dc016ff34a14d9bd17875ffe446a327b0c10"));
++        assertTrue(notice.contains("4b89d4518bd135ab4ee154a7bce722246b57a98c3d7efc1a09409898160c2bd1"));
++    }
++
+     @Test
+     void repeatedMigrationIsIdempotent() throws Exception {
+         final Path source = writeSource("config-version: 6\nsettings:\n  custom: true\n");
+         final Path target = this.temporaryDirectory.resolve("leavesx.yml");
+ 
+         final LeavesConfigMigrationResult first = migrator().migrate(source, target);
++        final String sourceAfterFirstRun = Files.readString(source);
+         final String targetAfterFirstRun = Files.readString(target);
+         final LeavesConfigMigrationResult second = migrator().migrate(source, target);
+ 
+         assertEquals(MigrationStatus.MIGRATED, first.status());
+         assertEquals(MigrationStatus.ALREADY_MIGRATED, second.status());
++        assertEquals(sourceAfterFirstRun, Files.readString(source));
+         assertEquals(targetAfterFirstRun, Files.readString(target));
+         assertEquals(1L, backupCount());
+     }
+ 
++    @Test
++    void permitsLeavesEditsAfterMigrationWithoutOverwritingEitherConfiguration() throws Exception {
++        final Path source = writeSource("config-version: 6\nsettings:\n  custom: true\n");
++        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
++        migrator().migrate(source, target);
++        final String targetAfterMigration = Files.readString(target);
++        final String editedLeaves = Files.readString(source).replace("custom: true", "custom: false");
++        Files.writeString(source, editedLeaves, StandardCharsets.UTF_8);
++
++        final LeavesConfigMigrationResult result = migrator().migrate(source, target);
++
++        assertEquals(MigrationStatus.ALREADY_MIGRATED, result.status());
++        assertEquals(editedLeaves, Files.readString(source));
++        assertEquals(targetAfterMigration, Files.readString(target));
++        assertEquals(1L, backupCount());
++    }
++
+     @Test
+     void rejectsDamagedYamlWithoutPartialOutputs() throws IOException {
+         final Path source = writeSource("settings: [broken\n");
+@@ -103,26 +242,35 @@ class LeavesConfigMigratorTest {
+ 
+         assertTrue(Files.exists(source));
+         assertFalse(Files.exists(target));
+-        assertFalse(Files.exists(this.temporaryDirectory.resolve(LeavesConfigMigrator.DEFAULT_REPORT_FILE_NAME)));
++        assertFalse(Files.exists(reportPath()));
+         assertEquals(0L, backupCount());
+     }
+ 
+     @Test
+-    void rejectsConflictingTargetWithoutOverwritingIt() throws IOException {
++    void rejectsConflictingTargetWithoutOverwritingItOrLeaves() throws IOException {
+         final Path source = writeSource("config-version: 6\nsettings:\n  custom: true\n");
++        final String originalSource = Files.readString(source);
+         final Path target = this.temporaryDirectory.resolve("leavesx.yml");
+-        final String existing = "leavesx:\n  config-version: 999\n";
++        final String existing = "config-version: 1\nthreading:\n  mode: legacy-compatible\n";
+         Files.writeString(target, existing, StandardCharsets.UTF_8);
+ 
+         assertThrows(LeavesConfigMigrationException.class, () -> migrator().migrate(source, target));
+ 
++        assertEquals(originalSource, Files.readString(source));
+         assertEquals(existing, Files.readString(target));
+         assertEquals(0L, backupCount());
+     }
+ 
+     @Test
+-    void rollsBackTargetAndBackupWhenReportWriteFails() throws IOException {
+-        final Path source = writeSource("config-version: 6\nsettings:\n  custom: true\n");
++    void restoresOriginalLeavesAndRemovesOutputsWhenReportWriteFails() throws IOException {
++        final Path source = writeSource("""
++            config-version: 6
++            settings:
++              modify:
++                fakeplayer:
++                  enable: true
++            """);
++        final byte[] originalBytes = Files.readAllBytes(source);
+         final Path target = this.temporaryDirectory.resolve("leavesx.yml");
+         final MigrationOutput output = new FailingReportOutput();
+ 
+@@ -131,14 +279,14 @@ class LeavesConfigMigratorTest {
+             () -> new LeavesConfigMigrator(Clock.fixed(MIGRATION_TIME, ZoneOffset.UTC), output).migrate(source, target)
+         );
+ 
+-        assertTrue(Files.exists(source));
++        assertEquals(new String(originalBytes, StandardCharsets.UTF_8), Files.readString(source));
+         assertFalse(Files.exists(target));
+-        assertFalse(Files.exists(this.temporaryDirectory.resolve(LeavesConfigMigrator.DEFAULT_REPORT_FILE_NAME)));
++        assertFalse(Files.exists(reportPath()));
+         assertEquals(0L, backupCount());
+     }
+ 
+     @Test
+-    void warnsButPreservesNewerLeavesConfiguration() throws Exception {
++    void warnsButDoesNotConvertNewerLeavesConfiguration() throws Exception {
+         final Path source = writeSource("config-version: 99\nsettings:\n  future: enabled\n");
+         final Path target = this.temporaryDirectory.resolve("leavesx.yml");
+ 
+@@ -146,7 +294,8 @@ class LeavesConfigMigratorTest {
+ 
+         assertEquals(MigrationStatus.MIGRATED, result.status());
+         assertTrue(result.warnings().stream().anyMatch(warning -> warning.contains("newer")));
+-        assertEquals("enabled", load(target).node("settings", "future").getString());
++        assertEquals("enabled", load(source).node("settings", "future").getString());
++        assertFalse(load(target).hasChild("settings"));
+     }
+ 
+     private LeavesConfigMigrator migrator() {
+@@ -159,6 +308,10 @@ class LeavesConfigMigratorTest {
+         return source;
+     }
+ 
++    private Path reportPath() {
++        return this.temporaryDirectory.resolve(LeavesConfigMigrator.DEFAULT_REPORT_FILE_NAME);
++    }
++
+     private long backupCount() throws IOException {
+         try (var paths = Files.list(this.temporaryDirectory)) {
+             return paths.filter(path -> path.getFileName().toString().contains(".leavesx-backup-")).count();
+@@ -169,25 +322,60 @@ class LeavesConfigMigratorTest {
+         return ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
+     }
+ 
++    private static byte[] readResource(final String path) throws IOException {
++        try (InputStream input = LeavesConfigMigratorTest.class.getResourceAsStream(path)) {
++            assertNotNull(input, "Missing test resource " + path);
++            return input.readAllBytes();
++        }
++    }
++
++    private static String sha256(final byte[] content) throws Exception {
++        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content));
++    }
++
++    private static void assertCommentPresent(final String yaml, final String description) {
++        assertNotNull(description);
++        for (final String line : description.split("\\R")) {
++            if (!line.isBlank()) {
++                assertTrue(yaml.contains("# " + line.strip()), "Missing YAML comment line: " + line);
++            }
++        }
++    }
++
+     private static final class FailingReportOutput implements MigrationOutput {
+ 
+-        private int yamlWrites;
++        private int writes;
+ 
+         @Override
+         public void copyBackup(final Path source, final Path backup) throws IOException {
+             AtomicMigrationOutput.INSTANCE.copyBackup(source, backup);
+         }
+ 
++        @Override
++        public void saveText(final Path target, final String content) throws IOException {
++            this.failOnReportWrite();
++            AtomicMigrationOutput.INSTANCE.saveText(target, content);
++        }
++
+         @Override
+         public void saveYaml(
+             final Path target,
+             final ConfigurationNode node,
+             final boolean includeHeader
+         ) throws IOException {
+-            if (++this.yamlWrites == 2) {
++            this.failOnReportWrite();
++            AtomicMigrationOutput.INSTANCE.saveYaml(target, node, includeHeader);
++        }
++
++        private void failOnReportWrite() throws IOException {
++            if (++this.writes == 3) {
+                 throw new IOException("Injected report write failure");
+             }
+-            AtomicMigrationOutput.INSTANCE.saveYaml(target, node, includeHeader);
++        }
++
++        @Override
++        public void restoreBackup(final Path backup, final Path target) throws IOException {
++            AtomicMigrationOutput.INSTANCE.restoreBackup(backup, target);
+         }
+ 
+         @Override

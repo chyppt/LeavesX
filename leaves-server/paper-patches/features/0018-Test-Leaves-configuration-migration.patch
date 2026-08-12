@@ -1,0 +1,232 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 12 Aug 2026 12:01:53 +0800
+Subject: [PATCH] Test Leaves configuration migration
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..764637de91536e2404d8dda7a116bfe43df2a1c8
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+@@ -0,0 +1,193 @@
++package org.leavesx.leavesx.config.migration;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import io.papermc.paper.configuration.ConfigurationLoaders;
++import java.io.IOException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.time.Clock;
++import java.time.Instant;
++import java.time.ZoneOffset;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.spongepowered.configurate.ConfigurationNode;
++
++@Normal
++class LeavesConfigMigratorTest {
++
++    private static final Instant MIGRATION_TIME = Instant.parse("2026-08-12T00:00:00Z");
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @Test
++    void returnsNoSourceWithoutCreatingFiles() {
++        final Path source = this.temporaryDirectory.resolve("leaves.yml");
++        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
++
++        final LeavesConfigMigrationResult result = migrator().migrate(source, target);
++
++        assertEquals(MigrationStatus.NO_SOURCE, result.status());
++        assertFalse(Files.exists(target));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve(LeavesConfigMigrator.DEFAULT_REPORT_FILE_NAME)));
++    }
++
++    @Test
++    void preservesCompleteLeavesTreeAndCreatesBackupAndReport() throws Exception {
++        final Path source = writeSource("""
++            config-version: 6
++            settings:
++              modify:
++                fakeplayer:
++                  enable: false
++              future-plugin-key:
++                value: 42
++            unknown-top-level:
++              retained: true
++            """);
++        final byte[] originalBytes = Files.readAllBytes(source);
++        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
++
++        final LeavesConfigMigrationResult result = migrator().migrate(source, target);
++        final ConfigurationNode migrated = load(target);
++
++        assertEquals(MigrationStatus.MIGRATED, result.status());
++        assertEquals(6, result.sourceConfigVersion());
++        assertFalse(migrated.node("settings", "modify", "fakeplayer", "enable").getBoolean());
++        assertEquals(42, migrated.node("settings", "future-plugin-key", "value").getInt());
++        assertTrue(migrated.node("unknown-top-level", "retained").getBoolean());
++        assertEquals("legacy-compatible", migrated.node("threading", "mode").getString());
++        assertEquals(LeavesConfigMigrator.LEAVESX_CONFIG_VERSION, migrated.node("config-version").getInt());
++        assertEquals(6, migrated.node("migration", "source-config-version").getInt());
++        assertNotNull(result.backup());
++        assertNotNull(result.report());
++        assertTrue(Files.exists(result.backup()));
++        assertTrue(Files.exists(result.report()));
++        assertEquals(new String(originalBytes, StandardCharsets.UTF_8), Files.readString(source));
++        assertEquals(new String(originalBytes, StandardCharsets.UTF_8), Files.readString(result.backup()));
++    }
++
++    @Test
++    void repeatedMigrationIsIdempotent() throws Exception {
++        final Path source = writeSource("config-version: 6\nsettings:\n  custom: true\n");
++        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
++
++        final LeavesConfigMigrationResult first = migrator().migrate(source, target);
++        final String targetAfterFirstRun = Files.readString(target);
++        final LeavesConfigMigrationResult second = migrator().migrate(source, target);
++
++        assertEquals(MigrationStatus.MIGRATED, first.status());
++        assertEquals(MigrationStatus.ALREADY_MIGRATED, second.status());
++        assertEquals(targetAfterFirstRun, Files.readString(target));
++        assertEquals(1L, backupCount());
++    }
++
++    @Test
++    void rejectsDamagedYamlWithoutPartialOutputs() throws IOException {
++        final Path source = writeSource("settings: [broken\n");
++        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
++
++        assertThrows(LeavesConfigMigrationException.class, () -> migrator().migrate(source, target));
++
++        assertTrue(Files.exists(source));
++        assertFalse(Files.exists(target));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve(LeavesConfigMigrator.DEFAULT_REPORT_FILE_NAME)));
++        assertEquals(0L, backupCount());
++    }
++
++    @Test
++    void rejectsConflictingTargetWithoutOverwritingIt() throws IOException {
++        final Path source = writeSource("config-version: 6\nsettings:\n  custom: true\n");
++        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
++        final String existing = "leavesx:\n  config-version: 999\n";
++        Files.writeString(target, existing, StandardCharsets.UTF_8);
++
++        assertThrows(LeavesConfigMigrationException.class, () -> migrator().migrate(source, target));
++
++        assertEquals(existing, Files.readString(target));
++        assertEquals(0L, backupCount());
++    }
++
++    @Test
++    void rollsBackTargetAndBackupWhenReportWriteFails() throws IOException {
++        final Path source = writeSource("config-version: 6\nsettings:\n  custom: true\n");
++        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
++        final MigrationOutput output = new FailingReportOutput();
++
++        assertThrows(
++            LeavesConfigMigrationException.class,
++            () -> new LeavesConfigMigrator(Clock.fixed(MIGRATION_TIME, ZoneOffset.UTC), output).migrate(source, target)
++        );
++
++        assertTrue(Files.exists(source));
++        assertFalse(Files.exists(target));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve(LeavesConfigMigrator.DEFAULT_REPORT_FILE_NAME)));
++        assertEquals(0L, backupCount());
++    }
++
++    @Test
++    void warnsButPreservesNewerLeavesConfiguration() throws Exception {
++        final Path source = writeSource("config-version: 99\nsettings:\n  future: enabled\n");
++        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
++
++        final LeavesConfigMigrationResult result = migrator().migrate(source, target);
++
++        assertEquals(MigrationStatus.MIGRATED, result.status());
++        assertTrue(result.warnings().stream().anyMatch(warning -> warning.contains("newer")));
++        assertEquals("enabled", load(target).node("settings", "future").getString());
++    }
++
++    private LeavesConfigMigrator migrator() {
++        return new LeavesConfigMigrator(Clock.fixed(MIGRATION_TIME, ZoneOffset.UTC), AtomicMigrationOutput.INSTANCE);
++    }
++
++    private Path writeSource(final String content) throws IOException {
++        final Path source = this.temporaryDirectory.resolve("leaves.yml");
++        Files.writeString(source, content, StandardCharsets.UTF_8);
++        return source;
++    }
++
++    private long backupCount() throws IOException {
++        try (var paths = Files.list(this.temporaryDirectory)) {
++            return paths.filter(path -> path.getFileName().toString().contains(".leavesx-backup-")).count();
++        }
++    }
++
++    private static ConfigurationNode load(final Path path) throws Exception {
++        return ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
++    }
++
++    private static final class FailingReportOutput implements MigrationOutput {
++
++        private int yamlWrites;
++
++        @Override
++        public void copyBackup(final Path source, final Path backup) throws IOException {
++            AtomicMigrationOutput.INSTANCE.copyBackup(source, backup);
++        }
++
++        @Override
++        public void saveYaml(
++            final Path target,
++            final ConfigurationNode node,
++            final boolean includeHeader
++        ) throws IOException {
++            if (++this.yamlWrites == 2) {
++                throw new IOException("Injected report write failure");
++            }
++            AtomicMigrationOutput.INSTANCE.saveYaml(target, node, includeHeader);
++        }
++
++        @Override
++        public void deleteIfExists(final Path path) throws IOException {
++            AtomicMigrationOutput.INSTANCE.deleteIfExists(path);
++        }
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java b/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..fd007b422740241f19aa6c2302222084050aa218
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java
+@@ -0,0 +1,21 @@
++package org.leavesx.leavesx.support;
++
++import org.junit.platform.suite.api.ConfigurationParameter;
++import org.junit.platform.suite.api.IncludeTags;
++import org.junit.platform.suite.api.SelectPackages;
++import org.junit.platform.suite.api.Suite;
++import org.junit.platform.suite.api.SuiteDisplayName;
++
++/**
++ * Entry point for LeavesX tests that do not require a live Minecraft registry.
++ *
++ * <p>The Folia build restricts test discovery to classes ending in {@code TestSuite}; keeping this suite narrow
++ * prevents unrelated upstream tests from changing the result of the LeavesX migration checks.</p>
++ */
++@Suite(failIfNoTests = false)
++@SuiteDisplayName("LeavesX compatibility and migration tests")
++@IncludeTags("Normal")
++@SelectPackages("org.leavesx")
++@ConfigurationParameter(key = "TestSuite", value = "Normal")
++public final class LeavesXTestSuite {
++}

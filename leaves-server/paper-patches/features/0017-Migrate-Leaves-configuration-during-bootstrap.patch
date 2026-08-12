@@ -1,0 +1,517 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 12 Aug 2026 12:01:53 +0800
+Subject: [PATCH] Migrate Leaves configuration during bootstrap
+
+
+diff --git a/src/main/java/io/papermc/paper/PaperBootstrap.java b/src/main/java/io/papermc/paper/PaperBootstrap.java
+index d543b1b107ab8d3eeb1fc3c1cadf489928d2786e..13bddf2f121fae6eb9264d5147b2372a18f06a48 100644
+--- a/src/main/java/io/papermc/paper/PaperBootstrap.java
++++ b/src/main/java/io/papermc/paper/PaperBootstrap.java
+@@ -18,6 +18,10 @@ public final class PaperBootstrap {
+ 
+         getStartupVersionMessages().forEach(LOGGER::info);
+ 
++        // LeavesX start - migrate before worlds, plugins or mutable server state are initialized
++        org.leavesx.leavesx.config.migration.LeavesConfigMigrationBootstrap.migrate(options);
++        // LeavesX end - migrate before worlds, plugins or mutable server state are initialized
++
+         Main.main(options);
+     }
+ 
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index ec8b215ce307725e465d5f5d75eeeca33090b16c..8dd0ea1891db0fcdfbef26c3a558cc2abe0b3c16 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -127,6 +127,20 @@ public class Main {
+                         .defaultsTo(new File("paper.yml"))
+                         .describedAs("Yml file");
+ 
++                // LeavesX start - Leaves configuration migration
++                this.acceptsAll(asList("leaves", "leaves-settings"), "File for existing Leaves settings")
++                        .withRequiredArg()
++                        .ofType(File.class)
++                        .defaultsTo(new File(org.leavesx.leavesx.config.migration.LeavesConfigMigrator.DEFAULT_SOURCE_FILE_NAME))
++                        .describedAs("Yml file");
++
++                this.acceptsAll(asList("leavesx", "leavesx-settings"), "File for LeavesX settings")
++                        .withRequiredArg()
++                        .ofType(File.class)
++                        .defaultsTo(new File(org.leavesx.leavesx.config.migration.LeavesConfigMigrator.DEFAULT_TARGET_FILE_NAME))
++                        .describedAs("Yml file");
++                // LeavesX end - Leaves configuration migration
++
+                 this.acceptsAll(asList("add-plugin", "add-extra-plugin-jar"), "Specify paths to extra plugin jars to be loaded in addition to those in the plugins folder. This argument can be specified multiple times, once for each extra plugin jar path.")
+                         .withRequiredArg()
+                         .ofType(File.class)
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/AtomicMigrationOutput.java b/src/main/java/org/leavesx/leavesx/config/migration/AtomicMigrationOutput.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..be671837420f597cd45b8fd20012f9caeb4e0614
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/config/migration/AtomicMigrationOutput.java
+@@ -0,0 +1,55 @@
++package org.leavesx.leavesx.config.migration;
++
++import io.papermc.paper.configuration.ConfigurationLoaders;
++import io.papermc.paper.util.AtomicFiles;
++import java.io.IOException;
++import java.nio.channels.FileChannel;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.nio.file.StandardCopyOption;
++import java.nio.file.StandardOpenOption;
++import org.spongepowered.configurate.ConfigurationNode;
++import org.spongepowered.configurate.loader.HeaderMode;
++import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
++
++final class AtomicMigrationOutput implements MigrationOutput {
++
++    static final AtomicMigrationOutput INSTANCE = new AtomicMigrationOutput();
++
++    private AtomicMigrationOutput() {
++    }
++
++    @Override
++    public void copyBackup(final Path source, final Path backup) throws IOException {
++        Files.copy(source, backup, StandardCopyOption.COPY_ATTRIBUTES);
++        try (FileChannel channel = FileChannel.open(backup, StandardOpenOption.WRITE)) {
++            channel.force(true);
++        } catch (final IOException ex) {
++            Files.deleteIfExists(backup);
++            throw ex;
++        }
++    }
++
++    @Override
++    public void saveYaml(
++        final Path target,
++        final ConfigurationNode node,
++        final boolean includeHeader
++    ) throws IOException {
++        AtomicFiles.atomicWrite(target, temporary -> {
++            final YamlConfigurationLoader loader = ConfigurationLoaders.naturallySorted()
++                .headerMode(includeHeader ? HeaderMode.PRESET : HeaderMode.NONE)
++                .path(temporary)
++                .build();
++            loader.save(node);
++            try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
++                channel.force(true);
++            }
++        });
++    }
++
++    @Override
++    public void deleteIfExists(final Path path) throws IOException {
++        Files.deleteIfExists(path);
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationBootstrap.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationBootstrap.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..77d16f6dfa4850b18275ffa2a36ae852880ca8b0
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationBootstrap.java
+@@ -0,0 +1,36 @@
++package org.leavesx.leavesx.config.migration;
++
++import java.io.File;
++import java.nio.file.Path;
++import joptsimple.OptionSet;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
++/**
++ * Runs configuration migration before Minecraft initializes worlds or plugins.
++ */
++public final class LeavesConfigMigrationBootstrap {
++
++    private static final Logger LOGGER = LoggerFactory.getLogger(LeavesConfigMigrationBootstrap.class);
++
++    private LeavesConfigMigrationBootstrap() {
++    }
++
++    public static void migrate(final OptionSet options) {
++        final Path source = ((File) options.valueOf("leaves-settings")).toPath();
++        final Path target = ((File) options.valueOf("leavesx-settings")).toPath();
++        final LeavesConfigMigrationResult result = new LeavesConfigMigrator().migrate(source, target);
++
++        switch (result.status()) {
++            case NO_SOURCE -> LOGGER.info("No Leaves configuration found at {}; migration is not required", result.source());
++            case ALREADY_MIGRATED -> LOGGER.info("Leaves configuration migration is already current at {}", result.target());
++            case MIGRATED -> {
++                LOGGER.info(
++                    "Migrated Leaves configuration version {} to {} (backup: {}, report: {})",
++                    result.sourceConfigVersion(), result.target(), result.backup(), result.report()
++                );
++                result.warnings().forEach(warning -> LOGGER.warn("Leaves config migration: {}", warning));
++            }
++        }
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationException.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationException.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3ac3d7e00fd5366eba339b06658baa682254227f
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationException.java
+@@ -0,0 +1,15 @@
++package org.leavesx.leavesx.config.migration;
++
++/**
++ * Stops server bootstrap when a Leaves configuration cannot be migrated without risking data loss.
++ */
++public final class LeavesConfigMigrationException extends RuntimeException {
++
++    public LeavesConfigMigrationException(final String message) {
++        super(message);
++    }
++
++    public LeavesConfigMigrationException(final String message, final Throwable cause) {
++        super(message, cause);
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationResult.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationResult.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..5215f4bd10b0fdf4f07e3bf417b4f77b072ea61b
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationResult.java
+@@ -0,0 +1,24 @@
++package org.leavesx.leavesx.config.migration;
++
++import java.nio.file.Path;
++import java.util.List;
++import org.jspecify.annotations.Nullable;
++
++/**
++ * Immutable migration result used by startup logging and tests.
++ */
++public record LeavesConfigMigrationResult(
++    MigrationStatus status,
++    Path source,
++    Path target,
++    @Nullable Path backup,
++    @Nullable Path report,
++    int sourceConfigVersion,
++    int preservedTopLevelKeys,
++    List<String> warnings
++) {
++
++    public LeavesConfigMigrationResult {
++        warnings = List.copyOf(warnings);
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..0b7c94c766113919ba4674430db478f4e460b57a
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java
+@@ -0,0 +1,272 @@
++package org.leavesx.leavesx.config.migration;
++
++import io.papermc.paper.configuration.ConfigurationLoaders;
++import java.io.IOException;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.security.MessageDigest;
++import java.security.NoSuchAlgorithmException;
++import java.time.Clock;
++import java.time.Instant;
++import java.time.ZoneOffset;
++import java.time.format.DateTimeFormatter;
++import java.util.ArrayList;
++import java.util.HexFormat;
++import java.util.List;
++import java.util.Map;
++import java.util.Objects;
++import org.spongepowered.configurate.CommentedConfigurationNode;
++import org.spongepowered.configurate.ConfigurateException;
++import org.spongepowered.configurate.ConfigurationNode;
++
++/**
++ * Imports a Leaves {@code leaves.yml} into LeavesX without modifying the source file.
++ *
++ * <p>The complete Leaves tree is retained, including unknown keys. Future Leaves feature ports can therefore consume
++ * their original {@code settings.*} paths. Output is published only after parsing, hashing and serialization succeed.</p>
++ */
++public final class LeavesConfigMigrator {
++
++    public static final int LEAVESX_CONFIG_VERSION = 1;
++    public static final int LEAVES_26_1_2_CONFIG_VERSION = 6;
++    public static final String DEFAULT_SOURCE_FILE_NAME = "leaves.yml";
++    public static final String DEFAULT_TARGET_FILE_NAME = "leavesx.yml";
++    public static final String DEFAULT_REPORT_FILE_NAME = "leavesx-migration-report.yml";
++
++    private static final String MIGRATION_ID = "leaves-26.1.2-to-leavesx-26.1.2-v1";
++    private static final String CONFIG_HEADER = "LeavesX configuration. Leaves settings are preserved for compatibility.";
++    private static final DateTimeFormatter BACKUP_TIMESTAMP = DateTimeFormatter
++        .ofPattern("uuuuMMdd-HHmmss-SSS")
++        .withZone(ZoneOffset.UTC);
++
++    private final Clock clock;
++    private final MigrationOutput output;
++
++    public LeavesConfigMigrator() {
++        this(Clock.systemUTC(), AtomicMigrationOutput.INSTANCE);
++    }
++
++    LeavesConfigMigrator(final Clock clock, final MigrationOutput output) {
++        this.clock = Objects.requireNonNull(clock, "clock");
++        this.output = Objects.requireNonNull(output, "output");
++    }
++
++    /**
++     * Migrates {@code source} to {@code target}, preserving the source and producing a durable backup and report.
++     *
++     * @throws LeavesConfigMigrationException when the source is invalid or output cannot be safely published
++     */
++    public LeavesConfigMigrationResult migrate(final Path source, final Path target) {
++        final Path absoluteSource = source.toAbsolutePath().normalize();
++        final Path absoluteTarget = target.toAbsolutePath().normalize();
++        final Path report = absoluteTarget.resolveSibling(DEFAULT_REPORT_FILE_NAME);
++
++        if (Files.notExists(absoluteSource)) {
++            return new LeavesConfigMigrationResult(
++                MigrationStatus.NO_SOURCE, absoluteSource, absoluteTarget, null, null, 0, 0, List.of()
++            );
++        }
++        if (!Files.isRegularFile(absoluteSource)) {
++            throw new LeavesConfigMigrationException("Leaves configuration is not a regular file: " + absoluteSource);
++        }
++
++        try {
++            final String sourceHash = sha256(absoluteSource);
++            final ConfigurationNode sourceNode = loadRequiredMap(absoluteSource, "Leaves source configuration");
++            final int sourceVersion = sourceNode.node("config-version").getInt(0);
++
++            if (Files.exists(absoluteTarget)) {
++                final ConfigurationNode existingTarget = loadRequiredMap(absoluteTarget, "LeavesX target configuration");
++                if (isSameMigration(existingTarget, absoluteSource, sourceHash)) {
++                    return new LeavesConfigMigrationResult(
++                        MigrationStatus.ALREADY_MIGRATED,
++                        absoluteSource,
++                        absoluteTarget,
++                        null,
++                        Files.exists(report) ? report : null,
++                        sourceVersion,
++                        sourceNode.childrenMap().size(),
++                        List.of()
++                    );
++                }
++                throw new LeavesConfigMigrationException(
++                    "LeavesX target already exists and was not generated from the current Leaves configuration: " + absoluteTarget
++                );
++            }
++
++            final Instant migratedAt = this.clock.instant();
++            final Path backup = nextBackupPath(absoluteSource, migratedAt);
++            final List<String> warnings = buildWarnings(sourceVersion);
++            final CommentedConfigurationNode migratedNode = createMigratedNode(
++                sourceNode, absoluteSource, sourceHash, migratedAt, warnings
++            );
++            final CommentedConfigurationNode reportNode = createReportNode(
++                absoluteSource,
++                absoluteTarget,
++                backup,
++                sourceHash,
++                sourceVersion,
++                sourceNode.childrenMap(),
++                migratedAt,
++                warnings
++            );
++
++            final Path targetParent = absoluteTarget.getParent();
++            if (targetParent != null) {
++                Files.createDirectories(targetParent);
++            }
++            this.output.copyBackup(absoluteSource, backup);
++            try {
++                this.output.saveYaml(absoluteTarget, migratedNode, true);
++                this.output.saveYaml(report, reportNode, false);
++            } catch (final IOException ex) {
++                deleteCreatedOutput(report, ex);
++                deleteCreatedOutput(absoluteTarget, ex);
++                deleteCreatedOutput(backup, ex);
++                throw ex;
++            }
++
++            return new LeavesConfigMigrationResult(
++                MigrationStatus.MIGRATED,
++                absoluteSource,
++                absoluteTarget,
++                backup,
++                report,
++                sourceVersion,
++                sourceNode.childrenMap().size(),
++                warnings
++            );
++        } catch (final LeavesConfigMigrationException ex) {
++            throw ex;
++        } catch (final Exception ex) {
++            throw new LeavesConfigMigrationException("Failed to migrate Leaves configuration " + absoluteSource, ex);
++        }
++    }
++
++    private static ConfigurationNode loadRequiredMap(final Path path, final String description) throws ConfigurateException {
++        final ConfigurationNode node = ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
++        if (node.virtual() || !node.isMap()) {
++            throw new LeavesConfigMigrationException(description + " must contain a YAML mapping: " + path);
++        }
++        return node;
++    }
++
++    private static boolean isSameMigration(final ConfigurationNode target, final Path source, final String sourceHash) {
++        return target.node("migration", "id").getString("").equals(MIGRATION_ID)
++            && target.node("migration", "source-sha256").getString("").equals(sourceHash)
++            && target.node("migration", "source-file").getString("").equals(source.toString())
++            && target.node("config-version").getInt(0) == LEAVESX_CONFIG_VERSION;
++    }
++
++    private static CommentedConfigurationNode createMigratedNode(
++        final ConfigurationNode sourceNode,
++        final Path source,
++        final String sourceHash,
++        final Instant migratedAt,
++        final List<String> warnings
++    ) {
++        final CommentedConfigurationNode target = CommentedConfigurationNode.root(
++            sourceNode.options().header(CONFIG_HEADER)
++        );
++        target.from(sourceNode);
++
++        final int sourceConfigVersion = sourceNode.node("config-version").getInt(0);
++        final ConfigurationNode migration = target.node("migration");
++        target.node("config-version").raw(LEAVESX_CONFIG_VERSION);
++        target.node("threading", "mode").raw("legacy-compatible");
++        migration.node("id").raw(MIGRATION_ID);
++        migration.node("source-type").raw("Leaves");
++        migration.node("source-file").raw(source.toString());
++        migration.node("source-config-version").raw(sourceConfigVersion);
++        migration.node("source-sha256").raw(sourceHash);
++        migration.node("migrated-at").raw(migratedAt.toString());
++        migration.node("warnings").raw(warnings);
++        return target;
++    }
++
++    private static CommentedConfigurationNode createReportNode(
++        final Path source,
++        final Path target,
++        final Path backup,
++        final String sourceHash,
++        final int sourceVersion,
++        final Map<Object, ? extends ConfigurationNode> topLevelKeys,
++        final Instant migratedAt,
++        final List<String> warnings
++    ) {
++        final CommentedConfigurationNode report = CommentedConfigurationNode.root();
++        report.node("report-version").raw(1);
++        report.node("status").raw("migrated");
++        report.node("migration-id").raw(MIGRATION_ID);
++        report.node("migrated-at").raw(migratedAt.toString());
++        report.node("source", "file").raw(source.toString());
++        report.node("source", "backup").raw(backup.toString());
++        report.node("source", "config-version").raw(sourceVersion);
++        report.node("source", "sha256").raw(sourceHash);
++        report.node("target", "file").raw(target.toString());
++        report.node("target", "config-version").raw(LEAVESX_CONFIG_VERSION);
++        report.node("preservation", "strategy").raw("copy-complete-tree");
++        report.node("preservation", "unknown-keys").raw("preserved");
++        report.node("preservation", "top-level-keys").raw(
++            topLevelKeys.keySet().stream().map(Object::toString).sorted().toList()
++        );
++        report.node("warnings").raw(warnings);
++        return report;
++    }
++
++    private static List<String> buildWarnings(final int sourceVersion) {
++        final List<String> warnings = new ArrayList<>();
++        if (sourceVersion == 0) {
++            warnings.add("The Leaves config has no config-version; all values were preserved without schema validation.");
++        } else if (sourceVersion > LEAVES_26_1_2_CONFIG_VERSION) {
++            warnings.add(
++                "The Leaves config version " + sourceVersion + " is newer than the tested 26.1.2 schema version "
++                    + LEAVES_26_1_2_CONFIG_VERSION + "; all values were preserved without destructive conversion."
++            );
++        } else if (sourceVersion < LEAVES_26_1_2_CONFIG_VERSION) {
++            warnings.add(
++                "The Leaves config version " + sourceVersion + " is older than the tested 26.1.2 schema version "
++                    + LEAVES_26_1_2_CONFIG_VERSION + "; legacy paths were preserved for feature-level migration."
++            );
++        }
++        warnings.add("Leaves feature settings are preserved but only become active as their LeavesX features are ported.");
++        return List.copyOf(warnings);
++    }
++
++    private static Path nextBackupPath(final Path source, final Instant migratedAt) {
++        final String timestamp = BACKUP_TIMESTAMP.format(migratedAt);
++        final String baseName = source.getFileName() + ".leavesx-backup-" + timestamp;
++        Path candidate = source.resolveSibling(baseName);
++        int suffix = 1;
++        while (Files.exists(candidate)) {
++            candidate = source.resolveSibling(baseName + "-" + suffix++);
++        }
++        return candidate;
++    }
++
++    private static String sha256(final Path source) throws IOException {
++        final MessageDigest digest;
++        try {
++            digest = MessageDigest.getInstance("SHA-256");
++        } catch (final NoSuchAlgorithmException ex) {
++            throw new IllegalStateException("The Java runtime does not provide SHA-256", ex);
++        }
++
++        try (var input = Files.newInputStream(source)) {
++            final byte[] buffer = new byte[16 * 1024];
++            int read;
++            while ((read = input.read(buffer)) >= 0) {
++                digest.update(buffer, 0, read);
++            }
++        }
++        return HexFormat.of().formatHex(digest.digest());
++    }
++
++    private void deleteCreatedOutput(final Path path, final Exception parent) {
++        try {
++            this.output.deleteIfExists(path);
++        } catch (final IOException cleanupFailure) {
++            parent.addSuppressed(cleanupFailure);
++        }
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/MigrationOutput.java b/src/main/java/org/leavesx/leavesx/config/migration/MigrationOutput.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..a341fdb22be9e9477af2770b1fcb17f0095e6c2a
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/config/migration/MigrationOutput.java
+@@ -0,0 +1,17 @@
++package org.leavesx.leavesx.config.migration;
++
++import java.io.IOException;
++import java.nio.file.Path;
++import org.spongepowered.configurate.ConfigurationNode;
++
++/**
++ * Filesystem boundary for migration output. Tests replace it to verify transactional rollback.
++ */
++interface MigrationOutput {
++
++    void copyBackup(Path source, Path backup) throws IOException;
++
++    void saveYaml(Path target, ConfigurationNode node, boolean includeHeader) throws IOException;
++
++    void deleteIfExists(Path path) throws IOException;
++}
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/MigrationStatus.java b/src/main/java/org/leavesx/leavesx/config/migration/MigrationStatus.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..d40f290b1aa7b96d7d090046f5536d4d91ef33b1
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/config/migration/MigrationStatus.java
+@@ -0,0 +1,10 @@
++package org.leavesx.leavesx.config.migration;
++
++/**
++ * Describes the externally visible result of a Leaves-to-LeavesX configuration migration.
++ */
++public enum MigrationStatus {
++    NO_SOURCE,
++    MIGRATED,
++    ALREADY_MIGRATED
++}

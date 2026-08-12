@@ -35,7 +35,7 @@ public class ReturnPortalManager {
             ServerLevel fromWorld = server.getLevel(dim);
             if (fromWorld != null) {
                 PortalForcer portalForcer = fromWorld.getPortalForcer();
-                return portalForcer.findClosestPortalPosition(pos, false, fromWorld.getWorldBorder()).orElse(null);
+                return portalForcer.findClosestPortalPosition(pos, fromWorld.getWorldBorder(), 128).orElse(null);
             }
         }
 

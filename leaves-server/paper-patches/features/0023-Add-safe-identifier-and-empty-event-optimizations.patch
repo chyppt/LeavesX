@@ -1,0 +1,213 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 12 Aug 2026 21:47:18 +0800
+Subject: [PATCH] Add safe identifier and empty-event optimizations
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 4c5c2e2dae0a3b9b48649e57533f7bbba54684c1..13c5c538b9b80c7c602dc3fc104106040e247d1f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -23,7 +23,9 @@ public record LeavesXConfig(
+     boolean deterministicTaskOrdering,
+     boolean preserveVanillaRng,
+     boolean optimizedVarInt,
+-    boolean immutableCacheOptimizations
++    boolean immutableCacheOptimizations,
++    boolean resourceIdentifierCache,
++    boolean skipEmptyEvents
+ ) {
+ 
+     public static final int CURRENT_CONFIG_VERSION = 1;
+@@ -87,6 +89,8 @@ public record LeavesXConfig(
+             true,
+             true,
+             true,
++            true,
++            true,
+             true
+         );
+     }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index a25ad904de5050404676f8ea45de5bd9664b2f42..a53e775f5307cb37647fa6fcb614df07c44536c2 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -47,9 +47,11 @@ public final class LeavesXConfigBootstrap {
+             config.preserveVanillaRng()
+         );
+         LOGGER.info(
+-            "LeavesX behavior-equivalent optimizations: optimized VarInt {}, immutable cache hashes {}",
++            "LeavesX behavior-equivalent optimizations: optimized VarInt {}, immutable cache hashes {}, resource identifier cache {}, skip empty events {}",
+             config.optimizedVarInt(),
+-            config.immutableCacheOptimizations()
++            config.immutableCacheOptimizations(),
++            config.resourceIdentifierCache(),
++            config.skipEmptyEvents()
+         );
+         LOGGER.info(
+             "LeavesX compatibility baseline is active: one tick worker; Folia region ownership checks remain enabled"
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index a10a55be559d3bdf0ff14ae9618925e1127d0a13..e092fc06bc5e99313d0d5b7c7f087d2d2d90f292 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -104,7 +104,13 @@ public final class LeavesXConfigLoader {
+                     node.node("performance", "immutable-cache-optimizations"),
+                     "performance.immutable-cache-optimizations",
+                     true
+-                )
++                ),
++                readBoolean(
++                    node.node("performance", "resource-identifier-cache"),
++                    "performance.resource-identifier-cache",
++                    true
++                ),
++                readBoolean(node.node("performance", "skip-empty-events"), "performance.skip-empty-events", true)
+             );
+         } catch (final IllegalArgumentException ex) {
+             throw new LeavesXConfigException("Invalid LeavesX configuration at " + path + ": " + ex.getMessage(), ex);
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 64617aa075c3482c0058bbd5c78eaec07a313a75..3ed89e9a92929c26690327ecb8fb7abada292cf7 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -67,6 +67,12 @@ public final class LeavesXConfigWriter {
+         node.node("performance", "immutable-cache-optimizations")
+             .comment(COMMENTS.get("performance.immutable-cache-optimizations"))
+             .raw(config.immutableCacheOptimizations());
++        node.node("performance", "resource-identifier-cache")
++            .comment(COMMENTS.get("performance.resource-identifier-cache"))
++            .raw(config.resourceIdentifierCache());
++        node.node("performance", "skip-empty-events")
++            .comment(COMMENTS.get("performance.skip-empty-events"))
++            .raw(config.skipEmptyEvents());
+     }
+ 
+     /** Returns the same path-keyed comments used for emitted {@code leavesx.yml} files. */
+@@ -100,6 +106,8 @@ public final class LeavesXConfigWriter {
+         comments.put("determinism.preserve-vanilla-rng", "用途：保持原版 RNG 类型、种子和消耗顺序。默认值：true。兼容性：保护原版及生电行为，不允许关闭。实现状态：已强制校验。");
+         comments.put("performance.optimized-varint", "用途：使用等价的定长分支写入 VarInt/VarLong，并缓存 VarLong 字节长度。默认值：true。兼容性：输出字节与原版完全一致，不改变协议或游戏逻辑。实现状态：已实现，可关闭回退原始循环。");
+         comments.put("performance.immutable-cache-optimizations", "用途：缓存不可变碰撞形状键的 identity 哈希，减少重复计算。默认值：true。兼容性：只优化纯查询，不改变碰撞结果、顺序或 Bukkit API。实现状态：已实现，可关闭回退按需计算。");
++        comments.put("performance.resource-identifier-cache", "用途：缓存不可变 Minecraft 资源标识符的字符串和哈希值，减少注册表、标签和数据包热点中的重复分配与计算。默认值：true。兼容性：返回字符串、哈希值和相等性与原版完全一致。实现状态：已实现，可关闭回退原始按需计算。");
++        comments.put("performance.skip-empty-events", "用途：当对应 HandlerList 没有任何插件监听器时，跳过 GenericGameEvent 和自然刷怪 PreCreatureSpawnEvent 的对象创建与分发。默认值：true。兼容性：注册任意监听器后完整执行原始事件路径，不改变刷怪判定、RNG 或事件顺序。实现状态：已实现，可关闭强制执行原始事件路径。");
+         return Map.copyOf(comments);
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index b9cc5c7124eee09ca74fa95dee8770413f19c2b9..f37936d03068e28146099e0785abff002f320001 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -13,6 +13,9 @@ public final class LeavesXRuntime {
+     private static volatile LeavesXConfig configuration = LeavesXConfig.safeDefaults();
+     private static volatile boolean optimizedVarInt = true;
+     private static volatile boolean immutableCacheOptimizations = true;
++    // Published during bootstrap before scheduler workers start; these hot-path flags are not reloadable.
++    private static boolean resourceIdentifierCache = true;
++    private static boolean skipEmptyEvents = true;
+ 
+     private LeavesXRuntime() {
+     }
+@@ -35,6 +38,8 @@ public final class LeavesXRuntime {
+         final LeavesXConfig validated = Objects.requireNonNull(next, "next");
+         optimizedVarInt = validated.optimizedVarInt();
+         immutableCacheOptimizations = validated.immutableCacheOptimizations();
++        resourceIdentifierCache = validated.resourceIdentifierCache();
++        skipEmptyEvents = validated.skipEmptyEvents();
+         configuration = validated;
+     }
+ 
+@@ -58,4 +63,14 @@ public final class LeavesXRuntime {
+     public static boolean immutableCacheOptimizations() {
+         return immutableCacheOptimizations;
+     }
++
++    /** Returns whether immutable Minecraft identifiers cache their string and hash representations. */
++    public static boolean resourceIdentifierCache() {
++        return resourceIdentifierCache;
++    }
++
++    /** Returns whether event allocation may be skipped when the corresponding handler list is empty. */
++    public static boolean skipEmptyEvents() {
++        return skipEmptyEvents;
++    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index e345dab44c2e43ef97a3f35d1938cd6a70e25e73..24548757515bf9f36fc9c5defdd0ab6ba748178e 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -79,6 +79,8 @@ class LeavesXConfigLoaderTest {
+         assertEquals(12_000, config.epochWatchdogAfterMillis());
+         assertTrue(config.optimizedVarInt());
+         assertTrue(config.immutableCacheOptimizations());
++        assertTrue(config.resourceIdentifierCache());
++        assertTrue(config.skipEmptyEvents());
+     }
+ 
+     @Test
+@@ -88,12 +90,16 @@ class LeavesXConfigLoaderTest {
+             performance:
+               optimized-varint: false
+               immutable-cache-optimizations: false
++              resource-identifier-cache: false
++              skip-empty-events: false
+             """);
+ 
+         final LeavesXConfig config = LeavesXConfigLoader.load(path);
+ 
+         assertFalse(config.optimizedVarInt());
+         assertFalse(config.immutableCacheOptimizations());
++        assertFalse(config.resourceIdentifierCache());
++        assertFalse(config.skipEmptyEvents());
+     }
+ 
+     @Test
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ResourceIdentifierCacheTest.java b/src/test/java/org/leavesx/leavesx/performance/ResourceIdentifierCacheTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..11ef8aec76e17ad6052db2e90f43ccf2cb2e44fa
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ResourceIdentifierCacheTest.java
+@@ -0,0 +1,46 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotSame;
++import static org.junit.jupiter.api.Assertions.assertSame;
++
++import net.minecraft.resources.Identifier;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++/** Verifies that identifier caching preserves the vanilla string and hash contracts. */
++@Normal
++class ResourceIdentifierCacheTest {
++
++    @Test
++    void cachesStringRepresentationWithoutChangingContent() {
++        final Identifier identifier = Identifier.fromNamespaceAndPath("leavesx", "performance/cache_test");
++
++        final String first = identifier.toString();
++        final String second = identifier.toString();
++
++        assertEquals("leavesx:performance/cache_test", first);
++        assertSame(first, second, "Enabled identifier caching must reuse the immutable String instance");
++    }
++
++    @Test
++    void preservesVanillaHashFormulaAndEquality() {
++        final String[][] values = {
++            {"minecraft", "stone"},
++            {"leavesx", "performance/cache_test"},
++            {"custom_namespace", "deep/path.with-dots"}
++        };
++
++        for (final String[] value : values) {
++            final Identifier first = Identifier.fromNamespaceAndPath(value[0], value[1]);
++            final Identifier equal = Identifier.fromNamespaceAndPath(value[0], value[1]);
++            final int vanillaHash = 31 * value[0].hashCode() + value[1].hashCode();
++
++            assertEquals(vanillaHash, first.hashCode());
++            assertEquals(vanillaHash, first.hashCode(), "Repeated cached hashes must remain stable");
++            assertEquals(first, equal);
++            assertEquals(first.hashCode(), equal.hashCode());
++            assertNotSame(first.toString(), equal.toString(), "Caches remain owned by each immutable identifier");
++        }
++    }
++}

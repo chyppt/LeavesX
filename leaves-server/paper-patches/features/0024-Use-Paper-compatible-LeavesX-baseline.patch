@@ -1,0 +1,1030 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 12 Aug 2026 23:20:59 +0800
+Subject: [PATCH] Use Paper-compatible LeavesX baseline
+
+
+diff --git a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+index f38f8e5851ec65a8f3f98018d55de74ea6ff165c..58595549b0be56cb104190e895fdb2faa26b2251 100644
+--- a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
++++ b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+@@ -30,7 +30,9 @@ public record ServerBuildInfoImpl(
+     private static final String ATTRIBUTE_GIT_BRANCH = "Git-Branch";
+     private static final String ATTRIBUTE_GIT_COMMIT = "Git-Commit";
+ 
+-    private static final String BRAND_PAPER_NAME = "Leaves"; // Leaves - Paper -> Leaves
++    private static final Key BRAND_LEAVES_ID = Key.key("leavesmc", "leaves");
++    private static final Key BRAND_LEAVESX_ID = Key.key("leavesx", "leavesx");
++    private static final String BRAND_LEAVESX_NAME = "LeavesX";
+ 
+     private static final String BUILD_DEV = "DEV";
+ 
+@@ -42,9 +44,9 @@ public record ServerBuildInfoImpl(
+         this(
+             getManifestAttribute(manifest, ATTRIBUTE_BRAND_ID)
+                 .map(Key::key)
+-                .orElse(BRAND_PAPER_ID),
++                .orElse(BRAND_LEAVESX_ID),
+             getManifestAttribute(manifest, ATTRIBUTE_BRAND_NAME)
+-                .orElse(BRAND_PAPER_NAME),
++                .orElse(BRAND_LEAVESX_NAME),
+             SharedConstants.getCurrentVersion().id(),
+             SharedConstants.getCurrentVersion().name(),
+             getManifestAttribute(manifest, ATTRIBUTE_BUILD_NUMBER)
+@@ -61,7 +63,14 @@ public record ServerBuildInfoImpl(
+ 
+     @Override
+     public boolean isBrandCompatible(final @NotNull Key brandId) {
+-        return brandId.equals(this.brandId);
++        return isCompatibleBrand(this.brandId, brandId);
++    }
++
++    static boolean isCompatibleBrand(final Key currentBrandId, final Key requestedBrandId) {
++        return requestedBrandId.equals(currentBrandId)
++            || requestedBrandId.equals(BRAND_LEAVESX_ID)
++            || requestedBrandId.equals(BRAND_LEAVES_ID)
++            || requestedBrandId.equals(BRAND_PAPER_ID);
+     }
+ 
+     @Override
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index 8dd0ea1891db0fcdfbef26c3a558cc2abe0b3c16..35c2e4cd3a7cd824b5d8333c23644582e5ebff14 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -128,12 +128,6 @@ public class Main {
+                         .describedAs("Yml file");
+ 
+                 // LeavesX start - Leaves configuration migration
+-                this.acceptsAll(asList("leaves", "leaves-settings"), "File for existing Leaves settings")
+-                        .withRequiredArg()
+-                        .ofType(File.class)
+-                        .defaultsTo(new File(org.leavesx.leavesx.config.migration.LeavesConfigMigrator.DEFAULT_SOURCE_FILE_NAME))
+-                        .describedAs("Yml file");
+-
+                 this.acceptsAll(asList("leavesx", "leavesx-settings"), "File for LeavesX settings")
+                         .withRequiredArg()
+                         .ofType(File.class)
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 13c5c538b9b80c7c602dc3fc104106040e247d1f..f6008749f29d0561efab2140e19a047332730dd4 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -1,27 +1,13 @@
+ package org.leavesx.leavesx.config;
+ 
+-import java.util.Objects;
+-
+ /**
+  * Immutable LeavesX runtime configuration.
+  *
+- * <p>The first runtime slice intentionally exposes only controls that can be enforced without changing game logic.
+- * Keeping the snapshot immutable lets tick threads read it without locks while configuration reload remains a future
+- * quiescent-point operation.</p>
++ * <p>Only behavior-equivalent optimizations belong in this snapshot. Leaves and Paper remain responsible for gameplay,
++ * plugin scheduling, and API semantics.</p>
+  */
+ public record LeavesXConfig(
+     int configVersion,
+-    LeavesXThreadingMode threadingMode,
+-    LegacyPluginPolicy legacyPluginPolicy,
+-    int tickThreads,
+-    int reserveCores,
+-    double maxPhysicalCoreUtilization,
+-    int targetTps,
+-    int epochWarnAfterMillis,
+-    int epochWatchdogAfterMillis,
+-    boolean unifiedEpochs,
+-    boolean deterministicTaskOrdering,
+-    boolean preserveVanillaRng,
+     boolean optimizedVarInt,
+     boolean immutableCacheOptimizations,
+     boolean resourceIdentifierCache,
+@@ -29,103 +15,26 @@ public record LeavesXConfig(
+ ) {
+ 
+     public static final int CURRENT_CONFIG_VERSION = 1;
+-    public static final int DEFAULT_TARGET_TPS = 20;
+-
+-    /**
+-     * Validates all values at the publication boundary.
+-     */
+     public LeavesXConfig {
+-        Objects.requireNonNull(threadingMode, "threadingMode");
+-        Objects.requireNonNull(legacyPluginPolicy, "legacyPluginPolicy");
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+                 "LeavesX config-version must be " + CURRENT_CONFIG_VERSION + ", but was " + configVersion
+             );
+         }
+-        if (tickThreads < 0) {
+-            throw new IllegalArgumentException("threading.workers.tick-threads must be zero (auto) or positive");
+-        }
+-        if (reserveCores < 0) {
+-            throw new IllegalArgumentException("threading.workers.reserve-cores must not be negative");
+-        }
+-        if (!Double.isFinite(maxPhysicalCoreUtilization) || maxPhysicalCoreUtilization <= 0.0
+-            || maxPhysicalCoreUtilization > 1.0) {
+-            throw new IllegalArgumentException("threading.workers.max-physical-core-utilization must be in (0, 1]");
+-        }
+-        if (targetTps != DEFAULT_TARGET_TPS) {
+-            throw new IllegalArgumentException("threading.epoch.target-tps must remain 20 in behavior-compatible modes");
+-        }
+-        if (epochWarnAfterMillis < 1 || epochWatchdogAfterMillis < epochWarnAfterMillis) {
+-            throw new IllegalArgumentException("Epoch warning/watchdog thresholds are invalid");
+-        }
+-        if (!unifiedEpochs) {
+-            throw new IllegalArgumentException("technical-strict.unified-epochs must remain true");
+-        }
+-        if (!deterministicTaskOrdering) {
+-            throw new IllegalArgumentException("determinism.stable-task-ordering must remain true");
+-        }
+-        if (!preserveVanillaRng) {
+-            throw new IllegalArgumentException("determinism.preserve-vanilla-rng must remain true");
+-        }
+     }
+ 
+     /**
+      * Returns the safe default used when no LeavesX file exists.
+      *
+-     * @return immutable legacy-compatible defaults
++     * @return immutable behavior-compatible defaults
+      */
+     public static LeavesXConfig safeDefaults() {
+         return new LeavesXConfig(
+             CURRENT_CONFIG_VERSION,
+-            LeavesXThreadingMode.LEGACY_COMPATIBLE,
+-            LegacyPluginPolicy.SINGLE_DOMAIN,
+-            0,
+-            2,
+-            0.80,
+-            DEFAULT_TARGET_TPS,
+-            50,
+-            10_000,
+-            true,
+-            true,
+-            true,
+             true,
+             true,
+             true,
+             true
+         );
+     }
+-
+-    /**
+-     * Whether the selected contract eventually permits multiple simulation domains.
+-     *
+-     * @return {@code true} for strict or throughput contracts
+-     */
+-    public boolean allowsMultipleDomains() {
+-        return this.threadingMode != LeavesXThreadingMode.LEGACY_COMPATIBLE;
+-    }
+-
+-    /** Policy for plugins without an explicit region-safe declaration. */
+-    public enum LegacyPluginPolicy {
+-        SINGLE_DOMAIN("single-domain"),
+-        REJECT("reject");
+-
+-        private final String serializedName;
+-
+-        LegacyPluginPolicy(final String serializedName) {
+-            this.serializedName = serializedName;
+-        }
+-
+-        public String serializedName() {
+-            return this.serializedName;
+-        }
+-
+-        public static LegacyPluginPolicy parse(final String value) {
+-            for (final LegacyPluginPolicy policy : values()) {
+-                if (policy.serializedName.equals(value)) {
+-                    return policy;
+-                }
+-            }
+-            throw new IllegalArgumentException("Unknown LeavesX legacy-plugin-policy: " + value);
+-        }
+-    }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index a53e775f5307cb37647fa6fcb614df07c44536c2..5b0805695236f3680cde65ed7ee6c680a3982c4f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -23,29 +23,7 @@ public final class LeavesXConfigBootstrap {
+         final Path path = ((File) options.valueOf("leavesx-settings")).toPath();
+         final LeavesXConfig config = LeavesXConfigLoader.load(path);
+         LeavesXRuntime.publish(config);
+-        LOGGER.info(
+-            "LeavesX threading mode: {} (legacy plugin policy: {}, requested strict workers: {})",
+-            config.threadingMode().serializedName(),
+-            config.legacyPluginPolicy().serializedName(),
+-            config.tickThreads() == 0 ? "auto" : config.tickThreads()
+-        );
+-        LOGGER.info(
+-            "LeavesX worker limits: reserve cores {}, max physical core utilization {}",
+-            config.reserveCores(),
+-            config.maxPhysicalCoreUtilization()
+-        );
+-        LOGGER.info(
+-            "LeavesX epoch settings: {} TPS, warn after {} ms, future watchdog threshold {} ms",
+-            config.targetTps(),
+-            config.epochWarnAfterMillis(),
+-            config.epochWatchdogAfterMillis()
+-        );
+-        LOGGER.info(
+-            "LeavesX compatibility invariants: unified epochs {}, stable task ordering {}, preserve vanilla RNG {}",
+-            config.unifiedEpochs(),
+-            config.deterministicTaskOrdering(),
+-            config.preserveVanillaRng()
+-        );
++        LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+             "LeavesX behavior-equivalent optimizations: optimized VarInt {}, immutable cache hashes {}, resource identifier cache {}, skip empty events {}",
+             config.optimizedVarInt(),
+@@ -53,8 +31,5 @@ public final class LeavesXConfigBootstrap {
+             config.resourceIdentifierCache(),
+             config.skipEmptyEvents()
+         );
+-        LOGGER.info(
+-            "LeavesX compatibility baseline is active: one tick worker; Folia region ownership checks remain enabled"
+-        );
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index e092fc06bc5e99313d0d5b7c7f087d2d2d90f292..7965fe72700587a2e6c454b1ad8853f3587706ce 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -16,7 +16,7 @@ import org.spongepowered.configurate.ConfigurationNode;
+ public final class LeavesXConfigLoader {
+ 
+     private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXConfigLoader.class);
+-    private static final String HEADER = "LeavesX global configuration. Defaults preserve legacy-compatible behavior.";
++    private static final String HEADER = "LeavesX performance configuration. Defaults preserve Leaves, Paper, Bukkit, and vanilla behavior.";
+ 
+     private LeavesXConfigLoader() {
+     }
+@@ -34,7 +34,7 @@ public final class LeavesXConfigLoader {
+             if (Files.notExists(normalized)) {
+                 final LeavesXConfig defaults = LeavesXConfig.safeDefaults();
+                 save(normalized, defaults);
+-                LOGGER.info("Created LeavesX configuration at {} using legacy-compatible defaults", normalized);
++                LOGGER.info("Created LeavesX configuration at {} using behavior-compatible defaults", normalized);
+                 return defaults;
+             }
+             if (!Files.isRegularFile(normalized)) {
+@@ -63,42 +63,8 @@ public final class LeavesXConfigLoader {
+                 );
+             }
+ 
+-            final String modeValue = readString(
+-                node.node("threading", "mode"), "threading.mode", "legacy-compatible"
+-            );
+-            final String policyValue = readString(
+-                node.node("threading", "legacy-plugin-policy"), "threading.legacy-plugin-policy", "single-domain"
+-            );
+-            final LeavesXThreadingMode mode = LeavesXThreadingMode.parse(modeValue);
+-            if (mode != LeavesXThreadingMode.LEGACY_COMPATIBLE) {
+-                throw new IllegalArgumentException(
+-                    "threading.mode " + mode.serializedName()
+-                        + " is not available until LeavesX ownership and unified-epoch barriers are complete"
+-                );
+-            }
+             return new LeavesXConfig(
+                 version,
+-                mode,
+-                LeavesXConfig.LegacyPluginPolicy.parse(policyValue),
+-                readTickThreads(node.node("threading", "workers", "tick-threads")),
+-                readInt(node.node("threading", "workers", "reserve-cores"), "threading.workers.reserve-cores", 2),
+-                readDouble(
+-                    node.node("threading", "workers", "max-physical-core-utilization"),
+-                    "threading.workers.max-physical-core-utilization",
+-                    0.80
+-                ),
+-                readInt(node.node("threading", "epoch", "target-tps"), "threading.epoch.target-tps", 20),
+-                readInt(node.node("threading", "epoch", "warn-after-ms"), "threading.epoch.warn-after-ms", 50),
+-                readInt(
+-                    node.node("threading", "epoch", "watchdog-after-ms"),
+-                    "threading.epoch.watchdog-after-ms",
+-                    10_000
+-                ),
+-                readBoolean(node.node("technical-strict", "unified-epochs"), "technical-strict.unified-epochs", true),
+-                readBoolean(
+-                    node.node("determinism", "stable-task-ordering"), "determinism.stable-task-ordering", true
+-                ),
+-                readBoolean(node.node("determinism", "preserve-vanilla-rng"), "determinism.preserve-vanilla-rng", true),
+                 readBoolean(node.node("performance", "optimized-varint"), "performance.optimized-varint", true),
+                 readBoolean(
+                     node.node("performance", "immutable-cache-optimizations"),
+@@ -134,31 +100,6 @@ public final class LeavesXConfigLoader {
+         });
+     }
+ 
+-    private static int readTickThreads(final ConfigurationNode node) {
+-        if (node.virtual()) {
+-            return 0;
+-        }
+-        final Object raw = node.rawScalar();
+-        if (raw instanceof String value) {
+-            if (value.equals("auto")) {
+-                return 0;
+-            }
+-            throw invalidType("threading.workers.tick-threads", "'auto' or an integer", raw);
+-        }
+-        return readInt(node, "threading.workers.tick-threads", 0);
+-    }
+-
+-    private static String readString(final ConfigurationNode node, final String path, final String defaultValue) {
+-        if (node.virtual()) {
+-            return defaultValue;
+-        }
+-        final Object raw = node.rawScalar();
+-        if (raw instanceof String value) {
+-            return value;
+-        }
+-        throw invalidType(path, "a string", raw);
+-    }
+-
+     private static int readInt(final ConfigurationNode node, final String path, final int defaultValue) {
+         if (node.virtual()) {
+             return defaultValue;
+@@ -174,17 +115,6 @@ public final class LeavesXConfigLoader {
+         return (int) longValue;
+     }
+ 
+-    private static double readDouble(final ConfigurationNode node, final String path, final double defaultValue) {
+-        if (node.virtual()) {
+-            return defaultValue;
+-        }
+-        final Object raw = node.rawScalar();
+-        if (raw instanceof Number number) {
+-            return number.doubleValue();
+-        }
+-        throw invalidType(path, "a number", raw);
+-    }
+-
+     private static boolean readBoolean(final ConfigurationNode node, final String path, final boolean defaultValue) {
+         if (node.virtual()) {
+             return defaultValue;
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 3ed89e9a92929c26690327ecb8fb7abada292cf7..2ff4fafb24c52b7f324784999523270bfbb42b96 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -28,39 +28,6 @@ public final class LeavesXConfigWriter {
+         node.node("config-version")
+             .comment(COMMENTS.get("config-version"))
+             .raw(config.configVersion());
+-        node.node("threading", "mode")
+-            .comment(COMMENTS.get("threading.mode"))
+-            .raw(config.threadingMode().serializedName());
+-        node.node("threading", "legacy-plugin-policy")
+-            .comment(COMMENTS.get("threading.legacy-plugin-policy"))
+-            .raw(config.legacyPluginPolicy().serializedName());
+-        node.node("threading", "workers", "tick-threads")
+-            .comment(COMMENTS.get("threading.workers.tick-threads"))
+-            .raw(config.tickThreads() == 0 ? "auto" : config.tickThreads());
+-        node.node("threading", "workers", "reserve-cores")
+-            .comment(COMMENTS.get("threading.workers.reserve-cores"))
+-            .raw(config.reserveCores());
+-        node.node("threading", "workers", "max-physical-core-utilization")
+-            .comment(COMMENTS.get("threading.workers.max-physical-core-utilization"))
+-            .raw(config.maxPhysicalCoreUtilization());
+-        node.node("threading", "epoch", "target-tps")
+-            .comment(COMMENTS.get("threading.epoch.target-tps"))
+-            .raw(config.targetTps());
+-        node.node("threading", "epoch", "warn-after-ms")
+-            .comment(COMMENTS.get("threading.epoch.warn-after-ms"))
+-            .raw(config.epochWarnAfterMillis());
+-        node.node("threading", "epoch", "watchdog-after-ms")
+-            .comment(COMMENTS.get("threading.epoch.watchdog-after-ms"))
+-            .raw(config.epochWatchdogAfterMillis());
+-        node.node("technical-strict", "unified-epochs")
+-            .comment(COMMENTS.get("technical-strict.unified-epochs"))
+-            .raw(config.unifiedEpochs());
+-        node.node("determinism", "stable-task-ordering")
+-            .comment(COMMENTS.get("determinism.stable-task-ordering"))
+-            .raw(config.deterministicTaskOrdering());
+-        node.node("determinism", "preserve-vanilla-rng")
+-            .comment(COMMENTS.get("determinism.preserve-vanilla-rng"))
+-            .raw(config.preserveVanillaRng());
+         node.node("performance", "optimized-varint")
+             .comment(COMMENTS.get("performance.optimized-varint"))
+             .raw(config.optimizedVarInt());
+@@ -92,18 +59,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "用途：LeavesX 配置结构版本。默认值：1。兼容性：更高版本会拒绝启动，防止降级损坏。实现状态：已实现。");
+-        comments.put("threading.mode", "用途：选择线程兼容契约。默认值：legacy-compatible。兼容性：保持 Bukkit 传统同步语义。实现状态：仅 legacy-compatible 已实现。");
+-        comments.put("threading.legacy-plugin-policy", "用途：未来严格模式处理未声明区域安全插件的策略。默认值：single-domain。兼容性：当前模式不改变插件行为。实现状态：已校验，严格模式尚未开放。");
+-        comments.put("threading.workers.tick-threads", "用途：请求未来严格模式的 tick 工作线程数。默认值：auto。兼容性：legacy-compatible 始终强制一个 tick worker。实现状态：已解析和校验，当前不启用多 worker。");
+-        comments.put("threading.workers.reserve-cores", "用途：为网络、区块 I/O 和 JVM 预留核心。默认值：2。兼容性：当前不改变游戏逻辑。实现状态：已解析和校验，自动选线程尚未启用。");
+-        comments.put("threading.workers.max-physical-core-utilization", "用途：限制未来自动选择的 tick worker 物理核心占用比例。默认值：0.80。兼容性：当前不改变 Bukkit 或原版行为。实现状态：已解析和校验，自动选线程尚未启用。");
+-        comments.put("threading.epoch.target-tps", "用途：统一逻辑纪元的目标 TPS。默认值：20。兼容性：行为兼容模式必须保持原版 20 TPS。实现状态：已实现并强制校验。");
+-        comments.put("threading.epoch.warn-after-ms", "用途：全局逻辑纪元超过此耗时时输出限频警告。默认值：50 毫秒。兼容性：仅诊断，不改变 tick。实现状态：已实现。");
+-        comments.put("threading.epoch.watchdog-after-ms", "用途：未来统一纪元 watchdog 的停止阈值。默认值：10000 毫秒。兼容性：不会跳过或重入 tick。实现状态：已校验，专用 watchdog 尚未启用。");
+-        comments.put("technical-strict.unified-epochs", "用途：要求所有模拟域使用统一逻辑纪元。默认值：true。兼容性：数据安全底线，不允许关闭。实现状态：基础纪元已实现，完整多域屏障尚未实现。");
+-        comments.put("determinism.stable-task-ordering", "用途：禁止由工作线程完成时间决定游戏任务顺序。默认值：true。兼容性：保护原版及生电确定性，不允许关闭。实现状态：契约已实现，多域提交器尚未实现。");
+-        comments.put("determinism.preserve-vanilla-rng", "用途：保持原版 RNG 类型、种子和消耗顺序。默认值：true。兼容性：保护原版及生电行为，不允许关闭。实现状态：已强制校验。");
++        comments.put("config-version", "用途：LeavesX 配置结构版本。默认值：1。兼容性：高于当前支持版本时拒绝启动，避免降级误写。实现状态：已实现。");
+         comments.put("performance.optimized-varint", "用途：使用等价的定长分支写入 VarInt/VarLong，并缓存 VarLong 字节长度。默认值：true。兼容性：输出字节与原版完全一致，不改变协议或游戏逻辑。实现状态：已实现，可关闭回退原始循环。");
+         comments.put("performance.immutable-cache-optimizations", "用途：缓存不可变碰撞形状键的 identity 哈希，减少重复计算。默认值：true。兼容性：只优化纯查询，不改变碰撞结果、顺序或 Bukkit API。实现状态：已实现，可关闭回退按需计算。");
+         comments.put("performance.resource-identifier-cache", "用途：缓存不可变 Minecraft 资源标识符的字符串和哈希值，减少注册表、标签和数据包热点中的重复分配与计算。默认值：true。兼容性：返回字符串、哈希值和相等性与原版完全一致。实现状态：已实现，可关闭回退原始按需计算。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index f37936d03068e28146099e0785abff002f320001..f29ddfb87bf7b3ff7c3529e5d8dc38aa3b3ed025 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -5,15 +5,15 @@ import java.util.Objects;
+ /**
+  * Lock-free access point for the immutable configuration snapshot.
+  *
+- * <p>The configuration is published once during bootstrap, before the scheduler starts. The volatile reference keeps
+- * publication safe while leaving tick-path reads allocation-free and lock-free.</p>
++ * <p>The configuration is published once during bootstrap, before networking and world ticking start. The volatile
++ * reference provides the publication boundary while primitive hot-path flags avoid loading the complete record.</p>
+  */
+ public final class LeavesXRuntime {
+ 
+     private static volatile LeavesXConfig configuration = LeavesXConfig.safeDefaults();
+     private static volatile boolean optimizedVarInt = true;
+     private static volatile boolean immutableCacheOptimizations = true;
+-    // Published during bootstrap before scheduler workers start; these hot-path flags are not reloadable.
++    // Published during bootstrap before networking and world ticking start; these hot-path flags are not reloadable.
+     private static boolean resourceIdentifierCache = true;
+     private static boolean skipEmptyEvents = true;
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXThreadingMode.java b/src/main/java/org/leavesx/leavesx/config/LeavesXThreadingMode.java
+deleted file mode 100644
+index 820c07ce01661cde95491cc4ac04b08dd8668995..0000000000000000000000000000000000000000
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXThreadingMode.java
++++ /dev/null
+@@ -1,44 +0,0 @@
+-package org.leavesx.leavesx.config;
+-
+-/**
+- * Selects the compatibility contract used by the LeavesX runtime.
+- */
+-public enum LeavesXThreadingMode {
+-    /** Keep all live game state on the traditional single simulation domain. */
+-    LEGACY_COMPATIBLE("legacy-compatible"),
+-    /** Allow only explicitly region-safe domains after all ownership checks pass. */
+-    TECHNICAL_STRICT("technical-strict"),
+-    /** Experimental Folia-style throughput mode; never selected implicitly. */
+-    THROUGHPUT("throughput");
+-
+-    private final String serializedName;
+-
+-    LeavesXThreadingMode(final String serializedName) {
+-        this.serializedName = serializedName;
+-    }
+-
+-    /**
+-     * Returns the stable YAML representation.
+-     *
+-     * @return serialized mode name
+-     */
+-    public String serializedName() {
+-        return this.serializedName;
+-    }
+-
+-    /**
+-     * Parses a mode without accepting ambiguous aliases.
+-     *
+-     * @param value configured value
+-     * @return parsed mode
+-     * @throws IllegalArgumentException when the value is unknown
+-     */
+-    public static LeavesXThreadingMode parse(final String value) {
+-        for (final LeavesXThreadingMode mode : values()) {
+-            if (mode.serializedName.equals(value)) {
+-                return mode;
+-            }
+-        }
+-        throw new IllegalArgumentException("Unknown LeavesX threading mode: " + value);
+-    }
+-}
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/GlobalCoordinator.java b/src/main/java/org/leavesx/leavesx/runtime/GlobalCoordinator.java
+deleted file mode 100644
+index bb01101f208438915198acca02398a172babce00..0000000000000000000000000000000000000000
+--- a/src/main/java/org/leavesx/leavesx/runtime/GlobalCoordinator.java
++++ /dev/null
+@@ -1,138 +0,0 @@
+-package org.leavesx.leavesx.runtime;
+-
+-import java.util.concurrent.TimeUnit;
+-import org.leavesx.leavesx.config.LeavesXConfig;
+-import org.leavesx.leavesx.config.LeavesXRuntime;
+-import org.slf4j.Logger;
+-import org.slf4j.LoggerFactory;
+-
+-/**
+- * Coordinates the first LeavesX logical epoch boundary.
+- *
+- * <p>This coordinator deliberately does not schedule game work. It records one global epoch around Folia's existing
+- * global tick, giving later domain barriers a stable protocol without changing entity, block or event ordering today.</p>
+- */
+-public final class GlobalCoordinator {
+-
+-    private static final Logger LOGGER = LoggerFactory.getLogger(GlobalCoordinator.class);
+-    private static final GlobalCoordinator INSTANCE = new GlobalCoordinator();
+-    private static final long SLOW_EPOCH_LOG_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(5L);
+-
+-    private volatile long completedEpoch;
+-    private volatile long activeEpoch = -1L;
+-    private volatile long activeEpochStartNanos;
+-    private volatile Thread activeEpochThread;
+-    private long lastSlowEpochLogNanos;
+-
+-    private GlobalCoordinator() {
+-    }
+-
+-    public static GlobalCoordinator getInstance() {
+-        return INSTANCE;
+-    }
+-
+-    /**
+-     * Begins one globally ordered logical epoch on the current global tick thread.
+-     *
+-     * @param upstreamPeriods number of Folia periods represented by this invocation
+-     * @return new LeavesX epoch identifier
+-     */
+-    public long beginEpoch(final long upstreamPeriods) {
+-        if (this.activeEpoch >= 0L) {
+-            throw new IllegalStateException("LeavesX logical epoch re-entered before completion: " + this.activeEpoch);
+-        }
+-        if (upstreamPeriods < 1L) {
+-            throw new IllegalArgumentException("Folia tick periods must be positive");
+-        }
+-        final long epoch;
+-        try {
+-            epoch = Math.addExact(this.completedEpoch, upstreamPeriods);
+-        } catch (final ArithmeticException ex) {
+-            throw new IllegalStateException("LeavesX logical epoch counter overflowed", ex);
+-        }
+-        this.activeEpochThread = Thread.currentThread();
+-        this.activeEpochStartNanos = System.nanoTime();
+-        // Publish the epoch last so observers cannot see an active epoch without its ownership metadata.
+-        this.activeEpoch = epoch;
+-        return epoch;
+-    }
+-
+-    /**
+-     * Completes the active epoch and emits bounded diagnostics for slow epochs.
+-     *
+-     * @param epoch active epoch identifier returned by {@link #beginEpoch(long)}
+-     */
+-    public void completeEpoch(final long epoch) {
+-        this.requireActiveEpoch(epoch, "completed");
+-        this.requireOwnerThread(epoch, "completed");
+-        final long now = System.nanoTime();
+-        final long elapsedNanos = now - this.activeEpochStartNanos;
+-
+-        final LeavesXConfig config = LeavesXRuntime.configuration();
+-        final long warnNanos = config.epochWarnAfterMillis() * 1_000_000L;
+-        if (elapsedNanos >= warnNanos && (this.lastSlowEpochLogNanos == 0L
+-            || now - this.lastSlowEpochLogNanos >= SLOW_EPOCH_LOG_INTERVAL_NANOS)) {
+-            this.lastSlowEpochLogNanos = now;
+-            LOGGER.warn("LeavesX logical epoch {} completed in {} ms", epoch, elapsedNanos / 1_000_000.0);
+-        }
+-        this.completedEpoch = epoch;
+-        this.activeEpochThread = null;
+-        this.activeEpoch = -1L;
+-    }
+-
+-    /**
+-     * Clears a failed epoch without publishing it as completed.
+-     *
+-     * @param epoch active epoch identifier returned by {@link #beginEpoch(long)}
+-     */
+-    public void abortEpoch(final long epoch) {
+-        this.requireActiveEpoch(epoch, "aborted");
+-        this.requireOwnerThread(epoch, "aborted");
+-        this.activeEpochThread = null;
+-        this.activeEpoch = -1L;
+-    }
+-
+-    /**
+-     * Returns the last successfully completed logical epoch.
+-     *
+-     * @return completed epoch, or zero before the first global tick
+-     */
+-    public long completedEpoch() {
+-        return this.completedEpoch;
+-    }
+-
+-    /**
+-     * Returns whether any epoch is currently active.
+-     *
+-     * @return {@code true} between begin and complete/abort
+-     */
+-    public boolean isEpochActive() {
+-        return this.activeEpoch >= 0L;
+-    }
+-
+-    void resetForTests() {
+-        this.activeEpoch = -1L;
+-        this.activeEpochStartNanos = 0L;
+-        this.activeEpochThread = null;
+-        this.completedEpoch = 0L;
+-        this.lastSlowEpochLogNanos = 0L;
+-    }
+-
+-    private void requireActiveEpoch(final long epoch, final String action) {
+-        if (this.activeEpoch != epoch) {
+-            throw new IllegalStateException(
+-                "LeavesX logical epoch " + epoch + " cannot be " + action + "; active epoch is " + this.activeEpoch
+-            );
+-        }
+-    }
+-
+-    private void requireOwnerThread(final long epoch, final String action) {
+-        final Thread owner = this.activeEpochThread;
+-        if (owner != Thread.currentThread()) {
+-            throw new IllegalStateException(
+-                "LeavesX logical epoch " + epoch + " cannot be " + action + " by thread '"
+-                    + Thread.currentThread().getName() + "'; owner is '" + (owner == null ? "none" : owner.getName()) + "'"
+-            );
+-        }
+-    }
+-}
+diff --git a/src/test/java/io/papermc/paper/ServerBuildInfoCompatibilityTest.java b/src/test/java/io/papermc/paper/ServerBuildInfoCompatibilityTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..5cb24ffb16716641f255c5ac29ca522198a5557a
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/ServerBuildInfoCompatibilityTest.java
+@@ -0,0 +1,23 @@
++package io.papermc.paper;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import net.kyori.adventure.key.Key;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++/** Verifies that LeavesX branding does not break Paper or Leaves compatibility checks. */
++@Normal
++public final class ServerBuildInfoCompatibilityTest {
++
++    private static final Key LEAVESX = Key.key("leavesx", "leavesx");
++
++    @Test
++    void acceptsPaperLeavesAndLeavesXBrandsWithoutClaimingFoliaCompatibility() {
++        assertTrue(ServerBuildInfoImpl.isCompatibleBrand(LEAVESX, ServerBuildInfo.BRAND_PAPER_ID));
++        assertTrue(ServerBuildInfoImpl.isCompatibleBrand(LEAVESX, Key.key("leavesmc", "leaves")));
++        assertTrue(ServerBuildInfoImpl.isCompatibleBrand(LEAVESX, LEAVESX));
++        assertFalse(ServerBuildInfoImpl.isCompatibleBrand(LEAVESX, Key.key("papermc", "folia")));
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 24548757515bf9f36fc9c5defdd0ab6ba748178e..090c223393399a37f338e35477ad69416e0ee99d 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -20,7 +20,7 @@ class LeavesXConfigLoaderTest {
+     Path temporaryDirectory;
+ 
+     @Test
+-    void createsAndReloadsSafeDefaults() throws IOException {
++    void createsAndReloadsDocumentedDefaults() throws IOException {
+         final Path path = this.temporaryDirectory.resolve("config").resolve("leavesx.yml");
+ 
+         final LeavesXConfig created = LeavesXConfigLoader.load(path);
+@@ -28,17 +28,17 @@ class LeavesXConfigLoaderTest {
+ 
+         assertEquals(LeavesXConfig.safeDefaults(), created);
+         assertEquals(created, reloaded);
+-        assertTrue(Files.isRegularFile(path));
+         final String generated = Files.readString(path);
+-        assertTrue(generated.contains("mode: legacy-compatible"));
+-        assertFalse(generated.contains("mode: technical-strict"));
++        assertTrue(generated.contains("performance:"));
++        assertFalse(generated.contains("threading:"));
++        assertFalse(generated.contains("folia"));
+         for (final String comment : LeavesXConfigWriter.comments().values()) {
+             assertTrue(generated.contains("# " + comment), "Generated configuration must include every key comment");
+         }
+     }
+ 
+     @Test
+-    void ignoresUnknownKeysWithoutAcceptingLeavesSettingsAsLeavesXConfiguration() throws IOException {
++    void ignoresUnknownLegacyPrototypeKeys() throws IOException {
+         final Path path = write("""
+             config-version: 1
+             threading:
+@@ -47,40 +47,7 @@ class LeavesXConfigLoaderTest {
+               enabled: true
+             """);
+ 
+-        final LeavesXConfig config = LeavesXConfigLoader.load(path);
+-
+-        assertEquals(LeavesXConfig.safeDefaults(), config);
+-    }
+-
+-    @Test
+-    void loadsExplicitWorkerAndEpochSettings() throws IOException {
+-        final Path path = write("""
+-            config-version: 1
+-            threading:
+-              mode: legacy-compatible
+-              legacy-plugin-policy: reject
+-              workers:
+-                tick-threads: 6
+-                reserve-cores: 3
+-                max-physical-core-utilization: 0.75
+-              epoch:
+-                target-tps: 20
+-                warn-after-ms: 80
+-                watchdog-after-ms: 12000
+-            """);
+-
+-        final LeavesXConfig config = LeavesXConfigLoader.load(path);
+-
+-        assertEquals(LeavesXConfig.LegacyPluginPolicy.REJECT, config.legacyPluginPolicy());
+-        assertEquals(6, config.tickThreads());
+-        assertEquals(3, config.reserveCores());
+-        assertEquals(0.75, config.maxPhysicalCoreUtilization());
+-        assertEquals(80, config.epochWarnAfterMillis());
+-        assertEquals(12_000, config.epochWatchdogAfterMillis());
+-        assertTrue(config.optimizedVarInt());
+-        assertTrue(config.immutableCacheOptimizations());
+-        assertTrue(config.resourceIdentifierCache());
+-        assertTrue(config.skipEmptyEvents());
++        assertEquals(LeavesXConfig.safeDefaults(), LeavesXConfigLoader.load(path));
+     }
+ 
+     @Test
+@@ -102,30 +69,12 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.skipEmptyEvents());
+     }
+ 
+-    @Test
+-    void rejectsUnavailableMultiDomainMode() throws IOException {
+-        final Path path = write("""
+-            config-version: 1
+-            threading:
+-              mode: technical-strict
+-            """);
+-
+-        final LeavesXConfigException exception = assertThrows(
+-            LeavesXConfigException.class,
+-            () -> LeavesXConfigLoader.load(path)
+-        );
+-
+-        assertTrue(exception.getMessage().contains("not available"));
+-    }
+-
+     @Test
+     void rejectsWrongScalarTypeWithConfigurationPath() throws IOException {
+         final Path path = write("""
+             config-version: 1
+-            threading:
+-              mode: legacy-compatible
+-              epoch:
+-                warn-after-ms: fifty
++            performance:
++              optimized-varint: disabled
+             """);
+ 
+         final LeavesXConfigException exception = assertThrows(
+@@ -133,88 +82,19 @@ class LeavesXConfigLoaderTest {
+             () -> LeavesXConfigLoader.load(path)
+         );
+ 
+-        assertTrue(exception.getMessage().contains("threading.epoch.warn-after-ms"));
++        assertTrue(exception.getMessage().contains("performance.optimized-varint"));
+         assertTrue(exception.getMessage().contains(path.toAbsolutePath().toString()));
+     }
+ 
+     @Test
+-    void rejectsDecimalForIntegerSetting() throws IOException {
+-        final Path path = write("""
+-            config-version: 1
+-            threading:
+-              workers:
+-                reserve-cores: 2.0
+-            """);
+-
+-        final LeavesXConfigException exception = assertThrows(
+-            LeavesXConfigException.class,
+-            () -> LeavesXConfigLoader.load(path)
+-        );
+-
+-        assertTrue(exception.getMessage().contains("threading.workers.reserve-cores must be an integer"));
+-    }
+-
+-    @Test
+-    void rejectsUnsupportedOlderSchema() throws IOException {
+-        final Path path = write("config-version: 0\n");
+-
+-        final LeavesXConfigException exception = assertThrows(
+-            LeavesXConfigException.class,
+-            () -> LeavesXConfigLoader.load(path)
+-        );
+-
+-        assertTrue(exception.getMessage().contains("config-version must be 1"));
+-    }
+-
+-    @Test
+-    void rejectsNonVanillaTargetTps() throws IOException {
+-        final Path path = write("""
+-            config-version: 1
+-            threading:
+-              epoch:
+-                target-tps: 30
+-            """);
+-
+-        final LeavesXConfigException exception = assertThrows(
+-            LeavesXConfigException.class,
+-            () -> LeavesXConfigLoader.load(path)
+-        );
+-
+-        assertTrue(exception.getMessage().contains("must remain 20"));
+-    }
+-
+-    @Test
+-    void rejectsWatchdogThresholdBelowWarningThreshold() throws IOException {
+-        final Path path = write("""
+-            config-version: 1
+-            threading:
+-              epoch:
+-                warn-after-ms: 100
+-                watchdog-after-ms: 99
+-            """);
+-
+-        final LeavesXConfigException exception = assertThrows(
+-            LeavesXConfigException.class,
+-            () -> LeavesXConfigLoader.load(path)
+-        );
+-
+-        assertTrue(exception.getMessage().contains("thresholds are invalid"));
+-    }
+-
+-    @Test
+-    void rejectsDisabledCompatibilityInvariant() throws IOException {
+-        final Path path = write("""
+-            config-version: 1
+-            determinism:
+-              preserve-vanilla-rng: false
+-            """);
+-
+-        final LeavesXConfigException exception = assertThrows(
+-            LeavesXConfigException.class,
+-            () -> LeavesXConfigLoader.load(path)
+-        );
+-
+-        assertTrue(exception.getMessage().contains("preserve-vanilla-rng must remain true"));
++    void rejectsUnsupportedSchemaVersions() throws IOException {
++        final Path older = write("config-version: 0\n");
++        assertTrue(assertThrows(LeavesXConfigException.class, () -> LeavesXConfigLoader.load(older))
++            .getMessage().contains("config-version must be 1"));
++
++        final Path newer = write("config-version: 2\n");
++        assertTrue(assertThrows(LeavesXConfigException.class, () -> LeavesXConfigLoader.load(newer))
++            .getMessage().contains("newer than supported"));
+     }
+ 
+     private Path write(final String content) throws IOException {
+diff --git a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+index 4095c37d98e8f037543dd1a08547e590d338697d..b5a55de385827bdd83c4c2e37a483e60c068573a 100644
+--- a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+@@ -78,12 +78,12 @@ class LeavesConfigMigratorTest {
+         );
+         assertFalse(leavesX.hasChild("settings"));
+         assertFalse(leavesX.hasChild("migration"));
+-        assertEquals("legacy-compatible", leavesX.node("threading", "mode").getString());
+-        assertEquals("single-domain", leavesX.node("threading", "legacy-plugin-policy").getString());
+-        assertEquals("auto", leavesX.node("threading", "workers", "tick-threads").getString());
+-        assertEquals(20, leavesX.node("threading", "epoch", "target-tps").getInt());
+-        assertTrue(leavesX.node("determinism", "stable-task-ordering").getBoolean());
+-        assertTrue(leavesX.node("determinism", "preserve-vanilla-rng").getBoolean());
++        assertFalse(leavesX.hasChild("threading"));
++        assertFalse(leavesX.hasChild("determinism"));
++        assertTrue(leavesX.node("performance", "optimized-varint").getBoolean());
++        assertTrue(leavesX.node("performance", "immutable-cache-optimizations").getBoolean());
++        assertTrue(leavesX.node("performance", "resource-identifier-cache").getBoolean());
++        assertTrue(leavesX.node("performance", "skip-empty-events").getBoolean());
+         assertEquals(LeavesConfigMigrator.LEAVESX_CONFIG_VERSION, leavesX.node("config-version").getInt());
+         final String leavesXText = Files.readString(target);
+         for (final Map.Entry<String, String> comment : LeavesXConfigWriter.comments().entrySet()) {
+@@ -251,7 +251,7 @@ class LeavesConfigMigratorTest {
+         final Path source = writeSource("config-version: 6\nsettings:\n  custom: true\n");
+         final String originalSource = Files.readString(source);
+         final Path target = this.temporaryDirectory.resolve("leavesx.yml");
+-        final String existing = "config-version: 1\nthreading:\n  mode: legacy-compatible\n";
++        final String existing = "config-version: 1\nperformance:\n  optimized-varint: false\n";
+         Files.writeString(target, existing, StandardCharsets.UTF_8);
+ 
+         assertThrows(LeavesConfigMigrationException.class, () -> migrator().migrate(source, target));
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/GlobalCoordinatorTest.java b/src/test/java/org/leavesx/leavesx/runtime/GlobalCoordinatorTest.java
+deleted file mode 100644
+index 69f41a8bd271477e9b0c2c795ca50c82f774adb6..0000000000000000000000000000000000000000
+--- a/src/test/java/org/leavesx/leavesx/runtime/GlobalCoordinatorTest.java
++++ /dev/null
+@@ -1,80 +0,0 @@
+-package org.leavesx.leavesx.runtime;
+-
+-import static org.junit.jupiter.api.Assertions.assertEquals;
+-import static org.junit.jupiter.api.Assertions.assertFalse;
+-import static org.junit.jupiter.api.Assertions.assertThrows;
+-import static org.junit.jupiter.api.Assertions.assertTrue;
+-
+-import java.util.concurrent.atomic.AtomicReference;
+-import org.bukkit.support.environment.Normal;
+-import org.junit.jupiter.api.AfterEach;
+-import org.junit.jupiter.api.BeforeEach;
+-import org.junit.jupiter.api.Test;
+-
+-@Normal
+-class GlobalCoordinatorTest {
+-
+-    private final GlobalCoordinator coordinator = GlobalCoordinator.getInstance();
+-
+-    @BeforeEach
+-    void resetCoordinator() {
+-        this.coordinator.resetForTests();
+-    }
+-
+-    @AfterEach
+-    void cleanUpCoordinator() {
+-        this.coordinator.resetForTests();
+-    }
+-
+-    @Test
+-    void advancesByTheNumberOfRepresentedSchedulerPeriods() {
+-        final long first = this.coordinator.beginEpoch(1L);
+-        this.coordinator.completeEpoch(first);
+-        final long second = this.coordinator.beginEpoch(3L);
+-        this.coordinator.completeEpoch(second);
+-
+-        assertEquals(1L, first);
+-        assertEquals(4L, second);
+-        assertEquals(second, this.coordinator.completedEpoch());
+-        assertFalse(this.coordinator.isEpochActive());
+-    }
+-
+-    @Test
+-    void rejectsReentryAndMismatchedCompletion() {
+-        final long epoch = this.coordinator.beginEpoch(1L);
+-
+-        assertThrows(IllegalStateException.class, () -> this.coordinator.beginEpoch(1L));
+-        assertThrows(IllegalStateException.class, () -> this.coordinator.completeEpoch(epoch + 1L));
+-
+-        this.coordinator.abortEpoch(epoch);
+-        assertEquals(0L, this.coordinator.completedEpoch());
+-        assertFalse(this.coordinator.isEpochActive());
+-    }
+-
+-    @Test
+-    void rejectsNonPositiveUpstreamPeriodCount() {
+-        assertThrows(IllegalArgumentException.class, () -> this.coordinator.beginEpoch(0L));
+-        assertFalse(this.coordinator.isEpochActive());
+-    }
+-
+-    @Test
+-    void rejectsCompletionFromAnotherThread() throws InterruptedException {
+-        final long epoch = this.coordinator.beginEpoch(1L);
+-        final AtomicReference<Throwable> failure = new AtomicReference<>();
+-        final Thread foreignThread = new Thread(() -> {
+-            try {
+-                this.coordinator.completeEpoch(epoch);
+-            } catch (final Throwable throwable) {
+-                failure.set(throwable);
+-            }
+-        }, "leavesx-foreign-test-thread");
+-
+-        foreignThread.start();
+-        foreignThread.join();
+-
+-        assertTrue(failure.get() instanceof IllegalStateException);
+-        assertTrue(failure.get().getMessage().contains("owner"));
+-        assertTrue(this.coordinator.isEpochActive());
+-        this.coordinator.abortEpoch(epoch);
+-    }
+-}
+diff --git a/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java b/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java
+index fd007b422740241f19aa6c2302222084050aa218..3751590330d15fb2831cc7fe89caecb0a3531a8a 100644
+--- a/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java
++++ b/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java
+@@ -1,7 +1,9 @@
+ package org.leavesx.leavesx.support;
+ 
++import io.papermc.paper.ServerBuildInfoCompatibilityTest;
+ import org.junit.platform.suite.api.ConfigurationParameter;
+ import org.junit.platform.suite.api.IncludeTags;
++import org.junit.platform.suite.api.SelectClasses;
+ import org.junit.platform.suite.api.SelectPackages;
+ import org.junit.platform.suite.api.Suite;
+ import org.junit.platform.suite.api.SuiteDisplayName;
+@@ -9,13 +11,13 @@ import org.junit.platform.suite.api.SuiteDisplayName;
+ /**
+  * Entry point for LeavesX tests that do not require a live Minecraft registry.
+  *
+- * <p>The Folia build restricts test discovery to classes ending in {@code TestSuite}; keeping this suite narrow
+- * prevents unrelated upstream tests from changing the result of the LeavesX migration checks.</p>
++ * <p>The suite keeps LeavesX compatibility and migration coverage grouped without changing upstream test selection.</p>
+  */
+ @Suite(failIfNoTests = false)
+ @SuiteDisplayName("LeavesX compatibility and migration tests")
+ @IncludeTags("Normal")
+ @SelectPackages("org.leavesx")
++@SelectClasses(ServerBuildInfoCompatibilityTest.class)
+ @ConfigurationParameter(key = "TestSuite", value = "Normal")
+ public final class LeavesXTestSuite {
+ }

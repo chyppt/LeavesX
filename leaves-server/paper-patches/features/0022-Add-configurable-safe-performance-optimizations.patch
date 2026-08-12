@@ -1,0 +1,467 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 12 Aug 2026 20:30:50 +0800
+Subject: [PATCH] Add configurable safe performance optimizations
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index c995d68fb9a9be27e2839523b46f4a5aad6cce25..4c5c2e2dae0a3b9b48649e57533f7bbba54684c1 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -21,7 +21,9 @@ public record LeavesXConfig(
+     int epochWatchdogAfterMillis,
+     boolean unifiedEpochs,
+     boolean deterministicTaskOrdering,
+-    boolean preserveVanillaRng
++    boolean preserveVanillaRng,
++    boolean optimizedVarInt,
++    boolean immutableCacheOptimizations
+ ) {
+ 
+     public static final int CURRENT_CONFIG_VERSION = 1;
+@@ -83,6 +85,8 @@ public record LeavesXConfig(
+             10_000,
+             true,
+             true,
++            true,
++            true,
+             true
+         );
+     }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 977e787b06d419d2cf8bfb184b135772f40f1d71..a25ad904de5050404676f8ea45de5bd9664b2f42 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -46,6 +46,11 @@ public final class LeavesXConfigBootstrap {
+             config.deterministicTaskOrdering(),
+             config.preserveVanillaRng()
+         );
++        LOGGER.info(
++            "LeavesX behavior-equivalent optimizations: optimized VarInt {}, immutable cache hashes {}",
++            config.optimizedVarInt(),
++            config.immutableCacheOptimizations()
++        );
+         LOGGER.info(
+             "LeavesX compatibility baseline is active: one tick worker; Folia region ownership checks remain enabled"
+         );
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 9ac8040a272459ee16f7f57d5789b1e403f98069..a10a55be559d3bdf0ff14ae9618925e1127d0a13 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -98,7 +98,13 @@ public final class LeavesXConfigLoader {
+                 readBoolean(
+                     node.node("determinism", "stable-task-ordering"), "determinism.stable-task-ordering", true
+                 ),
+-                readBoolean(node.node("determinism", "preserve-vanilla-rng"), "determinism.preserve-vanilla-rng", true)
++                readBoolean(node.node("determinism", "preserve-vanilla-rng"), "determinism.preserve-vanilla-rng", true),
++                readBoolean(node.node("performance", "optimized-varint"), "performance.optimized-varint", true),
++                readBoolean(
++                    node.node("performance", "immutable-cache-optimizations"),
++                    "performance.immutable-cache-optimizations",
++                    true
++                )
+             );
+         } catch (final IllegalArgumentException ex) {
+             throw new LeavesXConfigException("Invalid LeavesX configuration at " + path + ": " + ex.getMessage(), ex);
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 43bdbf805c5d94fbf421203c6d8d19fc356c6887..64617aa075c3482c0058bbd5c78eaec07a313a75 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -61,6 +61,12 @@ public final class LeavesXConfigWriter {
+         node.node("determinism", "preserve-vanilla-rng")
+             .comment(COMMENTS.get("determinism.preserve-vanilla-rng"))
+             .raw(config.preserveVanillaRng());
++        node.node("performance", "optimized-varint")
++            .comment(COMMENTS.get("performance.optimized-varint"))
++            .raw(config.optimizedVarInt());
++        node.node("performance", "immutable-cache-optimizations")
++            .comment(COMMENTS.get("performance.immutable-cache-optimizations"))
++            .raw(config.immutableCacheOptimizations());
+     }
+ 
+     /** Returns the same path-keyed comments used for emitted {@code leavesx.yml} files. */
+@@ -92,6 +98,8 @@ public final class LeavesXConfigWriter {
+         comments.put("technical-strict.unified-epochs", "用途：要求所有模拟域使用统一逻辑纪元。默认值：true。兼容性：数据安全底线，不允许关闭。实现状态：基础纪元已实现，完整多域屏障尚未实现。");
+         comments.put("determinism.stable-task-ordering", "用途：禁止由工作线程完成时间决定游戏任务顺序。默认值：true。兼容性：保护原版及生电确定性，不允许关闭。实现状态：契约已实现，多域提交器尚未实现。");
+         comments.put("determinism.preserve-vanilla-rng", "用途：保持原版 RNG 类型、种子和消耗顺序。默认值：true。兼容性：保护原版及生电行为，不允许关闭。实现状态：已强制校验。");
++        comments.put("performance.optimized-varint", "用途：使用等价的定长分支写入 VarInt/VarLong，并缓存 VarLong 字节长度。默认值：true。兼容性：输出字节与原版完全一致，不改变协议或游戏逻辑。实现状态：已实现，可关闭回退原始循环。");
++        comments.put("performance.immutable-cache-optimizations", "用途：缓存不可变碰撞形状键的 identity 哈希，减少重复计算。默认值：true。兼容性：只优化纯查询，不改变碰撞结果、顺序或 Bukkit API。实现状态：已实现，可关闭回退按需计算。");
+         return Map.copyOf(comments);
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 2f5e6a8f15eabe446443163196d3af50d32ab17f..b9cc5c7124eee09ca74fa95dee8770413f19c2b9 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -11,6 +11,8 @@ import java.util.Objects;
+ public final class LeavesXRuntime {
+ 
+     private static volatile LeavesXConfig configuration = LeavesXConfig.safeDefaults();
++    private static volatile boolean optimizedVarInt = true;
++    private static volatile boolean immutableCacheOptimizations = true;
+ 
+     private LeavesXRuntime() {
+     }
+@@ -30,6 +32,30 @@ public final class LeavesXRuntime {
+      * @param next validated immutable configuration
+      */
+     static void publish(final LeavesXConfig next) {
+-        configuration = Objects.requireNonNull(next, "next");
++        final LeavesXConfig validated = Objects.requireNonNull(next, "next");
++        optimizedVarInt = validated.optimizedVarInt();
++        immutableCacheOptimizations = validated.immutableCacheOptimizations();
++        configuration = validated;
++    }
++
++    /**
++     * Returns whether protocol integer fast paths are enabled.
++     *
++     * <p>The value is published once before networking starts. Keeping it as a primitive avoids loading the complete
++     * configuration record for each encoded packet field.</p>
++     *
++     * @return configured protocol encoding policy
++     */
++    public static boolean optimizedVarInt() {
++        return optimizedVarInt;
++    }
++
++    /**
++     * Returns whether immutable lookup keys may retain precomputed hashes.
++     *
++     * @return configured immutable-cache policy
++     */
++    public static boolean immutableCacheOptimizations() {
++        return immutableCacheOptimizations;
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/performance/ProtocolIntegerEncoding.java b/src/main/java/org/leavesx/leavesx/performance/ProtocolIntegerEncoding.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..04159565b584bb626c5e6e6d4e4ec36df57d0700
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/performance/ProtocolIntegerEncoding.java
+@@ -0,0 +1,156 @@
++package org.leavesx.leavesx.performance;
++
++import io.netty.buffer.ByteBuf;
++
++/**
++ * Behavior-equivalent fixed-width encoders for Minecraft protocol integers.
++ *
++ * <p>The implementation is adapted from the Leaf 26.2 Gale/Velocity patches licensed under GPL-3.0-only. It emits
++ * the same little-grouped 7-bit byte stream as the vanilla loops while reducing branches and individual Netty write
++ * calls for multi-byte values. This class owns no mutable state and is safe for every network event loop.</p>
++ */
++public final class ProtocolIntegerEncoding {
++
++    private static final int[] VARLONG_EXACT_BYTE_LENGTHS = createVarLongByteLengths();
++
++    private ProtocolIntegerEncoding() {
++    }
++
++    /**
++     * Returns the exact encoded size of a VarLong.
++     *
++     * @param value value to encode
++     * @return encoded byte count in the range 1 through 10
++     */
++    public static int getVarLongByteSize(final long value) {
++        return VARLONG_EXACT_BYTE_LENGTHS[Long.numberOfLeadingZeros(value)];
++    }
++
++    /**
++     * Writes one VarInt using at most two fixed-width buffer operations.
++     *
++     * @param output destination buffer
++     * @param value value to encode
++     * @return {@code output}
++     */
++    public static ByteBuf writeVarInt(final ByteBuf output, final int value) {
++        if ((value & 0xFFFFFF80) == 0) {
++            output.writeByte(value);
++        } else if ((value & 0xFFFFC000) == 0) {
++            final int encoded = (value & 0x7F) << 8
++                | (value >>> 7)
++                | 0x00008000;
++            output.writeShort(encoded);
++        } else if ((value & 0xFFE00000) == 0) {
++            final int encoded = (value & 0x7F) << 16
++                | (value & 0x3F80) << 1
++                | (value >>> 14)
++                | 0x00808000;
++            output.writeMedium(encoded);
++        } else if ((value & 0xF0000000) == 0) {
++            final int encoded = (value & 0x7F) << 24
++                | (value & 0x3F80) << 9
++                | (value & 0x1FC000) >> 6
++                | (value >>> 21)
++                | 0x80808000;
++            output.writeInt(encoded);
++        } else {
++            final int encoded = (value & 0x7F) << 24
++                | (value & 0x3F80) << 9
++                | (value & 0x1FC000) >> 6
++                | ((value >>> 21) & 0x7F)
++                | 0x80808080;
++            output.writeInt(encoded);
++            output.writeByte(value >>> 28);
++        }
++        return output;
++    }
++
++    /**
++     * Writes one VarLong using fixed-width buffer operations.
++     *
++     * @param output destination buffer
++     * @param value value to encode
++     * @return {@code output}
++     */
++    public static ByteBuf writeVarLong(final ByteBuf output, final long value) {
++        if ((value & 0xFFFFFFFFFFFFFF80L) == 0L) {
++            output.writeByte((int) value);
++        } else if (value < 0L) {
++            writeTenByteVarLong(output, value);
++        } else if ((value & 0xFFFFFFFFFFFFC000L) == 0L) {
++            final int least7Bits = (int) value;
++            output.writeShort((least7Bits & 0x7F) << 8 | (least7Bits >>> 7) | 0x00008000);
++        } else if ((value & 0xFFFFFFFFFFE00000L) == 0L) {
++            final int least7Bits = (int) value;
++            output.writeMedium(
++                (least7Bits & 0x7F) << 16
++                    | (least7Bits & 0x3F80) << 1
++                    | (least7Bits >>> 14)
++                    | 0x00808000
++            );
++        } else if ((value & 0xFFFFFFFFF0000000L) == 0L) {
++            final int least7Bits = (int) value;
++            output.writeInt(encodeFourGroups(least7Bits, 0x80808000));
++        } else if ((value & 0xFFFFFFF800000000L) == 0L) {
++            final int least7Bits = (int) (value & 0xFFFFFFFL);
++            output.writeInt(encodeFourGroups(least7Bits, 0x80808080));
++            output.writeByte((int) (value >>> 28));
++        } else if ((value & 0xFFFFFC0000000000L) == 0L) {
++            final int least7Bits = (int) (value & 0xFFFFFFFL);
++            final int second7Bits = (int) (value >>> 28);
++            output.writeInt(encodeFourGroups(least7Bits, 0x80808080));
++            output.writeShort((second7Bits & 0x7F) << 8 | (second7Bits >>> 7) | 0x00008000);
++        } else if ((value & 0xFFFE000000000000L) == 0L) {
++            final int least7Bits = (int) (value & 0xFFFFFFFL);
++            final int second7Bits = (int) (value >>> 28);
++            output.writeInt(encodeFourGroups(least7Bits, 0x80808080));
++            output.writeMedium(
++                (second7Bits & 0x7F) << 16
++                    | (second7Bits & 0x3F80) << 1
++                    | (second7Bits >>> 14)
++                    | 0x00808000
++            );
++        } else if ((value & 0xFF00000000000000L) == 0L) {
++            final int least7Bits = (int) (value & 0xFFFFFFFL);
++            final int second7Bits = (int) (value >>> 28);
++            output.writeInt(encodeFourGroups(least7Bits, 0x80808080));
++            output.writeInt(encodeFourGroups(second7Bits, 0x80808000));
++        } else {
++            final int least7Bits = (int) (value & 0xFFFFFFFL);
++            final long remaining = value >>> 28;
++            final int second7Bits = (int) (remaining & 0xFFFFFFFL);
++            output.writeInt(encodeFourGroups(least7Bits, 0x80808080));
++            output.writeInt(encodeFourGroups(second7Bits, 0x80808080));
++            output.writeByte((int) (remaining >>> 28));
++        }
++        return output;
++    }
++
++    private static void writeTenByteVarLong(final ByteBuf output, final long value) {
++        final int least7Bits = (int) (value & 0xFFFFFFFL);
++        final long remaining = value >>> 28;
++        final int second7Bits = (int) (remaining & 0xFFFFFFFL);
++        final int third7Bits = (int) (remaining >>> 28);
++        output.writeInt(encodeFourGroups(least7Bits, 0x80808080));
++        output.writeInt(encodeFourGroups(second7Bits, 0x80808080));
++        output.writeShort((third7Bits & 0x7F) << 8 | (third7Bits >>> 7) | 0x00008000);
++    }
++
++    private static int encodeFourGroups(final int value, final int continuationMask) {
++        return (value & 0x7F) << 24
++            | (value & 0x3F80) << 9
++            | (value & 0x1FC000) >> 6
++            | ((value >>> 21) & 0x7F)
++            | continuationMask;
++    }
++
++    private static int[] createVarLongByteLengths() {
++        final int[] lengths = new int[65];
++        for (int leadingZeros = 0; leadingZeros < 64; ++leadingZeros) {
++            lengths[leadingZeros] = (int) Math.ceil((63.0 - (leadingZeros - 1)) / 7.0);
++        }
++        lengths[64] = 1;
++        return lengths;
++    }
++}
+diff --git a/src/main/resources/META-INF/leavesx-third-party-notices.txt b/src/main/resources/META-INF/leavesx-third-party-notices.txt
+index 004e30a738d0ce51f58d80286322731adec386a7..ae65cdea265cfa4dee2fe195d3d47625aa79c3bf 100644
+--- a/src/main/resources/META-INF/leavesx-third-party-notices.txt
++++ b/src/main/resources/META-INF/leavesx-third-party-notices.txt
+@@ -26,3 +26,25 @@ Bundled license UTF-8 length: 16725 bytes
+ Bundled license SHA-256: 1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5
+ 
+ Copyright remains with the contributors to LeavesMC/Documentation.
++
++Leaf/Gale/Velocity protocol integer encoding
++--------------------------------------------
++
++Research snapshot: WheatLeaf/Leaf commit cc2a6fdfdec6245b9084b8860bdcbbbd7ddf04e6
++Leaf patch files: 0075-Pre-compute-VarLong-sizes.patch and
++0076-Optimize-VarInt-write-and-VarLong-write.patch
++Patch author: Martijn Muijsers, Gale
++Based on Velocity work by Andrew Steinborn
++License: GPL-3.0-only
++LeavesX modification: adapted to the 26.1.2 Paper/Folia interfaces, made configurable, and covered by byte-level
++differential tests. The LeavesX distribution includes GPL-3.0 terms in PATCHES-LICENSE.
++
++Leaf/Gale ShapePairKey hash caching
++-----------------------------------
++
++Research snapshot: WheatLeaf/Leaf commit cc2a6fdfdec6245b9084b8860bdcbbbd7ddf04e6
++Leaf patch file: 0046-Cache-ShapePairKey-hash.patch
++Patch author: Dreeam, Gale
++License: LGPL-3.0-only
++LeavesX modification: retains the cached identity hash and adds a thread-local non-stored lookup key so cache hits do
++not allocate. Persistent cache keys remain independent objects and the original LRU behavior is retained.
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 61d4282e2afdfeeb053be6c9d7bc9d827fb2df81..e345dab44c2e43ef97a3f35d1938cd6a70e25e73 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -77,6 +77,23 @@ class LeavesXConfigLoaderTest {
+         assertEquals(0.75, config.maxPhysicalCoreUtilization());
+         assertEquals(80, config.epochWarnAfterMillis());
+         assertEquals(12_000, config.epochWatchdogAfterMillis());
++        assertTrue(config.optimizedVarInt());
++        assertTrue(config.immutableCacheOptimizations());
++    }
++
++    @Test
++    void loadsBehaviorEquivalentOptimizationSwitches() throws IOException {
++        final Path path = write("""
++            config-version: 1
++            performance:
++              optimized-varint: false
++              immutable-cache-optimizations: false
++            """);
++
++        final LeavesXConfig config = LeavesXConfigLoader.load(path);
++
++        assertFalse(config.optimizedVarInt());
++        assertFalse(config.immutableCacheOptimizations());
+     }
+ 
+     @Test
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ProtocolIntegerEncodingTest.java b/src/test/java/org/leavesx/leavesx/performance/ProtocolIntegerEncodingTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..89f56cc3f0a818191fe848892a18ae96745bd612
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ProtocolIntegerEncodingTest.java
+@@ -0,0 +1,105 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import io.netty.buffer.ByteBuf;
++import io.netty.buffer.Unpooled;
++import java.util.Random;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class ProtocolIntegerEncodingTest {
++
++    @Test
++    void preservesVarIntBytesAtEveryLengthBoundary() {
++        final int[] values = {
++            0, 1, 0x7F, 0x80, 0x3FFF, 0x4000, 0x1FFFFF, 0x200000, 0x0FFFFFFF,
++            0x10000000, -1, Integer.MIN_VALUE, Integer.MAX_VALUE
++        };
++
++        for (final int value : values) {
++            assertArrayEquals(legacyVarInt(value), optimizedVarInt(value), "VarInt value " + value);
++        }
++    }
++
++    @Test
++    void preservesVarLongBytesAtEveryLengthBoundary() {
++        final long[] values = {
++            0L, 1L, 0x7FL, 0x80L, 0x3FFFL, 0x4000L, 0x1FFFFFL, 0x200000L,
++            0xFFFFFFFL, 0x10000000L, 0x7FFFFFFFFL, 0x3FFFFFFFFFFL, 0x1FFFFFFFFFFFFL,
++            0xFFFFFFFFFFFFFFL, 0x7FFFFFFFFFFFFFFFL, -1L, Long.MIN_VALUE, Long.MAX_VALUE
++        };
++
++        for (final long value : values) {
++            assertArrayEquals(legacyVarLong(value), optimizedVarLong(value), "VarLong value " + value);
++            assertEquals(legacyVarLong(value).length, ProtocolIntegerEncoding.getVarLongByteSize(value));
++        }
++    }
++
++    @Test
++    void preservesBytesForFixedRandomSamples() {
++        final Random random = new Random(0x4C58504F534954L);
++        for (int i = 0; i < 100_000; ++i) {
++            final int intValue = random.nextInt();
++            final long longValue = random.nextLong();
++            assertArrayEquals(legacyVarInt(intValue), optimizedVarInt(intValue));
++            assertArrayEquals(legacyVarLong(longValue), optimizedVarLong(longValue));
++        }
++    }
++
++    private static byte[] optimizedVarInt(final int value) {
++        final ByteBuf buffer = Unpooled.buffer(5);
++        try {
++            ProtocolIntegerEncoding.writeVarInt(buffer, value);
++            return readBytes(buffer);
++        } finally {
++            buffer.release();
++        }
++    }
++
++    private static byte[] optimizedVarLong(final long value) {
++        final ByteBuf buffer = Unpooled.buffer(10);
++        try {
++            ProtocolIntegerEncoding.writeVarLong(buffer, value);
++            return readBytes(buffer);
++        } finally {
++            buffer.release();
++        }
++    }
++
++    private static byte[] legacyVarInt(int value) {
++        final ByteBuf buffer = Unpooled.buffer(5);
++        try {
++            while ((value & -128) != 0) {
++                buffer.writeByte(value & 127 | 128);
++                value >>>= 7;
++            }
++            buffer.writeByte(value);
++            return readBytes(buffer);
++        } finally {
++            buffer.release();
++        }
++    }
++
++    private static byte[] legacyVarLong(long value) {
++        final ByteBuf buffer = Unpooled.buffer(10);
++        try {
++            while ((value & -128L) != 0L) {
++                buffer.writeByte((int) value & 127 | 128);
++                value >>>= 7;
++            }
++            buffer.writeByte((int) value);
++            return readBytes(buffer);
++        } finally {
++            buffer.release();
++        }
++    }
++
++    private static byte[] readBytes(final ByteBuf buffer) {
++        final byte[] bytes = new byte[buffer.readableBytes()];
++        buffer.readBytes(bytes);
++        return bytes;
++    }
++}
