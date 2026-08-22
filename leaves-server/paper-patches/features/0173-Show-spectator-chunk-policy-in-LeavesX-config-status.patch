@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 22 Aug 2026 14:37:48 +0800
+Subject: [PATCH] Show spectator chunk policy in LeavesX config status
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index c448895a5b9f02dfba5893b8db743e7bb978f774..3317e7a51d3a7aad10ab97929e7be8dc5f23deda 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -991,6 +991,11 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(line("实体查询优化", onOff(config.entityQueryOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("AI/寻路", onOff(config.aiOptimizations()) + " / " + onOff(config.pathfindingOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("村民原版兼容模式", onOff(config.villagerCompatibilityMode()), config.villagerCompatibilityMode() ? NamedTextColor.GREEN : NamedTextColor.YELLOW));
++        sender.sendMessage(line(
++            "旁观者不加载区块",
++            onOff(config.spectatorNoChunkLoading()) + "（需 spectators_generate_chunks=false）",
++            config.spectatorNoChunkLoading() ? NamedTextColor.YELLOW : NamedTextColor.GREEN
++        ));
+         sender.sendMessage(line("村民职业查找", onOff(LeavesXRuntime.villagerProfessionAssignmentOptimization()), NamedTextColor.AQUA));
+         sender.sendMessage(line("长跳候选构建", onOff(LeavesXRuntime.longJumpCandidateOptimization()), NamedTextColor.AQUA));
+         sender.sendMessage(line("山羊冲撞选点", onOff(LeavesXRuntime.ramPositionSelectionOptimization()), NamedTextColor.AQUA));
