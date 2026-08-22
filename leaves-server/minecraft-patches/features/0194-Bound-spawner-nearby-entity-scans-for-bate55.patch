@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 20:12:47 +0800
+Subject: [PATCH] Bound spawner nearby entity scans for bate55
+
+
+diff --git a/net/minecraft/world/level/BaseSpawner.java b/net/minecraft/world/level/BaseSpawner.java
+index 6bc7956c5ee9b1eb0024ad0644cfeeadf0e770c3..d004072fa180a553fe382d5e9912aa4a07e0ab6b 100644
+--- a/net/minecraft/world/level/BaseSpawner.java
++++ b/net/minecraft/world/level/BaseSpawner.java
+@@ -157,12 +157,26 @@ public abstract class BaseSpawner {
+                                 return;
+                             }
+ 
+-                            int nearBy = level.getEntities(
+-                                    EntityTypeTest.forExactClass(entity.getClass()),
+-                                    new AABB(pos.getX(), pos.getY(), pos.getZ(), pos.getX() + 1, pos.getY() + 1, pos.getZ() + 1).inflate(this.spawnRange),
+-                                    EntitySelector.NO_SPECTATORS
+-                                )
+-                                .size();
++                            final AABB nearbyEntityBox = new AABB(
++                                pos.getX(), pos.getY(), pos.getZ(), pos.getX() + 1, pos.getY() + 1, pos.getZ() + 1
++                            ).inflate(this.spawnRange);
++                            final int nearBy;
++                            if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++                                try (Level.LeavesXEntityQueryBuffer scan = Level.leavesX$acquireEntityQueryBuffer()) {
++                                    nearBy = scan.countUpTo(
++                                        level,
++                                        EntityTypeTest.forExactClass(entity.getClass()),
++                                        nearbyEntityBox,
++                                        EntitySelector.NO_SPECTATORS,
++                                        this.maxNearbyEntities
++                                    );
++                                }
++                            } else {
++                                nearBy = level.getEntities(
++                                        EntityTypeTest.forExactClass(entity.getClass()), nearbyEntityBox, EntitySelector.NO_SPECTATORS
++                                    )
++                                    .size();
++                            }
+                             if (nearBy >= this.maxNearbyEntities) {
+                                 this.delay(level, pos);
+                                 return;
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index a83f31d454b0d5ffffc08c22fe83ee0515410d12..aeb0fea05b751d1c95537e9786ba945f17c9603e 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -2359,6 +2359,23 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+             return this.results;
+         }
+ 
++        /** Counts matches without traversing beyond the caller's decision threshold. */
++        @SuppressWarnings({"rawtypes", "unchecked"})
++        public <T extends Entity> int countUpTo(
++            final Level level,
++            final EntityTypeTest<Entity, T> type,
++            final AABB boundingBox,
++            final Predicate<? super T> predicate,
++            final int maxCount
++        ) {
++            this.results.clear();
++            if (maxCount <= 0) {
++                return 0;
++            }
++            level.getEntities(type, boundingBox, predicate, (List)this.results, maxCount);
++            return this.results.size();
++        }
++
+         @Override
+         public void close() {
+             this.results.clear();

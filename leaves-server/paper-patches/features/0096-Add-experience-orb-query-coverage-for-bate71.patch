@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 23:08:44 +0800
+Subject: [PATCH] Add experience orb query coverage for bate71
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ExperienceOrbMergeEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ExperienceOrbMergeEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..e36dd2ace31f3193a802f6caac7774a407a8a263
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ExperienceOrbMergeEntityQueryHotPathTest.java
+@@ -0,0 +1,78 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ExperienceOrb;
++import net.minecraft.world.level.Level;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies experience-orb spawning stops after the first compatible merge target. */
++@Normal
++class ExperienceOrbMergeEntityQueryHotPathTest {
++
++    private static final String TYPED_FIRST_QUERY_DESCRIPTOR =
++        "(Lnet/minecraft/world/level/entity/EntityTypeTest;Lnet/minecraft/world/phys/AABB;Ljava/util/function/Predicate;)"
++            + "Lnet/minecraft/world/entity/Entity;";
++
++    @Test
++    void mergeLookupKeepsTypedBoundedAndVanillaQueries() throws IOException {
++        final MethodNode mergeLookup = method(classNode(ExperienceOrb.class), "tryMergeToExisting");
++        final List<MethodInsnNode> calls = invocations(mergeLookup);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call ->
++            call.name.equals("leavesX$getFirstEntity") && call.desc.equals(TYPED_FIRST_QUERY_DESCRIPTOR)
++        ));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("forClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntities")));
++    }
++
++    @Test
++    void typedHelperLimitsBothSharedAndNestedLookupsToOne() throws IOException {
++        final MethodNode first = method(classNode(Level.class), "leavesX$getFirstEntity", TYPED_FIRST_QUERY_DESCRIPTOR);
++        final List<MethodInsnNode> boundedQueries = invocations(first).stream()
++            .filter(call -> call.owner.equals("net/minecraft/world/level/Level"))
++            .filter(call -> call.name.equals("getEntities") && call.desc.endsWith("Ljava/util/List;I)V"))
++            .toList();
++
++        assertEquals(2, boundedQueries.size());
++        assertTrue(boundedQueries.stream().allMatch(call -> call.getPrevious().getOpcode() == Opcodes.ICONST_1));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName, final String descriptor) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName) && method.desc.equals(descriptor))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName + descriptor));
++    }
++}

@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 23:31:52 +0800
+Subject: [PATCH] Add Breeze attack sensor coverage for bate73
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BreezeAttackSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BreezeAttackSensorHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..d8aa59861532d5179527dae524cd12fd18adf713
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/BreezeAttackSensorHotPathTest.java
+@@ -0,0 +1,53 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ai.sensing.BreezeAttackEntitySensor;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies Breeze targeting has an allocation-light loop and a vanilla stream fallback. */
++@Normal
++class BreezeAttackSensorHotPathTest {
++
++    @Test
++    void sensorKeepsLoopAndVanillaStreamPaths() throws IOException {
++        final MethodNode doTick = method(classNode(BreezeAttackEntitySensor.class), "doTick");
++        final List<MethodInsnNode> calls = invocations(doTick);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("aiOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.owner.equals("java/util/Iterator") && call.name.equals("hasNext")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("isEntityAttackable")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("stream")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("findFirst")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("ifPresentOrElse")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

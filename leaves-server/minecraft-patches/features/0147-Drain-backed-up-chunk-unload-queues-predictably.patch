@@ -1,0 +1,225 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 10:26:21 +0800
+Subject: [PATCH] Drain backed up chunk unload queues predictably
+
+
+diff --git a/ca/spottedleaf/moonrise/paper/PaperHooks.java b/ca/spottedleaf/moonrise/paper/PaperHooks.java
+index e1e032e709193b5a8008d69b748bc54bc660eb64..e39a3cb0f5500ded217fd2cbf2240a93f79eb996 100644
+--- a/ca/spottedleaf/moonrise/paper/PaperHooks.java
++++ b/ca/spottedleaf/moonrise/paper/PaperHooks.java
+@@ -217,6 +217,26 @@ public class PaperHooks extends BaseChunkSystemHooks implements PlatformHooks {
+         return 0.05;
+     }
+ 
++    @Override
++    public boolean configAdaptiveChunkUnloading(final ServerLevel world) {
++        return org.leavesx.leavesx.config.LeavesXRuntime.adaptiveChunkUnloading();
++    }
++
++    @Override
++    public int configChunkUnloadBacklogThreshold(final ServerLevel world) {
++        return org.leavesx.leavesx.config.LeavesXRuntime.chunkUnloadBacklogThreshold();
++    }
++
++    @Override
++    public int configChunkUnloadMinimumPerTick(final ServerLevel world) {
++        return org.leavesx.leavesx.config.LeavesXRuntime.chunkUnloadMinimumPerTick();
++    }
++
++    @Override
++    public int configChunkUnloadMaximumPerTick(final ServerLevel world) {
++        return org.leavesx.leavesx.config.LeavesXRuntime.chunkUnloadMaximumPerTick();
++    }
++
+     @Override
+     public boolean configFixMC159283() {
+         return io.papermc.paper.configuration.GlobalConfiguration.get().misc.fixFarEndTerrainGeneration;
+@@ -308,4 +328,4 @@ public class PaperHooks extends BaseChunkSystemHooks implements PlatformHooks {
+     public boolean addTicketForEnderPearls(final ServerLevel world) {
+         return !world.paperConfig().misc.legacyEnderPearlBehavior;
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java b/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
+index 7dda31a98de2ddf0ca7a520ae48025fc96754011..323b5339cbd1062106dfe7f360c4f2222d9c18c1 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
+@@ -16,6 +16,9 @@ public final class ChunkUnloadQueue {
+ 
+     public final int coordinateShift;
+     private final AtomicLong orderGenerator = new AtomicLong();
++
++    /** Exact number of chunk holders currently waiting for unload processing. */
++    private final AtomicLong pendingChunkCount = new AtomicLong();
+     private final ConcurrentChainedLong2ReferenceHashTable<UnloadSection> unloadSections = new ConcurrentChainedLong2ReferenceHashTable<>();
+ 
+     /*
+@@ -29,6 +32,16 @@ public final class ChunkUnloadQueue {
+ 
+     public static record SectionToUnload(int sectionX, int sectionZ, long order, int count) {}
+ 
++    /**
++     * Returns the exact queue backlog without scanning every section.
++     *
++     * <p>The count is maintained at the same points that mutate the queue. This avoids relying on a concurrently
++     * changing set size, which could under-report a persistent backlog and delay unload work.</p>
++     */
++    public long pendingChunkCount() {
++        return this.pendingChunkCount.get();
++    }
++
+     public List<SectionToUnload> retrieveForAllRegions() {
+         final List<SectionToUnload> ret = new ArrayList<>();
+ 
+@@ -54,7 +67,11 @@ public final class ChunkUnloadQueue {
+     }
+ 
+     public UnloadSection removeSection(final int sectionX, final int sectionZ) {
+-        return this.unloadSections.remove(CoordinateUtils.getChunkKey(sectionX, sectionZ));
++        final UnloadSection removed = this.unloadSections.remove(CoordinateUtils.getChunkKey(sectionX, sectionZ));
++        if (removed != null) {
++            this.pendingChunkCount.addAndGet(-removed.chunks.size());
++        }
++        return removed;
+     }
+ 
+     // write operation
+@@ -72,7 +89,11 @@ public final class ChunkUnloadQueue {
+             this.unloadSections.put(sectionKey, section);
+         }
+ 
+-        return section.chunks.add(chunkKey);
++        final boolean added = section.chunks.add(chunkKey);
++        if (added) {
++            this.pendingChunkCount.incrementAndGet();
++        }
++        return added;
+     }
+ 
+     // write operation
+@@ -94,6 +115,8 @@ public final class ChunkUnloadQueue {
+             return false;
+         }
+ 
++        this.pendingChunkCount.decrementAndGet();
++
+         if (section.chunks.isEmpty()) {
+             this.unloadSections.remove(sectionKey);
+         }
+@@ -101,6 +124,21 @@ public final class ChunkUnloadQueue {
+         return true;
+     }
+ 
++    /**
++     * Removes the oldest entry from a section while keeping the global backlog exact.
++     *
++     * <p>Callers must already hold the section's scheduling lock. The explicit section coordinates let this method
++     * remove an emptied section without a second coordinate decode or an unaccounted direct set mutation.</p>
++     */
++    public long removeFirstChunk(final int sectionX, final int sectionZ, final UnloadSection section) {
++        final long chunkKey = section.chunks.removeFirstLong();
++        this.pendingChunkCount.decrementAndGet();
++        if (section.chunks.isEmpty()) {
++            this.unloadSections.remove(CoordinateUtils.getChunkKey(sectionX, sectionZ));
++        }
++        return chunkKey;
++    }
++
+     public JsonElement toDebugJson() {
+         final JsonArray ret = new JsonArray();
+ 
+@@ -109,7 +147,7 @@ public final class ChunkUnloadQueue {
+             ret.add(sectionJson);
+ 
+             sectionJson.addProperty("sectionX", section.sectionX());
+-            sectionJson.addProperty("sectionZ", section.sectionX());
++            sectionJson.addProperty("sectionZ", section.sectionZ());
+             sectionJson.addProperty("order", section.order());
+ 
+             final JsonArray coordinates = new JsonArray();
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+index 05d374f679919d082064e8f2bb363a419bc9648e..4dfccf6a3e1f891dfca866e4c6a579884db3f8f1 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+@@ -1156,24 +1156,8 @@ public final class ChunkHolderManager {
+             throw new IllegalStateException("Cannot unload chunks recursively");
+         }
+         final int sectionShift = this.unloadQueue.coordinateShift; // sectionShift <= lock shift
+-        final List<ChunkUnloadQueue.SectionToUnload> unloadSectionsForRegion = this.unloadQueue.retrieveForAllRegions();
+-        int unloadCountTentative = 0;
+-        for (final ChunkUnloadQueue.SectionToUnload sectionRef : unloadSectionsForRegion) {
+-            final ChunkUnloadQueue.UnloadSection section
+-                = this.unloadQueue.getSectionUnsynchronized(sectionRef.sectionX(), sectionRef.sectionZ());
+-
+-            if (section == null) {
+-                // removed concurrently
+-                continue;
+-            }
+-
+-            // technically reading the size field is unsafe, and it may be incorrect.
+-            // We assume that the error here cumulatively goes away over many ticks. If it did not, then it is possible
+-            // for chunks to never unload or not unload fast enough.
+-            unloadCountTentative += section.chunks.size();
+-        }
+-
+-        if (unloadCountTentative <= 0) {
++        long pendingChunkCount = this.unloadQueue.pendingChunkCount();
++        if (pendingChunkCount <= 0L) {
+             // no work to do
+             return;
+         }
+@@ -1181,9 +1165,30 @@ public final class ChunkHolderManager {
+         // We do need to process updates here so that any addTicket that is synchronised before this call does not go missed.
+         this.processTicketUpdates();
+ 
+-        final int toUnloadCount = Math.max(
+-            PlatformHooks.get().configMinChunkUnloadCount(this.world),
+-            (int)Math.round(unloadCountTentative * Math.clamp(PlatformHooks.get().configMinChunkUnloadFraction(this.world), 0.0, 1.0))
++        pendingChunkCount = this.unloadQueue.pendingChunkCount();
++        if (pendingChunkCount <= 0L) {
++            return;
++        }
++
++        final List<ChunkUnloadQueue.SectionToUnload> unloadSectionsForRegion = this.unloadQueue.retrieveForAllRegions();
++        final PlatformHooks hooks = PlatformHooks.get();
++        final int baseUnloadCount = Math.max(
++            hooks.configMinChunkUnloadCount(this.world),
++            (int)Math.min(
++                Integer.MAX_VALUE,
++                Math.round(pendingChunkCount * Math.clamp(hooks.configMinChunkUnloadFraction(this.world), 0.0, 1.0))
++            )
++        );
++        final int toUnloadCount = org.leavesx.leavesx.performance.ChunkUnloadBudget.calculate(
++            pendingChunkCount,
++            baseUnloadCount,
++            hooks.configMinChunkUnloadFraction(this.world),
++            hooks.configAdaptiveChunkUnloading(this.world),
++            hooks.configChunkUnloadBacklogThreshold(this.world),
++            hooks.configChunkUnloadMinimumPerTick(this.world),
++            hooks.configChunkUnloadMaximumPerTick(this.world),
++            this.world.getServer().getAverageTickTimeNanos(),
++            this.world.getServer().tickRateManager().nanosecondsPerTick()
+         );
+         int processedCount = 0;
+ 
+@@ -1227,7 +1232,9 @@ public final class ChunkHolderManager {
+                         // processedCount + len = toUnloadCount
+                         // we cannot drain the entire section
+                         for (int i = 0, len = toUnloadCount - processedCount; i < len; ++i) {
+-                            final NewChunkHolder holder = this.chunkHolders.get(section.chunks.removeFirstLong());
++                            final NewChunkHolder holder = this.chunkHolders.get(
++                                this.unloadQueue.removeFirstChunk(sectionRef.sectionX(), sectionRef.sectionZ(), section)
++                            );
+                             if (holder == null) {
+                                 throw new IllegalStateException();
+                             }
+@@ -1518,6 +1525,7 @@ public final class ChunkHolderManager {
+     public JsonObject getDebugJson() {
+         final JsonObject ret = new JsonObject();
+ 
++        ret.addProperty("unload_queue_pending", Long.valueOf(this.unloadQueue.pendingChunkCount()));
+         ret.add("unload_queue", this.unloadQueue.toDebugJson());
+ 
+         final JsonArray holders = new JsonArray();

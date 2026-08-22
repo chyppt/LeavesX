@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 20:58:38 +0800
+Subject: [PATCH] Short-circuit parrot follow target scans for bate60
+
+
+diff --git a/net/minecraft/world/entity/ai/goal/FollowMobGoal.java b/net/minecraft/world/entity/ai/goal/FollowMobGoal.java
+index 6730ebdc27b28ab43ca297f7314cb0c51521fa7f..3a7dd0bdb07d6094e3bee325483d9dc3fa2e5e28 100644
+--- a/net/minecraft/world/entity/ai/goal/FollowMobGoal.java
++++ b/net/minecraft/world/entity/ai/goal/FollowMobGoal.java
+@@ -14,6 +14,7 @@ import org.jspecify.annotations.Nullable;
+ public class FollowMobGoal extends Goal {
+     private final Mob mob;
+     private final Predicate<Mob> followPredicate;
++    private final Predicate<Mob> visibleFollowPredicate;
+     private @Nullable Mob followingMob;
+     private final double speedModifier;
+     private final PathNavigation navigation;
+@@ -25,6 +26,7 @@ public class FollowMobGoal extends Goal {
+     public FollowMobGoal(final Mob mob, final double speedModifier, final float stopDistance, final float areaSize) {
+         this.mob = mob;
+         this.followPredicate = input -> mob.getClass() != input.getClass();
++        this.visibleFollowPredicate = input -> this.followPredicate.test(input) && !input.isInvisible();
+         this.speedModifier = speedModifier;
+         this.navigation = mob.getNavigation();
+         this.stopDistance = stopDistance;
+@@ -37,6 +39,12 @@ public class FollowMobGoal extends Goal {
+ 
+     @Override
+     public boolean canUse() {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++            this.followingMob = this.mob.level().leavesX$getFirstEntityOfClass(
++                Mob.class, this.mob.getBoundingBox().inflate(this.areaSize), this.visibleFollowPredicate
++            );
++            return this.followingMob != null;
++        }
+         List<Mob> mobs = this.mob.level().getEntitiesOfClass(Mob.class, this.mob.getBoundingBox().inflate(this.areaSize), this.followPredicate);
+         if (!mobs.isEmpty()) {
+             for (Mob mobInList : mobs) {

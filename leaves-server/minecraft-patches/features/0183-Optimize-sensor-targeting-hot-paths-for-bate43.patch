@@ -1,0 +1,188 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 16:52:45 +0800
+Subject: [PATCH] Optimize sensor targeting hot paths for bate43
+
+
+diff --git a/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java b/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
+index 8e8f4474bec023a5f22af369ace8235b313298e9..130599dca015085e7363506dfd18408e2b651781 100644
+--- a/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
++++ b/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
+@@ -3,6 +3,7 @@ package net.minecraft.world.entity.ai.memory;
+ import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.Iterables;
+ import it.unimi.dsi.fastutil.objects.Object2BooleanOpenHashMap;
++import it.unimi.dsi.fastutil.objects.Object2ByteOpenHashMap;
+ import java.util.List;
+ import java.util.Optional;
+ import java.util.function.Predicate;
+@@ -10,6 +11,7 @@ import java.util.stream.Stream;
+ import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.util.VisibleForDebug;
+ import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.entity.ai.Brain;
+ import net.minecraft.world.entity.ai.sensing.Sensor;
+ 
+ public class NearestVisibleLivingEntities {
+@@ -24,9 +26,52 @@ public class NearestVisibleLivingEntities {
+ 
+     public NearestVisibleLivingEntities(final ServerLevel level, final LivingEntity body, final List<LivingEntity> livingEntities) {
+         this.nearbyEntities = livingEntities;
+-        Object2BooleanOpenHashMap<LivingEntity> cache = new Object2BooleanOpenHashMap<>(livingEntities.size());
+-        Predicate<LivingEntity> targetTest = targetEntity -> Sensor.isEntityTargetable(level, body, targetEntity);
+-        this.lineOfSightTest = otherEntity -> cache.computeIfAbsent(otherEntity, targetTest);
++        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++            this.lineOfSightTest = new LeavesXLineOfSightCache(level, body, body.getBrain(), livingEntities.size());
++        } else {
++            Object2BooleanOpenHashMap<LivingEntity> cache = new Object2BooleanOpenHashMap<>(livingEntities.size());
++            Predicate<LivingEntity> targetTest = targetEntity -> Sensor.isEntityTargetable(level, body, targetEntity);
++            this.lineOfSightTest = otherEntity -> cache.computeIfAbsent(otherEntity, targetTest);
++        }
++    }
++
++    /**
++     * Caches visibility as a primitive tri-state value while retaining vanilla's lazy attack-target lookup timing.
++     * A candidate is evaluated against the Brain state present on its first visibility query, exactly as upstream.
++     */
++    private static final class LeavesXLineOfSightCache implements Predicate<LivingEntity> {
++        private static final byte UNKNOWN = 0;
++        private static final byte VISIBLE = 1;
++        private static final byte HIDDEN = -1;
++
++        private final ServerLevel level;
++        private final LivingEntity body;
++        private final Brain<?> brain;
++        private final Object2ByteOpenHashMap<LivingEntity> cache;
++
++        private LeavesXLineOfSightCache(final ServerLevel level, final LivingEntity body, final Brain<?> brain, final int expectedEntities) {
++            this.level = level;
++            this.body = body;
++            this.brain = brain;
++            this.cache = new Object2ByteOpenHashMap<>(expectedEntities);
++        }
++
++        @Override
++        public boolean test(final LivingEntity target) {
++            final byte cached = this.cache.getByte(target);
++            if (cached != UNKNOWN) {
++                return cached == VISIBLE;
++            }
++
++            final boolean visible = Sensor.isEntityTargetable(
++                this.level,
++                this.body,
++                target,
++                this.brain.isMemoryValue(MemoryModuleType.ATTACK_TARGET, target)
++            );
++            this.cache.put(target, visible ? VISIBLE : HIDDEN);
++            return visible;
++        }
+     }
+ 
+     public static NearestVisibleLivingEntities empty() {
+diff --git a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
+index 0d8a670580528a8dda89f935869d88ac05f024ec..e1440c54b5c17ff342fc8e299a6441e42b93abbd 100644
+--- a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
+@@ -29,6 +29,7 @@ public class PlayerSensor extends Sensor<LivingEntity> {
+     @Override
+     protected void doTick(final ServerLevel level, final LivingEntity body) {
+         final boolean optimizeAllocations = org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations();
++        final Brain<?> brain = body.getBrain();
+         final List<Player> players;
+         if (optimizeAllocations) {
+             // LeavesX start - preserve the stream predicate order while avoiding its per-sensor pipeline allocations
+@@ -51,13 +52,13 @@ public class PlayerSensor extends Sensor<LivingEntity> {
+                 .sorted(Comparator.comparingDouble(body::distanceToSqr))
+                 .collect(Collectors.toList());
+         }
+-        Brain<?> brain = body.getBrain();
+         brain.setMemory(MemoryModuleType.NEAREST_PLAYERS, players);
++        final LivingEntity attackTarget = optimizeAllocations ? brain.getMemory(MemoryModuleType.ATTACK_TARGET).orElse(null) : null;
+         final List<Player> visiblePlayers;
+         if (optimizeAllocations) {
+             final List<Player> targetablePlayers = new ArrayList<>(players.size());
+             for (final Player player : players) {
+-                if (isEntityTargetable(level, body, player)) {
++                if (isEntityTargetable(level, body, player, java.util.Objects.equals(attackTarget, player))) {
+                     targetablePlayers.add(player);
+                 }
+             }
+@@ -70,7 +71,7 @@ public class PlayerSensor extends Sensor<LivingEntity> {
+         if (optimizeAllocations) {
+             final List<Player> attackablePlayers = new ArrayList<>(visiblePlayers.size());
+             for (final Player player : visiblePlayers) {
+-                if (isEntityAttackable(level, body, player)) {
++                if (isEntityAttackable(level, body, player, java.util.Objects.equals(attackTarget, player))) {
+                     attackablePlayers.add(player);
+                 }
+             }
+diff --git a/net/minecraft/world/entity/ai/sensing/Sensor.java b/net/minecraft/world/entity/ai/sensing/Sensor.java
+index 8386e433dd1906bb45f8f5c9bfcd1425289ef91e..be94d55875bfb4ea2e7a99d6ff57152fe8c00c45 100644
+--- a/net/minecraft/world/entity/ai/sensing/Sensor.java
++++ b/net/minecraft/world/entity/ai/sensing/Sensor.java
+@@ -26,6 +26,8 @@ public abstract class Sensor<E extends LivingEntity> {
+         .range(16.0)
+         .ignoreLineOfSight()
+         .ignoreInvisibilityTesting();
++    // LeavesX - these conditions are shared, so the cache must describe their shared current range as well.
++    private static long leavesXLastTargetingRangeBits = Long.MIN_VALUE;
+     private final int scanRate;
+     private long timeToTick;
+     private final String configKey; // Paper - configurable sensor tick rate and timings
+@@ -60,12 +62,19 @@ public abstract class Sensor<E extends LivingEntity> {
+ 
+     private void updateTargetingConditionRanges(final E body) {
+         double followRange = body.getAttributeValue(Attributes.FOLLOW_RANGE);
++        final boolean optimizeRanges = org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations();
++        final long followRangeBits = Double.doubleToRawLongBits(followRange);
++        if (optimizeRanges && followRangeBits == leavesXLastTargetingRangeBits) {
++            return;
++        }
+         TARGET_CONDITIONS.range(followRange);
+         TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING.range(followRange);
+         ATTACK_TARGET_CONDITIONS.range(followRange);
+         ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING.range(followRange);
+         ATTACK_TARGET_CONDITIONS_IGNORE_LINE_OF_SIGHT.range(followRange);
+         ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_AND_LINE_OF_SIGHT.range(followRange);
++        // Resetting while disabled guarantees that re-enabling the optimization performs a fresh write.
++        leavesXLastTargetingRangeBits = optimizeRanges ? followRangeBits : Long.MIN_VALUE;
+     }
+ 
+     protected abstract void doTick(final ServerLevel level, final E body);
+@@ -73,13 +82,33 @@ public abstract class Sensor<E extends LivingEntity> {
+     public abstract Set<MemoryModuleType<?>> requires();
+ 
+     public static boolean isEntityTargetable(final ServerLevel level, final LivingEntity body, final LivingEntity entity) {
+-        return body.getBrain().isMemoryValue(MemoryModuleType.ATTACK_TARGET, entity)
++        return isEntityTargetable(level, body, entity, body.getBrain().isMemoryValue(MemoryModuleType.ATTACK_TARGET, entity));
++    }
++
++    /** Applies the vanilla targetability test using an attack-target comparison already performed by the caller. */
++    public static boolean isEntityTargetable(
++        final ServerLevel level,
++        final LivingEntity body,
++        final LivingEntity entity,
++        final boolean isCurrentAttackTarget
++    ) {
++        return isCurrentAttackTarget
+             ? TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING.test(level, body, entity)
+             : TARGET_CONDITIONS.test(level, body, entity);
+     }
+ 
+     public static boolean isEntityAttackable(final ServerLevel level, final LivingEntity body, final LivingEntity target) {
+-        return body.getBrain().isMemoryValue(MemoryModuleType.ATTACK_TARGET, target)
++        return isEntityAttackable(level, body, target, body.getBrain().isMemoryValue(MemoryModuleType.ATTACK_TARGET, target));
++    }
++
++    /** Applies the vanilla attackability test using an attack-target comparison already performed by the caller. */
++    public static boolean isEntityAttackable(
++        final ServerLevel level,
++        final LivingEntity body,
++        final LivingEntity target,
++        final boolean isCurrentAttackTarget
++    ) {
++        return isCurrentAttackTarget
+             ? ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING.test(level, body, target)
+             : ATTACK_TARGET_CONDITIONS.test(level, body, target);
+     }

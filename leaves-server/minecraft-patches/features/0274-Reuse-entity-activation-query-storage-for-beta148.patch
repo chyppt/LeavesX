@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 21 Aug 2026 21:47:00 +0800
+Subject: [PATCH] Reuse entity activation query storage for beta148
+
+
+diff --git a/io/papermc/paper/entity/activation/ActivationRange.java b/io/papermc/paper/entity/activation/ActivationRange.java
+index cf7f5216ae61cdddf8b467716bf136f8db103987..7ad3fce142ed9311ac15179deae078e00e6baaa5 100644
+--- a/io/papermc/paper/entity/activation/ActivationRange.java
++++ b/io/papermc/paper/entity/activation/ActivationRange.java
+@@ -36,6 +36,7 @@ import net.minecraft.world.entity.vehicle.boat.AbstractBoat;
+ import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
+ import net.minecraft.world.level.Level;
+ import net.minecraft.world.phys.AABB;
++import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.spigotmc.SpigotWorldConfig;
+ import java.util.List;
+ import java.util.Set;
+@@ -146,35 +147,49 @@ public final class ActivationRange {
+         final int worldHeight = world.getHeight();
+         final boolean tickMarkers = world.paperConfig().entities.markers.tick;
+         final List<? extends Player> players = world.players();
+-        for (int playerIndex = 0, playerCount = players.size(); playerIndex < playerCount; playerIndex++) {
+-            final Player player = players.get(playerIndex);
+-            player.activatedTick = currentTick;
+-            if (config.ignoreSpectatorActivation && player.isSpectator()) {
+-                continue;
+-            }
++        // The activation query is read-only and runs once per player. Reusing its list avoids repeated ArrayList
++        // growth in dense farms while retaining a nested-query fallback for unusual plugin re-entry. The dedicated
++        // switch keeps Paper's original allocating query available for troubleshooting and compatibility checks.
++        final Level.LeavesXEntityQueryBuffer queryBuffer = LeavesXRuntime.entityActivationQueryBufferReuseOptimization()
++            ? Level.leavesX$acquireEntityQueryBuffer()
++            : null;
++        try {
++            for (int playerIndex = 0, playerCount = players.size(); playerIndex < playerCount; playerIndex++) {
++                final Player player = players.get(playerIndex);
++                player.activatedTick = currentTick;
++                if (config.ignoreSpectatorActivation && player.isSpectator()) {
++                    continue;
++                }
+ 
+-            // Entity#getBoundingBox returns the same immutable box until movement updates it. Reuse it for all ranges.
+-            final AABB playerBoundingBox = player.getBoundingBox();
+-            ActivationRange.maxBB = playerBoundingBox.inflate(maxRange, worldHeight, maxRange);
+-            ActivationType.MISC.boundingBox = playerBoundingBox.inflate(miscActivationRange, worldHeight, miscActivationRange);
+-            ActivationType.RAIDER.boundingBox = playerBoundingBox.inflate(raiderActivationRange, worldHeight, raiderActivationRange);
+-            ActivationType.ANIMAL.boundingBox = playerBoundingBox.inflate(animalActivationRange, worldHeight, animalActivationRange);
+-            ActivationType.MONSTER.boundingBox = playerBoundingBox.inflate(monsterActivationRange, worldHeight, monsterActivationRange);
+-            ActivationType.WATER.boundingBox = playerBoundingBox.inflate(waterActivationRange, worldHeight, waterActivationRange);
+-            ActivationType.FLYING_MONSTER.boundingBox = playerBoundingBox.inflate(flyingActivationRange, worldHeight, flyingActivationRange);
+-            ActivationType.VILLAGER.boundingBox = playerBoundingBox.inflate(villagerActivationRange, worldHeight, villagerActivationRange);
++                // Entity#getBoundingBox returns the same immutable box until movement updates it. Reuse it for all ranges.
++                final AABB playerBoundingBox = player.getBoundingBox();
++                ActivationRange.maxBB = playerBoundingBox.inflate(maxRange, worldHeight, maxRange);
++                ActivationType.MISC.boundingBox = playerBoundingBox.inflate(miscActivationRange, worldHeight, miscActivationRange);
++                ActivationType.RAIDER.boundingBox = playerBoundingBox.inflate(raiderActivationRange, worldHeight, raiderActivationRange);
++                ActivationType.ANIMAL.boundingBox = playerBoundingBox.inflate(animalActivationRange, worldHeight, animalActivationRange);
++                ActivationType.MONSTER.boundingBox = playerBoundingBox.inflate(monsterActivationRange, worldHeight, monsterActivationRange);
++                ActivationType.WATER.boundingBox = playerBoundingBox.inflate(waterActivationRange, worldHeight, waterActivationRange);
++                ActivationType.FLYING_MONSTER.boundingBox = playerBoundingBox.inflate(flyingActivationRange, worldHeight, flyingActivationRange);
++                ActivationType.VILLAGER.boundingBox = playerBoundingBox.inflate(villagerActivationRange, worldHeight, villagerActivationRange);
+ 
+-            final List<Entity> entities = world.getEntities((Entity) null, ActivationRange.maxBB, e -> true);
+-            if (ActivationRangeSnapshot.activateEntities(entities, tickMarkers, currentTick)) {
+-                continue;
+-            }
+-            for (int entityIndex = 0, entityCount = entities.size(); entityIndex < entityCount; entityIndex++) {
+-                final Entity entity = entities.get(entityIndex);
+-                if (!tickMarkers && entity instanceof Marker) {
++                final List<Entity> entities = queryBuffer == null
++                    ? world.getEntities((Entity)null, ActivationRange.maxBB, e -> true)
++                    : queryBuffer.query(world, null, ActivationRange.maxBB, e -> true);
++                if (ActivationRangeSnapshot.activateEntities(entities, tickMarkers, currentTick)) {
+                     continue;
+                 }
++                for (int entityIndex = 0, entityCount = entities.size(); entityIndex < entityCount; entityIndex++) {
++                    final Entity entity = entities.get(entityIndex);
++                    if (!tickMarkers && entity instanceof Marker) {
++                        continue;
++                    }
+ 
+-                ActivationRange.activateEntity(entity, currentTick);
++                    ActivationRange.activateEntity(entity, currentTick);
++                }
++            }
++        } finally {
++            if (queryBuffer != null) {
++                queryBuffer.close();
+             }
+         }
+     }

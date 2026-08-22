@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 01:33:48 +0800
+Subject: [PATCH] Preserve any-type adult sensing for bate81
+
+
+diff --git a/net/minecraft/world/entity/ai/sensing/AdultSensor.java b/net/minecraft/world/entity/ai/sensing/AdultSensor.java
+index 1131204b221abf209dec7224be653d6aa55aef5d..29584a95bcff71fbfa636a7f50782fc4b92a9cd4 100644
+--- a/net/minecraft/world/entity/ai/sensing/AdultSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/AdultSensor.java
+@@ -22,12 +22,7 @@ public class AdultSensor extends Sensor<LivingEntity> {
+                 MemoryModuleType.NEAREST_VISIBLE_LIVING_ENTITIES
+             );
+             if (visibleLivingEntities != null) {
+-                brain.setMemory(
+-                    MemoryModuleType.NEAREST_VISIBLE_ADULT,
+-                    visibleLivingEntities.leavesX$findClosestOrNull(
+-                        entity -> entity.getType() == body.getType() && !entity.isBaby()
+-                    )
+-                );
++                this.setNearestVisibleAdultDirect(body, visibleLivingEntities);
+             }
+             return;
+         }
+@@ -36,6 +31,18 @@ public class AdultSensor extends Sensor<LivingEntity> {
+             .ifPresent(livingEntities -> this.setNearestVisibleAdult(body, livingEntities));
+     }
+ 
++    protected void setNearestVisibleAdultDirect(
++        final LivingEntity body,
++        final NearestVisibleLivingEntities visibleLivingEntities
++    ) {
++        body.getBrain().setMemory(
++            MemoryModuleType.NEAREST_VISIBLE_ADULT,
++            visibleLivingEntities.leavesX$findClosestOrNull(
++                entity -> entity.getType() == body.getType() && !entity.isBaby()
++            )
++        );
++    }
++
+     protected void setNearestVisibleAdult(final LivingEntity body, final NearestVisibleLivingEntities visibleLivingEntities) {
+         Optional<LivingEntity> adult = visibleLivingEntities.findClosest(entity -> entity.getType() == body.getType() && !entity.isBaby());
+         body.getBrain().setMemory(MemoryModuleType.NEAREST_VISIBLE_ADULT, adult);
+diff --git a/net/minecraft/world/entity/ai/sensing/AdultSensorAnyType.java b/net/minecraft/world/entity/ai/sensing/AdultSensorAnyType.java
+index d7225a8ba06bdec5cf0fd4eb72a4b8da9c4f6d2c..129e492f38a004664842e9593505e7b16a1075da 100644
+--- a/net/minecraft/world/entity/ai/sensing/AdultSensorAnyType.java
++++ b/net/minecraft/world/entity/ai/sensing/AdultSensorAnyType.java
+@@ -7,6 +7,19 @@ import net.minecraft.world.entity.ai.memory.MemoryModuleType;
+ import net.minecraft.world.entity.ai.memory.NearestVisibleLivingEntities;
+ 
+ public class AdultSensorAnyType extends AdultSensor {
++    @Override
++    protected void setNearestVisibleAdultDirect(
++        final LivingEntity body,
++        final NearestVisibleLivingEntities visibleLivingEntities
++    ) {
++        body.getBrain().setMemory(
++            MemoryModuleType.NEAREST_VISIBLE_ADULT,
++            visibleLivingEntities.leavesX$findClosestOrNull(
++                entity -> entity.is(EntityTypeTags.FOLLOWABLE_FRIENDLY_MOBS) && !entity.isBaby()
++            )
++        );
++    }
++
+     @Override
+     protected void setNearestVisibleAdult(final LivingEntity body, final NearestVisibleLivingEntities visibleLivingEntities) {
+         Optional<LivingEntity> adult = visibleLivingEntities.findClosest(entity -> entity.is(EntityTypeTags.FOLLOWABLE_FRIENDLY_MOBS) && !entity.isBaby());

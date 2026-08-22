@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 20:51:13 +0800
+Subject: [PATCH] Add ridden entity follow query coverage for bate59
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FollowPlayerRiddenEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/FollowPlayerRiddenEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..366d3b5ce37230b473353631e33f1969890fc1be
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/FollowPlayerRiddenEntityQueryHotPathTest.java
+@@ -0,0 +1,61 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ai.goal.FollowPlayerRiddenEntityGoal;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies dolphin ridden-entity following stops after the first relevant vehicle. */
++@Normal
++class FollowPlayerRiddenEntityQueryHotPathTest {
++
++    @Test
++    void canUseKeepsFirstMatchAndVanillaPaths() throws IOException {
++        final MethodNode canUse = method(classNode(FollowPlayerRiddenEntityGoal.class), "canUse");
++        final List<MethodInsnNode> calls = invocations(canUse);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("hasMovedHorizontallyRecently")));
++    }
++
++    @Test
++    void startKeepsFirstMatchAndVanillaPaths() throws IOException {
++        final MethodNode start = method(classNode(FollowPlayerRiddenEntityGoal.class), "start");
++        final List<MethodInsnNode> calls = invocations(start);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getControllingPassenger")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

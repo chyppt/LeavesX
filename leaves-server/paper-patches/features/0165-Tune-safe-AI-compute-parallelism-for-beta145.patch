@@ -1,0 +1,648 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 21 Aug 2026 18:28:25 +0800
+Subject: [PATCH] Tune safe AI compute parallelism for beta145
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 33559dbfdd358ec3ca010e1cc70ca56fffb8d0a1..b86143f8d3ff5b8ce74664e3881780884256b55b 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -790,10 +790,19 @@ public final class LeavesXCommand extends Command {
+             }
+             sender.sendMessage(line(
+                 workload.workload().displayName(),
+-                workload.parallelInvocations() + " 并行 / " + workload.synchronousFallbacks() + " 同步 / "
+-                    + workload.failedInvocations() + " 失败",
++                workload.invocations() + " 调用 / " + workload.parallelInvocations() + " 并行 / "
++                    + workload.synchronousFallbacks() + " 同步 / " + workload.failedInvocations() + " 失败 / "
++                    + workload.totalItems() + " 项目（最大 " + workload.maximumItems() + "）",
+                 workload.failedInvocations() == 0L ? NamedTextColor.GRAY : NamedTextColor.RED
+             ));
++            sender.sendMessage(line(
++                "  原因",
++                "低于阈值 " + workload.belowFeatureThresholdFallbacks()
++                    + " / 分片不足 " + workload.insufficientPartitionFallbacks()
++                    + " / 线程池不可用 " + workload.unavailableParallelismFallbacks()
++                    + " / 背压接管 " + workload.backpressureCallerRuns(),
++                NamedTextColor.DARK_GRAY
++            ));
+         }
+         sender.sendMessage(line(
+             "JVM 线程",
+@@ -992,7 +1001,8 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(line(
+             "目标距离并行",
+             onOff(config.parallelAiTargetSearch()) + "，生效阈值 " + LeavesXRuntime.aiTargetSearchMinimumCandidates()
+-                + "（配置 " + config.aiTargetSearchMinimumCandidates() + "）",
++                + "（配置 " + config.aiTargetSearchMinimumCandidates() + "），每分片 "
++                + LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker(),
+             NamedTextColor.AQUA
+         ));
+         sender.sendMessage(line("区块卸载", onOff(config.adaptiveChunkUnloading()) + "，预算 " + config.chunkUnloadMinimumPerTick() + '-' + config.chunkUnloadMaximumPerTick(), NamedTextColor.AQUA));
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 59fb7b9d065b1c881ee49698ebae459a987a69d4..030eaa4c5dc0ae2d8b9f3dc159dd8912ca4e5283 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -29,6 +29,7 @@ public record LeavesXConfig(
+     int animalIdleGoalIntervalMultiplier,
+     boolean parallelAiTargetSearch,
+     int aiTargetSearchMinimumCandidates,
++    int aiTargetSearchMinimumItemsPerWorker,
+     boolean parallelMobSpawnCounting,
+     int computeWorkers,
+     int minimumItemsPerWorker,
+@@ -47,7 +48,7 @@ public record LeavesXConfig(
+     boolean villagerCompatibilityMode
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 58;
++    public static final int CURRENT_CONFIG_VERSION = 59;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -78,6 +79,11 @@ public record LeavesXConfig(
+         if (aiTargetSearchMinimumCandidates < 64) {
+             throw new IllegalArgumentException("parallelism.ai-target-search.minimum-candidates must be at least 64");
+         }
++        if (aiTargetSearchMinimumItemsPerWorker < 64 || aiTargetSearchMinimumItemsPerWorker > 32_768) {
++            throw new IllegalArgumentException(
++                "parallelism.ai-target-search.minimum-items-per-worker must be between 64 and 32768"
++            );
++        }
+         if (chunkUnloadBacklogThreshold < 100) {
+             throw new IllegalArgumentException("performance.chunk-unloading.backlog-threshold must be at least 100");
+         }
+@@ -123,7 +129,8 @@ public record LeavesXConfig(
+             false,
+             2,
+             true,
+-            256,
++            2_048,
++            1_024,
+             true,
+             0,
+             64,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 1e3ea380775af1b40187ed7c3c3bf417daa7e35a..62ce3a57c9d4049cf310721271fa8b6dffbc4ea3 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -100,10 +100,12 @@ public final class LeavesXConfigBootstrap {
+             config.mobSpawnCountingMinimumEntities()
+         );
+         LOGGER.info(
+-            "LeavesX AI target-distance workers: {}, parallel from {} candidates (configured {})",
++            "LeavesX AI target-distance workers: {}, parallel from {} candidates (configured {}), minimum {} items per lane (configured {})",
+             config.parallelAiTargetSearch() ? "enabled" : "disabled",
+             LeavesXRuntime.aiTargetSearchMinimumCandidates(),
+-            config.aiTargetSearchMinimumCandidates()
++            config.aiTargetSearchMinimumCandidates(),
++            LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker(),
++            config.aiTargetSearchMinimumItemsPerWorker()
+         );
+         LOGGER.info(
+             "LeavesX animal idle-goal throttling: {}, interval multiplier {} (disabled by default because it changes idle behavior)",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index a9417baa3138da938dca30cea6365a7c2f84a3ee..78662f0c6af0637b51b6ff2e13aa9055cf4bd0dd 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -19,6 +19,9 @@ import org.spongepowered.configurate.loader.HeaderMode;
+ public final class LeavesXConfigLoader {
+ 
+     private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXConfigLoader.class);
++    private static final int AI_PARALLEL_DEFAULT_MIGRATION_VERSION = 59;
++    private static final int LEGACY_AI_PARALLEL_DEFAULT = 256;
++    private static final int AI_PARALLEL_DEFAULT = 2_048;
+     private static final String HEADER = "LeavesX 性能配置。默认设置保持 Paper、Bukkit 和原版行为。";
+     // Schema-owned version comments may be replaced; all other leading user comments stay untouched.
+     private static final Pattern GENERATED_CONFIG_VERSION_COMMENT = Pattern.compile(
+@@ -52,9 +55,13 @@ public final class LeavesXConfigLoader {
+                 .path(normalized)
+                 .build()
+                 .load();
+-            final LeavesXConfig config = fromNode(node, normalized);
+-            boolean changed = false;
+-            if (node.node("config-version").getInt(LeavesXConfig.CURRENT_CONFIG_VERSION) < LeavesXConfig.CURRENT_CONFIG_VERSION) {
++            LeavesXConfig config = fromNode(node, normalized);
++            final int sourceVersion = node.node("config-version").getInt(LeavesXConfig.CURRENT_CONFIG_VERSION);
++            boolean changed = migrateLegacyAiParallelDefault(node, sourceVersion);
++            if (changed) {
++                config = fromNode(node, normalized);
++            }
++            if (sourceVersion < LeavesXConfig.CURRENT_CONFIG_VERSION) {
+                 node.node("config-version").raw(LeavesXConfig.CURRENT_CONFIG_VERSION);
+                 LeavesXConfigWriter.refreshKnownComments(node);
+                 changed = true;
+@@ -172,7 +179,12 @@ public final class LeavesXConfigLoader {
+                 readInt(
+                     node.node("parallelism", "ai-target-search", "minimum-candidates"),
+                     "parallelism.ai-target-search.minimum-candidates",
+-                    256
++                    AI_PARALLEL_DEFAULT
++                ),
++                readInt(
++                    node.node("parallelism", "ai-target-search", "minimum-items-per-worker"),
++                    "parallelism.ai-target-search.minimum-items-per-worker",
++                    1_024
+                 ),
+                 readBoolean(
+                     node.node("parallelism", "mob-spawning", "enabled"),
+@@ -367,6 +379,26 @@ public final class LeavesXConfigLoader {
+         return (int) longValue;
+     }
+ 
++    /** Upgrades only the former generated default; all operator-selected thresholds remain untouched. */
++    private static boolean migrateLegacyAiParallelDefault(
++        final CommentedConfigurationNode node,
++        final int sourceVersion
++    ) {
++        if (sourceVersion >= AI_PARALLEL_DEFAULT_MIGRATION_VERSION) {
++            return false;
++        }
++        final CommentedConfigurationNode threshold = node.node(
++            "parallelism", "ai-target-search", "minimum-candidates"
++        );
++        final Object raw = threshold.rawScalar();
++        if (!(raw instanceof Byte || raw instanceof Short || raw instanceof Integer || raw instanceof Long)
++            || ((Number) raw).longValue() != LEGACY_AI_PARALLEL_DEFAULT) {
++            return false;
++        }
++        threshold.raw(AI_PARALLEL_DEFAULT);
++        return true;
++    }
++
+     private static boolean readBoolean(final ConfigurationNode node, final String path, final boolean defaultValue) {
+         if (node.virtual()) {
+             return defaultValue;
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 153805568f2f144d1e2e49156536e4c809675acf..5923060ea7817fc0546dc03e5da5e01a3b99bb14 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -201,6 +201,12 @@ public final class LeavesXConfigWriter {
+             config.aiTargetSearchMinimumCandidates(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("parallelism", "ai-target-search", "minimum-items-per-worker"),
++            "parallelism.ai-target-search.minimum-items-per-worker",
++            config.aiTargetSearchMinimumItemsPerWorker(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "item-merge-optimizations"),
+             "performance.item-merge-optimizations",
+@@ -300,7 +306,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：58。");
++        comments.put("config-version", "配置版本，请勿修改。默认：59。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -338,7 +344,8 @@ public final class LeavesXConfigWriter {
+         comments.put("parallelism.mob-spawning.enabled", "允许超大规模刷怪计数使用多线程。默认：true。");
+         comments.put("parallelism.mob-spawning.minimum-entities", "实体达到此数量才并行统计刷怪。默认：524288。");
+         comments.put("parallelism.ai-target-search.enabled", "多线程计算大量 AI 目标的距离。默认：true。");
+-        comments.put("parallelism.ai-target-search.minimum-candidates", "候选达到此数量才并行计算距离和选择目标；视线、事件和最终写入仍在主线程。默认：256。");
++        comments.put("parallelism.ai-target-search.minimum-candidates", "AI 候选达到此数量才使用多线程。默认：2048。");
++        comments.put("parallelism.ai-target-search.minimum-items-per-worker", "每个 AI 计算分片至少处理的候选数。默认：1024。");
+         for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
+             comments.put(optimization.path(), optimization.comment());
+         }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 2da8a65a2791b57144a3cc003b01a3541f089ad3..58c6be1cde1a0061b0f426bcf866f79b5654f5a2 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -13,11 +13,12 @@ public final class LeavesXRuntime {
+     /**
+      * Minimum candidate count at which a primitive AI computation can amortize worker dispatch.
+      *
+-     * <p>The previous value (262144) was appropriate only for a synthetic global batch. Sensors operate on a
+-     * per-mob snapshot, so that value effectively disabled the feature on every real server. 256 keeps the
+-     * synchronous path for ordinary small scans while allowing dense farms to use the already bounded pool.</p>
++     * <p>9950X measurements show that 128-256 candidates are several times slower when dispatched, while 2048
++     * candidates become profitable with 1024-item partitions. Keeping both floors here prevents configuration from
++     * turning ordinary per-mob scans into a scheduling regression.</p>
+      */
+-    private static final int AI_TARGET_SEARCH_PROFITABLE_FLOOR = 256;
++    private static final int AI_TARGET_SEARCH_PROFITABLE_FLOOR = 2_048;
++    private static final int AI_TARGET_SEARCH_MINIMUM_ITEMS_FLOOR = 1_024;
+     private static final int MOB_SPAWN_COUNTING_PROFITABLE_FLOOR = 524_288;
+ 
+     private static volatile LeavesXConfig configuration = LeavesXConfig.safeDefaults();
+@@ -43,6 +44,7 @@ public final class LeavesXRuntime {
+     private static int animalIdleGoalIntervalMultiplier = 2;
+     private static boolean parallelAiTargetSearch = true;
+     private static int aiTargetSearchMinimumCandidates = AI_TARGET_SEARCH_PROFITABLE_FLOOR;
++    private static int aiTargetSearchMinimumItemsPerWorker = AI_TARGET_SEARCH_MINIMUM_ITEMS_FLOOR;
+     private static boolean itemMergeOptimizations = true;
+     private static boolean blockEntityOptimizations = true;
+     private static boolean blockEntityTickerRemovalOptimization = true;
+@@ -120,6 +122,10 @@ public final class LeavesXRuntime {
+             validated.aiTargetSearchMinimumCandidates(),
+             AI_TARGET_SEARCH_PROFITABLE_FLOOR
+         );
++        aiTargetSearchMinimumItemsPerWorker = Math.max(
++            validated.aiTargetSearchMinimumItemsPerWorker(),
++            AI_TARGET_SEARCH_MINIMUM_ITEMS_FLOOR
++        );
+         itemMergeOptimizations = validated.itemMergeOptimizations();
+         blockEntityOptimizations = validated.blockEntityOptimizations();
+         blockEntityTickerRemovalOptimization = validated.blockEntityTickerRemovalOptimization();
+@@ -603,6 +609,11 @@ public final class LeavesXRuntime {
+         return aiTargetSearchMinimumCandidates;
+     }
+ 
++    /** Returns the benchmark-clamped minimum primitive items assigned to each AI computation lane. */
++    public static int aiTargetSearchMinimumItemsPerWorker() {
++        return aiTargetSearchMinimumItemsPerWorker;
++    }
++
+     /** Returns whether full item stacks may stop their neighbour scan early. */
+     public static boolean itemMergeOptimizations() {
+         return itemMergeOptimizations;
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+index ad9320b84daf5ec31234ee111057ccc78d7372f9..022f74f27e043f4e6e48c6c1f4ff6685c33e817d 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -3,6 +3,7 @@ package org.leavesx.leavesx.performance;
+ import java.util.Arrays;
+ import java.util.List;
+ import net.minecraft.world.entity.Entity;
++import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
+ 
+ /**
+@@ -94,12 +95,12 @@ public final class StableDistanceSorter {
+                 );
+             }
+ 
+-            final boolean parallelEligible = parallel && size >= parallelThreshold;
+-            final int completedPartitions = parallelEligible
++            final int completedPartitions = parallel
+                 ? LeavesXComputeExecutor.invokeRangesWithCount(
+                     LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
+                     size,
+                     parallelThreshold,
++                    LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker(),
+                     (taskIndex, start, end) -> workspace.nearestByPartition[taskIndex] = nearestInRange(
+                         workspace.keys,
+                         start,
+@@ -178,11 +179,12 @@ public final class StableDistanceSorter {
+         final int parallelThreshold
+     ) {
+         final boolean parallelEligible = parallel && size >= parallelThreshold;
+-        final int completedPartitions = parallelEligible
++        final int completedPartitions = parallel
+             ? LeavesXComputeExecutor.invokeRangesWithCount(
+                 LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
+                 size,
+                 parallelThreshold,
++                LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker(),
+                 (taskIndex, start, end) -> stableRadixRange(
+                     workspace.order,
+                     workspace.scratch,
+@@ -212,7 +214,7 @@ public final class StableDistanceSorter {
+                 final int mergeWidth = width;
+                 final int mergeStep = step;
+                 final int mergedPartitions = LeavesXComputeExecutor.invokeRangesWithCount(
+-                    LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++                    LeavesXComputeExecutor.Workload.AI_TARGET_MERGE,
+                     pairCount,
+                     2,
+                     1,
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index ada69d8c9bd92dfb7c2b819500159869c9476ad5..7260e8915f119c2c291e4e5cfa0a0eb58fe9032f 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -176,7 +176,7 @@ public final class LeavesXComputeExecutor {
+     ) {
+         final WorkloadCounters workloadCounters = WORKLOAD_COUNTERS[workload.ordinal()];
+         invocationCount.incrementAndGet();
+-        workloadCounters.invocations.incrementAndGet();
++        workloadCounters.recordInvocation(size);
+         final ThreadPoolExecutor current = executor;
+         if (current == null || workerCount <= 1) {
+             unavailableParallelismFallbackCount.incrementAndGet();
+@@ -198,7 +198,7 @@ public final class LeavesXComputeExecutor {
+         final int rangeSize = (size + taskCount - 1) / taskCount;
+         final int expectedTaskCount = (size + rangeSize - 1) / rangeSize;
+         final int callerTaskIndex = expectedTaskCount - 1;
+-        final RangeInvocation invocation = new RangeInvocation(task, callerTaskIndex);
++        final RangeInvocation invocation = new RangeInvocation(task, workloadCounters, callerTaskIndex);
+         for (int taskIndex = 0; taskIndex < callerTaskIndex; taskIndex++) {
+             final int rangeStart = taskIndex * rangeSize;
+             final int rangeEnd = Math.min(size, rangeStart + rangeSize);
+@@ -297,6 +297,7 @@ public final class LeavesXComputeExecutor {
+     public enum Workload {
+         UNSPECIFIED("其他计算"),
+         AI_TARGET_SORT("AI 目标排序"),
++        AI_TARGET_MERGE("AI 排序归并"),
+         AI_TARGET_SELECT("AI 目标选择"),
+         MOB_SPAWN_COUNTING("刷怪统计");
+ 
+@@ -339,7 +340,10 @@ public final class LeavesXComputeExecutor {
+         long belowFeatureThresholdFallbacks,
+         long insufficientPartitionFallbacks,
+         long unavailableParallelismFallbacks,
+-        long failedInvocations
++        long failedInvocations,
++        long backpressureCallerRuns,
++        long totalItems,
++        long maximumItems
+     ) {
+     }
+ 
+@@ -359,6 +363,20 @@ public final class LeavesXComputeExecutor {
+         private final AtomicLong insufficientPartitionFallbacks = new AtomicLong();
+         private final AtomicLong unavailableParallelismFallbacks = new AtomicLong();
+         private final AtomicLong failedInvocations = new AtomicLong();
++        private final AtomicLong backpressureCallerRuns = new AtomicLong();
++        private final AtomicLong totalItems = new AtomicLong();
++        private final AtomicLong maximumItems = new AtomicLong();
++
++        private void recordInvocation(final int size) {
++            this.invocations.incrementAndGet();
++            final int boundedSize = Math.max(0, size);
++            this.totalItems.addAndGet(boundedSize);
++            long currentMaximum = this.maximumItems.get();
++            while (boundedSize > currentMaximum
++                && !this.maximumItems.compareAndSet(currentMaximum, boundedSize)) {
++                currentMaximum = this.maximumItems.get();
++            }
++        }
+ 
+         private void reset() {
+             this.invocations.set(0L);
+@@ -367,6 +385,9 @@ public final class LeavesXComputeExecutor {
+             this.insufficientPartitionFallbacks.set(0L);
+             this.unavailableParallelismFallbacks.set(0L);
+             this.failedInvocations.set(0L);
++            this.backpressureCallerRuns.set(0L);
++            this.totalItems.set(0L);
++            this.maximumItems.set(0L);
+         }
+ 
+         private WorkloadMetrics snapshot(final Workload workload) {
+@@ -381,7 +402,10 @@ public final class LeavesXComputeExecutor {
+                 belowThreshold,
+                 insufficientWork,
+                 unavailable,
+-                this.failedInvocations.get()
++                this.failedInvocations.get(),
++                this.backpressureCallerRuns.get(),
++                this.totalItems.get(),
++                this.maximumItems.get()
+             );
+         }
+     }
+@@ -390,11 +414,17 @@ public final class LeavesXComputeExecutor {
+     private static final class RangeInvocation {
+ 
+         private final RangeTask task;
++        private final WorkloadCounters workloadCounters;
+         private final CountDownLatch workersDone;
+         private volatile Throwable failure;
+ 
+-        private RangeInvocation(final RangeTask task, final int workerRangeCount) {
++        private RangeInvocation(
++            final RangeTask task,
++            final WorkloadCounters workloadCounters,
++            final int workerRangeCount
++        ) {
+             this.task = task;
++            this.workloadCounters = workloadCounters;
+             this.workersDone = new CountDownLatch(workerRangeCount);
+         }
+ 
+@@ -416,6 +446,7 @@ public final class LeavesXComputeExecutor {
+         ) {
+             if (backpressure) {
+                 backpressureCallerRunCount.incrementAndGet();
++                this.workloadCounters.backpressureCallerRuns.incrementAndGet();
+             }
+             try {
+                 this.task.run(taskIndex, startInclusive, endExclusive);
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 1b12885c3f0c76a9f43fcd882da7d675690b0a99..5a22680aff67bc9b7294886c48532c024686a526 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -200,7 +200,8 @@ class LeavesXConfigLoaderTest {
+               prestart-workers: false
+               ai-target-search:
+                 enabled: false
+-                minimum-candidates: 256
++                minimum-candidates: 4096
++                minimum-items-per-worker: 2048
+               mob-spawning:
+                 enabled: false
+                 minimum-entities: 768
+@@ -224,7 +225,8 @@ class LeavesXConfigLoaderTest {
+         assertTrue(config.animalIdleGoalThrottling());
+         assertEquals(3, config.animalIdleGoalIntervalMultiplier());
+         assertFalse(config.parallelAiTargetSearch());
+-        assertEquals(256, config.aiTargetSearchMinimumCandidates());
++        assertEquals(4_096, config.aiTargetSearchMinimumCandidates());
++        assertEquals(2_048, config.aiTargetSearchMinimumItemsPerWorker());
+         assertFalse(config.itemMergeOptimizations());
+         assertFalse(config.blockEntityOptimizations());
+         assertFalse(config.blockEntityTickerRemovalOptimization());
+@@ -245,7 +247,8 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.longJumpCandidateOptimization());
+             assertFalse(LeavesXRuntime.ramPositionSelectionOptimization());
+             assertEquals(524_288, LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities());
+-            assertEquals(256, LeavesXRuntime.aiTargetSearchMinimumCandidates());
++            assertEquals(4_096, LeavesXRuntime.aiTargetSearchMinimumCandidates());
++            assertEquals(2_048, LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+@@ -655,6 +658,34 @@ class LeavesXConfigLoaderTest {
+         assertTrue(text.contains("# " + LeavesXConfigWriter.comments().get("performance.optimized-varint")));
+     }
+ 
++    @Test
++    void migratesOnlyTheOldDefaultAiParallelThreshold() throws Exception {
++        final Path path = write("""
++            config-version: 58
++            parallelism:
++              ai-target-search:
++                minimum-candidates: 256
++            """);
++
++        final LeavesXConfig migrated = LeavesXConfigLoader.load(path);
++        final org.spongepowered.configurate.ConfigurationNode migratedNode =
++            io.papermc.paper.configuration.ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
++
++        assertEquals(2_048, migrated.aiTargetSearchMinimumCandidates());
++        assertEquals(2_048, migratedNode.node("parallelism", "ai-target-search", "minimum-candidates").getInt());
++        assertEquals(LeavesXConfig.CURRENT_CONFIG_VERSION, migratedNode.node("config-version").getInt());
++
++        write("""
++            config-version: 58
++            parallelism:
++              ai-target-search:
++                minimum-candidates: 512
++            """);
++        final LeavesXConfig customized = LeavesXConfigLoader.load(path);
++
++        assertEquals(512, customized.aiTargetSearchMinimumCandidates(), "operator-defined thresholds must be retained");
++    }
++
+     @Test
+     void rejectsInvalidChunkUnloadBudgetRange() throws IOException {
+         final Path path = write("""
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index a06b9931b84eaa9373075981f5e9def3b8cdc7e3..fbe13a8516c509c3bacfc40fb58178b6bcf44423 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -137,7 +137,8 @@ class VillagerCompatibilityContextTest {
+             false,
+             2,
+             true,
+-            256,
++            2_048,
++            1_024,
+             true,
+             0,
+             64,
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+index e57f6147e73a9ed9867877e6195499d51d734d2f..f223800b561ac9364f4d060dd58443001b91503c 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -2,6 +2,7 @@ package org.leavesx.leavesx.performance;
+ 
+ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertSame;
+ import static org.junit.jupiter.api.Assertions.assertThrows;
+ import static org.mockito.Mockito.mock;
+@@ -12,6 +13,7 @@ import java.util.Arrays;
+ import java.util.Comparator;
+ import java.util.List;
+ import java.util.Random;
++import java.util.concurrent.atomic.AtomicBoolean;
+ import net.minecraft.world.entity.Entity;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.AfterEach;
+@@ -145,6 +147,63 @@ class StableDistanceSorterTest {
+         assertEquals(256, StableDistanceSorter.findNearestIndex(entities, origin, true, 64));
+     }
+ 
++    @Test
++    void usesAiSpecificPartitionSizeForProfitableCandidateSets() {
++        final int size = 2_048;
++        final double[] x = new double[size];
++        final double[] y = new double[size];
++        final double[] z = new double[size];
++        for (int index = 0; index < size; index++) {
++            x[index] = index & 63;
++            y[index] = (index >>> 6) & 15;
++            z[index] = index >>> 10;
++        }
++
++        // The global shard size is deliberately too large. AI distance work has its own benchmark-derived shard
++        // size, otherwise unrelated tuning of spawn-counting work can silently disable AI parallelism.
++        LeavesXComputeExecutor.configure(4, 4_096);
++        StableDistanceSorter.sort(x, y, z, 0.0D, 0.0D, 0.0D, true, 2_048);
++
++        final LeavesXComputeExecutor.WorkloadMetrics ai = workload(LeavesXComputeExecutor.Workload.AI_TARGET_SORT);
++        assertEquals(1L, ai.invocations());
++        assertEquals(1L, ai.parallelInvocations());
++        assertEquals(2_048L, ai.totalItems());
++        assertEquals(2_048L, ai.maximumItems());
++    }
++
++    @Test
++    void keepsSmallCandidateSetsSynchronousAndReportsTheReason() {
++        LeavesXComputeExecutor.configure(4, 64);
++        StableDistanceSorter.sort(new double[128], new double[128], new double[128], 0.0D, 0.0D, 0.0D, true, 2_048);
++        StableDistanceSorter.sort(new double[256], new double[256], new double[256], 0.0D, 0.0D, 0.0D, true, 2_048);
++
++        final LeavesXComputeExecutor.WorkloadMetrics ai = workload(LeavesXComputeExecutor.Workload.AI_TARGET_SORT);
++        assertEquals(2L, ai.invocations());
++        assertEquals(0L, ai.parallelInvocations());
++        assertEquals(2L, ai.belowFeatureThresholdFallbacks());
++        assertEquals(384L, ai.totalItems());
++        assertEquals(256L, ai.maximumItems());
++    }
++
++    @Test
++    void readsEveryEntityCoordinateOnlyOnTheCallingThread() {
++        final Thread callingThread = Thread.currentThread();
++        final AtomicBoolean offThreadGetter = new AtomicBoolean();
++        final List<Entity> entities = new ArrayList<>(2_048);
++        for (int index = 0; index < 2_048; index++) {
++            entities.add(threadConfinedEntityAt(index & 63, (index >>> 6) & 15, index >>> 10, callingThread, offThreadGetter));
++        }
++        final Entity origin = threadConfinedEntityAt(0.0D, 0.0D, 0.0D, callingThread, offThreadGetter);
++
++        LeavesXComputeExecutor.configure(4, 4_096);
++        StableDistanceSorter.sortEntitiesByDistance(entities, origin, true, 2_048);
++        assertEquals(0, StableDistanceSorter.findNearestIndex(entities, origin, true, 2_048));
++
++        assertFalse(offThreadGetter.get(), "workers must receive primitive snapshots, never live entities");
++        assertEquals(1L, workload(LeavesXComputeExecutor.Workload.AI_TARGET_SORT).parallelInvocations());
++        assertEquals(1L, workload(LeavesXComputeExecutor.Workload.AI_TARGET_SELECT).parallelInvocations());
++    }
++
+     private static Entity entityAt(final double x, final double y, final double z) {
+         final Entity entity = mock(Entity.class);
+         when(entity.getX()).thenReturn(x);
+@@ -153,6 +212,38 @@ class StableDistanceSorterTest {
+         return entity;
+     }
+ 
++    private static Entity threadConfinedEntityAt(
++        final double x,
++        final double y,
++        final double z,
++        final Thread callingThread,
++        final AtomicBoolean offThreadGetter
++    ) {
++        final Entity entity = mock(Entity.class);
++        when(entity.getX()).thenAnswer(ignored -> coordinateOnCallingThread(x, callingThread, offThreadGetter));
++        when(entity.getY()).thenAnswer(ignored -> coordinateOnCallingThread(y, callingThread, offThreadGetter));
++        when(entity.getZ()).thenAnswer(ignored -> coordinateOnCallingThread(z, callingThread, offThreadGetter));
++        return entity;
++    }
++
++    private static double coordinateOnCallingThread(
++        final double coordinate,
++        final Thread callingThread,
++        final AtomicBoolean offThreadGetter
++    ) {
++        if (Thread.currentThread() != callingThread) {
++            offThreadGetter.set(true);
++        }
++        return coordinate;
++    }
++
++    private static LeavesXComputeExecutor.WorkloadMetrics workload(final LeavesXComputeExecutor.Workload workload) {
++        return LeavesXComputeExecutor.metrics().workloads().stream()
++            .filter(metrics -> metrics.workload() == workload)
++            .findFirst()
++            .orElseThrow();
++    }
++
+     private static int[] referenceOrder(
+         final double[] x,
+         final double[] y,
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index ebac8491c2c607d4215b185c25bf2deeae0c48aa..b7a310c2d5508173511db66800c01b82e4e20c9b 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -199,6 +199,11 @@ class LeavesXComputeExecutorTest {
+             assertEquals(1, counts.get(index), "backpressure must not duplicate index " + index);
+         }
+         assertTrue(LeavesXComputeExecutor.metrics().backpressureCallerRuns() > 0L);
++        final LeavesXComputeExecutor.WorkloadMetrics unspecified = LeavesXComputeExecutor.metrics().workloads().stream()
++            .filter(workload -> workload.workload() == LeavesXComputeExecutor.Workload.UNSPECIFIED)
++            .findFirst()
++            .orElseThrow();
++        assertTrue(unspecified.backpressureCallerRuns() > 0L);
+         release.countDown();
+     }
+ 

@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 19 Aug 2026 12:32:00 +0800
+Subject: [PATCH] Make villager diagnostics memory lookups optional
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXVillagerDiagnostics.java b/src/main/java/org/leavesx/leavesx/command/LeavesXVillagerDiagnostics.java
+index 5e4b4c9ec305138d37e85e47c71258c8cfd12932..63110182a107e4269575740f2cf1c2758e222558 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXVillagerDiagnostics.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXVillagerDiagnostics.java
+@@ -100,9 +100,11 @@ final class LeavesXVillagerDiagnostics {
+ 
+         try {
+             final Brain<Villager> brain = villager.getBrain();
+-            final LivingEntity hostile = brain.getMemory(MemoryModuleType.NEAREST_HOSTILE).orElse(null);
+-            final Long lastSlept = brain.getMemory(MemoryModuleType.LAST_SLEPT).orElse(null);
+-            final Long lastWorked = brain.getMemory(MemoryModuleType.LAST_WORKED_AT_POI).orElse(null);
++            // These memories are optional across entity brain layouts. Use the null-safe registered lookup so
++            // diagnostics never turn a missing optional slot into an entity-tick-style exception.
++            final LivingEntity hostile = brain.leavesX$getMemoryValueIfRegistered(MemoryModuleType.NEAREST_HOSTILE);
++            final Long lastSlept = brain.leavesX$getMemoryValueIfRegistered(MemoryModuleType.LAST_SLEPT);
++            final Long lastWorked = brain.leavesX$getMemoryValueIfRegistered(MemoryModuleType.LAST_WORKED_AT_POI);
+             return new VillagerSnapshot(
+                 world.getKey().toString(),
+                 villager.getBlockX(),
+diff --git a/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java b/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java
+index 8c84c31fe77e241cabb45ce049d3cc8b238629fc..e9bdee03d6bb99d8aaa5008a3d139f71f4c0e869 100644
+--- a/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java
++++ b/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java
+@@ -62,6 +62,11 @@ class LeavesXCommandSafetyTest {
+             .map(MethodInsnNode.class::cast)
+             .anyMatch(call -> call.owner.equals("net/minecraft/world/entity/ai/Brain")
+                 && (call.name.startsWith("setMemory") || call.name.equals("eraseMemory"))));
++        assertFalse(Arrays.stream(snapshot.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals("net/minecraft/world/entity/ai/Brain")
++                && call.name.equals("getMemory")));
+     }
+ 
+     private static ClassNode classNode(final String className) throws IOException {

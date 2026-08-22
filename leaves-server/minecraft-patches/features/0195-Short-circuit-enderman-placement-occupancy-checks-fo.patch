@@ -1,0 +1,95 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 20:22:34 +0800
+Subject: [PATCH] Short-circuit enderman placement occupancy checks for bate56
+
+
+diff --git a/net/minecraft/world/entity/monster/EnderMan.java b/net/minecraft/world/entity/monster/EnderMan.java
+index 0cbc93e016cbc184b56fa2762b886e0fe772c1df..52b5cebb9cb65a4c1f1ff769c01daa5061df6e05 100644
+--- a/net/minecraft/world/entity/monster/EnderMan.java
++++ b/net/minecraft/world/entity/monster/EnderMan.java
+@@ -22,6 +22,7 @@ import net.minecraft.util.TimeUtil;
+ import net.minecraft.util.valueproviders.UniformInt;
+ import net.minecraft.world.damagesource.DamageSource;
+ import net.minecraft.world.entity.Entity;
++import net.minecraft.world.entity.EntitySelector;
+ import net.minecraft.world.entity.EntityReference;
+ import net.minecraft.world.entity.EntityType;
+ import net.minecraft.world.entity.LivingEntity;
+@@ -527,7 +528,11 @@ public class EnderMan extends Monster implements NeutralMob {
+                 && !belowState.is(Blocks.BEDROCK)
+                 && belowState.isCollisionShapeFullBlock(level, below)
+                 && carried.canSurvive(level, pos)
+-                && level.getEntities(this.enderman, AABB.unitCubeFromLowerCorner(Vec3.atLowerCornerOf(pos))).isEmpty();
++                && (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()
++                    ? !level.leavesX$hasEntity(
++                        this.enderman, AABB.unitCubeFromLowerCorner(Vec3.atLowerCornerOf(pos)), EntitySelector.NO_SPECTATORS
++                    )
++                    : level.getEntities(this.enderman, AABB.unitCubeFromLowerCorner(Vec3.atLowerCornerOf(pos))).isEmpty());
+         }
+     }
+ 
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index aeb0fea05b751d1c95537e9786ba945f17c9603e..414a11bda2f619de30c9c4e2addd5bee9dca1c9d 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -209,6 +209,8 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+     // LeavesX - one reusable result slot per calling thread; nested calls allocate a private fallback.
+     private static final ThreadLocal<LeavesXFirstEntityQueryBuffer> LEAVESX_FIRST_ENTITY_QUERY_BUFFER =
+         ThreadLocal.withInitial(LeavesXFirstEntityQueryBuffer::new);
++    private static final ThreadLocal<LeavesXFirstEntityQueryBuffer> LEAVESX_FIRST_UNTYPED_ENTITY_QUERY_BUFFER =
++        ThreadLocal.withInitial(LeavesXFirstEntityQueryBuffer::new);
+     private static final ThreadLocal<LeavesXFirstEntityQueryBuffer> LEAVESX_UNIQUE_ENTITY_QUERY_BUFFER =
+         ThreadLocal.withInitial(LeavesXFirstEntityQueryBuffer::new);
+     private static final ThreadLocal<LeavesXEntityQueryBuffer> LEAVESX_ENTITY_QUERY_BUFFER =
+@@ -333,6 +335,50 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         return this.leavesX$getFirstEntityOfClass(entityClass, boundingBox, EntitySelector.NO_SPECTATORS);
+     }
+ 
++    /** Returns the first matching entity while preserving Paper's supplemental entity lookup. */
++    public final @Nullable Entity leavesX$getFirstEntity(
++        final @Nullable Entity except,
++        final AABB boundingBox,
++        final Predicate<? super Entity> predicate
++    ) {
++        Profiler.get().incrementCounter("getEntities");
++        final LeavesXFirstEntityQueryBuffer buffer = LEAVESX_FIRST_UNTYPED_ENTITY_QUERY_BUFFER.get();
++        if (!buffer.acquire()) {
++            final List<Entity> nestedResults = new java.util.ArrayList<>(1);
++            this.leavesX$collectFirstEntity(except, boundingBox, predicate, nestedResults);
++            return nestedResults.isEmpty() ? null : nestedResults.getFirst();
++        }
++
++        try {
++            this.leavesX$collectFirstEntity(except, boundingBox, predicate, buffer.results);
++            return buffer.results.isEmpty() ? null : buffer.results.getFirst();
++        } finally {
++            buffer.release();
++        }
++    }
++
++    private void leavesX$collectFirstEntity(
++        final @Nullable Entity except,
++        final AABB boundingBox,
++        final Predicate<? super Entity> predicate,
++        final List<Entity> results
++    ) {
++        ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemLevel)this)
++            .moonrise$getEntityLookup().getEntities(except, boundingBox, results, predicate, 1);
++        if (results.isEmpty()) {
++            ca.spottedleaf.moonrise.common.PlatformHooks.get()
++                .addToGetEntities((Level)(Object)this, except, boundingBox, predicate, results);
++        }
++    }
++
++    public final boolean leavesX$hasEntity(
++        final @Nullable Entity except,
++        final AABB boundingBox,
++        final Predicate<? super Entity> predicate
++    ) {
++        return this.leavesX$getFirstEntity(except, boundingBox, predicate) != null;
++    }
++
+     public final <T extends Entity> boolean leavesX$hasEntityOfClass(
+         final Class<T> entityClass,
+         final AABB boundingBox

@@ -1,0 +1,184 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 15 Aug 2026 13:14:21 +0800
+Subject: [PATCH] Optimize synchronous natural spawn accounting for bate17
+
+
+diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
+index 9f2260b0d1a49bbd865498d8305cc74727fac3cc..667677de2ec3e071565d6f4266ee09eca5a236bb 100644
+--- a/net/minecraft/server/level/ServerChunkCache.java
++++ b/net/minecraft/server/level/ServerChunkCache.java
+@@ -593,8 +593,10 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+             // Paper end - chunk tick iteration optimisation
+             profiler.popPush("tickSpawningChunks");
+ 
+-            for (LevelChunk chunk : spawningChunks) {
+-                this.tickSpawningChunk(chunk, timeDiff, spawningCategories, spawnCookie);
++            // LeavesX - ObjectArrayList supports stable indexed traversal without allocating an iterator each tick.
++            final int spawningChunkCount = spawningChunks.size();
++            for (int chunkIndex = 0; chunkIndex < spawningChunkCount; chunkIndex++) {
++                this.tickSpawningChunk(spawningChunks.get(chunkIndex), timeDiff, spawningCategories, spawnCookie);
+             }
+         } finally {
+             spawningChunks.clear();
+diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+index c28779891799e20fb456721b8c269010d52325b5..146fcfcb269d21042ab74fbc48b51bb4a1944f5a 100644
+--- a/net/minecraft/world/level/MobSpawnCountAccumulator.java
++++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+@@ -5,7 +5,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+ import java.util.Objects;
+ import net.minecraft.world.entity.MobCategory;
+ 
+-/** Aggregates immutable chunk/category snapshots without exposing live world state to worker threads. */
++/** Aggregates chunk/category counts for both direct tick-thread and immutable worker-snapshot paths. */
+ final class MobSpawnCountAccumulator {
+ 
+     private static final int CATEGORY_COUNT = MobCategory.values().length;
+@@ -13,6 +13,14 @@ final class MobSpawnCountAccumulator {
+     private MobSpawnCountAccumulator() {
+     }
+ 
++    static void add(
++        final Long2ObjectOpenHashMap<int[]> counts,
++        final long chunkKey,
++        final MobCategory category
++    ) {
++        add(counts, chunkKey, category.ordinal());
++    }
++
+     static Long2ObjectOpenHashMap<int[]> count(
+         final Inputs inputs,
+         final boolean parallel,
+@@ -41,17 +49,20 @@ final class MobSpawnCountAccumulator {
+     private static Long2ObjectOpenHashMap<int[]> countRange(final Inputs inputs, final int start, final int end) {
+         final Long2ObjectOpenHashMap<int[]> counts = new Long2ObjectOpenHashMap<>();
+         for (int index = start; index < end; index++) {
+-            final long chunkKey = inputs.chunkKeys()[index];
+-            int[] categoryCounts = counts.get(chunkKey);
+-            if (categoryCounts == null) {
+-                categoryCounts = new int[CATEGORY_COUNT];
+-                counts.put(chunkKey, categoryCounts);
+-            }
+-            categoryCounts[Byte.toUnsignedInt(inputs.categoryOrdinals()[index])]++;
++            add(counts, inputs.chunkKeys()[index], Byte.toUnsignedInt(inputs.categoryOrdinals()[index]));
+         }
+         return counts;
+     }
+ 
++    private static void add(final Long2ObjectOpenHashMap<int[]> counts, final long chunkKey, final int categoryOrdinal) {
++        int[] categoryCounts = counts.get(chunkKey);
++        if (categoryCounts == null) {
++            categoryCounts = new int[CATEGORY_COUNT];
++            counts.put(chunkKey, categoryCounts);
++        }
++        categoryCounts[categoryOrdinal]++;
++    }
++
+     private static Long2ObjectOpenHashMap<int[]> merge(
+         final Long2ObjectOpenHashMap<int[]>[] partialCounts,
+         final int completedPartitions
+diff --git a/net/minecraft/world/level/MobSpawnCounting.java b/net/minecraft/world/level/MobSpawnCounting.java
+index 4804185d0ad37b12865e5858ea08b46c94f13bb5..7d7641bb6d0152e63cfc3ff97fdfeb55d3e78456 100644
+--- a/net/minecraft/world/level/MobSpawnCounting.java
++++ b/net/minecraft/world/level/MobSpawnCounting.java
+@@ -16,10 +16,11 @@ import net.minecraft.world.level.chunk.ChunkAccess;
+ import org.jspecify.annotations.Nullable;
+ 
+ /**
+- * Builds natural-spawn counters from a tick-thread snapshot.
++ * Builds natural-spawn counters while keeping all live world access on the tick thread.
+  *
+- * <p>Workers receive only packed chunk positions and category ordinals. Entity, chunk, player, plugin, and world
+- * objects remain on the tick thread, and every result is applied before spawning continues in the same tick.</p>
++ * <p>The normal synchronous path aggregates directly. When parallel counting is profitable, workers receive only
++ * packed chunk positions and category ordinals. Entity, chunk, player, plugin, and world objects remain on the tick
++ * thread, and every result is applied before spawning continues in the same tick.</p>
+  */
+ final class MobSpawnCounting {
+ 
+@@ -36,6 +37,10 @@ final class MobSpawnCounting {
+         final boolean parallelCounting,
+         final int expectedEntityCount
+     ) {
++        if (!parallelCounting) {
++            return countSequentially(entities, chunkGetter, localMobCapCalculator, countMobs);
++        }
++
+         final Snapshot snapshot = freezeInputs(
+             entities,
+             chunkGetter,
+@@ -56,6 +61,74 @@ final class MobSpawnCounting {
+         return new Result(snapshot.mobCounts(), snapshot.spawnPotential());
+     }
+ 
++    /**
++     * Aggregates directly on the tick thread when worker execution is not profitable.
++     *
++     * <p>This retains the batched write-back semantics while avoiding worker snapshot arrays and their second scan.</p>
++     */
++    private static Result countSequentially(
++        final Iterable<Entity> entities,
++        final NaturalSpawner.ChunkGetter chunkGetter,
++        final @Nullable LocalMobCapCalculator localMobCapCalculator,
++        final boolean countMobs
++    ) {
++        final PotentialCalculator spawnPotential = new PotentialCalculator();
++        final Object2IntOpenHashMap<MobCategory> mobCounts = new Object2IntOpenHashMap<>();
++        final @Nullable Long2ObjectOpenHashMap<int[]> localCounts = localMobCapCalculator == null
++            ? null
++            : new Long2ObjectOpenHashMap<>();
++        final @Nullable Long2ObjectOpenHashMap<int[]> playerCounts = countMobs ? new Long2ObjectOpenHashMap<>() : null;
++        final ChunkMap[] playerMobCounter = countMobs ? new ChunkMap[1] : null;
++
++        for (final Entity entity : entities) {
++            final boolean isMob = entity instanceof Mob;
++            if (isMob && (((Mob)entity).isPersistenceRequired() || ((Mob)entity).requiresCustomPersistence())) {
++                continue;
++            }
++            final EntityType<?> entityType = entity.getType();
++            final MobCategory category = entityType.getCategory();
++            if (category == MobCategory.MISC) {
++                continue;
++            }
++            if (!org.leavesmc.leaves.LeavesConfig.modify.mcTechnicalMode
++                && !entity.level().paperConfig().entities.spawning.countAllMobsForSpawning
++                && entity.spawnReason != org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.NATURAL
++                && entity.spawnReason != org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CHUNK_GEN) {
++                continue;
++            }
++
++            final BlockPos position = entity.blockPosition();
++            final long playerChunkKey = entity.chunkPosition().pack();
++            chunkGetter.query(ChunkPos.pack(position), chunk -> {
++                if (playerMobCounter != null && playerMobCounter[0] == null) {
++                    playerMobCounter[0] = chunk.level.getChunkSource().chunkMap;
++                }
++
++                final MobSpawnSettings.MobSpawnCost cost = getRoughBiome(position, chunk)
++                    .getMobSettings()
++                    .getMobSpawnCost(entityType);
++                if (cost != null) {
++                    spawnPotential.addCharge(position, cost.charge());
++                }
++                mobCounts.addTo(category, 1);
++                if (isMob && localCounts != null) {
++                    MobSpawnCountAccumulator.add(localCounts, chunk.getPos().pack(), category);
++                }
++                if (playerCounts != null) {
++                    MobSpawnCountAccumulator.add(playerCounts, playerChunkKey, category);
++                }
++            });
++        }
++
++        if (localCounts != null) {
++            applyLocalCounts(localCounts, localMobCapCalculator);
++        }
++        if (playerCounts != null) {
++            applyPlayerCounts(playerCounts, playerMobCounter[0]);
++        }
++        return new Result(mobCounts, spawnPotential);
++    }
++
+     private static Snapshot freezeInputs(
+         final Iterable<Entity> entities,
+         final NaturalSpawner.ChunkGetter chunkGetter,

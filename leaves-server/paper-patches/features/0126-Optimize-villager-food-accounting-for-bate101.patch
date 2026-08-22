@@ -1,0 +1,239 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 06:49:42 +0800
+Subject: [PATCH] Optimize villager food accounting for bate101
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 6e96c75dfdc0813d17dccc9d28aa7831c0f36e7a..4cb8cf89f5e22098b6acc71a64709682b5c55d47 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 31;
++    public static final int CURRENT_CONFIG_VERSION = 32;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index ba1dd9253e87192a161ff7a0018f058bde4556be..19ddd7a303d8e81b3ab17165c5138be38898123a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：31。");
++        comments.put("config-version", "配置版本，请勿修改。默认：32。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index af6a998e2226fea2c11785b9c91c390a603f9022..85de056381e800184286885d670dd4457714a9dc 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -207,6 +207,10 @@ enum LeavesXOptimization {
+     SERVER_FIRE_STATE(
+         "performance.entity-update.server-fire-state",
+         "无燃烧 Tick 时跳过实体防火检查，关闭后使用原版顺序。默认：true。"
++    ),
++    VILLAGER_FOOD_INVENTORY(
++        "performance.ai.villager-food-inventory",
++        "村民食物计数只扫描一次库存，关闭后按食物类型重复统计。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index d6adcb09dff0f8d5d5512d24bd07d4c3f46fa300..326890e02def64c7cbeff220ec5555c5c06fea04 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -310,6 +310,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && enabled(LeavesXOptimization.VILLAGER_BABIES_SENSOR);
+     }
+ 
++    /** Returns whether villager food points may be accumulated in one inventory pass. */
++    public static boolean villagerFoodInventoryOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.VILLAGER_FOOD_INVENTORY);
++    }
++
+     /** Returns whether player sensing may use direct loops and one attack-target snapshot. */
+     public static boolean playerSensorOptimization() {
+         return aiOptimizations && enabled(LeavesXOptimization.PLAYER_SENSOR);
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 61b6f0dc62cbd21d87a9c6a96bb89f99046e9587..63572356ff7c38cec98d0c0185ef409e008eba28 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -293,6 +293,7 @@ class LeavesXConfigLoaderTest {
+                 player-sensor: false
+                 sensing-cache: false
+                 villager-babies-sensor: false
++                villager-food-inventory: false
+               block-entity:
+                 hopper-entity-queries: false
+               chunk:
+@@ -325,6 +326,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PLAYER_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.SENSING_CACHE));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.VILLAGER_BABIES_SENSOR));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.VILLAGER_FOOD_INVENTORY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_ENTITY_QUERIES));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.EXPIRING_TICKET_BUFFERS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_LOAD_COMPOUND_LISTS));
+@@ -341,7 +343,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 23,
++            LeavesXConfig.fineGrainedOptimizationCount() - 24,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -355,6 +357,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.playerSensorOptimization());
+             assertFalse(LeavesXRuntime.sensingCacheOptimization());
+             assertFalse(LeavesXRuntime.villagerBabiesSensorOptimization());
++            assertFalse(LeavesXRuntime.villagerFoodInventoryOptimization());
+             assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
+             assertFalse(LeavesXRuntime.expiringTicketBuffersOptimization());
+             assertFalse(LeavesXRuntime.chunkLoadCompoundListsOptimization());
+@@ -389,6 +392,7 @@ class LeavesXConfigLoaderTest {
+               mob-spawning-optimizations: false
+               ai:
+                 breeze-attack-sensor: true
++                villager-food-inventory: true
+               block-entity:
+                 hopper-entity-queries: true
+               entity-queries:
+@@ -403,6 +407,7 @@ class LeavesXConfigLoaderTest {
+         try {
+             LeavesXRuntime.publish(config);
+             assertFalse(LeavesXRuntime.breezeAttackSensorOptimization());
++            assertFalse(LeavesXRuntime.villagerFoodInventoryOptimization());
+             assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.catSpawningHomeCountOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/VillagerFoodInventoryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/VillagerFoodInventoryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..bfeb597a95e23b894dc69f150a31cb516ed46a65
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/VillagerFoodInventoryHotPathTest.java
+@@ -0,0 +1,117 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.CALLS_REAL_METHODS;
++import static org.mockito.Mockito.doReturn;
++import static org.mockito.Mockito.mock;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.Arrays;
++import net.minecraft.world.SimpleContainer;
++import net.minecraft.world.entity.npc.villager.Villager;
++import net.minecraft.world.item.ItemStack;
++import net.minecraft.world.item.Items;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.AbstractInsnNode;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldInsnNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies single-pass villager food accounting preserves Paper's exact result. */
++@Normal
++class VillagerFoodInventoryHotPathTest {
++
++    @TempDir
++    Path tempDir;
++
++    @Test
++    void optimizedAndFallbackPathsReturnTheSameFoodPoints() throws Exception {
++        final SimpleContainer inventory = new SimpleContainer(8);
++        inventory.setItem(0, new ItemStack(Items.BREAD, 3));
++        inventory.setItem(1, new ItemStack(Items.POTATO, 5));
++        inventory.setItem(2, new ItemStack(Items.CARROT, 7));
++        inventory.setItem(3, new ItemStack(Items.BEETROOT, 11));
++        inventory.setItem(4, new ItemStack(Items.WHEAT, 64));
++        final Villager villager = mock(Villager.class, CALLS_REAL_METHODS);
++        doReturn(inventory).when(villager).getInventory();
++
++        try {
++            publish(this.configuration(true, "optimized.yml"));
++            final int optimized = foodPoints(villager);
++            publish(this.configuration(false, "fallback.yml"));
++            final int fallback = foodPoints(villager);
++
++            assertEquals(35, optimized);
++            assertEquals(fallback, optimized);
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void optimizedPathUsesItsOwnSwitchAndScansTheBackingListDirectly() throws IOException {
++        final MethodNode method = method(classNode(), "countFoodPointsInInventory");
++        final AbstractInsnNode[] instructions = method.instructions.toArray();
++
++        assertTrue(Arrays.stream(instructions)
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime")
++                && call.name.equals("villagerFoodInventoryOptimization")));
++        assertTrue(Arrays.stream(instructions)
++            .filter(FieldInsnNode.class::isInstance)
++            .map(FieldInsnNode.class::cast)
++            .anyMatch(field -> field.getOpcode() == Opcodes.GETFIELD
++                && field.owner.equals("net/minecraft/world/SimpleContainer")
++                && field.name.equals("items")));
++    }
++
++    private static int foodPoints(final Villager villager) throws ReflectiveOperationException {
++        final Method method = Villager.class.getDeclaredMethod("countFoodPointsInInventory");
++        method.setAccessible(true);
++        return (int)method.invoke(villager);
++    }
++
++    private static void publish(final LeavesXConfig config) throws ReflectiveOperationException {
++        final Method method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++        method.setAccessible(true);
++        method.invoke(null, config);
++    }
++
++    private LeavesXConfig configuration(final boolean optimized, final String fileName) throws IOException {
++        final Path path = this.tempDir.resolve(fileName);
++        Files.writeString(path, """
++            config-version: 1
++            performance:
++              ai-optimizations: true
++              ai:
++                villager-food-inventory: %s
++            """.formatted(optimized));
++        return LeavesXConfigLoader.load(path);
++    }
++
++    private static ClassNode classNode() throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(Villager.class.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + name));
++    }
++}

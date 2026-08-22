@@ -1,0 +1,326 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 14:18:41 +0800
+Subject: [PATCH] Add AI traversal and POI capacity verification
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 45383ed3bdac221db9c5b905b1730209be5d3e1f..74be0a4d00318d1ae5baf310c67efbcdc72fa445 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -190,7 +190,7 @@ public final class LeavesXConfigWriter {
+         comments.put("parallelism.mob-spawning.enabled", "使用多个线程计算自然刷怪数量。刷怪位置、随机数、事件和实体创建仍在主线程执行；遇到问题可设为 false。默认：true。");
+         comments.put("parallelism.mob-spawning.workers", "自然刷怪统计使用的线程数。0 表示自动选择，普通服务器建议保持 0。默认：0。");
+         comments.put("parallelism.mob-spawning.minimum-entities", "实体少于这个数量时直接在主线程计算，避免线程切换反而变慢。建议保持默认。默认：512。");
+-        comments.put("performance.ai-optimizations", "优化生物 AI 的热路径，减少重复计算。不会异步访问实体或世界，也不改变目标选择顺序；遇到问题可设为 false。默认：true。");
++        comments.put("performance.ai-optimizations", "减少生物每刻检查 AI 行为、村民查找床和工作站时的临时对象。不会异步访问实体或世界，也不改变检查顺序和结果；遇到问题可设为 false。默认：true。");
+         comments.put("parallelism.ai-target-search.enabled", "用工作线程计算大量目标候选的坐标距离。实体条件、视线检查和最终目标仍在主线程按原顺序确认；遇到问题可设为 false。默认：true。");
+         comments.put("parallelism.ai-target-search.minimum-candidates", "候选生物达到这个数量才使用多线程，数量较少时直接在主线程计算更快。建议保持默认。默认：128。");
+         comments.put("performance.chunk-unloading.enabled", "区块卸载队列积压且服务器有足够 tick 余量时，逐步增加处理量；服务器变慢时会自动降压。仍会检查区块票据、保存状态和插件事件，不会强制卸载正在使用的区块。遇到问题可设为 false。默认：true。");
+diff --git a/src/main/java/org/leavesx/leavesx/performance/PoiSearchCapacity.java b/src/main/java/org/leavesx/leavesx/performance/PoiSearchCapacity.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..981f60b97db16b5f59f1102a12ee6cbe6b333867
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/performance/PoiSearchCapacity.java
+@@ -0,0 +1,70 @@
++package org.leavesx.leavesx.performance;
++
++/**
++ * Sizes the visited-section set used by the deterministic POI breadth-first search.
++ *
++ * <p>The search inserts every section inside its inclusive bounds and the six face-adjacent shells. Pre-sizing for
++ * that upper bound avoids repeated hash-table growth during villager bed and job-site searches. The result is capped
++ * so unusually large or heavily distance-pruned searches do not reserve excessive memory up front.</p>
++ */
++public final class PoiSearchCapacity {
++
++    private static final int MINIMUM_EXPECTED_SECTIONS = 16;
++    private static final int MAXIMUM_EXPECTED_SECTIONS = 2_048;
++
++    private PoiSearchCapacity() {
++    }
++
++    /**
++     * Returns a bounded expected element count for an inclusive three-dimensional section box.
++     *
++     * @param lowerX inclusive lower section x
++     * @param lowerY inclusive lower section y
++     * @param lowerZ inclusive lower section z
++     * @param upperX inclusive upper section x
++     * @param upperY inclusive upper section y
++     * @param upperZ inclusive upper section z
++     * @return expected visited-section count suitable for a hash-set constructor
++     */
++    public static int forBounds(
++        final int lowerX,
++        final int lowerY,
++        final int lowerZ,
++        final int upperX,
++        final int upperY,
++        final int upperZ
++    ) {
++        final long width = inclusiveLength(lowerX, upperX);
++        final long height = inclusiveLength(lowerY, upperY);
++        final long depth = inclusiveLength(lowerZ, upperZ);
++        if (width == 0L || height == 0L || depth == 0L) {
++            return MINIMUM_EXPECTED_SECTIONS;
++        }
++
++        final long volume = saturatedMultiply(saturatedMultiply(width, height), depth);
++        final long faceShell = saturatedMultiply(
++            2L,
++            saturatedAdd(
++                saturatedAdd(saturatedMultiply(width, height), saturatedMultiply(width, depth)),
++                saturatedMultiply(height, depth)
++            )
++        );
++        final long expected = saturatedAdd(volume, faceShell);
++        return (int)Math.clamp(expected, MINIMUM_EXPECTED_SECTIONS, MAXIMUM_EXPECTED_SECTIONS);
++    }
++
++    private static long inclusiveLength(final int lower, final int upper) {
++        return upper < lower ? 0L : (long)upper - (long)lower + 1L;
++    }
++
++    private static long saturatedMultiply(final long left, final long right) {
++        if (left == 0L || right == 0L) {
++            return 0L;
++        }
++        return left > Long.MAX_VALUE / right ? Long.MAX_VALUE : left * right;
++    }
++
++    private static long saturatedAdd(final long left, final long right) {
++        return left > Long.MAX_VALUE - right ? Long.MAX_VALUE : left + right;
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BrainBehaviorTraversalTest.java b/src/test/java/org/leavesx/leavesx/performance/BrainBehaviorTraversalTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..8749ef10deda2c7f81495ee24583c9a4a84f9112
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/BrainBehaviorTraversalTest.java
+@@ -0,0 +1,164 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import com.google.common.collect.ImmutableList;
++import com.mojang.datafixers.util.Pair;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Set;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.entity.ai.Brain;
++import net.minecraft.world.entity.ai.behavior.Behavior;
++import net.minecraft.world.entity.ai.behavior.BehaviorControl;
++import net.minecraft.world.entity.ai.memory.MemoryModuleType;
++import net.minecraft.world.entity.schedule.Activity;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class BrainBehaviorTraversalTest {
++
++    @Test
++    void preservesPriorityAndInsertionOrderAcrossStartAndTick() {
++        final List<String> calls = new ArrayList<>();
++        final RecordingBehavior firstPriority = RecordingBehavior.stopped("priority-0", calls);
++        final RecordingBehavior firstAtSecondPriority = RecordingBehavior.stopped("priority-1-a", calls);
++        final RecordingBehavior secondAtSecondPriority = RecordingBehavior.stopped("priority-1-b", calls);
++        final Brain<LivingEntity> brain = new Brain<>();
++        brain.addActivity(
++            Activity.CORE,
++            ImmutableList.of(
++                Pair.of(1, firstAtSecondPriority),
++                Pair.of(0, firstPriority),
++                Pair.of(1, secondAtSecondPriority)
++            ),
++            Set.of(),
++            Set.of()
++        );
++
++        brain.tick(levelAt(100L), mock(LivingEntity.class));
++
++        assertEquals(
++            List.of(
++                "start:priority-0",
++                "start:priority-1-a",
++                "start:priority-1-b",
++                "tick:priority-0",
++                "tick:priority-1-a",
++                "tick:priority-1-b"
++            ),
++            calls
++        );
++    }
++
++    @Test
++    void snapshotsAllRunningBehaviorsBeforeAnyBehaviorTicks() {
++        final List<String> calls = new ArrayList<>();
++        final RecordingBehavior second = RecordingBehavior.running("second", calls);
++        final RecordingBehavior first = RecordingBehavior.running("first", calls);
++        first.afterTick(() -> second.setStatus(Behavior.Status.STOPPED));
++        final Brain<LivingEntity> brain = new Brain<>();
++        brain.addActivity(
++            Activity.CORE,
++            ImmutableList.of(Pair.of(0, first), Pair.of(0, second)),
++            Set.of(),
++            Set.of()
++        );
++
++        brain.tick(levelAt(200L), mock(LivingEntity.class));
++
++        assertEquals(List.of("tick:first", "tick:second"), calls);
++    }
++
++    @Test
++    void rebuildsTheTraversalCacheAfterBehaviorsAreAdded() {
++        final List<String> calls = new ArrayList<>();
++        final RecordingBehavior first = RecordingBehavior.stopped("first", calls);
++        final Brain<LivingEntity> brain = new Brain<>();
++        brain.addActivity(Activity.CORE, ImmutableList.of(Pair.of(0, first)), Set.of(), Set.of());
++        final ServerLevel level = levelAt(300L);
++        final LivingEntity body = mock(LivingEntity.class);
++        brain.tick(level, body);
++
++        calls.clear();
++        first.setStatus(Behavior.Status.STOPPED);
++        final RecordingBehavior second = RecordingBehavior.stopped("second", calls);
++        brain.addActivity(Activity.CORE, ImmutableList.of(Pair.of(0, second)), Set.of(), Set.of());
++        brain.tick(level, body);
++
++        assertEquals(List.of("start:first", "start:second", "tick:first", "tick:second"), calls);
++    }
++
++    private static ServerLevel levelAt(final long gameTime) {
++        final ServerLevel level = mock(ServerLevel.class);
++        when(level.getGameTime()).thenReturn(gameTime);
++        return level;
++    }
++
++    private static final class RecordingBehavior implements BehaviorControl<LivingEntity> {
++
++        private final String name;
++        private final List<String> calls;
++        private Behavior.Status status;
++        private Runnable afterTick = () -> { };
++
++        private RecordingBehavior(final String name, final List<String> calls, final Behavior.Status status) {
++            this.name = name;
++            this.calls = calls;
++            this.status = status;
++        }
++
++        static RecordingBehavior stopped(final String name, final List<String> calls) {
++            return new RecordingBehavior(name, calls, Behavior.Status.STOPPED);
++        }
++
++        static RecordingBehavior running(final String name, final List<String> calls) {
++            return new RecordingBehavior(name, calls, Behavior.Status.RUNNING);
++        }
++
++        void afterTick(final Runnable callback) {
++            this.afterTick = callback;
++        }
++
++        void setStatus(final Behavior.Status status) {
++            this.status = status;
++        }
++
++        @Override
++        public Behavior.Status getStatus() {
++            return this.status;
++        }
++
++        @Override
++        public Set<MemoryModuleType<?>> getRequiredMemories() {
++            return Set.of();
++        }
++
++        @Override
++        public boolean tryStart(final ServerLevel level, final LivingEntity body, final long timestamp) {
++            this.calls.add("start:" + this.name);
++            this.status = Behavior.Status.RUNNING;
++            return true;
++        }
++
++        @Override
++        public void tickOrStop(final ServerLevel level, final LivingEntity body, final long timestamp) {
++            this.calls.add("tick:" + this.name);
++            this.afterTick.run();
++        }
++
++        @Override
++        public void doStop(final ServerLevel level, final LivingEntity body, final long timestamp) {
++            this.status = Behavior.Status.STOPPED;
++        }
++
++        @Override
++        public String debugString() {
++            return this.name;
++        }
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PoiSearchCapacityTest.java b/src/test/java/org/leavesx/leavesx/performance/PoiSearchCapacityTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..59c8d78d75db62fb9322ce11e41d06bfec9bbef5
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/PoiSearchCapacityTest.java
+@@ -0,0 +1,55 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class PoiSearchCapacityTest {
++
++    @Test
++    void includesTheVisitedBoxAndItsSixFaceShells() {
++        // 7 * 24 * 7 in-bounds sections plus two faces for each pair of dimensions.
++        assertEquals(1_946, PoiSearchCapacity.forBounds(-3, -4, -3, 3, 19, 3));
++    }
++
++    @Test
++    void avoidsRehashingAStandardVillagerPoiSearch() {
++        final int expectedSections = PoiSearchCapacity.forBounds(-3, -4, -3, 3, 19, 3);
++        final RehashCountingSet visited = new RehashCountingSet(expectedSections);
++
++        for (int section = 0; section < expectedSections; section++) {
++            visited.add(section);
++        }
++
++        assertEquals(0, visited.rehashCount);
++    }
++
++    @Test
++    void keepsSmallAndInvalidBoundsAtTheFastutilMinimum() {
++        assertEquals(16, PoiSearchCapacity.forBounds(0, 0, 0, 0, 0, 0));
++        assertEquals(16, PoiSearchCapacity.forBounds(1, 0, 0, 0, 0, 0));
++    }
++
++    @Test
++    void capsLargeSearchesToAvoidExcessiveUpfrontAllocation() {
++        assertEquals(2_048, PoiSearchCapacity.forBounds(Integer.MIN_VALUE, -64, -64, Integer.MAX_VALUE, 64, 64));
++    }
++
++    private static final class RehashCountingSet extends LongOpenHashSet {
++
++        private int rehashCount;
++
++        private RehashCountingSet(final int expected) {
++            super(expected);
++        }
++
++        @Override
++        protected void rehash(final int newSize) {
++            this.rehashCount++;
++            super.rehash(newSize);
++        }
++    }
++}

@@ -1,0 +1,151 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 03:25:46 +0800
+Subject: [PATCH] Add villager indoor walking regression coverage for bate29
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/VillagerIndoorWalkTest.java b/src/test/java/org/leavesx/leavesx/performance/VillagerIndoorWalkTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9d2f01a8f824bc82f95d2f079e016db48bb869a8
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/VillagerIndoorWalkTest.java
+@@ -0,0 +1,139 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.inOrder;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.ArrayList;
++import java.util.List;
++import net.minecraft.core.BlockPos;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.entity.PathfinderMob;
++import net.minecraft.world.entity.ai.behavior.InsideBrownianWalk;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.mockito.InOrder;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.ClassVisitor;
++import org.objectweb.asm.MethodVisitor;
++import org.objectweb.asm.Opcodes;
++
++/** Verifies the shuffled indoor-walk scan used by villagers without a home. */
++@Normal
++class VillagerIndoorWalkTest {
++
++    @Test
++    void directScanPreservesFilterOrderAndStopsAtFirstValidPosition() throws ReflectiveOperationException {
++        final ServerLevel level = mock();
++        final PathfinderMob body = mock();
++        final BlockPos exposed = new BlockPos(1, 64, 0);
++        final BlockPos unsupported = new BlockPos(2, 64, 0);
++        final BlockPos selected = new BlockPos(3, 64, 0);
++        final BlockPos afterSelection = new BlockPos(4, 64, 0);
++        when(level.canSeeSky(exposed)).thenReturn(true);
++        when(level.canSeeSky(unsupported)).thenReturn(false);
++        when(level.loadedAndEntityCanStandOn(unsupported, body)).thenReturn(false);
++        when(level.canSeeSky(selected)).thenReturn(false);
++        when(level.loadedAndEntityCanStandOn(selected, body)).thenReturn(true);
++        when(level.noCollision(body)).thenReturn(true);
++        final Method method = InsideBrownianWalk.class.getDeclaredMethod(
++            "findInsideWalkTargetDirect",
++            ServerLevel.class,
++            PathfinderMob.class,
++            List.class
++        );
++        method.setAccessible(true);
++
++        final BlockPos result = (BlockPos)method.invoke(
++            null,
++            level,
++            body,
++            List.of(exposed, unsupported, selected, afterSelection)
++        );
++
++        assertSame(selected, result);
++        final InOrder order = inOrder(level);
++        order.verify(level).canSeeSky(exposed);
++        order.verify(level).canSeeSky(unsupported);
++        order.verify(level).loadedAndEntityCanStandOn(unsupported, body);
++        order.verify(level).canSeeSky(selected);
++        order.verify(level).loadedAndEntityCanStandOn(selected, body);
++        order.verify(level).noCollision(body);
++        verify(level, never()).canSeeSky(afterSelection);
++    }
++
++    @Test
++    void directIndoorWalkHelperDoesNotCreateStreams() throws IOException {
++        final List<Invocation> calls = invocations("findInsideWalkTargetDirect");
++        assertFalse(calls.stream().anyMatch(call -> call.name().equals("stream")));
++        assertFalse(calls.stream().anyMatch(call -> call.owner().startsWith("java/util/stream/")));
++    }
++
++    @Test
++    void indoorWalkBehaviorDelegatesToDirectHelper() throws IOException {
++        assertTrue(allInvocations().stream().anyMatch(call -> call.name().equals("findInsideWalkTargetDirect")));
++    }
++
++    private static List<Invocation> invocations(final String methodName) throws IOException {
++        final List<Invocation> calls = new ArrayList<>();
++        final boolean[] found = {false};
++        readMethods((name, call) -> {
++            if (name.equals(methodName)) {
++                found[0] = true;
++                calls.add(call);
++            }
++        });
++        assertTrue(found[0], () -> "Missing InsideBrownianWalk#" + methodName);
++        return calls;
++    }
++
++    private static List<Invocation> allInvocations() throws IOException {
++        final List<Invocation> calls = new ArrayList<>();
++        readMethods((name, call) -> calls.add(call));
++        return calls;
++    }
++
++    private static void readMethods(final MethodInvocationConsumer consumer) throws IOException {
++        new ClassReader(InsideBrownianWalk.class.getName()).accept(
++            new ClassVisitor(Opcodes.ASM9) {
++                @Override
++                public MethodVisitor visitMethod(
++                    final int access,
++                    final String name,
++                    final String descriptor,
++                    final String signature,
++                    final String[] exceptions
++                ) {
++                    return new MethodVisitor(Opcodes.ASM9) {
++                        @Override
++                        public void visitMethodInsn(
++                            final int opcode,
++                            final String owner,
++                            final String calledName,
++                            final String calledDescriptor,
++                            final boolean isInterface
++                        ) {
++                            consumer.accept(name, new Invocation(owner, calledName));
++                        }
++                    };
++                }
++            },
++            ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES
++        );
++    }
++
++    @FunctionalInterface
++    private interface MethodInvocationConsumer {
++        void accept(String methodName, Invocation invocation);
++    }
++
++    private record Invocation(String owner, String name) {
++    }
++}

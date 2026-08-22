@@ -1,0 +1,259 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 07:24:21 +0800
+Subject: [PATCH] Optimize entity lookup visibility for bate103
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 8e1080951c2727e279f361e5de06b26001911276..c501b34f5af6f1eafff641c7e1434180c1eeaff2 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 33;
++    public static final int CURRENT_CONFIG_VERSION = 34;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index dac1e9419eb400a21b26c67b9f88f07b044bd5cb..7062ec15e0548645250e88ce22ca4df8db84a7a4 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：33。");
++        comments.put("config-version", "配置版本，请勿修改。默认：34。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index ee6ecd4a4bc4b6e050b9f9f71bd4aafce7895802..c2186d7599ccbffe2023074e23f0c0ec9414ac58 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -215,6 +215,10 @@ enum LeavesXOptimization {
+     VILLAGER_FARMLAND_SEED_SCAN(
+         "performance.ai.villager-farmland-seed-scan",
+         "农民种植时只扫描一次种子库存，关闭后先额外检查种子。默认：true。"
++    ),
++    ENTITY_LOOKUP_VISIBILITY(
++        "performance.entity-queries.entity-lookup-visibility",
++        "直接判断实体所在区块的可见状态，关闭后使用 Paper 映射。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 1a047146e534b35c676824b9d820d3cde682def5..51af9de83291f0e90f0092d993d9a371feb13f0a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -195,6 +195,11 @@ public final class LeavesXRuntime {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.FIRST_MATCH_ENTITY_QUERIES);
+     }
+ 
++    /** Returns whether Moonrise entity lookup may map chunk visibility without the generic enum helper. */
++    public static boolean entityLookupVisibilityOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.ENTITY_LOOKUP_VISIBILITY);
++    }
++
+     /** Returns whether pressure plates may reuse one entity scan per signal update. */
+     public static boolean pressurePlateEntityScansOptimization() {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS);
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 7ddf4c8f657d6a4192382bc323d03119f754f1a6..c98e1236d2d4ec779070d95a6bc298969a3b8685 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -314,6 +314,7 @@ class LeavesXConfigLoaderTest {
+               network:
+                 chunk-packet-assembly: false
+               entity-queries:
++                entity-lookup-visibility: false
+                 experience-orb-merge-parameters: false
+                 pressure-plate-scans: false
+                 fox-item-search: false
+@@ -341,11 +342,12 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.STATIONARY_ENTITY_SPEED));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_TICK_DIAGNOSTIC_STATE));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_PACKET_ASSEMBLY));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_LOOKUP_VISIBILITY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.EXPERIENCE_ORB_MERGE_PARAMETERS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 25,
++            LeavesXConfig.fineGrainedOptimizationCount() - 26,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -373,6 +375,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.stationaryEntitySpeedOptimization());
+             assertFalse(LeavesXRuntime.entityTickDiagnosticStateOptimization());
+             assertFalse(LeavesXRuntime.chunkPacketAssemblyOptimization());
++            assertFalse(LeavesXRuntime.entityLookupVisibilityOptimization());
+             assertFalse(LeavesXRuntime.experienceOrbMergeParametersOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.foxItemSearchOptimization());
+@@ -401,6 +404,7 @@ class LeavesXConfigLoaderTest {
+                 hopper-entity-queries: true
+               entity-queries:
+                 cat-spawning-density: true
++                entity-lookup-visibility: true
+                 experience-orb-merge-parameters: true
+                 pressure-plate-scans: true
+               entity-update:
+@@ -417,6 +421,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.catSpawningHomeCountOptimization());
+             assertFalse(LeavesXRuntime.catSpawningEntityDensityOptimization());
++            assertFalse(LeavesXRuntime.entityLookupVisibilityOptimization());
+             assertFalse(LeavesXRuntime.experienceOrbMergeParametersOptimization());
+             assertFalse(LeavesXRuntime.serverFireStateOptimization());
+             assertFalse(LeavesXRuntime.stationaryEntitySpeedOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityLookupVisibilityHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityLookupVisibilityHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..aa67cc271c5ffd940e84da8757c797eb279f455b
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityLookupVisibilityHotPathTest.java
+@@ -0,0 +1,140 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.CALLS_REAL_METHODS;
++import static org.mockito.Mockito.doReturn;
++import static org.mockito.Mockito.mock;
++
++import ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity;
++import ca.spottedleaf.moonrise.patches.chunk_system.level.entity.EntityLookup;
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.Arrays;
++import net.minecraft.server.level.FullChunkStatus;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.level.entity.Visibility;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies direct Moonrise visibility mapping preserves every Paper entity state. */
++@Normal
++class EntityLookupVisibilityHotPathTest {
++
++    @TempDir
++    Path tempDir;
++
++    @Test
++    void optimizedAndFallbackMappingsMatchForEveryChunkStatus() throws Exception {
++        final Entity entity = mock(Entity.class, CALLS_REAL_METHODS);
++        final ChunkSystemEntity chunkSystemEntity = (ChunkSystemEntity)entity;
++
++        try {
++            for (final FullChunkStatus status : new FullChunkStatus[] {
++                null,
++                FullChunkStatus.INACCESSIBLE,
++                FullChunkStatus.FULL,
++                FullChunkStatus.BLOCK_TICKING,
++                FullChunkStatus.ENTITY_TICKING
++            }) {
++                chunkSystemEntity.moonrise$setChunkStatus(status);
++                publish(this.configuration(true, true, "optimized-" + String.valueOf(status) + ".yml"));
++                final Visibility optimized = EntityLookup.getEntityStatus(entity);
++                publish(this.configuration(true, false, "fallback-" + String.valueOf(status) + ".yml"));
++                final Visibility fallback = EntityLookup.getEntityStatus(entity);
++
++                assertEquals(fallback, optimized, String.valueOf(status));
++            }
++
++            doReturn(true).when(entity).isAlwaysTicking();
++            chunkSystemEntity.moonrise$setChunkStatus(null);
++            publish(this.configuration(true, true, "always-optimized.yml"));
++            assertEquals(Visibility.TICKING, EntityLookup.getEntityStatus(entity));
++            publish(this.configuration(true, false, "always-fallback.yml"));
++            assertEquals(Visibility.TICKING, EntityLookup.getEntityStatus(entity));
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void dedicatedSwitchRespectsTheEntityQueryMasterSwitch() throws Exception {
++        try {
++            publish(this.configuration(true, true, "enabled.yml"));
++            assertTrue(LeavesXRuntime.entityLookupVisibilityOptimization());
++
++            publish(this.configuration(true, false, "disabled.yml"));
++            assertFalse(LeavesXRuntime.entityLookupVisibilityOptimization());
++
++            publish(this.configuration(false, true, "master-disabled.yml"));
++            assertFalse(LeavesXRuntime.entityLookupVisibilityOptimization());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void optimizedMaskKeepsAlwaysTickingAndPaperFallbackChecks() throws IOException {
++        final MethodNode method = method(classNode(), "maskNonAccessible");
++        final MethodInsnNode[] calls = Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++
++        assertEquals(1L, countCall(calls, "org/leavesx/leavesx/config/LeavesXRuntime", "entityLookupVisibilityOptimization"));
++        assertEquals(1L, countCall(calls, "net/minecraft/world/entity/Entity", "isAlwaysTicking"));
++        assertEquals(1L, countCall(calls, "ca/spottedleaf/moonrise/patches/chunk_system/entity/ChunkSystemEntity", "moonrise$getChunkStatus"));
++        assertEquals(1L, countCall(calls, "ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup", "getEntityStatus"));
++    }
++
++    private LeavesXConfig configuration(
++        final boolean entityQueryOptimizations,
++        final boolean visibilityOptimization,
++        final String fileName
++    ) throws IOException {
++        final Path path = this.tempDir.resolve(fileName);
++        Files.writeString(path, """
++            config-version: 1
++            performance:
++              entity-query-optimizations: %s
++              entity-queries:
++                entity-lookup-visibility: %s
++            """.formatted(entityQueryOptimizations, visibilityOptimization));
++        return LeavesXConfigLoader.load(path);
++    }
++
++    private static void publish(final LeavesXConfig config) throws ReflectiveOperationException {
++        final Method method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++        method.setAccessible(true);
++        method.invoke(null, config);
++    }
++
++    private static ClassNode classNode() throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(EntityLookup.class.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + name));
++    }
++
++    private static long countCall(final MethodInsnNode[] calls, final String owner, final String name) {
++        return Arrays.stream(calls).filter(call -> call.owner.equals(owner) && call.name.equals(name)).count();
++    }
++}

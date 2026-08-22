@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 22:53:02 +0800
+Subject: [PATCH] Short-circuit pufferfish danger scans for bate70
+
+
+diff --git a/net/minecraft/world/entity/animal/fish/Pufferfish.java b/net/minecraft/world/entity/animal/fish/Pufferfish.java
+index 9981452e2dda0675defd279c4460031dae5fd25f..e255ddeff1898c46a4a207fa37d0724531d78de4 100644
+--- a/net/minecraft/world/entity/animal/fish/Pufferfish.java
++++ b/net/minecraft/world/entity/animal/fish/Pufferfish.java
+@@ -26,6 +26,7 @@ import net.minecraft.world.item.Items;
+ import net.minecraft.world.level.Level;
+ import net.minecraft.world.level.storage.ValueInput;
+ import net.minecraft.world.level.storage.ValueOutput;
++import net.minecraft.world.phys.AABB;
+ 
+ public class Pufferfish extends AbstractFish {
+     private static final EntityDataAccessor<Integer> PUFF_STATE = SynchedEntityData.defineId(Pufferfish.class, EntityDataSerializers.INT);
+@@ -209,16 +210,25 @@ public class Pufferfish extends AbstractFish {
+ 
+         @Override
+         public boolean canUse() {
+-            List<LivingEntity> entities = this.fish
+-                .level()
+-                .getEntitiesOfClass(
+-                    LivingEntity.class,
+-                    this.fish.getBoundingBox().inflate(2.0),
+-                    target -> Pufferfish.TARGETING_CONDITIONS.test(getServerLevel(this.fish), this.fish, target)
+-                );
++            final Level level = this.fish.level();
++            final AABB dangerArea = this.fish.getBoundingBox().inflate(2.0);
++            if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++                // The goal only needs existence; retaining later matches cannot change whether the fish puffs.
++                return level.leavesX$getFirstEntityOfClass(
++                    LivingEntity.class, dangerArea, this::isDangerousTarget
++                ) != null;
++            }
++
++            final List<LivingEntity> entities = level.getEntitiesOfClass(
++                LivingEntity.class, dangerArea, this::isDangerousTarget
++            );
+             return !entities.isEmpty();
+         }
+ 
++        private boolean isDangerousTarget(final LivingEntity target) {
++            return Pufferfish.TARGETING_CONDITIONS.test(getServerLevel(this.fish), this.fish, target);
++        }
++
+         @Override
+         public void start() {
+             this.fish.inflateCounter = 1;

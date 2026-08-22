@@ -1,0 +1,602 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 19 Aug 2026 12:06:22 +0800
+Subject: [PATCH] Add villager compatibility diagnostics for beta130
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 54570605824104acb56aa0be99546772d7db9898..fbca63975acbb26c0ee20764fc7ff1299db36925 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -66,13 +66,13 @@ public final class LeavesXCommand extends Command {
+ 
+     private static final List<String> SUBCOMMANDS = List.of(
+         "status", "all", "gui", "worlds", "entities", "hotspots", "blockentities", "blockhotspots",
+-        "activity", "tickets", "plugins", "memory", "network", "threads", "system", "stalls", "config", "help"
++        "villagers", "activity", "tickets", "plugins", "memory", "network", "threads", "system", "stalls", "config", "help"
+     );
+ 
+     public LeavesXCommand(final String name) {
+         super(name);
+         this.description = "查看 LeavesX 服务器性能状态";
+-        this.usageMessage = "/leavesx <status|all|gui|worlds|activity|entities|hotspots|blockentities|blockhotspots|tickets|plugins|memory|network|threads|system|stalls|config>";
++        this.usageMessage = "/leavesx <status|all|gui|worlds|activity|entities|hotspots|villagers|blockentities|blockhotspots|tickets|plugins|memory|network|threads|system|stalls|config>";
+         this.setPermission("leavesx.command.performance");
+     }
+ 
+@@ -91,6 +91,7 @@ public final class LeavesXCommand extends Command {
+             case "activity" -> sendActivity(sender);
+             case "entities" -> sendEntities(sender, args);
+             case "hotspots" -> sendHotspots(sender, args);
++            case "villagers" -> sendVillagers(sender, args);
+             case "blockentities" -> sendBlockEntities(sender, args);
+             case "blockhotspots" -> sendBlockHotspots(sender, args);
+             case "tickets" -> sendTickets(sender, args);
+@@ -126,6 +127,7 @@ public final class LeavesXCommand extends Command {
+         if ((args[0].equalsIgnoreCase("all")
+             || args[0].equalsIgnoreCase("entities")
+             || args[0].equalsIgnoreCase("hotspots")
++            || args[0].equalsIgnoreCase("villagers")
+             || args[0].equalsIgnoreCase("blockentities")
+             || args[0].equalsIgnoreCase("blockhotspots")
+             || args[0].equalsIgnoreCase("tickets")) && args.length == 2) {
+@@ -197,7 +199,7 @@ public final class LeavesXCommand extends Command {
+                 + oneDecimal(gc.maximumPauseNanos() / 1_000_000.0D) + " ms",
+             gc.maximumPauseNanos() >= TimeUnit.MILLISECONDS.toNanos(50L) ? NamedTextColor.RED : NamedTextColor.GRAY
+         ));
+-        sender.sendMessage(Component.text("排查：/leavesx all | activity | tickets | plugins | stalls | memory", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("排查：/leavesx all | villagers | activity | tickets | plugins | stalls | memory", NamedTextColor.GRAY));
+     }
+ 
+     private static void sendWorlds(final CommandSender sender) {
+@@ -331,6 +333,18 @@ public final class LeavesXCommand extends Command {
+         }
+     }
+ 
++    private static void sendVillagers(final CommandSender sender, final String[] args) {
++        final Selection selection = selectWorldsAndLimit(sender, args);
++        if (selection == null) {
++            return;
++        }
++        sendVillagers(sender, selection);
++    }
++
++    private static void sendVillagers(final CommandSender sender, final Selection selection) {
++        LeavesXVillagerDiagnostics.send(sender, selection.worlds(), selection.limit());
++    }
++
+     private static EntitySnapshot collectEntities(final List<World> worlds) {
+         final Map<Identifier, MutableEntityCount> counts = new HashMap<>();
+         final Map<String, Integer> tickingByWorld = new HashMap<>();
+@@ -928,6 +942,7 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(line("实体状态优化", onOff(config.entityStateOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("实体查询优化", onOff(config.entityQueryOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("AI/寻路", onOff(config.aiOptimizations()) + " / " + onOff(config.pathfindingOptimizations()), NamedTextColor.AQUA));
++        sender.sendMessage(line("村民原版兼容模式", onOff(config.villagerCompatibilityMode()), config.villagerCompatibilityMode() ? NamedTextColor.GREEN : NamedTextColor.YELLOW));
+         sender.sendMessage(line("村民职业查找", onOff(LeavesXRuntime.villagerProfessionAssignmentOptimization()), NamedTextColor.AQUA));
+         sender.sendMessage(line("长跳候选构建", onOff(LeavesXRuntime.longJumpCandidateOptimization()), NamedTextColor.AQUA));
+         sender.sendMessage(line("山羊冲撞选点", onOff(LeavesXRuntime.ramPositionSelectionOptimization()), NamedTextColor.AQUA));
+@@ -961,6 +976,7 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(Component.text("/leavesx activity - 最近区块加载、卸载和票据变化", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx entities [世界] [数量] - 实体类型排行", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx hotspots [世界] [数量] - 实体密集区块坐标", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx villagers [世界] [数量] - 村民恐吓和刷铁条件", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx blockentities [世界] [数量] - 方块实体类型排行", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx blockhotspots [世界] [数量] - 方块实体密集区块", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx tickets [世界] [数量] - 区块票据和插件强制区块", NamedTextColor.GRAY));
+@@ -1232,7 +1248,15 @@ public final class LeavesXCommand extends Command {
+                 sendEntities(this.sender, this.selection, this.entities);
+                 sendHotspots(this.sender, this.selection, this.entities);
+                 this.entities = null;
+-            }, this::sendBlockEntityDetails);
++            }, this::sendVillagerDetails);
++        }
++
++        private void sendVillagerDetails() {
++            this.runStage(
++                "村民诊断",
++                () -> LeavesXVillagerDiagnostics.send(this.sender, this.selection.worlds(), this.selection.limit()),
++                this::sendBlockEntityDetails
++            );
+         }
+ 
+         private void sendBlockEntityDetails() {
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXVillagerDiagnostics.java b/src/main/java/org/leavesx/leavesx/command/LeavesXVillagerDiagnostics.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..5e4b4c9ec305138d37e85e47c71258c8cfd12932
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXVillagerDiagnostics.java
+@@ -0,0 +1,372 @@
++package org.leavesx.leavesx.command;
++
++import io.papermc.paper.FeatureHooks;
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.List;
++import java.util.Locale;
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.NamedTextColor;
++import net.minecraft.core.SectionPos;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.entity.EntityType;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.entity.ai.Brain;
++import net.minecraft.world.entity.ai.memory.MemoryModuleType;
++import net.minecraft.world.entity.npc.villager.Villager;
++import net.minecraft.world.entity.schedule.Activity;
++import org.bukkit.Location;
++import org.bukkit.World;
++import org.bukkit.command.CommandSender;
++import org.bukkit.craftbukkit.CraftWorld;
++import org.bukkit.entity.Player;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++
++/** Read-only diagnostics for villager fear, activation and iron-golem spawning conditions. */
++final class LeavesXVillagerDiagnostics {
++
++    private LeavesXVillagerDiagnostics() {
++    }
++
++    static void send(final CommandSender sender, final List<World> worlds, final int limit) {
++        final List<VillagerSnapshot> villagers = collect(sender, worlds);
++        villagers.sort(Comparator.comparingDouble(VillagerSnapshot::commandDistanceSquared)
++            .thenComparing(Comparator.comparingInt(LeavesXVillagerDiagnostics::problemPriority).reversed())
++            .thenComparing(VillagerSnapshot::world)
++            .thenComparingInt(VillagerSnapshot::blockX)
++            .thenComparingInt(VillagerSnapshot::blockZ));
++
++        header(sender, "村民刷铁诊断");
++        sender.sendMessage(line(
++            "村民原版兼容模式",
++            onOff(LeavesXRuntime.villagerCompatibilityMode()),
++            LeavesXRuntime.villagerCompatibilityMode() ? NamedTextColor.GREEN : NamedTextColor.YELLOW
++        ));
++        sender.sendMessage(Component.text("此命令只读取村民状态，不会修改 AI 或 Brain 记忆。", NamedTextColor.DARK_GRAY));
++
++        final int displayCount = Math.min(limit, villagers.size());
++        for (int index = 0; index < displayCount; index++) {
++            sendVillager(sender, index + 1, villagers.get(index));
++        }
++        if (villagers.isEmpty()) {
++            sender.sendMessage(Component.text("所选世界没有村民。", NamedTextColor.GRAY));
++        } else if (villagers.size() > displayCount) {
++            sender.sendMessage(Component.text(
++                "共 " + villagers.size() + " 名村民，本次显示 " + displayCount + " 名。可把数量调到 50。",
++                NamedTextColor.GRAY
++            ));
++        }
++    }
++
++    private static List<VillagerSnapshot> collect(final CommandSender sender, final List<World> worlds) {
++        final List<VillagerSnapshot> snapshots = new ArrayList<>();
++        final Location commandLocation = sender instanceof Player player ? player.getLocation() : null;
++        final long currentTick = MinecraftServer.currentTick;
++
++        for (final World world : worlds) {
++            final ServerLevel level = ((CraftWorld)world).getHandle();
++            final long gameTime = level.getGameTime();
++            for (final net.minecraft.world.entity.Entity entity : FeatureHooks.getAllEntities(level)) {
++                if (entity instanceof Villager villager) {
++                    snapshots.add(snapshot(world, level, villager, commandLocation, currentTick, gameTime));
++                }
++            }
++        }
++        return snapshots;
++    }
++
++    private static VillagerSnapshot snapshot(
++        final World world,
++        final ServerLevel level,
++        final Villager villager,
++        final Location commandLocation,
++        final long currentTick,
++        final long gameTime
++    ) {
++        final boolean entityTicking = level.isPositionEntityTicking(villager.blockPosition());
++        final boolean paperActive = villager.defaultActivationState
++            || villager.tickCount < 200
++            || villager.activatedTick >= currentTick
++            || villager.isTemporarilyActive;
++        final long inactiveTicks = Math.max(0L, currentTick - villager.activatedTick);
++        final boolean tickInactiveVillagers = level.spigotConfig.tickInactiveVillagers;
++        final boolean villagersActiveForPanic = level.spigotConfig.villagersActiveForPanic;
++        final net.minecraft.world.entity.player.Player nearestPlayer = level.getNearestPlayer(villager, -1.0D);
++        final double nearestPlayerDistance = nearestPlayer == null
++            ? Double.POSITIVE_INFINITY
++            : Math.sqrt(villager.distanceToSqr(nearestPlayer));
++        final double commandDistanceSquared = distanceSquared(commandLocation, world, villager);
++
++        try {
++            final Brain<Villager> brain = villager.getBrain();
++            final LivingEntity hostile = brain.getMemory(MemoryModuleType.NEAREST_HOSTILE).orElse(null);
++            final Long lastSlept = brain.getMemory(MemoryModuleType.LAST_SLEPT).orElse(null);
++            final Long lastWorked = brain.getMemory(MemoryModuleType.LAST_WORKED_AT_POI).orElse(null);
++            return new VillagerSnapshot(
++                world.getKey().toString(),
++                villager.getBlockX(),
++                villager.getBlockY(),
++                villager.getBlockZ(),
++                SectionPos.blockToSectionCoord(villager.getBlockX()),
++                SectionPos.blockToSectionCoord(villager.getBlockZ()),
++                entityTicking,
++                paperActive,
++                inactiveTicks,
++                villager.aware,
++                villager.isNoAi(),
++                tickInactiveVillagers,
++                villagersActiveForPanic,
++                nearestPlayerDistance,
++                hostile == null ? null : EntityType.getKey(hostile.getType()).toString(),
++                hostile == null ? Double.POSITIVE_INFINITY : Math.sqrt(villager.distanceToSqr(hostile)),
++                brain.hasMemoryValue(MemoryModuleType.HURT_BY),
++                brain.getActiveActivities().toString(),
++                brain.isActive(Activity.PANIC),
++                memoryAge(gameTime, lastSlept),
++                memoryAge(gameTime, lastWorked),
++                brain.hasMemoryValue(MemoryModuleType.GOLEM_DETECTED_RECENTLY),
++                villager.wantsToSpawnGolem(gameTime),
++                commandDistanceSquared,
++                null
++            );
++        } catch (final IllegalStateException ex) {
++            return unreadableMemorySnapshot(
++                world,
++                level,
++                villager,
++                entityTicking,
++                paperActive,
++                inactiveTicks,
++                tickInactiveVillagers,
++                villagersActiveForPanic,
++                nearestPlayerDistance,
++                commandDistanceSquared,
++                ex.getMessage()
++            );
++        }
++    }
++
++    private static VillagerSnapshot unreadableMemorySnapshot(
++        final World world,
++        final ServerLevel level,
++        final Villager villager,
++        final boolean entityTicking,
++        final boolean paperActive,
++        final long inactiveTicks,
++        final boolean tickInactiveVillagers,
++        final boolean villagersActiveForPanic,
++        final double nearestPlayerDistance,
++        final double commandDistanceSquared,
++        final String memoryError
++    ) {
++        return new VillagerSnapshot(
++            world.getKey().toString(),
++            villager.getBlockX(),
++            villager.getBlockY(),
++            villager.getBlockZ(),
++            SectionPos.blockToSectionCoord(villager.getBlockX()),
++            SectionPos.blockToSectionCoord(villager.getBlockZ()),
++            entityTicking,
++            paperActive,
++            inactiveTicks,
++            villager.aware,
++            villager.isNoAi(),
++            tickInactiveVillagers,
++            villagersActiveForPanic,
++            nearestPlayerDistance,
++            null,
++            Double.POSITIVE_INFINITY,
++            false,
++            "未知",
++            false,
++            -1L,
++            -1L,
++            false,
++            false,
++            commandDistanceSquared,
++            memoryError
++        );
++    }
++
++    private static double distanceSquared(
++        final Location commandLocation,
++        final World world,
++        final Villager villager
++    ) {
++        if (commandLocation == null || commandLocation.getWorld() != world) {
++            return Double.POSITIVE_INFINITY;
++        }
++        final double deltaX = commandLocation.getX() - villager.getX();
++        final double deltaY = commandLocation.getY() - villager.getY();
++        final double deltaZ = commandLocation.getZ() - villager.getZ();
++        return deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
++    }
++
++    private static void sendVillager(final CommandSender sender, final int index, final VillagerSnapshot villager) {
++        sender.sendMessage(Component.text(
++            index + ". " + villager.world() + " [" + villager.blockX() + ", " + villager.blockY() + ", "
++                + villager.blockZ() + "] 区块[" + villager.chunkX() + ", " + villager.chunkZ() + "]",
++            NamedTextColor.GOLD
++        ));
++        sender.sendMessage(Component.text(
++            "   Tick：区块实体 " + yesNo(villager.entityTicking()) + " / Paper "
++                + (villager.paperActive() ? "活跃" : "非活跃 " + villager.inactiveTicks() + " tick")
++                + " / 非活跃 Brain " + onOff(villager.paperTickInactiveVillagers())
++                + " / 恐慌保活 " + onOff(villager.paperVillagersActiveForPanic()),
++            villager.entityTicking() && (villager.paperActive() || villager.paperTickInactiveVillagers())
++                ? NamedTextColor.AQUA : NamedTextColor.RED
++        ));
++        sender.sendMessage(Component.text(
++            "   AI：aware " + yesNo(villager.aware()) + " / NoAI " + yesNo(villager.noAi())
++                + " / 最近玩家 " + formatDistance(villager.nearestPlayerDistance())
++                + " / 活动 " + villager.activities(),
++            villager.aware() && !villager.noAi() ? NamedTextColor.GRAY : NamedTextColor.RED
++        ));
++        sender.sendMessage(Component.text(
++            "   恐吓：敌对 " + (villager.hostileType() == null
++                ? "无"
++                : villager.hostileType() + ' ' + formatDistance(villager.hostileDistance()))
++                + " / 受伤记忆 " + yesNo(villager.hurt()) + " / 恐慌 " + yesNo(villager.panic()),
++            (villager.hostileType() != null || villager.hurt()) && !villager.panic()
++                ? NamedTextColor.RED : NamedTextColor.GRAY
++        ));
++        sender.sendMessage(Component.text(
++            "   刷铁：最近睡眠 " + formatMemoryAge(villager.lastSleptAge())
++                + " / 最近工作 " + formatMemoryAge(villager.lastWorkedAge())
++                + " / 近期傀儡 " + yesNo(villager.golemDetectedRecently())
++                + " / 当前资格 " + yesNo(villager.wantsToSpawnGolem()),
++            villager.wantsToSpawnGolem() ? NamedTextColor.GREEN : NamedTextColor.GRAY
++        ));
++        sender.sendMessage(Component.text("   判断：" + diagnosis(villager), diagnosisColor(villager)));
++    }
++
++    private static int problemPriority(final VillagerSnapshot villager) {
++        if (villager.memoryError() != null) {
++            return 100;
++        }
++        if (!villager.entityTicking()) {
++            return 90;
++        }
++        if (!villager.aware() || villager.noAi()) {
++            return 80;
++        }
++        if (!villager.paperActive() && !villager.paperTickInactiveVillagers()) {
++            return 70;
++        }
++        if (!villager.paperVillagersActiveForPanic() && !villager.paperTickInactiveVillagers()) {
++            return 65;
++        }
++        if ((villager.hostileType() != null || villager.hurt()) && !villager.panic()) {
++            return 60;
++        }
++        if (villager.lastSleptAge() < 0L || villager.lastSleptAge() >= 24_000L) {
++            return 50;
++        }
++        return villager.golemDetectedRecently() ? 20 : 0;
++    }
++
++    private static String diagnosis(final VillagerSnapshot villager) {
++        if (villager.memoryError() != null) {
++            return "Brain 记忆读取异常：" + villager.memoryError();
++        }
++        if (!villager.entityTicking()) {
++            return "区块未处于实体 Tick，加载区块不等于模拟实体。";
++        }
++        if (!villager.aware()) {
++            return "aware=false，通常由插件或 API 关闭了 AI。";
++        }
++        if (villager.noAi()) {
++            return "NoAI=true，村民不会运行 Brain。";
++        }
++        if (!villager.paperActive() && !villager.paperTickInactiveVillagers()) {
++            return "Paper 将村民设为非活跃，并暂停了完整 Brain。";
++        }
++        if (!villager.paperVillagersActiveForPanic() && !villager.paperTickInactiveVillagers()) {
++            return "Paper 未让恐慌村民保持活跃，离开激活范围后刷铁可能停止。";
++        }
++        if ((villager.hostileType() != null || villager.hurt()) && !villager.panic()) {
++            return "已有恐吓记忆但未进入 panic，需要继续排查 Brain 活动切换。";
++        }
++        if (villager.hostileType() == null && !villager.hurt()) {
++            return "未发现恐吓来源，检查僵尸距离、视线和村民所在模拟区块。";
++        }
++        if (villager.lastSleptAge() < 0L || villager.lastSleptAge() >= 24_000L) {
++            return "最近 24000 tick 内没有有效睡眠，当前不满足刷铁条件。";
++        }
++        if (villager.golemDetectedRecently()) {
++            return "近期检测到铁傀儡，记忆过期前不会再次同意刷铁。";
++        }
++        if (villager.wantsToSpawnGolem()) {
++            return "已满足个人刷铁资格，恐慌周期会统计附近至少 3 名村民。";
++        }
++        return "个人刷铁条件未满足，请结合同组村民状态检查。";
++    }
++
++    private static NamedTextColor diagnosisColor(final VillagerSnapshot villager) {
++        final int priority = problemPriority(villager);
++        return priority >= 60 ? NamedTextColor.RED : priority >= 20 ? NamedTextColor.YELLOW : NamedTextColor.GREEN;
++    }
++
++    private static long memoryAge(final long gameTime, final Long timestamp) {
++        return timestamp == null ? -1L : Math.max(0L, gameTime - timestamp);
++    }
++
++    private static String formatMemoryAge(final long age) {
++        return age < 0L ? "无" : age + " tick前";
++    }
++
++    private static String formatDistance(final double distance) {
++        return Double.isFinite(distance) ? oneDecimal(distance) + " 格" : "无";
++    }
++
++    private static String yesNo(final boolean value) {
++        return value ? "是" : "否";
++    }
++
++    private static String onOff(final boolean enabled) {
++        return enabled ? "开启" : "关闭";
++    }
++
++    private static String oneDecimal(final double value) {
++        return String.format(Locale.ROOT, "%.1f", value);
++    }
++
++    private static void header(final CommandSender sender, final String title) {
++        sender.sendMessage(Component.text("----- " + title + " -----", NamedTextColor.GOLD));
++    }
++
++    private static Component line(final String label, final String value, final NamedTextColor valueColor) {
++        return Component.text().append(Component.text(label + "：", NamedTextColor.GRAY))
++            .append(Component.text(value, valueColor)).build();
++    }
++
++    private record VillagerSnapshot(
++        String world,
++        int blockX,
++        int blockY,
++        int blockZ,
++        int chunkX,
++        int chunkZ,
++        boolean entityTicking,
++        boolean paperActive,
++        long inactiveTicks,
++        boolean aware,
++        boolean noAi,
++        boolean paperTickInactiveVillagers,
++        boolean paperVillagersActiveForPanic,
++        double nearestPlayerDistance,
++        String hostileType,
++        double hostileDistance,
++        boolean hurt,
++        String activities,
++        boolean panic,
++        long lastSleptAge,
++        long lastWorkedAge,
++        boolean golemDetectedRecently,
++        boolean wantsToSpawnGolem,
++        double commandDistanceSquared,
++        String memoryError
++    ) {
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java b/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java
+index 9a6d7c3b57e28d9d38a400f0f93c2431082e348a..8c84c31fe77e241cabb45ce049d3cc8b238629fc 100644
+--- a/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java
++++ b/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java
+@@ -4,7 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import java.io.IOException;
++import java.lang.reflect.Field;
+ import java.util.Arrays;
++import java.util.List;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+ import org.objectweb.asm.ClassReader;
+@@ -46,6 +48,22 @@ class LeavesXCommandSafetyTest {
+             .anyMatch(jump -> jump.getOpcode() == Opcodes.IFNULL || jump.getOpcode() == Opcodes.IFNONNULL));
+     }
+ 
++    @Test
++    void villagerDiagnosticIsRegisteredAndCannotWriteBrainMemory() throws IOException, ReflectiveOperationException {
++        final Field subcommandsField = LeavesXCommand.class.getDeclaredField("SUBCOMMANDS");
++        subcommandsField.setAccessible(true);
++        @SuppressWarnings("unchecked")
++        final List<String> subcommands = (List<String>)subcommandsField.get(null);
++        assertTrue(subcommands.contains("villagers"));
++
++        final MethodNode snapshot = method(classNode(LeavesXVillagerDiagnostics.class.getName()), "snapshot");
++        assertFalse(Arrays.stream(snapshot.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals("net/minecraft/world/entity/ai/Brain")
++                && (call.name.startsWith("setMemory") || call.name.equals("eraseMemory"))));
++    }
++
+     private static ClassNode classNode(final String className) throws IOException {
+         final ClassNode classNode = new ClassNode(Opcodes.ASM9);
+         new ClassReader(className).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index ecf1faf14e2bd758f04b033891e2cc5b2b53c10e..1eba055da45d83898e728aaad8840db38923d1c2 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -3,8 +3,18 @@ package org.leavesx.leavesx.config;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.npc.villager.Villager;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldInsnNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
+ 
+ /** Verifies that a vanilla-compatibility villager tick disables every relevant LeavesX fast path. */
+ @Normal
+@@ -26,6 +36,20 @@ class VillagerCompatibilityContextTest {
+             assertFalse(LeavesXRuntime.parallelAiTargetSearch());
+             assertFalse(LeavesXRuntime.pathNodeListBuildingOptimization());
+             assertFalse(LeavesXRuntime.stationaryEntitySpeedOptimization());
++            assertFalse(LeavesXRuntime.goalSelectorOptimization());
++            assertFalse(LeavesXRuntime.brainTickTraversalOptimization());
++            assertFalse(LeavesXRuntime.sensingCacheOptimization());
++            assertFalse(LeavesXRuntime.playerSensorOptimization());
++            assertFalse(LeavesXRuntime.hurtBySensorOptimization());
++            assertFalse(LeavesXRuntime.mobPresenceSensorOptimization());
++            assertFalse(LeavesXRuntime.villagerBabiesSensorOptimization());
++            assertFalse(LeavesXRuntime.villagerFoodInventoryOptimization());
++            assertFalse(LeavesXRuntime.villagerFarmlandSeedScanOptimization());
++            assertFalse(LeavesXRuntime.villagerGolemAgreementOptimization());
++            assertFalse(LeavesXRuntime.villagerGossipScansOptimization());
++            assertFalse(LeavesXRuntime.villagerPlayTagOptimization());
++            assertFalse(LeavesXRuntime.yieldJobSiteOptimization());
++            assertFalse(LeavesXRuntime.occupiedPoiBedQueriesOptimization());
+         } finally {
+             LeavesXRuntime.exitVillagerCompatibilityContext(previous);
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+@@ -87,4 +111,39 @@ class VillagerCompatibilityContextTest {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+     }
++
++    @Test
++    void compatibilityModeDoesNotOverridePaperInactiveVillagerPolicy() throws IOException {
++        final MethodNode inactiveTick = method(classNode(Villager.class.getName()), "inactiveTick");
++        final String runtimeOwner = LeavesXRuntime.class.getName().replace('.', '/');
++        final List<String> runtimeCalls = Arrays.stream(inactiveTick.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .filter(call -> call.owner.equals(runtimeOwner))
++            .map(call -> call.name)
++            .toList();
++
++        assertTrue(Arrays.stream(inactiveTick.instructions.toArray())
++            .filter(FieldInsnNode.class::isInstance)
++            .map(FieldInsnNode.class::cast)
++            .anyMatch(field -> field.owner.equals("org/spigotmc/SpigotWorldConfig")
++                && field.name.equals("tickInactiveVillagers")));
++        assertTrue(runtimeCalls.contains("enterVillagerCompatibilityContext"));
++        assertTrue(runtimeCalls.contains("exitVillagerCompatibilityContext"));
++        assertTrue(runtimeCalls.stream().allMatch(call -> call.equals("enterVillagerCompatibilityContext")
++            || call.equals("exitVillagerCompatibilityContext")));
++    }
++
++    private static ClassNode classNode(final String className) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(className).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode classNode, final String name) {
++        return classNode.methods.stream()
++            .filter(method -> method.name.equals(name))
++            .findFirst()
++            .orElseThrow();
++    }
+ }

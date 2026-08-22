@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 15:14:44 +0800
+Subject: [PATCH] Add bate36 chunk tracker regression coverage
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChunkTrackerHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ChunkTrackerHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9cde41d6cb7f5eb3390aec0bef0c412070381b6b
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ChunkTrackerHotPathTest.java
+@@ -0,0 +1,56 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++
++import java.io.IOException;
++import java.util.Arrays;
++import net.minecraft.server.level.ChunkTracker;
++import net.minecraft.world.level.ChunkPos;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++@Normal
++class ChunkTrackerHotPathTest {
++
++    @Test
++    void neighborPropagationDecodesPackedCoordinatesWithoutAllocatingChunkPos() throws IOException {
++        for (final String methodName : new String[] {"checkNeighborsAfterUpdate", "getComputedLevel"}) {
++            final MethodNode method = methodNode(ChunkTracker.class, methodName);
++            assertFalse(
++                Arrays.stream(method.instructions.toArray())
++                    .filter(MethodInsnNode.class::isInstance)
++                    .map(MethodInsnNode.class::cast)
++                    .anyMatch(call -> call.owner.equals("net/minecraft/world/level/ChunkPos") && call.name.equals("unpack")),
++                methodName + " should decode the packed key without allocating a temporary ChunkPos"
++            );
++        }
++    }
++
++    @Test
++    void directCoordinateDecodingMatchesChunkPosUnpack() {
++        final int[] coordinates = {Integer.MIN_VALUE, -1_875_066, -1, 0, 1, 1_875_066, Integer.MAX_VALUE};
++        for (final int x : coordinates) {
++            for (final int z : coordinates) {
++                final long packed = ChunkPos.pack(x, z);
++                final ChunkPos unpacked = ChunkPos.unpack(packed);
++                assertEquals(unpacked.x(), ChunkPos.getX(packed));
++                assertEquals(unpacked.z(), ChunkPos.getZ(packed));
++            }
++        }
++    }
++
++    private static MethodNode methodNode(final Class<?> owner, final String methodName) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.getName() + '#' + methodName));
++    }
++}

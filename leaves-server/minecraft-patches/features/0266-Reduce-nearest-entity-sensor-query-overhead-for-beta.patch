@@ -1,0 +1,89 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 19 Aug 2026 18:42:00 +0800
+Subject: [PATCH] Reduce nearest-entity sensor query overhead for beta132
+
+
+diff --git a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
+index 78e086f8e40accea0bb68c4cd499b1598a3c4f96..f57e1c2b0974013954959e27ac7e7dc320967ec6 100644
+--- a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
+@@ -1,8 +1,8 @@
+ package net.minecraft.world.entity.ai.sensing;
+ 
+ import com.google.common.collect.ImmutableSet;
++import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+ import java.util.Comparator;
+-import java.util.List;
+ import java.util.Optional;
+ import java.util.Set;
+ import net.minecraft.server.level.ServerLevel;
+@@ -24,7 +24,15 @@ public class NearestItemSensor extends Sensor<Mob> {
+     @Override
+     protected void doTick(final ServerLevel level, final Mob body) {
+         Brain<?> brain = body.getBrain();
+-        List<ItemEntity> items = level.getEntitiesOfClass(ItemEntity.class, body.getBoundingBox().inflate(32.0, 16.0, 32.0), item -> item.closerThan(body, MAX_DISTANCE_TO_WANTED_ITEM) && body.wantsToPickUp(level, item.getItem())); // Paper - Perf: Move predicate into getEntities
++        // LeavesX - collect directly into the list consumed by the sensor, avoiding the generic return-list path.
++        final ObjectArrayList<ItemEntity> items = new ObjectArrayList<>();
++        level.leavesX$getEntitiesOfClass(
++            ItemEntity.class,
++            null,
++            body.getBoundingBox().inflate(32.0, 16.0, 32.0),
++            item -> item.closerThan(body, MAX_DISTANCE_TO_WANTED_ITEM) && body.wantsToPickUp(level, item.getItem()),
++            items
++        ); // Paper - Perf: Move predicate into getEntities
+         // LeavesX start - use the same stable, allocation-reusing distance order as living-entity sensors
+         if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortOptimization()
+             && items.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
+diff --git a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
+index 7c8ab8c48066dbb20ee90c74b5f114b2a0cd5250..b3c6d70f82d3a75869c5b0da565ee8ed675c689b 100644
+--- a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
++++ b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
+@@ -1,8 +1,8 @@
+ package net.minecraft.world.entity.ai.sensing;
+ 
+ import com.google.common.collect.ImmutableSet;
++import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+ import java.util.Comparator;
+-import java.util.List;
+ import java.util.Set;
+ import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.world.entity.LivingEntity;
+@@ -17,7 +17,9 @@ public class NearestLivingEntitySensor<T extends LivingEntity> extends Sensor<T>
+     protected void doTick(final ServerLevel level, final T body) {
+         double followRange = body.getAttributeValue(Attributes.FOLLOW_RANGE);
+         AABB boundingBox = body.getBoundingBox().inflate(followRange, followRange, followRange);
+-        List<LivingEntity> livingEntities = level.getEntitiesOfClass(LivingEntity.class, boundingBox, mob -> mob != body && mob.isAlive());
++        // LeavesX - Moonrise can exclude the sensing entity before evaluating the shared, non-capturing predicate.
++        final ObjectArrayList<LivingEntity> livingEntities = new ObjectArrayList<>();
++        level.leavesX$getEntitiesOfClass(LivingEntity.class, body, boundingBox, LivingEntity::isAlive, livingEntities);
+         // LeavesX start - snapshot distance keys on the tick thread, then stably reorder without per-sensor arrays
+         if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortOptimization()
+             && livingEntities.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index 72dbb090de0f10d7a61c25866e20941697200fa7..93ddf17eaf694577fbb7b4f78dcd0c2eaa62cef8 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -249,10 +249,21 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         final AABB boundingBox,
+         final Predicate<? super T> predicate,
+         final List<? super T> into
++    ) {
++        this.leavesX$getEntitiesOfClass(entityClass, null, boundingBox, predicate, into);
++    }
++
++    /** Collects typed entities while allowing hot-path callers to exclude one entity before predicate evaluation. */
++    public final <T extends Entity> void leavesX$getEntitiesOfClass(
++        final Class<T> entityClass,
++        final @Nullable Entity except,
++        final AABB boundingBox,
++        final Predicate<? super T> predicate,
++        final List<? super T> into
+     ) {
+         Profiler.get().incrementCounter("getEntities");
+         ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemLevel)this)
+-            .moonrise$getEntityLookup().getEntities(entityClass, null, boundingBox, into, predicate);
++            .moonrise$getEntityLookup().getEntities(entityClass, except, boundingBox, into, predicate);
+     }
+ 
+     public final void leavesX$getEntities(

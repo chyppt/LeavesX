@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 21 Aug 2026 23:44:00 +0800
+Subject: [PATCH] Add hard-collision query buffer reuse for beta149
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 0d18943868e9014bee7c917a8932cb1561c32568..746c13017c0e9e67340b5e496ab52ad676c6060b 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -336,6 +336,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.skip-empty-events", "没有监听器时跳过事件对象创建。默认：true。");
+         comments.put("performance.entity-state-optimizations", "减少实体装备等状态检查的临时对象。默认：true。");
+         comments.put("performance.entity-query-optimizations", "只查一个实体时立即停止搜索并复用临时列表。默认：true。");
++        comments.put("performance.entity-queries.entity-collision-query-buffer-reuse", "复用内部实体碰撞查询列表，关闭后使用原版分配方式，不改变碰撞顺序。默认：true。");
+         comments.put("performance.ai-optimizations", "减少 AI 和村民 POI 搜索的重复计算。默认：true。");
+         comments.put(
+             "performance.villager-compatibility-mode",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 33ecd8395db6943c1e1669825365d30482d8973a..2681185603403f72606776f685a1039c87ac50c2 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -20,6 +20,10 @@ enum LeavesXOptimization {
+         "performance.entity-queries.entity-activation-buffer-reuse",
+         "复用实体激活扫描列表，关闭后使用 Paper 原版查询。默认：true。"
+     ),
++    ENTITY_COLLISION_QUERY_BUFFER_REUSE(
++        "performance.entity-queries.entity-collision-query-buffer-reuse",
++        "复用内部实体碰撞查询列表，关闭后使用原版分配方式，不改变碰撞顺序。默认：true。"
++    ),
+     PRESSURE_PLATE_ENTITY_SCANS(
+         "performance.entity-queries.pressure-plate-scans",
+         "复用压力板实体扫描结果，关闭后使用原版扫描。默认：true。"
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 538d7e534c3a049e081a7c9f87e79593589a268b..d96a0b170d556628069bd370dbcb7541b460261c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -278,6 +278,11 @@ public final class LeavesXRuntime {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.ENTITY_ACTIVATION_BUFFER_REUSE);
+     }
+ 
++    /** Returns whether internal hard-collision entity queries may reuse a reentrant thread-local result buffer. */
++    public static boolean entityCollisionQueryBufferReuseOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.ENTITY_COLLISION_QUERY_BUFFER_REUSE);
++    }
++
+     /** Returns whether Moonrise entity lookup may map chunk visibility without the generic enum helper. */
+     public static boolean entityLookupVisibilityOptimization() {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.ENTITY_LOOKUP_VISIBILITY);
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java
+index 5b5ccfa28a41cec78c07fdb76c6f871a8f6f2e06..1a8797a76b27ec92d6ce7e1a1c18f853bf3f4172 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java
+@@ -104,6 +104,34 @@ class EntityCollisionHotPathTest {
+         );
+     }
+ 
++    @Test
++    void hardCollisionQueriesHaveAReentrantAllocationFreeInternalPath() throws IOException {
++        final List<MethodNode> methods = methodNodes(
++            ca.spottedleaf.moonrise.patches.collisions.CollisionUtil.class,
++            "getEntityHardCollisions"
++        );
++        final MethodInsnNode[] calls = methods.stream()
++            .flatMap(method -> Arrays.stream(method.instructions.toArray()))
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++
++        assertTrue(
++            Arrays.stream(calls).anyMatch(call ->
++                call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime")
++                    && call.name.equals("entityCollisionQueryBufferReuseOptimization")
++            ),
++            "hard-collision queries should be guarded by the LeavesX compatibility switch"
++        );
++        assertTrue(
++            Arrays.stream(calls).anyMatch(call ->
++                call.owner.equals("net/minecraft/world/level/Level")
++                    && call.name.equals("leavesX$acquireEntityQueryBuffer")
++            ),
++            "hard-collision queries should use the reentrancy-safe thread-local buffer"
++        );
++    }
++
+     private static List<MethodNode> methodNodes(final Class<?> owner, final String methodName) throws IOException {
+         final ClassNode classNode = new ClassNode(Opcodes.ASM9);
+         new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);

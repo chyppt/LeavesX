@@ -1,0 +1,137 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 16:52:45 +0800
+Subject: [PATCH] Add sensor targeting regression coverage for bate43
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f1d24cfc57b5f126af67dacd7c0f224e0b03c155
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java
+@@ -0,0 +1,125 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ai.memory.NearestVisibleLivingEntities;
++import net.minecraft.world.entity.ai.sensing.PlayerSensor;
++import net.minecraft.world.entity.ai.sensing.Sensor;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies repeated Brain and targeting-condition lookups are removed from sensor candidate loops. */
++@Normal
++class SensorMemoryLookupHotPathTest {
++
++    @Test
++    void targetingRangeWritesAreSkippedWhenTheRangeIsUnchanged() throws IOException {
++        final ClassNode sensor = classNode(Sensor.class);
++        assertTrue(sensor.fields.stream().anyMatch(field -> field.name.equals("leavesXLastTargetingRangeBits")
++            && field.desc.equals("J")
++            && (field.access & Opcodes.ACC_STATIC) != 0));
++
++        final MethodNode updateRanges = method(sensor, "updateTargetingConditionRanges");
++        assertTrue(hasInvocation(updateRanges, "org/leavesx/leavesx/config/LeavesXRuntime", "aiOptimizations"));
++        assertTrue(hasInvocation(updateRanges, "java/lang/Double", "doubleToRawLongBits"));
++    }
++
++    @Test
++    void visibleEntityCacheAvoidsLookupAllocationsWithoutFreezingAttackTargetState() throws IOException {
++        final ClassNode visibleEntities = classNode(NearestVisibleLivingEntities.class);
++        final MethodNode constructor = method(
++            visibleEntities,
++            "<init>",
++            "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/entity/LivingEntity;Ljava/util/List;)V"
++        );
++
++        assertEquals(1L, invocationCount(constructor, "net/minecraft/world/entity/LivingEntity", "getBrain"));
++        assertTrue(hasInvocation(constructor, "org/leavesx/leavesx/config/LeavesXRuntime", "aiOptimizations"));
++
++        final Class<?> cacheClass = Arrays.stream(NearestVisibleLivingEntities.class.getDeclaredClasses())
++            .filter(type -> type.getSimpleName().equals("LeavesXLineOfSightCache"))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing optimized visibility cache"));
++        final MethodNode test = method(classNode(cacheClass), "test", "(Lnet/minecraft/world/entity/LivingEntity;)Z");
++        assertEquals(1L, invocationCount(test, "net/minecraft/world/entity/ai/Brain", "isMemoryValue"));
++        assertTrue(hasInvocation(test, "it/unimi/dsi/fastutil/objects/Object2ByteOpenHashMap", "getByte"));
++        assertTrue(hasInvocation(test, "it/unimi/dsi/fastutil/objects/Object2ByteOpenHashMap", "put"));
++        assertTrue(hasInvocation(
++            test,
++            "net/minecraft/world/entity/ai/sensing/Sensor",
++            "isEntityTargetable",
++            "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/entity/LivingEntity;Lnet/minecraft/world/entity/LivingEntity;Z)Z"
++        ));
++        assertFalse(hasInvocation(test, "net/minecraft/world/entity/ai/Brain", "getMemory"));
++    }
++
++    @Test
++    void playerSensorUsesAttackTargetSnapshotForCandidateChecks() throws IOException {
++        final MethodNode doTick = method(classNode(PlayerSensor.class), "doTick");
++        final List<MethodInsnNode> calls = methodCalls(doTick);
++        final String snapshotDescriptor =
++            "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/entity/LivingEntity;Lnet/minecraft/world/entity/LivingEntity;Z)Z";
++
++        assertEquals(1L, calls.stream().filter(call -> call.owner.equals("net/minecraft/world/entity/ai/Brain") && call.name.equals("getMemory")).count());
++        assertTrue(calls.stream().anyMatch(call -> call.owner.equals("net/minecraft/world/entity/ai/sensing/PlayerSensor")
++            && call.name.equals("isEntityTargetable")
++            && call.desc.equals(snapshotDescriptor)));
++        assertTrue(calls.stream().anyMatch(call -> call.owner.equals("net/minecraft/world/entity/ai/sensing/PlayerSensor")
++            && call.name.equals("isEntityAttackable")
++            && call.desc.equals(snapshotDescriptor)));
++
++        final ClassNode sensor = classNode(Sensor.class);
++        method(sensor, "isEntityTargetable", snapshotDescriptor);
++        method(sensor, "isEntityAttackable", snapshotDescriptor);
++    }
++
++    private static long invocationCount(final MethodNode method, final String owner, final String methodName) {
++        return methodCalls(method).stream().filter(call -> call.owner.equals(owner) && call.name.equals(methodName)).count();
++    }
++
++    private static boolean hasInvocation(final MethodNode method, final String owner, final String methodName) {
++        return invocationCount(method, owner, methodName) > 0L;
++    }
++
++    private static boolean hasInvocation(final MethodNode method, final String owner, final String methodName, final String descriptor) {
++        return methodCalls(method).stream()
++            .anyMatch(call -> call.owner.equals(owner) && call.name.equals(methodName) && call.desc.equals(descriptor));
++    }
++
++    private static List<MethodInsnNode> methodCalls(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName, final String descriptor) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName) && method.desc.equals(descriptor))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName + descriptor));
++    }
++}

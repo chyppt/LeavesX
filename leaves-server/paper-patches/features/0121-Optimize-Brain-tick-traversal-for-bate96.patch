@@ -1,0 +1,297 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 05:14:53 +0800
+Subject: [PATCH] Optimize Brain tick traversal for bate96
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index a2924e8061fea38e96d9808cccfd64525633c9ff..2afbf52f20ceb46e79458aa3e8ed3977fd9cd3ca 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 26;
++    public static final int CURRENT_CONFIG_VERSION = 27;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 137176d9660bdfd083fee40327d166b77a897a46..ebd83f39fdb14ea48db181bb5bab140a8e1a9ac0 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：26。");
++        comments.put("config-version", "配置版本，请勿修改。默认：27。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 4955b8903e4108da6291e282e6de5e4f9688d84e..c0ba59d257141915055d23afea540539298efd56 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -187,6 +187,10 @@ enum LeavesXOptimization {
+     GOAL_SELECTOR(
+         "performance.ai.goal-selector",
+         "减少生物目标选择时的映射查询，关闭后使用 Paper 原版流程。默认：true。"
++    ),
++    BRAIN_TICK_TRAVERSAL(
++        "performance.ai.brain-tick-traversal",
++        "减少生物感知器和记忆更新的迭代开销，关闭后使用原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 70ac9b469932d260f0d03503fa589563548fb980..f70929d7a087ca0688572f20260d9ef2805308c5 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -47,6 +47,7 @@ public final class LeavesXRuntime {
+     private static int chunkUnloadMaximumPerTick = 500;
+     private static volatile boolean chunkPacketAssemblyOptimization = true;
+     private static boolean goalSelectorOptimization = true;
++    private static boolean brainTickTraversalOptimization = true;
+     private static long fineGrainedOptimizationMaskLow = LeavesXOptimization.allEnabledMaskLow();
+     private static long fineGrainedOptimizationMaskHigh = LeavesXOptimization.allEnabledMaskHigh();
+ 
+@@ -106,6 +107,7 @@ public final class LeavesXRuntime {
+         chunkUnloadMaximumPerTick = validated.chunkUnloadMaximumPerTick();
+         chunkPacketAssemblyOptimization = validated.optimizationEnabled(LeavesXOptimization.CHUNK_PACKET_ASSEMBLY);
+         goalSelectorOptimization = validated.optimizationEnabled(LeavesXOptimization.GOAL_SELECTOR);
++        brainTickTraversalOptimization = validated.optimizationEnabled(LeavesXOptimization.BRAIN_TICK_TRAVERSAL);
+         fineGrainedOptimizationMaskLow = validated.fineGrainedOptimizationMaskLow();
+         fineGrainedOptimizationMaskHigh = validated.fineGrainedOptimizationMaskHigh();
+         configuration = validated;
+@@ -512,6 +514,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && goalSelectorOptimization;
+     }
+ 
++    /** Returns whether Brain ticks may traverse stable sensor and memory-slot lists directly. */
++    public static boolean brainTickTraversalOptimization() {
++        return aiOptimizations && brainTickTraversalOptimization;
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(fineGrainedOptimizationMaskLow, fineGrainedOptimizationMaskHigh);
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/BrainTickTraversalTest.java b/src/test/java/org/leavesx/leavesx/config/BrainTickTraversalTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c17741e6609a3c2428f429b63df44e57d98198f4
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/config/BrainTickTraversalTest.java
+@@ -0,0 +1,177 @@
++package org.leavesx.leavesx.config;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.mockito.ArgumentMatchers.anyInt;
++import static org.mockito.Mockito.doReturn;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import io.papermc.paper.configuration.WorldConfiguration;
++import java.io.IOException;
++import java.lang.reflect.Constructor;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.Collection;
++import java.util.List;
++import java.util.Optional;
++import java.util.Set;
++import java.util.concurrent.atomic.AtomicInteger;
++import java.util.function.Supplier;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.util.RandomSource;
++import net.minecraft.world.entity.EntityType;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.entity.ai.Brain;
++import net.minecraft.world.entity.ai.memory.MemoryMap;
++import net.minecraft.world.entity.ai.memory.MemoryModuleType;
++import net.minecraft.world.entity.ai.sensing.Sensor;
++import net.minecraft.world.entity.ai.sensing.SensorType;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++
++@Normal
++class BrainTickTraversalTest {
++
++    @TempDir
++    Path tempDir;
++
++    @Test
++    void optimizedAndPaperPathsKeepDuplicateSensorReplacementOrder() throws Exception {
++        final List<String> paperCalls = this.runDuplicateSensorScenario(false);
++
++        assertEquals(List.of("first-2", "second-1"), paperCalls);
++        assertEquals(paperCalls, this.runDuplicateSensorScenario(true));
++    }
++
++    @Test
++    void optimizedAndPaperPathsTickDuplicateMemoryRegistrationOnce() throws Exception {
++        final long paperTimeToLive = this.runDuplicateMemoryScenario(false);
++
++        assertEquals(4L, paperTimeToLive);
++        assertEquals(paperTimeToLive, this.runDuplicateMemoryScenario(true));
++    }
++
++    private List<String> runDuplicateSensorScenario(final boolean optimized) throws Exception {
++        final ArrayList<String> calls = new ArrayList<>();
++        final AtomicInteger firstInstances = new AtomicInteger();
++        final AtomicInteger secondInstances = new AtomicInteger();
++        final SensorType<RecordingSensor> firstType = sensorType(
++            () -> new RecordingSensor("first-" + firstInstances.incrementAndGet(), calls)
++        );
++        final SensorType<RecordingSensor> secondType = sensorType(
++            () -> new RecordingSensor("second-" + secondInstances.incrementAndGet(), calls)
++        );
++
++        try {
++            LeavesXRuntime.publish(this.configuration(optimized));
++            final TestBrain brain = new TestBrain(
++                List.of(),
++                List.of(firstType, secondType, firstType),
++                zeroDelayRandom()
++            );
++            brain.tick(configuredLevel(), configuredEntity());
++            return List.copyOf(calls);
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    private long runDuplicateMemoryScenario(final boolean optimized) throws Exception {
++        final MemoryModuleType<String> memoryType = new MemoryModuleType<>(Optional.empty());
++
++        try {
++            LeavesXRuntime.publish(this.configuration(optimized));
++            final TestBrain brain = new TestBrain(
++                List.of(memoryType, memoryType),
++                List.of(),
++                zeroDelayRandom()
++            );
++            brain.setMemoryWithExpiry(memoryType, "value", 5L);
++            brain.tick(mock(ServerLevel.class), mock(LivingEntity.class));
++            return brain.getTimeUntilExpiry(memoryType);
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    private LeavesXConfig configuration(final boolean optimized) throws IOException {
++        final Path path = this.tempDir.resolve("brain-tick-traversal-" + optimized + ".yml");
++        Files.writeString(path, """
++            config-version: 1
++            performance:
++              ai:
++                brain-tick-traversal: %s
++            """.formatted(optimized));
++        return LeavesXConfigLoader.load(path);
++    }
++
++    private static RandomSource zeroDelayRandom() {
++        final RandomSource random = mock(RandomSource.class);
++        when(random.nextInt(anyInt())).thenReturn(0);
++        return random;
++    }
++
++    private static ServerLevel configuredLevel() throws ReflectiveOperationException {
++        final Constructor<WorldConfiguration> constructor = WorldConfiguration.class.getDeclaredConstructor(
++            org.spigotmc.SpigotWorldConfig.class,
++            net.minecraft.resources.Identifier.class
++        );
++        constructor.setAccessible(true);
++        final WorldConfiguration configuration = constructor.newInstance(null, null);
++        configuration.tickRates = configuration.new TickRates();
++
++        final ServerLevel level = mock(ServerLevel.class);
++        when(level.paperConfig()).thenReturn(configuration);
++        return level;
++    }
++
++    private static LivingEntity configuredEntity() {
++        final LivingEntity entity = mock(LivingEntity.class);
++        doReturn(EntityType.VILLAGER).when(entity).getType();
++        when(entity.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.FOLLOW_RANGE)).thenReturn(16.0D);
++        return entity;
++    }
++
++    @SuppressWarnings("unchecked")
++    private static <S extends Sensor<?>> SensorType<S> sensorType(final Supplier<S> factory)
++        throws ReflectiveOperationException {
++        final Constructor<SensorType> constructor = SensorType.class.getDeclaredConstructor(Supplier.class);
++        constructor.setAccessible(true);
++        return (SensorType<S>)constructor.newInstance(factory);
++    }
++
++    private static final class TestBrain extends Brain<LivingEntity> {
++
++        private TestBrain(
++            final Collection<? extends MemoryModuleType<?>> memoryTypes,
++            final Collection<? extends SensorType<? extends Sensor<? super LivingEntity>>> sensorTypes,
++            final RandomSource random
++        ) {
++            super(memoryTypes, sensorTypes, List.of(), MemoryMap.EMPTY, random);
++        }
++    }
++
++    private static final class RecordingSensor extends Sensor<LivingEntity> {
++
++        private final String name;
++        private final List<String> calls;
++
++        private RecordingSensor(final String name, final List<String> calls) {
++            super(20);
++            this.name = name;
++            this.calls = calls;
++        }
++
++        @Override
++        protected void doTick(final ServerLevel level, final LivingEntity body) {
++            this.calls.add(this.name);
++        }
++
++        @Override
++        public Set<MemoryModuleType<?>> requires() {
++            return Set.of();
++        }
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index b8061378402733e5e75ca017f1a33bd86cb4cfc2..03d0e302feb7e934caedecda5cf16fc0264ac810 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -285,6 +285,7 @@ class LeavesXConfigLoaderTest {
+             config-version: 1
+             performance:
+               ai:
++                brain-tick-traversal: false
+                 breeze-attack-sensor: false
+                 goal-selector: false
+                 hurt-by-sensor: false
+@@ -312,6 +313,7 @@ class LeavesXConfigLoaderTest {
+                 fox-item-search: false
+             """));
+ 
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.BRAIN_TICK_TRAVERSAL));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.BREEZE_ATTACK_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.GOAL_SELECTOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HURT_BY_SENSOR));
+@@ -331,12 +333,13 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 18,
++            LeavesXConfig.fineGrainedOptimizationCount() - 19,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+         try {
+             LeavesXRuntime.publish(config);
++            assertFalse(LeavesXRuntime.brainTickTraversalOptimization());
+             assertFalse(LeavesXRuntime.breezeAttackSensorOptimization());
+             assertFalse(LeavesXRuntime.goalSelectorOptimization());
+             assertFalse(LeavesXRuntime.hurtBySensorOptimization());

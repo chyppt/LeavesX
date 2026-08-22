@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 15:00:20 +0800
+Subject: [PATCH] Harden optional AI memory lookups for beta114
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BrainMemoryLookupSafetyTest.java b/src/test/java/org/leavesx/leavesx/performance/BrainMemoryLookupSafetyTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..600e62f93fe482bbc31b1774036676d44a2229b3
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/BrainMemoryLookupSafetyTest.java
+@@ -0,0 +1,45 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.entity.ai.Brain;
++import net.minecraft.world.entity.ai.memory.MemoryModuleType;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Ensures internal LeavesX memory shortcuts cannot discard entities on optional memory layouts. */
++@Normal
++class BrainMemoryLookupSafetyTest {
++
++    @Test
++    void directLookupReturnsEmptyForAnUnregisteredMemory() {
++        final Brain<LivingEntity> brain = new Brain<>();
++        assertNull(brain.leavesX$getMemoryValue(MemoryModuleType.ATTACK_TARGET));
++    }
++
++    @Test
++    void directLookupTreatsAnUnregisteredMemoryAsEmpty() throws IOException {
++        final ClassNode brain = new ClassNode(org.objectweb.asm.Opcodes.ASM9);
++        new ClassReader(Brain.class.getName()).accept(brain, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        final MethodNode lookup = brain.methods.stream()
++            .filter(method -> method.name.equals("leavesX$getMemoryValue"))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing LeavesX direct memory lookup"));
++        final var calls = Arrays.stream(lookup.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getMemorySlotIfPresent")));
++        assertFalse(calls.stream().anyMatch(call -> call.name.equals("getMemorySlot")));
++    }
++}

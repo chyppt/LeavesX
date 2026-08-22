@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 15:25:09 +0800
+Subject: [PATCH] Reuse ticket conflict coordinates for beta116
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/TicketUpdateQueueAllocationHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/TicketUpdateQueueAllocationHotPathTest.java
+index 8e5ed6519ea4631f8e2afdaf5067b432aaae05ef..bdaf318b4c9498b01385d9d514fed43277a08825 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/TicketUpdateQueueAllocationHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/TicketUpdateQueueAllocationHotPathTest.java
+@@ -1,8 +1,13 @@
+ package org.leavesx.leavesx.performance;
+ 
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertSame;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import java.io.IOException;
++import java.lang.reflect.Method;
+ import java.util.Arrays;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+@@ -29,6 +34,8 @@ class TicketUpdateQueueAllocationHotPathTest {
+             .toArray(MethodInsnNode[]::new);
+ 
+         assertTrue(Arrays.stream(calls).anyMatch(call -> call.name.equals("ticketQueueAllocationOptimization")));
++        assertTrue(Arrays.stream(calls).anyMatch(call -> call.name.equals("leavesX$acquireBlockingNodeBuffer")));
++        assertTrue(Arrays.stream(calls).anyMatch(call -> call.name.equals("release")));
+         assertTrue(Arrays.stream(calls).anyMatch(call -> call.name.equals("getAndSetUpdatingVolatile")));
+         assertTrue(Arrays.stream(calls).anyMatch(call -> call.name.equals("await")));
+         assertTrue(Arrays.stream(method.instructions.toArray())
+@@ -38,6 +45,54 @@ class TicketUpdateQueueAllocationHotPathTest {
+             .anyMatch(instruction -> instruction.desc.equals("java/util/ArrayList")));
+     }
+ 
++    @Test
++    void reusableConflictBufferRejectsReentryAndClearsBeforeReuse() throws ReflectiveOperationException {
++        final Class<?> updateQueue = Class.forName(UPDATE_QUEUE_CLASS);
++        final Class<?> bufferType = Arrays.stream(updateQueue.getDeclaredClasses())
++            .filter(type -> type.getSimpleName().equals("LeavesXBlockingNodeBuffer"))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing LeavesX blocking-node buffer"));
++        final var constructor = bufferType.getDeclaredConstructor();
++        final Method tryAcquire = bufferType.getDeclaredMethod("tryAcquire");
++        final Class<?> nodeType = Arrays.stream(updateQueue.getDeclaredClasses())
++            .filter(type -> type.getSimpleName().equals("UpdateQueueNode"))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing ticket update queue node"));
++        final Class<?> sectionType = Class.forName(
++            "ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ThreadedTicketLevelPropagator$Section"
++        );
++        final var nodeConstructor = nodeType.getDeclaredConstructor(sectionType, nodeType);
++        final Method add = bufferType.getDeclaredMethod("add", nodeType);
++        final Method intersects = bufferType.getDeclaredMethod("intersects", nodeType);
++        final Method release = bufferType.getDeclaredMethod("release");
++        final var firstNodeField = bufferType.getDeclaredField("firstNode");
++        final var sizeField = bufferType.getDeclaredField("size");
++        constructor.setAccessible(true);
++        nodeConstructor.setAccessible(true);
++        tryAcquire.setAccessible(true);
++        add.setAccessible(true);
++        intersects.setAccessible(true);
++        release.setAccessible(true);
++        firstNodeField.setAccessible(true);
++        sizeField.setAccessible(true);
++
++        final Object buffer = constructor.newInstance();
++        final Object node = nodeConstructor.newInstance(null, null);
++
++        assertTrue((boolean)tryAcquire.invoke(buffer));
++        assertFalse((boolean)tryAcquire.invoke(buffer), "Same-thread reentry must allocate a private fallback list");
++        add.invoke(buffer, node);
++        assertTrue((boolean)intersects.invoke(buffer, node));
++        assertEquals(1, sizeField.getInt(buffer));
++        assertSame(node, firstNodeField.get(buffer));
++        release.invoke(buffer);
++
++        assertEquals(0, sizeField.getInt(buffer));
++        assertNull(firstNodeField.get(buffer));
++        assertTrue((boolean)tryAcquire.invoke(buffer), "Released conflict buffers must be reusable");
++        release.invoke(buffer);
++    }
++
+     private static ClassNode classNode(final String binaryName) throws IOException {
+         final ClassNode classNode = new ClassNode(Opcodes.ASM9);
+         new ClassReader(binaryName).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);

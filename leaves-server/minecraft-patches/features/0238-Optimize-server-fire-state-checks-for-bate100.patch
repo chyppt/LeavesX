@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 06:31:00 +0800
+Subject: [PATCH] Optimize server fire state checks for bate100
+
+
+diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
+index 2d362b73c9ad72e77fc5f839b20bf87f95b6fdea..73a096fcc461683c10f390eb81b4255ca04c5b6a 100644
+--- a/net/minecraft/world/entity/Entity.java
++++ b/net/minecraft/world/entity/Entity.java
+@@ -3645,7 +3645,12 @@ public abstract class Entity
+     }
+ 
+     public boolean isOnFire() {
+-        boolean isClientSide = this.level() != null && this.level().isClientSide();
++        final Level currentLevel = this.level();
++        if (org.leavesx.leavesx.config.LeavesXRuntime.serverFireStateOptimization()
++            && (currentLevel == null || !currentLevel.isClientSide())) {
++            return this.remainingFireTicks > 0 && !this.fireImmune();
++        }
++        boolean isClientSide = currentLevel != null && currentLevel.isClientSide();
+         return !this.fireImmune() && (this.remainingFireTicks > 0 || isClientSide && this.getSharedFlag(FLAG_ONFIRE));
+     }
+ 

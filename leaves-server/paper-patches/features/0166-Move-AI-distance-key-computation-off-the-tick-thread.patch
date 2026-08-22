@@ -1,0 +1,382 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 21 Aug 2026 19:12:03 +0800
+Subject: [PATCH] Move AI distance-key computation off the tick thread for
+ beta146
+
+Large AI target scans still spent their coordinate-distance arithmetic on the tick thread before entering the worker pool. Fuse immutable snapshot key generation with each parallel sort or nearest-target range, then retain a full synchronous recomputation fallback.
+
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+index 022f74f27e043f4e6e48c6c1f4ff6685c33e817d..e6e4eb2214caff8b9ad83295e2f52ffc77475043 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -9,9 +9,10 @@ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
+ /**
+  * Stably orders immutable distance keys without exposing live entities to worker threads.
+  *
+- * <p>The tick thread snapshots every squared distance into primitive storage. Radix passes may then operate on those
+- * keys in parallel, after which the tick thread applies the stable permutation to the original list. Per-thread
+- * primitive workspaces remove the coordinate, merge-buffer, and boxed-index allocation churn from AI sensors.</p>
++ * <p>The tick thread snapshots every live coordinate into private primitive storage. Workers may then calculate
++ * squared-distance keys and run radix passes without touching entity or world state, after which the tick thread
++ * applies the stable permutation to the original list. Reused workspaces remove per-sensor snapshot, merge-buffer,
++ * and boxed-index allocation churn.</p>
+  */
+ public final class StableDistanceSorter {
+ 
+@@ -29,8 +30,8 @@ public final class StableDistanceSorter {
+     /**
+      * Sorts entities by squared distance while preserving the original order of equal-distance entries.
+      *
+-     * <p>All entity coordinates are read exactly once on the calling thread. Worker threads only receive primitive
+-     * key and index arrays, so Bukkit/Paper thread-affinity rules remain unchanged.</p>
++     * <p>All entity coordinates are read exactly once on the calling thread. Worker threads only receive private
++     * coordinate, key and index arrays, so Bukkit/Paper thread-affinity rules remain unchanged.</p>
+      */
+     public static <T extends Entity> void sortEntitiesByDistance(
+         final List<T> entities,
+@@ -48,15 +49,13 @@ public final class StableDistanceSorter {
+             final double originX = origin.getX();
+             final double originY = origin.getY();
+             final double originZ = origin.getZ();
+-            for (int index = 0; index < size; index++) {
+-                final Entity entity = entities.get(index);
+-                workspace.keys[index] = sortableDistanceKey(
+-                    squaredDistance(originX, originY, originZ, entity.getX(), entity.getY(), entity.getZ())
+-                );
+-                workspace.order[index] = index;
++            if (parallel && size >= parallelThreshold) {
++                snapshotEntityCoordinates(entities, workspace, size);
++                sortCoordinateSnapshot(workspace, size, originX, originY, originZ, true, parallelThreshold);
++            } else {
++                snapshotEntityDistanceKeys(entities, workspace, size, originX, originY, originZ);
++                sortPreparedKeys(workspace, size, parallel, parallelThreshold);
+             }
+-
+-            sortOrder(workspace, size, parallel, parallelThreshold);
+             applyPermutation(entities, workspace.order, size);
+         } finally {
+             releaseWorkspace(workspace);
+@@ -88,11 +87,11 @@ public final class StableDistanceSorter {
+             final double originX = origin.getX();
+             final double originY = origin.getY();
+             final double originZ = origin.getZ();
+-            for (int index = 0; index < size; index++) {
+-                final Entity entity = entities.get(index);
+-                workspace.keys[index] = sortableDistanceKey(
+-                    squaredDistance(originX, originY, originZ, entity.getX(), entity.getY(), entity.getZ())
+-                );
++            final boolean useCoordinateSnapshot = parallel && size >= parallelThreshold;
++            if (useCoordinateSnapshot) {
++                snapshotEntityCoordinates(entities, workspace, size);
++            } else {
++                snapshotEntityDistanceKeys(entities, workspace, size, originX, originY, originZ);
+             }
+ 
+             final int completedPartitions = parallel
+@@ -101,18 +100,24 @@ public final class StableDistanceSorter {
+                     size,
+                     parallelThreshold,
+                     LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker(),
+-                    (taskIndex, start, end) -> workspace.nearestByPartition[taskIndex] = nearestInRange(
+-                        workspace.keys,
+-                        start,
+-                        end
+-                    )
++                    (taskIndex, start, end) -> workspace.nearestByPartition[taskIndex] = useCoordinateSnapshot
++                        ? computeDistanceKeysAndFindNearest(
++                            workspace,
++                            start,
++                            end,
++                            originX,
++                            originY,
++                            originZ
++                        )
++                        : nearestInRange(workspace.keys, start, end)
+                 )
+                 : 0;
+             if (completedPartitions == 0) {
+-                return nearestInRange(workspace.keys, 0, size);
++                return useCoordinateSnapshot
++                    ? computeDistanceKeysAndFindNearest(workspace, 0, size, originX, originY, originZ)
++                    : nearestInRange(workspace.keys, 0, size);
+             }
+ 
+-            final int rangeSize = divideCeil(size, completedPartitions);
+             int nearest = -1;
+             for (int partition = 0; partition < completedPartitions; partition++) {
+                 final int candidate = workspace.nearestByPartition[partition];
+@@ -123,12 +128,6 @@ public final class StableDistanceSorter {
+                     nearest = candidate;
+                 }
+             }
+-            // rangeSize is intentionally computed from the exact completed partition count. Keeping this local
+-            // calculation documents the contiguous partition contract and prevents future callers from deriving it
+-            // from the configured worker count when adaptive backpressure reduces the lane count.
+-            if (rangeSize <= 0) {
+-                return -1;
+-            }
+             return nearest;
+         } finally {
+             releaseWorkspace(workspace);
+@@ -159,20 +158,21 @@ public final class StableDistanceSorter {
+ 
+         final Workspace workspace = acquireWorkspace(size);
+         try {
+-            for (int index = 0; index < size; index++) {
+-                workspace.keys[index] = sortableDistanceKey(
+-                    squaredDistance(originX, originY, originZ, x[index], y[index], z[index])
+-                );
+-                workspace.order[index] = index;
+-            }
+-            sortOrder(workspace, size, parallel, parallelThreshold);
++            // Copy the compatibility entry point's mutable arrays before workers can observe them. Runtime entity
++            // sorting writes the same private workspace directly while reading live coordinates on the tick thread.
++            workspace.ensureCoordinateCapacity(size);
++            System.arraycopy(x, 0, workspace.x, 0, size);
++            System.arraycopy(y, 0, workspace.y, 0, size);
++            System.arraycopy(z, 0, workspace.z, 0, size);
++            sortCoordinateSnapshot(workspace, size, originX, originY, originZ, parallel, parallelThreshold);
+             return Arrays.copyOf(workspace.order, size);
+         } finally {
+             releaseWorkspace(workspace);
+         }
+     }
+ 
+-    private static void sortOrder(
++    /** Sorts keys that were calculated on the tick thread for a small or explicitly synchronous entity list. */
++    private static void sortPreparedKeys(
+         final Workspace workspace,
+         final int size,
+         final boolean parallel,
+@@ -206,6 +206,68 @@ public final class StableDistanceSorter {
+             return;
+         }
+ 
++        mergeSortedPartitions(workspace, size, completedPartitions);
++    }
++
++    /**
++     * Computes immutable distance keys and sorts each disjoint range in the same worker invocation.
++     *
++     * <p>Fusing these stages moves all distance arithmetic off the tick thread without adding another dispatch or
++     * exposing live entities to workers. A failed invocation recomputes every key from the private snapshot before
++     * taking the synchronous path, so partially completed ranges can never leak into the result.</p>
++     */
++    private static void sortCoordinateSnapshot(
++        final Workspace workspace,
++        final int size,
++        final double originX,
++        final double originY,
++        final double originZ,
++        final boolean parallel,
++        final int parallelThreshold
++    ) {
++        final int completedPartitions = parallel
++            ? LeavesXComputeExecutor.invokeRangesWithCount(
++                LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++                size,
++                parallelThreshold,
++                LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker(),
++                (taskIndex, start, end) -> {
++                    computeDistanceKeysAndInitializeOrder(
++                        workspace,
++                        start,
++                        end,
++                        originX,
++                        originY,
++                        originZ
++                    );
++                    stableRadixRange(
++                        workspace.order,
++                        workspace.scratch,
++                        workspace.keys,
++                        start,
++                        end,
++                        workspace.laneOffsets,
++                        taskIndex * RADIX_BUCKETS
++                    );
++                }
++            )
++            : 0;
++
++        if (completedPartitions == 0) {
++            computeDistanceKeysAndInitializeOrder(workspace, 0, size, originX, originY, originZ);
++            stableRadixRange(workspace.order, workspace.scratch, workspace.keys, 0, size, workspace.offsets, 0);
++            return;
++        }
++
++        mergeSortedPartitions(workspace, size, completedPartitions);
++    }
++
++    /** Completes the stable merge tree after independently sorted contiguous ranges. */
++    private static void mergeSortedPartitions(
++        final Workspace workspace,
++        final int size,
++        final int completedPartitions
++    ) {
+         final int rangeSize = divideCeil(size, completedPartitions);
+         for (int width = rangeSize; width < size; width = nextMergeWidth(width, size)) {
+             final int step = width >= size - width ? size : width << 1;
+@@ -242,6 +304,78 @@ public final class StableDistanceSorter {
+         }
+     }
+ 
++    /** Captures every live coordinate on the calling tick thread before any worker is scheduled. */
++    private static <T extends Entity> void snapshotEntityCoordinates(
++        final List<T> entities,
++        final Workspace workspace,
++        final int size
++    ) {
++        workspace.ensureCoordinateCapacity(size);
++        for (int index = 0; index < size; index++) {
++            final Entity entity = entities.get(index);
++            workspace.x[index] = entity.getX();
++            workspace.y[index] = entity.getY();
++            workspace.z[index] = entity.getZ();
++        }
++    }
++
++    /** Keeps small synchronous lists on the allocation-free single-pass path. */
++    private static <T extends Entity> void snapshotEntityDistanceKeys(
++        final List<T> entities,
++        final Workspace workspace,
++        final int size,
++        final double originX,
++        final double originY,
++        final double originZ
++    ) {
++        for (int index = 0; index < size; index++) {
++            final Entity entity = entities.get(index);
++            workspace.keys[index] = sortableDistanceKey(
++                squaredDistance(originX, originY, originZ, entity.getX(), entity.getY(), entity.getZ())
++            );
++            workspace.order[index] = index;
++        }
++    }
++
++    /** Calculates one primitive snapshot range and initializes the matching stable identity order. */
++    private static void computeDistanceKeysAndInitializeOrder(
++        final Workspace workspace,
++        final int start,
++        final int end,
++        final double originX,
++        final double originY,
++        final double originZ
++    ) {
++        for (int index = start; index < end; index++) {
++            workspace.keys[index] = sortableDistanceKey(
++                squaredDistance(originX, originY, originZ, workspace.x[index], workspace.y[index], workspace.z[index])
++            );
++            workspace.order[index] = index;
++        }
++    }
++
++    /** Calculates keys and returns the first nearest index inside one disjoint primitive snapshot range. */
++    private static int computeDistanceKeysAndFindNearest(
++        final Workspace workspace,
++        final int start,
++        final int end,
++        final double originX,
++        final double originY,
++        final double originZ
++    ) {
++        int nearest = -1;
++        for (int index = start; index < end; index++) {
++            final long key = sortableDistanceKey(
++                squaredDistance(originX, originY, originZ, workspace.x[index], workspace.y[index], workspace.z[index])
++            );
++            workspace.keys[index] = key;
++            if (nearest < 0 || Long.compareUnsigned(key, workspace.keys[nearest]) < 0) {
++                nearest = index;
++            }
++        }
++        return nearest;
++    }
++
+     /** Merges independent ordered range pairs; callers may safely assign disjoint pair indexes to workers. */
+     private static void mergePairs(
+         final int[] order,
+@@ -440,6 +574,9 @@ public final class StableDistanceSorter {
+ 
+         private final boolean pooled;
+         private final int[] offsets = new int[RADIX_BUCKETS];
++        private double[] x = new double[0];
++        private double[] y = new double[0];
++        private double[] z = new double[0];
+         private long[] keys = new long[0];
+         private int[] order = new int[0];
+         private int[] scratch = new int[0];
+@@ -466,5 +603,16 @@ public final class StableDistanceSorter {
+                 this.nearestByPartition = new int[Math.max(1, lanes)];
+             }
+         }
++
++        /** Allocates coordinate storage only for a genuinely parallel snapshot, keeping small AI scans compact. */
++        private void ensureCoordinateCapacity(final int size) {
++            if (this.x.length >= size) {
++                return;
++            }
++            final int capacity = expandedCapacity(this.x.length, size);
++            this.x = Arrays.copyOf(this.x, capacity);
++            this.y = Arrays.copyOf(this.y, capacity);
++            this.z = Arrays.copyOf(this.z, capacity);
++        }
+     }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+index f223800b561ac9364f4d060dd58443001b91503c..a8016822b3f13bdfc60c0bf97548044cc357e3e4 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -133,18 +133,16 @@ class StableDistanceSorterTest {
+     @Test
+     void nearestPrimitiveReductionMatchesVanillaFirstTieRule() {
+         final Entity origin = entityAt(0.0D, 0.0D, 0.0D);
+-        final List<Entity> entities = new ArrayList<>();
+-        for (int index = 0; index < 256; index++) {
+-            entities.add(entityAt(10.0D + index, 0.0D, 0.0D));
++        final List<Entity> entities = new ArrayList<>(2_048);
++        for (int index = 0; index < 2_048; index++) {
++            final double x = index == 1_023 || index == 1_024 ? 2.0D : 10.0D + index;
++            entities.add(entityAt(x, 0.0D, 0.0D));
+         }
+-        final Entity firstEqualNearest = entityAt(2.0D, 0.0D, 0.0D);
+-        final Entity secondEqualNearest = entityAt(-2.0D, 0.0D, 0.0D);
+-        entities.add(firstEqualNearest);
+-        entities.add(secondEqualNearest);
+ 
+         LeavesXComputeExecutor.configure(4, 16);
+-        assertEquals(256, StableDistanceSorter.findNearestIndex(entities, origin, false, 64));
+-        assertEquals(256, StableDistanceSorter.findNearestIndex(entities, origin, true, 64));
++        assertEquals(1_023, StableDistanceSorter.findNearestIndex(entities, origin, false, 64));
++        assertEquals(1_023, StableDistanceSorter.findNearestIndex(entities, origin, true, 64));
++        assertEquals(1L, workload(LeavesXComputeExecutor.Workload.AI_TARGET_SELECT).parallelInvocations());
+     }
+ 
+     @Test
+@@ -190,13 +188,24 @@ class StableDistanceSorterTest {
+         final Thread callingThread = Thread.currentThread();
+         final AtomicBoolean offThreadGetter = new AtomicBoolean();
+         final List<Entity> entities = new ArrayList<>(2_048);
++        final double[] x = new double[2_048];
++        final double[] y = new double[2_048];
++        final double[] z = new double[2_048];
+         for (int index = 0; index < 2_048; index++) {
+-            entities.add(threadConfinedEntityAt(index & 63, (index >>> 6) & 15, index >>> 10, callingThread, offThreadGetter));
++            x[index] = index & 63;
++            y[index] = (index >>> 6) & 15;
++            z[index] = index >>> 10;
++            entities.add(threadConfinedEntityAt(x[index], y[index], z[index], callingThread, offThreadGetter));
+         }
+         final Entity origin = threadConfinedEntityAt(0.0D, 0.0D, 0.0D, callingThread, offThreadGetter);
++        final Entity[] originalOrder = entities.toArray(Entity[]::new);
++        final int[] expectedOrder = referenceOrder(x, y, z, 0.0D, 0.0D, 0.0D);
+ 
+         LeavesXComputeExecutor.configure(4, 4_096);
+         StableDistanceSorter.sortEntitiesByDistance(entities, origin, true, 2_048);
++        for (int index = 0; index < expectedOrder.length; index++) {
++            assertSame(originalOrder[expectedOrder[index]], entities.get(index));
++        }
+         assertEquals(0, StableDistanceSorter.findNearestIndex(entities, origin, true, 2_048));
+ 
+         assertFalse(offThreadGetter.get(), "workers must receive primitive snapshots, never live entities");

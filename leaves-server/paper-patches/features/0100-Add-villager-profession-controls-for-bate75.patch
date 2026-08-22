@@ -1,0 +1,330 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 00:10:30 +0800
+Subject: [PATCH] Add villager profession controls for bate75
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 644847e754689b838e193ffb46c6e0212825c1e6..9913d4f2507d5de4a4d3caf630a2b9615f600c62 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -924,6 +924,7 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(line("实体状态优化", onOff(config.entityStateOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("实体查询优化", onOff(config.entityQueryOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("AI/寻路", onOff(config.aiOptimizations()) + " / " + onOff(config.pathfindingOptimizations()), NamedTextColor.AQUA));
++        sender.sendMessage(line("村民职业查找", onOff(LeavesXRuntime.villagerProfessionAssignmentOptimization()), NamedTextColor.AQUA));
+         sender.sendMessage(line("动物空闲降频", onOff(config.animalIdleGoalThrottling()) + "，倍数 " + config.animalIdleGoalIntervalMultiplier(), config.animalIdleGoalThrottling() ? NamedTextColor.YELLOW : NamedTextColor.GREEN));
+         sender.sendMessage(line("刷怪优化", onOff(config.mobSpawningOptimizations()) + "，并行 " + onOff(config.parallelMobSpawnCounting()), NamedTextColor.AQUA));
+         sender.sendMessage(line("刷怪并行阈值", LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities() + " 实体", NamedTextColor.AQUA));
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index c2c64aaf7d3b15eb49b313a7bf445403ed4c3951..9dd45099e71eaf12a4bb369f49b83594a782ba4f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -20,6 +20,7 @@ public record LeavesXConfig(
+     boolean entityStateOptimizations,
+     boolean entityQueryOptimizations,
+     boolean aiOptimizations,
++    boolean villagerProfessionAssignmentOptimization,
+     boolean pathfindingOptimizations,
+     boolean mobSpawningOptimizations,
+     boolean animalIdleGoalThrottling,
+@@ -40,7 +41,7 @@ public record LeavesXConfig(
+     int chunkUnloadMaximumPerTick
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 7;
++    public static final int CURRENT_CONFIG_VERSION = 8;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -106,6 +107,7 @@ public record LeavesXConfig(
+             true,
+             true,
+             true,
++            true,
+             false,
+             2,
+             true,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 98d95c37b706d2a2ba7235e6391227d4b3e67ea9..63e74fdd876c6feeffa5fe16d7d820f14e32b78d 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -67,7 +67,7 @@ public final class LeavesXConfigBootstrap {
+     private static void logConfiguration(final LeavesXConfig config) {
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+-            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, entity state {}, entity queries {}, AI {}, pathfinding {}, mob spawning {}, item merge {}, block entity hot paths {}, block entity removal {}, spawn range {}",
++            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, entity state {}, entity queries {}, AI {}, villager profession {}, pathfinding {}, mob spawning {}, item merge {}, block entity hot paths {}, block entity removal {}, spawn range {}",
+             config.optimizedVarInt(),
+             config.networkFlushConsolidation(),
+             config.immutableCacheOptimizations(),
+@@ -76,6 +76,7 @@ public final class LeavesXConfigBootstrap {
+             config.entityStateOptimizations(),
+             config.entityQueryOptimizations(),
+             config.aiOptimizations(),
++            LeavesXRuntime.villagerProfessionAssignmentOptimization(),
+             config.pathfindingOptimizations(),
+             config.mobSpawningOptimizations(),
+             config.itemMergeOptimizations(),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 785a42f7094884a095d5c59b11f12e8d2a7c765f..0863f580c8b8eb8319b83f08815a713f8f321ce6 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -128,6 +128,11 @@ public final class LeavesXConfigLoader {
+                     true
+                 ),
+                 readBoolean(node.node("performance", "ai-optimizations"), "performance.ai-optimizations", true),
++                readBoolean(
++                    node.node("performance", "ai", "villager-profession-assignment"),
++                    "performance.ai.villager-profession-assignment",
++                    true
++                ),
+                 readBoolean(
+                     node.node("performance", "pathfinding-optimizations"),
+                     "performance.pathfinding-optimizations",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 1471e56158b3f785a0f8de7c9f0b19c25b6982d3..630b1a71f188d9ba52822e4b502ce0fedeecb11a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -141,6 +141,12 @@ public final class LeavesXConfigWriter {
+             config.aiOptimizations(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "ai", "villager-profession-assignment"),
++            "performance.ai.villager-profession-assignment",
++            config.villagerProfessionAssignmentOptimization(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "pathfinding-optimizations"),
+             "performance.pathfinding-optimizations",
+@@ -262,7 +268,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：7。");
++        comments.put("config-version", "配置版本，请勿修改。默认：8。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -275,6 +281,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.entity-state-optimizations", "减少实体装备等状态检查的临时对象。默认：true。");
+         comments.put("performance.entity-query-optimizations", "只查一个实体时立即停止搜索并复用临时列表。默认：true。");
+         comments.put("performance.ai-optimizations", "减少 AI 和村民 POI 搜索的重复计算。默认：true。");
++        comments.put("performance.ai.villager-profession-assignment", "优化村民领取职业时的职业查找，关闭后使用原版查找。默认：true。");
+         comments.put("performance.pathfinding-optimizations", "减少寻路重建和临时对象开销。默认：true。");
+         comments.put("performance.mob-spawning-optimizations", "减少刷怪统计的临时对象和重复遍历。默认：true。");
+         comments.put("performance.animal-idle-goals.enabled", "降低动物空闲游走和环顾频率，会改变空闲行为。默认：false。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index fa05ffc1ed2caf1dd4a22d6ef795817109b04ba3..2da19db074aeb8e3aeb62b2b6e21376258c24b8c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -26,6 +26,7 @@ public final class LeavesXRuntime {
+     private static boolean entityStateOptimizations = true;
+     private static boolean entityQueryOptimizations = true;
+     private static boolean aiOptimizations = true;
++    private static boolean villagerProfessionAssignmentOptimization = true;
+     private static boolean pathfindingOptimizations = true;
+     private static boolean mobSpawningOptimizations = true;
+     private static boolean animalIdleGoalThrottling;
+@@ -74,6 +75,7 @@ public final class LeavesXRuntime {
+         entityStateOptimizations = validated.entityStateOptimizations();
+         entityQueryOptimizations = validated.entityQueryOptimizations();
+         aiOptimizations = validated.aiOptimizations();
++        villagerProfessionAssignmentOptimization = validated.villagerProfessionAssignmentOptimization();
+         pathfindingOptimizations = validated.pathfindingOptimizations();
+         mobSpawningOptimizations = validated.mobSpawningOptimizations();
+         animalIdleGoalThrottling = validated.animalIdleGoalThrottling();
+@@ -168,6 +170,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations;
+     }
+ 
++    /** Returns whether villager profession lookup may use the allocation-free registry-order scan. */
++    public static boolean villagerProfessionAssignmentOptimization() {
++        return aiOptimizations && villagerProfessionAssignmentOptimization;
++    }
++
+     /** Returns whether behavior-equivalent path reconstruction optimizations are enabled. */
+     public static boolean pathfindingOptimizations() {
+         return pathfindingOptimizations;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index dbde5716f57837763a702ea42cd30b8dab5f0439..54627241756b076d564c792410aad7de6b894289 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -34,6 +34,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(generated.contains("diagnostics:"));
+         assertTrue(generated.contains("rolling-window-seconds:"));
+         assertTrue(generated.contains("slow-plugin-task-ms:"));
++        assertTrue(generated.contains("villager-profession-assignment:"));
+         assertTrue(generated.contains("workers:"));
+         assertFalse(generated.contains("threading:"));
+         assertFalse(generated.contains("folia"));
+@@ -84,6 +85,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(config.mobSpawningOptimizations());
+         assertTrue(config.entityStateOptimizations());
+         assertTrue(config.entityQueryOptimizations());
++        assertTrue(config.villagerProfessionAssignmentOptimization());
+         assertFalse(reloaded.node("performance", "optimized-varint").getBoolean());
+         assertTrue(reloaded.node("performance", "item-merge-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "block-entity-optimizations").getBoolean());
+@@ -92,6 +94,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(reloaded.node("performance", "mob-spawning-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "entity-state-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "entity-query-optimizations").getBoolean());
++        assertTrue(reloaded.node("performance", "ai", "villager-profession-assignment").getBoolean());
+         assertTrue(reloaded.node("custom-extension", "retained").getBoolean());
+         assertTrue(upgraded.contains("# User-managed LeavesX settings."), upgraded);
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.item-merge-optimizations")));
+@@ -101,6 +104,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.mob-spawning-optimizations")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.entity-state-optimizations")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.entity-query-optimizations")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.ai.villager-profession-assignment")));
+     }
+ 
+     @Test
+@@ -155,6 +159,8 @@ class LeavesXConfigLoaderTest {
+               entity-state-optimizations: false
+               entity-query-optimizations: false
+               ai-optimizations: false
++              ai:
++                villager-profession-assignment: false
+               pathfinding-optimizations: false
+               mob-spawning-optimizations: false
+               animal-idle-goals:
+@@ -190,6 +196,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.entityStateOptimizations());
+         assertFalse(config.entityQueryOptimizations());
+         assertFalse(config.aiOptimizations());
++        assertFalse(config.villagerProfessionAssignmentOptimization());
+         assertFalse(config.pathfindingOptimizations());
+         assertFalse(config.mobSpawningOptimizations());
+         assertTrue(config.animalIdleGoalThrottling());
+@@ -211,6 +218,7 @@ class LeavesXConfigLoaderTest {
+         try {
+             LeavesXRuntime.publish(config);
+             assertFalse(LeavesXRuntime.entityStateOptimizations());
++            assertFalse(LeavesXRuntime.villagerProfessionAssignmentOptimization());
+             assertEquals(524_288, LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities());
+             assertEquals(262_144, LeavesXRuntime.aiTargetSearchMinimumCandidates());
+         } finally {
+@@ -218,6 +226,25 @@ class LeavesXConfigLoaderTest {
+         }
+     }
+ 
++    @Test
++    void aiMasterSwitchDisablesVillagerProfessionOptimization() throws IOException {
++        final LeavesXConfig config = LeavesXConfigLoader.load(write("""
++            config-version: 1
++            performance:
++              ai-optimizations: false
++              ai:
++                villager-profession-assignment: true
++            """));
++
++        assertTrue(config.villagerProfessionAssignmentOptimization());
++        try {
++            LeavesXRuntime.publish(config);
++            assertFalse(LeavesXRuntime.villagerProfessionAssignmentOptimization());
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
+     @Test
+     void rejectsWrongScalarTypeWithConfigurationPath() throws IOException {
+         final Path path = write("""
+diff --git a/src/test/java/org/leavesx/leavesx/performance/VillagerProfessionAssignmentHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/VillagerProfessionAssignmentHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..d77037ec425eaf3fd8e8dfb0902cf5aa3d1a9470
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/VillagerProfessionAssignmentHotPathTest.java
+@@ -0,0 +1,87 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.core.Holder;
++import net.minecraft.core.registries.BuiltInRegistries;
++import net.minecraft.world.entity.ai.behavior.AssignProfessionFromJobSite;
++import net.minecraft.world.entity.ai.village.poi.PoiType;
++import net.minecraft.world.entity.npc.villager.VillagerProfession;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies villager profession lookup keeps registry order and the Bukkit career-change path. */
++@Normal
++class VillagerProfessionAssignmentHotPathTest {
++
++    @Test
++    void directLookupMatchesVanillaRegistryOrderForEveryPoiType() throws Exception {
++        final Method directLookup = AssignProfessionFromJobSite.class.getDeclaredMethod("findProfessionDirect", Holder.class);
++        directLookup.setAccessible(true);
++
++        for (final Holder.Reference<PoiType> poiType : BuiltInRegistries.POINT_OF_INTEREST_TYPE.listElements().toList()) {
++            final Holder<VillagerProfession> expected = BuiltInRegistries.VILLAGER_PROFESSION
++                .listElements()
++                .filter(profession -> profession.value().heldJobSite().test(poiType))
++                .findFirst()
++                .orElse(null);
++            @SuppressWarnings("unchecked")
++            final Holder<VillagerProfession> actual = (Holder<VillagerProfession>)directLookup.invoke(null, poiType);
++
++            assertSame(expected, actual, () -> "Profession order changed for POI " + poiType);
++        }
++    }
++
++    @Test
++    void optimizedAndVanillaPathsRemainSelectable() throws IOException {
++        final ClassNode behavior = classNode(AssignProfessionFromJobSite.class);
++        final MethodNode directLookup = method(behavior, "findProfessionDirect");
++        final List<MethodInsnNode> directCalls = invocations(directLookup);
++        final List<MethodInsnNode> behaviorCalls = behavior.methods.stream()
++            .filter(method -> method.name.equals("create") || method.name.startsWith("lambda$create$"))
++            .flatMap(method -> invocations(method).stream())
++            .toList();
++        final List<MethodInsnNode> assignmentCalls = invocations(method(behavior, "assignProfession"));
++
++        assertFalse(directCalls.stream().anyMatch(call -> call.name.equals("stream") || call.name.equals("listElements")));
++        assertTrue(directCalls.stream().anyMatch(call -> call.name.equals("size")));
++        assertTrue(directCalls.stream().anyMatch(call -> call.name.equals("byId")));
++        assertTrue(directCalls.stream().anyMatch(call -> call.name.equals("wrapAsHolder")));
++        assertTrue(behaviorCalls.stream().anyMatch(call -> call.name.equals("villagerProfessionAssignmentOptimization")));
++        assertTrue(behaviorCalls.stream().anyMatch(call -> call.name.equals("listElements")));
++        assertTrue(behaviorCalls.stream().anyMatch(call -> call.name.equals("findFirst")));
++        assertTrue(assignmentCalls.stream().anyMatch(call -> call.name.equals("callVillagerCareerChangeEvent")));
++        assertTrue(assignmentCalls.stream().anyMatch(call -> call.name.equals("refreshBrain")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

@@ -1,0 +1,250 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 10:54:37 +0800
+Subject: [PATCH] Optimize block entity ticker removal
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 1f08ee608d35ee725b908ec137db0960159ec9bc..8fa92d992dc94bdeed970b54e12e42f9c835d28c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -19,6 +19,7 @@ public record LeavesXConfig(
+     int mobSpawnCountingWorkers,
+     int mobSpawnCountingMinimumEntities,
+     boolean itemMergeOptimizations,
++    boolean blockEntityTickerRemovalOptimization,
+     boolean adaptiveChunkUnloading,
+     int chunkUnloadBacklogThreshold,
+     int chunkUnloadMinimumPerTick,
+@@ -74,6 +75,7 @@ public record LeavesXConfig(
+             512,
+             true,
+             true,
++            true,
+             1_000,
+             100,
+             500
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 8748053043765f08ac21954d0e9b23ddb58a8e7a..3e2ea8ebb6ccda9f5c3bc55f15edd661331fcd54 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -26,13 +26,14 @@ public final class LeavesXConfigBootstrap {
+         org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(config.mobSpawnCountingWorkers());
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+-            "LeavesX behavior-equivalent optimizations: optimized VarInt {}, immutable cache hashes {}, resource identifier cache {}, skip empty events {}, AI hot paths {}, item merge scan {}",
++            "LeavesX behavior-equivalent optimizations: optimized VarInt {}, immutable cache hashes {}, resource identifier cache {}, skip empty events {}, AI hot paths {}, item merge scan {}, block-entity ticker compaction {}",
+             config.optimizedVarInt(),
+             config.immutableCacheOptimizations(),
+             config.resourceIdentifierCache(),
+             config.skipEmptyEvents(),
+             config.aiOptimizations(),
+-            config.itemMergeOptimizations()
++            config.itemMergeOptimizations(),
++            config.blockEntityTickerRemovalOptimization()
+         );
+         LOGGER.info(
+             "LeavesX natural-spawn counting: {}, {} worker threads, parallel from {} entities",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index ee6e66df7f26e6607ba0fb3406ae2aa7cbf9452c..dd00328b3ac6210f4f95af2eaf734712da912173 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -120,6 +120,11 @@ public final class LeavesXConfigLoader {
+                     "performance.item-merge-optimizations",
+                     true
+                 ),
++                readBoolean(
++                    node.node("performance", "block-entity-ticker-removal"),
++                    "performance.block-entity-ticker-removal",
++                    true
++                ),
+                 readBoolean(
+                     node.node("performance", "chunk-unloading", "enabled"),
+                     "performance.chunk-unloading.enabled",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index c35b8783f56fa5255dbe1e366fdbbd8d6885d2ba..2c7f8025ae6fe24f0604036aaf5d10b1af31c1f9 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -107,6 +107,12 @@ public final class LeavesXConfigWriter {
+             config.itemMergeOptimizations(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "block-entity-ticker-removal"),
++            "performance.block-entity-ticker-removal",
++            config.blockEntityTickerRemovalOptimization(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("parallelism", "mob-spawning", "enabled"),
+             "parallelism.mob-spawning.enabled",
+@@ -173,6 +179,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.resource-identifier-cache", "缓存物品、方块和标签等资源名称，减少重复创建字符串。不会改变资源名称；遇到问题可设为 false。默认：true。");
+         comments.put("performance.skip-empty-events", "没有插件监听对应事件时，不创建无用的事件对象。有插件监听时仍会正常调用；遇到问题可设为 false。默认：true。");
+         comments.put("performance.item-merge-optimizations", "物品堆达到上限后停止无用的邻居扫描，不改变合并规则和事件。遇到问题可设为 false。默认：true。");
++        comments.put("performance.block-entity-ticker-removal", "区块卸载时更快清理已经失效的方块实体更新项，减少内存和主线程开销。不会改变方块实体的更新顺序和行为；遇到问题可设为 false。默认：true。");
+         comments.put("parallelism.mob-spawning.enabled", "使用多个线程计算自然刷怪数量。刷怪位置、随机数、事件和实体创建仍在主线程执行；遇到问题可设为 false。默认：true。");
+         comments.put("parallelism.mob-spawning.workers", "自然刷怪统计使用的线程数。0 表示自动选择，普通服务器建议保持 0。默认：0。");
+         comments.put("parallelism.mob-spawning.minimum-entities", "实体少于这个数量时直接在主线程计算，避免线程切换反而变慢。建议保持默认。默认：512。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 8c46d0b699b768410e219d2772e6fee0965425f8..a092b241d3a4796fb2b2eca166add0c189dab17e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -20,6 +20,7 @@ public final class LeavesXRuntime {
+     private static boolean parallelAiTargetSearch = true;
+     private static int aiTargetSearchMinimumCandidates = 128;
+     private static boolean itemMergeOptimizations = true;
++    private static boolean blockEntityTickerRemovalOptimization = true;
+     private static boolean parallelMobSpawnCounting = true;
+     private static int mobSpawnCountingMinimumEntities = 512;
+     private static boolean adaptiveChunkUnloading = true;
+@@ -54,6 +55,7 @@ public final class LeavesXRuntime {
+         parallelAiTargetSearch = validated.parallelAiTargetSearch();
+         aiTargetSearchMinimumCandidates = validated.aiTargetSearchMinimumCandidates();
+         itemMergeOptimizations = validated.itemMergeOptimizations();
++        blockEntityTickerRemovalOptimization = validated.blockEntityTickerRemovalOptimization();
+         parallelMobSpawnCounting = validated.parallelMobSpawnCounting();
+         mobSpawnCountingMinimumEntities = validated.mobSpawnCountingMinimumEntities();
+         adaptiveChunkUnloading = validated.adaptiveChunkUnloading();
+@@ -114,6 +116,11 @@ public final class LeavesXRuntime {
+         return itemMergeOptimizations;
+     }
+ 
++    /** Returns whether removed block-entity tickers are compacted by their stable list indices. */
++    public static boolean blockEntityTickerRemovalOptimization() {
++        return blockEntityTickerRemovalOptimization;
++    }
++
+     /** Returns whether frozen natural-spawn counting inputs may be processed by LeavesX workers. */
+     public static boolean parallelMobSpawnCounting() {
+         return parallelMobSpawnCounting;
+diff --git a/src/main/java/org/leavesx/leavesx/performance/SortedIndexListCompactor.java b/src/main/java/org/leavesx/leavesx/performance/SortedIndexListCompactor.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..acda2c5fe3252618d33519cad8483d17ee3e18a7
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/performance/SortedIndexListCompactor.java
+@@ -0,0 +1,41 @@
++package org.leavesx.leavesx.performance;
++
++import it.unimi.dsi.fastutil.ints.IntList;
++import java.util.List;
++
++/** Removes entries from a random-access list using sorted indexes while preserving survivor order. */
++public final class SortedIndexListCompactor {
++
++    private SortedIndexListCompactor() {
++    }
++
++    /**
++     * Removes the supplied indexes with one stable in-place compaction pass.
++     *
++     * <p>The indexes must be unique, strictly increasing, and valid for the list at method entry. Callers that collect
++     * indexes during an indexed forward scan already satisfy this contract without sorting or allocating a set.</p>
++     */
++    public static <T> void removeSortedIndices(final List<T> list, final IntList sortedIndices) {
++        final int removalCount = sortedIndices.size();
++        if (removalCount == 0) {
++            return;
++        }
++
++        final int originalSize = list.size();
++        final int firstRemovedIndex = sortedIndices.getInt(0);
++        int writeIndex = firstRemovedIndex;
++        int removalCursor = 1;
++        int nextRemovedIndex = removalCursor < removalCount ? sortedIndices.getInt(removalCursor) : originalSize;
++
++        for (int readIndex = firstRemovedIndex + 1; readIndex < originalSize; readIndex++) {
++            if (readIndex == nextRemovedIndex) {
++                removalCursor++;
++                nextRemovedIndex = removalCursor < removalCount ? sortedIndices.getInt(removalCursor) : originalSize;
++                continue;
++            }
++            list.set(writeIndex++, list.get(readIndex));
++        }
++
++        list.subList(writeIndex, originalSize).clear();
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 737fb981b34c3dc7e645c6c65e5f54f062a4c9d9..dbd9121d879f1e2f1a90bc2f4c386e980e7206c0 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -69,11 +69,14 @@ class LeavesXConfigLoaderTest {
+ 
+         assertFalse(config.optimizedVarInt());
+         assertTrue(config.itemMergeOptimizations());
++        assertTrue(config.blockEntityTickerRemovalOptimization());
+         assertFalse(reloaded.node("performance", "optimized-varint").getBoolean());
+         assertTrue(reloaded.node("performance", "item-merge-optimizations").getBoolean());
++        assertTrue(reloaded.node("performance", "block-entity-ticker-removal").getBoolean());
+         assertTrue(reloaded.node("custom-extension", "retained").getBoolean());
+         assertTrue(upgraded.contains("# User-managed LeavesX settings."), upgraded);
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.item-merge-optimizations")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.block-entity-ticker-removal")));
+     }
+ 
+     @Test
+@@ -104,6 +107,7 @@ class LeavesXConfigLoaderTest {
+               skip-empty-events: false
+               ai-optimizations: false
+               item-merge-optimizations: false
++              block-entity-ticker-removal: false
+               chunk-unloading:
+                 enabled: false
+                 backlog-threshold: 2000
+@@ -129,6 +133,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.parallelAiTargetSearch());
+         assertEquals(256, config.aiTargetSearchMinimumCandidates());
+         assertFalse(config.itemMergeOptimizations());
++        assertFalse(config.blockEntityTickerRemovalOptimization());
+         assertFalse(config.adaptiveChunkUnloading());
+         assertEquals(2_000, config.chunkUnloadBacklogThreshold());
+         assertEquals(75, config.chunkUnloadMinimumPerTick());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/SortedIndexListCompactorTest.java b/src/test/java/org/leavesx/leavesx/performance/SortedIndexListCompactorTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..ec885ddf407ed5341c87824e96b919cc7baff59d
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/SortedIndexListCompactorTest.java
+@@ -0,0 +1,42 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import it.unimi.dsi.fastutil.ints.IntArrayList;
++import java.util.ArrayList;
++import java.util.List;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class SortedIndexListCompactorTest {
++
++    @Test
++    void removesSparseEntriesWithoutChangingSurvivorOrder() {
++        final List<String> values = new ArrayList<>(List.of("a", "b", "c", "d", "e", "f"));
++
++        SortedIndexListCompactor.removeSortedIndices(values, IntArrayList.of(1, 3, 5));
++
++        assertEquals(List.of("a", "c", "e"), values);
++    }
++
++    @Test
++    void removesLeadingTrailingAndAllEntries() {
++        final List<Integer> edgeValues = new ArrayList<>(List.of(0, 1, 2, 3));
++        SortedIndexListCompactor.removeSortedIndices(edgeValues, IntArrayList.of(0, 3));
++        assertEquals(List.of(1, 2), edgeValues);
++
++        final List<Integer> allValues = new ArrayList<>(List.of(0, 1, 2));
++        SortedIndexListCompactor.removeSortedIndices(allValues, IntArrayList.of(0, 1, 2));
++        assertEquals(List.of(), allValues);
++    }
++
++    @Test
++    void leavesListUntouchedWhenNoIndexesAreMarked() {
++        final List<String> values = new ArrayList<>(List.of("a", "b"));
++
++        SortedIndexListCompactor.removeSortedIndices(values, IntArrayList.of());
++
++        assertEquals(List.of("a", "b"), values);
++    }
++}

@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 04:52:59 +0800
+Subject: [PATCH] Optimize goal selection for bate95
+
+
+diff --git a/net/minecraft/world/entity/ai/goal/GoalSelector.java b/net/minecraft/world/entity/ai/goal/GoalSelector.java
+index 37dd98b83a91d67d69122578deda81fb9ca92a27..0fe3cdaa149f7c132b711f05dc26316bd0b4d9eb 100644
+--- a/net/minecraft/world/entity/ai/goal/GoalSelector.java
++++ b/net/minecraft/world/entity/ai/goal/GoalSelector.java
+@@ -25,6 +25,7 @@ public class GoalSelector {
+     private final Set<WrappedGoal> availableGoals = new ObjectLinkedOpenHashSet<>();
+     private static final Goal.Flag[] GOAL_FLAG_VALUES = Goal.Flag.values(); // Paper - remove streams from GoalSelector
+     private final ca.spottedleaf.moonrise.common.set.OptimizedSmallEnumSet<net.minecraft.world.entity.ai.goal.Goal.Flag> goalTypes = new ca.spottedleaf.moonrise.common.set.OptimizedSmallEnumSet<>(Goal.Flag.class); // Paper - remove streams from GoalSelector
++    private final WrappedGoal[] leavesX$lockedGoals = new WrappedGoal[GOAL_FLAG_VALUES.length];
+     private int curRate; // Paper - EAR 2
+ 
+     public void addGoal(final int prio, final Goal goal) {
+@@ -81,6 +82,24 @@ public class GoalSelector {
+         return true;
+     }
+ 
++    // LeavesX start - preserve Paper's replacement checks while avoiding repeated EnumMap lookups
++    private static boolean leavesX$goalCanBeReplacedForAllFlags(
++        final WrappedGoal goal,
++        long flagIterator,
++        final WrappedGoal[] lockedGoals
++    ) {
++        while (flagIterator != 0L) {
++            final int flagIndex = Long.numberOfTrailingZeros(flagIterator);
++            final WrappedGoal lockedGoal = lockedGoals[flagIndex];
++            if (!(lockedGoal == null ? NO_GOAL : lockedGoal).canBeReplacedBy(goal)) {
++                return false;
++            }
++            flagIterator ^= ca.spottedleaf.concurrentutil.util.IntegerUtil.getTrailingBit(flagIterator);
++        }
++        return true;
++    }
++    // LeavesX end - preserve Paper's replacement checks while avoiding repeated EnumMap lookups
++
+     public void tick() {
+         ProfilerFiller profiler = Profiler.get();
+         profiler.push("goalCleanup");
+@@ -91,37 +110,70 @@ public class GoalSelector {
+             }
+         }
+ 
+-        // LeavesX start - avoid allocating an entry iterator and predicate in the per-mob AI hot path
+-        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
+-            for (final Goal.Flag flag : GOAL_FLAG_VALUES) {
++        // LeavesX start - reuse an indexed view of locked goals in the per-mob AI hot path
++        final boolean optimizeGoalSelection = org.leavesx.leavesx.config.LeavesXRuntime.goalSelectorOptimization();
++        if (optimizeGoalSelection) {
++            for (int flagIndex = 0; flagIndex < GOAL_FLAG_VALUES.length; ++flagIndex) {
++                final Goal.Flag flag = GOAL_FLAG_VALUES[flagIndex];
+                 final WrappedGoal lockedGoal = this.lockedFlags.get(flag);
+                 if (lockedGoal != null && !lockedGoal.isRunning()) {
+                     this.lockedFlags.remove(flag);
++                    this.leavesX$lockedGoals[flagIndex] = null;
++                } else {
++                    this.leavesX$lockedGoals[flagIndex] = lockedGoal;
+                 }
+             }
+         } else {
+             this.lockedFlags.entrySet().removeIf(entry -> !entry.getValue().isRunning());
+         }
+-        // LeavesX end - avoid allocating an entry iterator and predicate in the per-mob AI hot path
++        // LeavesX end - reuse an indexed view of locked goals in the per-mob AI hot path
+         profiler.pop();
+         profiler.push("goalUpdate");
+ 
+-        for (WrappedGoal goal : this.availableGoals) {
+-            // Paper start
+-            if (!goal.isRunning() && !goalContainsAnyFlags(goal, this.goalTypes) && goalCanBeReplacedForAllFlags(goal, this.lockedFlags) && goal.canUse()) {
++        if (optimizeGoalSelection) {
++            for (final WrappedGoal goal : this.availableGoals) {
++                if (goal.isRunning()) {
++                    continue;
++                }
++                final long checkedFlags = goal.getFlags().getBackingSet();
++                if ((checkedFlags & this.goalTypes.getBackingSet()) != 0L
++                    || !leavesX$goalCanBeReplacedForAllFlags(goal, checkedFlags, this.leavesX$lockedGoals)
++                    || !goal.canUse()) {
++                    continue;
++                }
++
++                // Paper reads the flags again after canUse(); retain that observable ordering for custom goals.
+                 long flagIterator = goal.getFlags().getBackingSet();
+-                int wrappedGoalSize = goal.getFlags().size();
+-                for (int i = 0; i < wrappedGoalSize; ++i) {
+-                    final Goal.Flag flag = GOAL_FLAG_VALUES[Long.numberOfTrailingZeros(flagIterator)];
+-                    flagIterator ^= ca.spottedleaf.concurrentutil.util.IntegerUtil.getTrailingBit(flagIterator);
+-                    // Paper end
+-                    WrappedGoal currentGoal = this.lockedFlags.getOrDefault(flag, NO_GOAL);
+-                    currentGoal.stop();
++                while (flagIterator != 0L) {
++                    final int flagIndex = Long.numberOfTrailingZeros(flagIterator);
++                    final Goal.Flag flag = GOAL_FLAG_VALUES[flagIndex];
++                    final WrappedGoal currentGoal = this.leavesX$lockedGoals[flagIndex];
++                    (currentGoal == null ? NO_GOAL : currentGoal).stop();
+                     this.lockedFlags.put(flag, goal);
++                    this.leavesX$lockedGoals[flagIndex] = goal;
++                    flagIterator ^= ca.spottedleaf.concurrentutil.util.IntegerUtil.getTrailingBit(flagIterator);
+                 }
+ 
+                 goal.start();
+             }
++        } else {
++            for (WrappedGoal goal : this.availableGoals) {
++                // Paper start
++                if (!goal.isRunning() && !goalContainsAnyFlags(goal, this.goalTypes) && goalCanBeReplacedForAllFlags(goal, this.lockedFlags) && goal.canUse()) {
++                    long flagIterator = goal.getFlags().getBackingSet();
++                    int wrappedGoalSize = goal.getFlags().size();
++                    for (int i = 0; i < wrappedGoalSize; ++i) {
++                        final Goal.Flag flag = GOAL_FLAG_VALUES[Long.numberOfTrailingZeros(flagIterator)];
++                        flagIterator ^= ca.spottedleaf.concurrentutil.util.IntegerUtil.getTrailingBit(flagIterator);
++                        // Paper end
++                        WrappedGoal currentGoal = this.lockedFlags.getOrDefault(flag, NO_GOAL);
++                        currentGoal.stop();
++                        this.lockedFlags.put(flag, goal);
++                    }
++
++                    goal.start();
++                }
++            }
+         }
+ 
+         profiler.pop();

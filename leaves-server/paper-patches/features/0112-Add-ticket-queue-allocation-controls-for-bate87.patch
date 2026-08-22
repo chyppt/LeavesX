@@ -1,0 +1,155 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 02:43:45 +0800
+Subject: [PATCH] Add ticket queue allocation controls for bate87
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 653c50649e576da4a369437d19936c78edef99b0..c163389326384abb6ab59874f659502d37e75622 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -44,7 +44,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMask
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 18;
++    public static final int CURRENT_CONFIG_VERSION = 19;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 8df47fa9b42259ae641e4c0c4311de67b57f4621..3b5fe1d3158a2cf3b2b8548291de7181a3e4c73b 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：18。");
++        comments.put("config-version", "配置版本，请勿修改。默认：19。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 7965be75c99a87679f21cdcd81fe5bd519768168..da771f4c238f96931fed04d0dd294d3b7780c820 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -155,6 +155,10 @@ enum LeavesXOptimization {
+     CHUNK_NBT_LIST_CAPACITY(
+         "performance.chunk.nbt-list-capacity",
+         "按区块数据量预留 NBT 列表容量，关闭后使用原版流程。默认：true。"
++    ),
++    TICKET_QUEUE_ALLOCATION(
++        "performance.chunk.ticket-queue-allocation",
++        "无竞争票据更新时不创建临时列表，关闭后使用原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 2a89aa1d2acfb8a2ae16b070c9e767bae0495834..1b681a5c388a339525668301604f9e266f22685f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -466,6 +466,11 @@ public final class LeavesXRuntime {
+         return enabled(LeavesXOptimization.CHUNK_NBT_LIST_CAPACITY);
+     }
+ 
++    /** Returns whether uncontended ticket-queue scans may defer allocating their conflict list. */
++    public static boolean ticketQueueAllocationOptimization() {
++        return enabled(LeavesXOptimization.TICKET_QUEUE_ALLOCATION);
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(fineGrainedOptimizationMask);
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 730156e9acf95275df949ce9c68e68d3b2e9f598..ec6aa1623e0b202dd2f43bbc2fe8afb192af495b 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -294,6 +294,7 @@ class LeavesXConfigLoaderTest {
+                 hopper-entity-queries: false
+               chunk:
+                 nbt-list-capacity: false
++                ticket-queue-allocation: false
+                 unload-serialization: false
+               entity-queries:
+                 pressure-plate-scans: false
+@@ -308,10 +309,11 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_ENTITY_QUERIES));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_NBT_LIST_CAPACITY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_SERIALIZATION));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.TICKET_QUEUE_ALLOCATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 10,
++            LeavesXConfig.fineGrainedOptimizationCount() - 11,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -325,6 +327,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
+             assertFalse(LeavesXRuntime.chunkNbtListCapacityOptimization());
+             assertFalse(LeavesXRuntime.chunkUnloadSerializationOptimization());
++            assertFalse(LeavesXRuntime.ticketQueueAllocationOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.foxItemSearchOptimization());
+             assertTrue(LeavesXRuntime.wardenTargetSensorOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/TicketUpdateQueueAllocationHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/TicketUpdateQueueAllocationHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..8e5ed6519ea4631f8e2afdaf5067b432aaae05ef
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/TicketUpdateQueueAllocationHotPathTest.java
+@@ -0,0 +1,53 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++import org.objectweb.asm.tree.TypeInsnNode;
++
++/** Verifies ticket queue scans retain lazy and vanilla conflict-list allocation paths. */
++@Normal
++class TicketUpdateQueueAllocationHotPathTest {
++
++    private static final String UPDATE_QUEUE_CLASS =
++        "ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ThreadedTicketLevelPropagator$UpdateQueue";
++
++    @Test
++    void queueScanDefersAllocationWithoutChangingWaitSemantics() throws IOException {
++        final MethodNode method = method(classNode(UPDATE_QUEUE_CLASS), "acquireNextOrWait");
++        final MethodInsnNode[] calls = Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++
++        assertTrue(Arrays.stream(calls).anyMatch(call -> call.name.equals("ticketQueueAllocationOptimization")));
++        assertTrue(Arrays.stream(calls).anyMatch(call -> call.name.equals("getAndSetUpdatingVolatile")));
++        assertTrue(Arrays.stream(calls).anyMatch(call -> call.name.equals("await")));
++        assertTrue(Arrays.stream(method.instructions.toArray())
++            .filter(TypeInsnNode.class::isInstance)
++            .map(TypeInsnNode.class::cast)
++            .filter(instruction -> instruction.getOpcode() == Opcodes.NEW)
++            .anyMatch(instruction -> instruction.desc.equals("java/util/ArrayList")));
++    }
++
++    private static ClassNode classNode(final String binaryName) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(binaryName).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 11:03:37 +0800
+Subject: [PATCH] Optimize world tick attribution and entity state paths for
+ bate34
+
+
+diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
+index c4c043d5276b05ea85f09b62c5654e464e41af87..64e14a0ffd0756ea99b5f4664db0ced64f6cb6bc 100644
+--- a/net/minecraft/server/level/ServerEntity.java
++++ b/net/minecraft/server/level/ServerEntity.java
+@@ -202,23 +202,28 @@ public class ServerEntity {
+ 
+                 if (this.entity.needsSync || this.trackDelta || this.entity instanceof LivingEntity && ((LivingEntity)this.entity).isFallFlying()) {
+                     Vec3 movement = this.entity.getDeltaMovement();
+-                    double diff = movement.distanceToSqr(this.lastSentMovement);
+-                    if (diff > 1.0E-7 || diff > 0.0 && movement.lengthSqr() == 0.0) {
+-                        this.lastSentMovement = movement;
+-                        if (this.entity instanceof AbstractHurtingProjectile projectile) {
+-                            this.synchronizer
+-                                .sendToTrackingPlayers(
+-                                    new ClientboundBundlePacket(
+-                                        List.of(
+-                                            new ClientboundSetEntityMotionPacket(this.entity.getId(), this.lastSentMovement),
+-                                            new ClientboundProjectilePowerPacket(projectile.getId(), projectile.accelerationPower)
++                    // LeavesX start - Vec3 is immutable, so reference equality proves that motion is unchanged.
++                    if (!org.leavesx.leavesx.config.LeavesXRuntime.entityStateOptimizations()
++                        || movement != this.lastSentMovement) {
++                        double diff = movement.distanceToSqr(this.lastSentMovement);
++                        if (diff > 1.0E-7 || diff > 0.0 && movement.lengthSqr() == 0.0) {
++                            this.lastSentMovement = movement;
++                            if (this.entity instanceof AbstractHurtingProjectile projectile) {
++                                this.synchronizer
++                                    .sendToTrackingPlayers(
++                                        new ClientboundBundlePacket(
++                                            List.of(
++                                                new ClientboundSetEntityMotionPacket(this.entity.getId(), this.lastSentMovement),
++                                                new ClientboundProjectilePowerPacket(projectile.getId(), projectile.accelerationPower)
++                                            )
+                                         )
+-                                    )
+-                                );
+-                        } else {
+-                            this.synchronizer.sendToTrackingPlayers(new ClientboundSetEntityMotionPacket(this.entity.getId(), this.lastSentMovement));
++                                    );
++                            } else {
++                                this.synchronizer.sendToTrackingPlayers(new ClientboundSetEntityMotionPacket(this.entity.getId(), this.lastSentMovement));
++                            }
+                         }
+                     }
++                    // LeavesX end - Vec3 is immutable, so reference equality proves that motion is unchanged.
+                 }
+ 
+                 if (packet != null) {
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index 3fabf25ed5d8b46aa05a99a4075a74b630793e00..0015babdde0f9acfb03e7592f20ef4f407bc5808 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -842,7 +842,12 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         }
+ 
+         profiler.popPush("chunkSource");
++        long leavesXWorldPhaseStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
+         this.getChunkSource().tick(haveTime, true);
++        org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.endPhase(
++            org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.WORLD_CHUNKS,
++            leavesXWorldPhaseStarted
++        );
+         profiler.popPush("blockEvents");
+         if (runs) {
+             this.runBlockEvents();
+@@ -860,6 +865,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         }
+ 
+         if (this.emptyTime < 300) {
++            leavesXWorldPhaseStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
+             profiler.push("entities");
+             if (this.dragonFight != null && runs) {
+                 profiler.push("dragonFight");
+@@ -916,12 +922,21 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+                         }
+                     }
+                 );
++            org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.endPhase(
++                org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.WORLD_ENTITIES,
++                leavesXWorldPhaseStarted
++            );
+             if (this.paperConfig().unsupportedSettings.ticking.blockEntities) { // Paper - option to disable ticking
+             profiler.popPush("blockEntities");
+             if (org.leavesmc.leaves.LeavesConfig.modify.elytraAeronautics.enableNoChunkLoad) {
+                 org.leavesmc.leaves.util.ElytraAeronauticsHelper.tick(this);
+             }
++            leavesXWorldPhaseStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
+             this.tickBlockEntities();
++            org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.endPhase(
++                org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.WORLD_BLOCK_ENTITIES,
++                leavesXWorldPhaseStarted
++            );
+             profiler.pop();
+             } // Paper - option to disable ticking
+             this.spigotConfig.currentPrimedTnt = 0; // Spigot
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 35428a14f217c2f51e4592edb948ebe991131ae9..12d9187ab72f34207005d873d7e902a27ca97f20 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -3841,7 +3841,12 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         if (this.level() instanceof ServerLevel serverLevel) {
+             profiler.push("freezing");
+             if ((!this.isInPowderSnow || !this.canFreeze()) && !this.freezeLocked) { // Paper - Freeze Tick Lock API
+-                this.setTicksFrozen(Math.max(0, this.getTicksFrozen() - 2));
++                // LeavesX start - SynchedEntityData already treats an unchanged value as a no-op; avoid the call entirely.
++                final int ticksFrozen = this.getTicksFrozen();
++                if (!org.leavesx.leavesx.config.LeavesXRuntime.entityStateOptimizations() || ticksFrozen != 0) {
++                    this.setTicksFrozen(Math.max(0, ticksFrozen - 2));
++                }
++                // LeavesX end - SynchedEntityData already treats an unchanged value as a no-op; avoid the call entirely.
+             }
+ 
+             this.removeFrost();

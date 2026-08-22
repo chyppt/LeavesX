@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 15 Aug 2026 13:14:21 +0800
+Subject: [PATCH] Add bate17 spawn accounting regression coverage
+
+
+diff --git a/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java b/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java
+index a239e44d09e20470fa52e884031071b67ddf7e4b..60fcc484fe29076dcd9dbebbeeb3786777f433bd 100644
+--- a/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java
++++ b/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java
+@@ -72,4 +72,32 @@ public final class MobSpawnCountAccumulatorTest {
+             assertArrayEquals(entry.getValue(), parallel.get(entry.getLongKey()));
+         }
+     }
++
++    @Test
++    void streamingAggregationMatchesTheSnapshotPath() {
++        final int size = 4_096;
++        final long[] chunkKeys = new long[size];
++        final byte[] categories = new byte[size];
++        final MobCategory[] categoryValues = MobCategory.values();
++        final Long2ObjectOpenHashMap<int[]> streaming = new Long2ObjectOpenHashMap<>();
++
++        for (int index = 0; index < size; index++) {
++            final long chunkKey = ChunkPos.pack(
++                Math.floorMod(index * 13, 97) - 48,
++                Math.floorMod(index * 29, 89) - 44
++            );
++            final MobCategory category = categoryValues[Math.floorMod(index * 7, categoryValues.length)];
++            chunkKeys[index] = chunkKey;
++            categories[index] = (byte)category.ordinal();
++            MobSpawnCountAccumulator.add(streaming, chunkKey, category);
++        }
++
++        final MobSpawnCountAccumulator.Inputs inputs = new MobSpawnCountAccumulator.Inputs(chunkKeys, categories, size);
++        final Long2ObjectOpenHashMap<int[]> snapshot = MobSpawnCountAccumulator.count(inputs, false, 128);
++
++        assertEquals(snapshot.size(), streaming.size());
++        for (final Long2ObjectMap.Entry<int[]> entry : snapshot.long2ObjectEntrySet()) {
++            assertArrayEquals(entry.getValue(), streaming.get(entry.getLongKey()));
++        }
++    }
+ }

@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 16:20:13 +0800
+Subject: [PATCH] Optimize block entity ticker coordinate access
+
+
+diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
+index 83a4cad650cf8fb08970843f15661c38a6971253..c5a799a2c63eb16677684a6bc8030adb04f29d14 100644
+--- a/net/minecraft/world/level/chunk/LevelChunk.java
++++ b/net/minecraft/world/level/chunk/LevelChunk.java
+@@ -949,28 +949,31 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+     private class BoundTickingBlockEntity<T extends BlockEntity> implements TickingBlockEntity {
+         private final T blockEntity;
+         private final BlockEntityTicker<T> ticker;
++        private final BlockPos cachedPos;
+         private boolean loggedInvalidBlockState;
+ 
+         private BoundTickingBlockEntity(final T blockEntity, final BlockEntityTicker<T> ticker) {
+             this.blockEntity = blockEntity;
+             this.ticker = ticker;
++            // BlockEntity stores an immutable final position, so resolving it once is behavior-equivalent.
++            this.cachedPos = blockEntity.getBlockPos();
+         }
+ 
+         @Override
+         public void tick() {
+             if (!this.blockEntity.isRemoved() && this.blockEntity.hasLevel()) {
+-                BlockPos pos = this.blockEntity.getBlockPos();
++                BlockPos pos = this.cachedPos;
+                 if (LevelChunk.this.isTicking(pos)) {
+                     try {
+                         ProfilerFiller profiler = Profiler.get();
+                         profiler.push(this::getType);
+                         BlockState blockState = LevelChunk.this.getBlockState(pos);
+                         if (this.blockEntity.getType().isValid(blockState)) {
+-                            this.ticker.tick(LevelChunk.this.level, this.blockEntity.getBlockPos(), blockState, this.blockEntity);
++                            this.ticker.tick(LevelChunk.this.level, pos, blockState, this.blockEntity);
+                             this.loggedInvalidBlockState = false;
+                             // Paper start - Remove the Block Entity if it's invalid
+                         } else {
+-                            LevelChunk.this.removeBlockEntity(this.getPos());
++                            LevelChunk.this.removeBlockEntity(pos);
+                             if (!this.loggedInvalidBlockState) {
+                             // Paper end - Remove the Block Entity if it's invalid
+                             this.loggedInvalidBlockState = true;
+@@ -1006,7 +1009,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+ 
+         @Override
+         public BlockPos getPos() {
+-            return this.blockEntity.getBlockPos();
++            return this.cachedPos;
+         }
+ 
+         @Override

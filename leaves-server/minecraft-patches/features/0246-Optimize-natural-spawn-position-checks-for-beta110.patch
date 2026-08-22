@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 11:49:36 +0800
+Subject: [PATCH] Optimize natural spawn position checks for beta110
+
+
+diff --git a/net/minecraft/world/level/NaturalSpawner.java b/net/minecraft/world/level/NaturalSpawner.java
+index 13969ae1cfa2f7a18315f77d6583369412089d3b..18f104737aaec5f078fe1eab50fa0a22c43e8252 100644
+--- a/net/minecraft/world/level/NaturalSpawner.java
++++ b/net/minecraft/world/level/NaturalSpawner.java
+@@ -392,6 +392,22 @@ public final class NaturalSpawner {
+         }
+ 
+         LevelData.RespawnData respawnData = level.getRespawnData();
++        if (org.leavesx.leavesx.config.LeavesXRuntime.naturalSpawnPositionChecksOptimization()) {
++            final int candidateX = pos.getX();
++            final int candidateY = pos.getY();
++            final int candidateZ = pos.getZ();
++            if (respawnData.dimension() == level.dimension()
++                && leavesX$isWithinSpawnPointExclusionRadius(respawnData.pos(), candidateX, candidateY, candidateZ)) {
++                return false;
++            }
++
++            final ChunkPos currentChunkPos = chunk.getPos();
++            if (leavesX$isInChunk(candidateX, candidateZ, currentChunkPos)) {
++                return true;
++            }
++            return level.canSpawnEntitiesInChunk(new ChunkPos(candidateX >> 4, candidateZ >> 4));
++        }
++
+         if (respawnData.dimension() == level.dimension()
+             && respawnData.pos().closerToCenterThan(new Vec3(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5), 24.0)) {
+             return false;
+@@ -401,6 +417,20 @@ public final class NaturalSpawner {
+         return Objects.equals(chunkPos, chunk.getPos()) || level.canSpawnEntitiesInChunk(chunkPos);
+     }
+ 
++    // These helpers mirror the existing Vec3 and ChunkPos calculations without allocating candidate objects.
++    static boolean leavesX$isWithinSpawnPointExclusionRadius(
++        final BlockPos spawnPoint,
++        final int candidateX,
++        final int candidateY,
++        final int candidateZ
++    ) {
++        return spawnPoint.distToCenterSqr(candidateX + 0.5D, candidateY, candidateZ + 0.5D) < 576.0D;
++    }
++
++    static boolean leavesX$isInChunk(final int candidateX, final int candidateZ, final ChunkPos chunkPos) {
++        return (candidateX >> 4) == chunkPos.x() && (candidateZ >> 4) == chunkPos.z();
++    }
++
+     // Paper start - PreCreatureSpawnEvent
+     private enum PreSpawnStatus {
+         FAIL,

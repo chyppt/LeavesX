@@ -1,0 +1,248 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 06:29:42 +0800
+Subject: [PATCH] Optimize server fire state checks for bate100
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index cd5edf4a22cc4158c8309f52c61431c0ac53b874..6e96c75dfdc0813d17dccc9d28aa7831c0f36e7a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 30;
++    public static final int CURRENT_CONFIG_VERSION = 31;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index dc5363672a98288fa90084b9c7500bb1025aaa5c..ba1dd9253e87192a161ff7a0018f058bde4556be 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：30。");
++        comments.put("config-version", "配置版本，请勿修改。默认：31。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 6491242cd251d0b8112d9d8aebc386d4d03d8796..af6a998e2226fea2c11785b9c91c390a603f9022 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -203,6 +203,10 @@ enum LeavesXOptimization {
+     EXPERIENCE_ORB_MERGE_PARAMETERS(
+         "performance.entity-queries.experience-orb-merge-parameters",
+         "缓存经验球合并参数，关闭后每次候选判断重新读取。默认：true。"
++    ),
++    SERVER_FIRE_STATE(
++        "performance.entity-update.server-fire-state",
++        "无燃烧 Tick 时跳过实体防火检查，关闭后使用原版顺序。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index dfb4e45add9c8bf2bab9fc4ec005df659e88ea3e..d6adcb09dff0f8d5d5512d24bd07d4c3f46fa300 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -50,6 +50,7 @@ public final class LeavesXRuntime {
+     private static boolean brainTickTraversalOptimization = true;
+     private static boolean sensingCacheOptimization = true;
+     private static boolean stationaryEntitySpeedOptimization = true;
++    private static boolean serverFireStateOptimization = true;
+     private static long fineGrainedOptimizationMaskLow = LeavesXOptimization.allEnabledMaskLow();
+     private static long fineGrainedOptimizationMaskHigh = LeavesXOptimization.allEnabledMaskHigh();
+ 
+@@ -112,6 +113,7 @@ public final class LeavesXRuntime {
+         brainTickTraversalOptimization = validated.optimizationEnabled(LeavesXOptimization.BRAIN_TICK_TRAVERSAL);
+         sensingCacheOptimization = validated.optimizationEnabled(LeavesXOptimization.SENSING_CACHE);
+         stationaryEntitySpeedOptimization = validated.optimizationEnabled(LeavesXOptimization.STATIONARY_ENTITY_SPEED);
++        serverFireStateOptimization = validated.optimizationEnabled(LeavesXOptimization.SERVER_FIRE_STATE);
+         fineGrainedOptimizationMaskLow = validated.fineGrainedOptimizationMaskLow();
+         fineGrainedOptimizationMaskHigh = validated.fineGrainedOptimizationMaskHigh();
+         configuration = validated;
+@@ -538,6 +540,11 @@ public final class LeavesXRuntime {
+         return entityStateOptimizations && stationaryEntitySpeedOptimization;
+     }
+ 
++    /** Returns whether server-side fire checks may reject zero fire ticks before immunity checks. */
++    public static boolean serverFireStateOptimization() {
++        return entityStateOptimizations && serverFireStateOptimization;
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(fineGrainedOptimizationMaskLow, fineGrainedOptimizationMaskHigh);
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/EntityFireStateOptimizationTest.java b/src/test/java/org/leavesx/leavesx/config/EntityFireStateOptimizationTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3f25a7740342e8a5b6e4ace8c4409e70166dcfa9
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/config/EntityFireStateOptimizationTest.java
+@@ -0,0 +1,110 @@
++package org.leavesx.leavesx.config;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.ArgumentMatchers.anyInt;
++import static org.mockito.Mockito.CALLS_REAL_METHODS;
++import static org.mockito.Mockito.doReturn;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++
++import java.io.IOException;
++import java.lang.reflect.Field;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.level.Level;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++
++/** Verifies server fire-state short-circuiting while preserving the client and Paper paths. */
++@Normal
++class EntityFireStateOptimizationTest {
++
++    @TempDir
++    Path tempDir;
++
++    @Test
++    void optimizedServerPathSkipsImmunityForZeroFireTicks() throws Exception {
++        final Entity entity = this.entity(false, false, false, 0);
++        try {
++            LeavesXRuntime.publish(this.configuration(true, "optimized.yml"));
++            assertFalse(entity.isOnFire());
++            verify(entity, never()).fireImmune();
++            verify(entity, never()).getSharedFlag(anyInt());
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void optimizedServerPathStillChecksImmunityWhenBurning() throws Exception {
++        final Entity vulnerable = this.entity(false, false, false, 20);
++        final Entity immune = this.entity(false, true, false, 20);
++        try {
++            LeavesXRuntime.publish(this.configuration(true, "burning.yml"));
++            assertTrue(vulnerable.isOnFire());
++            assertFalse(immune.isOnFire());
++            verify(vulnerable).fireImmune();
++            verify(immune).fireImmune();
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void disabledOptimizationKeepsThePaperEvaluationPath() throws Exception {
++        final Entity entity = this.entity(false, false, false, 0);
++        try {
++            LeavesXRuntime.publish(this.configuration(false, "fallback.yml"));
++            assertFalse(entity.isOnFire());
++            verify(entity).fireImmune();
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void clientSharedFireFlagKeepsItsOriginalMeaning() throws Exception {
++        final Entity entity = this.entity(true, false, true, 0);
++        try {
++            LeavesXRuntime.publish(this.configuration(true, "client.yml"));
++            assertTrue(entity.isOnFire());
++            verify(entity).fireImmune();
++            verify(entity).getSharedFlag(anyInt());
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    private Entity entity(
++        final boolean clientSide,
++        final boolean fireImmune,
++        final boolean sharedFireFlag,
++        final int remainingFireTicks
++    ) throws ReflectiveOperationException {
++        final Entity entity = mock(Entity.class, CALLS_REAL_METHODS);
++        final Level level = mock(Level.class);
++        doReturn(level).when(entity).level();
++        doReturn(clientSide).when(level).isClientSide();
++        doReturn(fireImmune).when(entity).fireImmune();
++        doReturn(sharedFireFlag).when(entity).getSharedFlag(anyInt());
++        final Field field = Entity.class.getDeclaredField("remainingFireTicks");
++        field.setAccessible(true);
++        field.setInt(entity, remainingFireTicks);
++        return entity;
++    }
++
++    private LeavesXConfig configuration(final boolean optimized, final String fileName) throws IOException {
++        final Path path = this.tempDir.resolve(fileName);
++        Files.writeString(path, """
++            config-version: 1
++            performance:
++              entity-update:
++                server-fire-state: %s
++            """.formatted(optimized));
++        return LeavesXConfigLoader.load(path);
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 9f2a91e38c4bbdf96b928b8171aecd67b4b1fa74..61b6f0dc62cbd21d87a9c6a96bb89f99046e9587 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -306,6 +306,7 @@ class LeavesXConfigLoaderTest {
+               entity-sync:
+                 lazy-equipment-lists: false
+               entity-update:
++                server-fire-state: false
+                 stationary-speed-vector: false
+                 tick-diagnostic-state: false
+               network:
+@@ -332,6 +333,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.TICKET_QUEUE_ALLOCATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_LOAD_OPTIONAL_CHAINS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_SYNC_EQUIPMENT_LISTS));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.SERVER_FIRE_STATE));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.STATIONARY_ENTITY_SPEED));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_TICK_DIAGNOSTIC_STATE));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_PACKET_ASSEMBLY));
+@@ -339,7 +341,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 22,
++            LeavesXConfig.fineGrainedOptimizationCount() - 23,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -361,6 +363,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.ticketQueueAllocationOptimization());
+             assertFalse(LeavesXRuntime.entityLoadOptionalChainsOptimization());
+             assertFalse(LeavesXRuntime.entitySyncEquipmentListsOptimization());
++            assertFalse(LeavesXRuntime.serverFireStateOptimization());
+             assertFalse(LeavesXRuntime.stationaryEntitySpeedOptimization());
+             assertFalse(LeavesXRuntime.entityTickDiagnosticStateOptimization());
+             assertFalse(LeavesXRuntime.chunkPacketAssemblyOptimization());
+@@ -393,6 +396,7 @@ class LeavesXConfigLoaderTest {
+                 experience-orb-merge-parameters: true
+                 pressure-plate-scans: true
+               entity-update:
++                server-fire-state: true
+                 stationary-speed-vector: true
+             """));
+ 
+@@ -404,6 +408,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.catSpawningHomeCountOptimization());
+             assertFalse(LeavesXRuntime.catSpawningEntityDensityOptimization());
+             assertFalse(LeavesXRuntime.experienceOrbMergeParametersOptimization());
++            assertFalse(LeavesXRuntime.serverFireStateOptimization());
+             assertFalse(LeavesXRuntime.stationaryEntitySpeedOptimization());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());

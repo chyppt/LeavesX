@@ -1,0 +1,123 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 20:42:30 +0800
+Subject: [PATCH] Bound cat spawning density lookups for bate58
+
+
+diff --git a/net/minecraft/world/entity/ai/village/poi/PoiManager.java b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
+index a67c3ccfd24172df1bd2e440a48d7e5f262af82f..e126a7acb81b2be97e14c51619ae6629ab42118f 100644
+--- a/net/minecraft/world/entity/ai/village/poi/PoiManager.java
++++ b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
+@@ -206,6 +206,33 @@ public class PoiManager extends SectionStorage<PoiSection, PoiSection.Packed> im
+         return this.getInRange(predicate, center, radius, occupancy).count();
+     }
+ 
++    /** Checks a count threshold without collecting POIs that cannot change the result. */
++    public boolean leavesX$hasAtLeastInRange(
++        final Predicate<Holder<PoiType>> predicate,
++        final BlockPos center,
++        final int radius,
++        final PoiManager.Occupancy occupancy,
++        final int requiredCount
++    ) {
++        if (requiredCount <= 0) {
++            return true;
++        }
++        final List<PoiRecord> matches = new java.util.ArrayList<>(requiredCount);
++        ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.findAnyPoiRecords(
++            (PoiManager)(Object)this,
++            predicate,
++            (Predicate<BlockPos>)null,
++            center,
++            radius,
++            (double)((long)radius * (long)radius),
++            occupancy,
++            ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.LOAD_FOR_SEARCHING,
++            requiredCount,
++            matches
++        );
++        return matches.size() >= requiredCount;
++    }
++
+     public boolean existsAtPosition(final ResourceKey<PoiType> poiType, final BlockPos blockPos) {
+         return this.exists(blockPos, p -> p.is(poiType));
+     }
+diff --git a/net/minecraft/world/entity/npc/CatSpawner.java b/net/minecraft/world/entity/npc/CatSpawner.java
+index 3c745f35075a59a6055ba2d43b364b238089138f..1984e1ead1664fd01a41b5dd0622bd5be51f7e1c 100644
+--- a/net/minecraft/world/entity/npc/CatSpawner.java
++++ b/net/minecraft/world/entity/npc/CatSpawner.java
+@@ -6,6 +6,7 @@ import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.tags.StructureTags;
+ import net.minecraft.util.RandomSource;
+ import net.minecraft.world.entity.EntitySpawnReason;
++import net.minecraft.world.entity.EntitySelector;
+ import net.minecraft.world.entity.EntityType;
+ import net.minecraft.world.entity.SpawnPlacements;
+ import net.minecraft.world.entity.ai.village.poi.PoiManager;
+@@ -13,10 +14,16 @@ import net.minecraft.world.entity.ai.village.poi.PoiTypes;
+ import net.minecraft.world.entity.animal.feline.Cat;
+ import net.minecraft.world.entity.player.Player;
+ import net.minecraft.world.level.CustomSpawner;
++import net.minecraft.world.level.Level;
++import net.minecraft.world.level.entity.EntityTypeTest;
+ import net.minecraft.world.phys.AABB;
+ 
+ public class CatSpawner implements CustomSpawner {
+     private static final int TICK_DELAY = 1200;
++    private static final int VILLAGE_RADIUS = 48;
++    private static final int REQUIRED_OCCUPIED_HOMES = 5;
++    private static final int VILLAGE_CAT_LIMIT = 5;
++    private static final int HUT_RADIUS = 16;
+     private int nextTick;
+ 
+     @Override
+@@ -45,19 +52,42 @@ public class CatSpawner implements CustomSpawner {
+     }
+ 
+     private void spawnInVillage(final ServerLevel serverLevel, final BlockPos spawnPos) {
+-        int radius = 48;
+-        if (serverLevel.getPoiManager().getCountInRange(p -> p.is(PoiTypes.HOME), spawnPos, 48, PoiManager.Occupancy.IS_OCCUPIED) > 4L) {
+-            List<Cat> cats = serverLevel.getEntitiesOfClass(Cat.class, new AABB(spawnPos).inflate(48.0, 8.0, 48.0));
+-            if (cats.size() < 5) {
++        final boolean enoughOccupiedHomes = org.leavesx.leavesx.config.LeavesXRuntime.mobSpawningOptimizations()
++            ? serverLevel.getPoiManager().leavesX$hasAtLeastInRange(
++                poi -> poi.is(PoiTypes.HOME), spawnPos, VILLAGE_RADIUS, PoiManager.Occupancy.IS_OCCUPIED, REQUIRED_OCCUPIED_HOMES
++            )
++            : serverLevel.getPoiManager()
++                .getCountInRange(poi -> poi.is(PoiTypes.HOME), spawnPos, VILLAGE_RADIUS, PoiManager.Occupancy.IS_OCCUPIED)
++                >= REQUIRED_OCCUPIED_HOMES;
++        if (enoughOccupiedHomes) {
++            final AABB catArea = new AABB(spawnPos).inflate(VILLAGE_RADIUS, 8.0, VILLAGE_RADIUS);
++            final int catCount;
++            if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++                try (Level.LeavesXEntityQueryBuffer scan = Level.leavesX$acquireEntityQueryBuffer()) {
++                    catCount = scan.countUpTo(
++                        serverLevel,
++                        EntityTypeTest.forClass(Cat.class),
++                        catArea,
++                        EntitySelector.NO_SPECTATORS,
++                        VILLAGE_CAT_LIMIT
++                    );
++                }
++            } else {
++                List<Cat> cats = serverLevel.getEntitiesOfClass(Cat.class, catArea);
++                catCount = cats.size();
++            }
++            if (catCount < VILLAGE_CAT_LIMIT) {
+                 this.spawnCat(spawnPos, serverLevel, false);
+             }
+         }
+     }
+ 
+     private void spawnInHut(final ServerLevel level, final BlockPos spawnPos) {
+-        int radius = 16;
+-        List<Cat> cats = level.getEntitiesOfClass(Cat.class, new AABB(spawnPos).inflate(16.0, 8.0, 16.0));
+-        if (cats.isEmpty()) {
++        final AABB catArea = new AABB(spawnPos).inflate(HUT_RADIUS, 8.0, HUT_RADIUS);
++        final boolean hasCat = org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()
++            ? level.leavesX$hasEntityOfClass(Cat.class, catArea)
++            : !level.getEntitiesOfClass(Cat.class, catArea).isEmpty();
++        if (!hasCat) {
+             this.spawnCat(spawnPos, level, true);
+         }
+     }

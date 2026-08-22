@@ -1,0 +1,158 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 11:33:15 +0800
+Subject: [PATCH] Add chunk spawn range optimization setting
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 8fa92d992dc94bdeed970b54e12e42f9c835d28c..86b281a1782d04ffda9d415cd7e39b0f8f56a8be 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -20,6 +20,7 @@ public record LeavesXConfig(
+     int mobSpawnCountingMinimumEntities,
+     boolean itemMergeOptimizations,
+     boolean blockEntityTickerRemovalOptimization,
++    boolean chunkSpawnRangeOptimization,
+     boolean adaptiveChunkUnloading,
+     int chunkUnloadBacklogThreshold,
+     int chunkUnloadMinimumPerTick,
+@@ -76,6 +77,7 @@ public record LeavesXConfig(
+             true,
+             true,
+             true,
++            true,
+             1_000,
+             100,
+             500
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 3e2ea8ebb6ccda9f5c3bc55f15edd661331fcd54..398de2f1208f3e0493951d08e128b959177dc209 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -26,14 +26,15 @@ public final class LeavesXConfigBootstrap {
+         org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(config.mobSpawnCountingWorkers());
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+-            "LeavesX behavior-equivalent optimizations: optimized VarInt {}, immutable cache hashes {}, resource identifier cache {}, skip empty events {}, AI hot paths {}, item merge scan {}, block-entity ticker compaction {}",
++            "LeavesX behavior-equivalent optimizations: optimized VarInt {}, immutable cache hashes {}, resource identifier cache {}, skip empty events {}, AI hot paths {}, item merge scan {}, block-entity ticker compaction {}, chunk spawn-range math {}",
+             config.optimizedVarInt(),
+             config.immutableCacheOptimizations(),
+             config.resourceIdentifierCache(),
+             config.skipEmptyEvents(),
+             config.aiOptimizations(),
+             config.itemMergeOptimizations(),
+-            config.blockEntityTickerRemovalOptimization()
++            config.blockEntityTickerRemovalOptimization(),
++            config.chunkSpawnRangeOptimization()
+         );
+         LOGGER.info(
+             "LeavesX natural-spawn counting: {}, {} worker threads, parallel from {} entities",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index dd00328b3ac6210f4f95af2eaf734712da912173..b778736f49183cd7f587afd1967898bafa6b7897 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -125,6 +125,11 @@ public final class LeavesXConfigLoader {
+                     "performance.block-entity-ticker-removal",
+                     true
+                 ),
++                readBoolean(
++                    node.node("performance", "chunk-spawn-range-optimization"),
++                    "performance.chunk-spawn-range-optimization",
++                    true
++                ),
+                 readBoolean(
+                     node.node("performance", "chunk-unloading", "enabled"),
+                     "performance.chunk-unloading.enabled",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 2c7f8025ae6fe24f0604036aaf5d10b1af31c1f9..463272174a84530f03dcd022b2d5bebcd86aff0b 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -113,6 +113,12 @@ public final class LeavesXConfigWriter {
+             config.blockEntityTickerRemovalOptimization(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "chunk-spawn-range-optimization"),
++            "performance.chunk-spawn-range-optimization",
++            config.chunkSpawnRangeOptimization(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("parallelism", "mob-spawning", "enabled"),
+             "parallelism.mob-spawning.enabled",
+@@ -180,6 +186,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.skip-empty-events", "没有插件监听对应事件时，不创建无用的事件对象。有插件监听时仍会正常调用；遇到问题可设为 false。默认：true。");
+         comments.put("performance.item-merge-optimizations", "物品堆达到上限后停止无用的邻居扫描，不改变合并规则和事件。遇到问题可设为 false。默认：true。");
+         comments.put("performance.block-entity-ticker-removal", "区块卸载时更快清理已经失效的方块实体更新项，减少内存和主线程开销。不会改变方块实体的更新顺序和行为；遇到问题可设为 false。默认：true。");
++        comments.put("performance.chunk-spawn-range-optimization", "判断区块是否靠近玩家时复用区块中心坐标，减少刷怪判断开销。不会改变刷怪范围、事件或随机数；遇到问题可设为 false。默认：true。");
+         comments.put("parallelism.mob-spawning.enabled", "使用多个线程计算自然刷怪数量。刷怪位置、随机数、事件和实体创建仍在主线程执行；遇到问题可设为 false。默认：true。");
+         comments.put("parallelism.mob-spawning.workers", "自然刷怪统计使用的线程数。0 表示自动选择，普通服务器建议保持 0。默认：0。");
+         comments.put("parallelism.mob-spawning.minimum-entities", "实体少于这个数量时直接在主线程计算，避免线程切换反而变慢。建议保持默认。默认：512。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index a092b241d3a4796fb2b2eca166add0c189dab17e..e85709963f8b92fbd2baca79e303d119c92fe9c9 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -21,6 +21,7 @@ public final class LeavesXRuntime {
+     private static int aiTargetSearchMinimumCandidates = 128;
+     private static boolean itemMergeOptimizations = true;
+     private static boolean blockEntityTickerRemovalOptimization = true;
++    private static boolean chunkSpawnRangeOptimization = true;
+     private static boolean parallelMobSpawnCounting = true;
+     private static int mobSpawnCountingMinimumEntities = 512;
+     private static boolean adaptiveChunkUnloading = true;
+@@ -56,6 +57,7 @@ public final class LeavesXRuntime {
+         aiTargetSearchMinimumCandidates = validated.aiTargetSearchMinimumCandidates();
+         itemMergeOptimizations = validated.itemMergeOptimizations();
+         blockEntityTickerRemovalOptimization = validated.blockEntityTickerRemovalOptimization();
++        chunkSpawnRangeOptimization = validated.chunkSpawnRangeOptimization();
+         parallelMobSpawnCounting = validated.parallelMobSpawnCounting();
+         mobSpawnCountingMinimumEntities = validated.mobSpawnCountingMinimumEntities();
+         adaptiveChunkUnloading = validated.adaptiveChunkUnloading();
+@@ -121,6 +123,11 @@ public final class LeavesXRuntime {
+         return blockEntityTickerRemovalOptimization;
+     }
+ 
++    /** Returns whether chunk spawn-range distance checks use the allocation-free center calculation. */
++    public static boolean chunkSpawnRangeOptimization() {
++        return chunkSpawnRangeOptimization;
++    }
++
+     /** Returns whether frozen natural-spawn counting inputs may be processed by LeavesX workers. */
+     public static boolean parallelMobSpawnCounting() {
+         return parallelMobSpawnCounting;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index dbd9121d879f1e2f1a90bc2f4c386e980e7206c0..aceb0813acbb394f3e18cc96ac35e111b8173da6 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -70,13 +70,16 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizedVarInt());
+         assertTrue(config.itemMergeOptimizations());
+         assertTrue(config.blockEntityTickerRemovalOptimization());
++        assertTrue(config.chunkSpawnRangeOptimization());
+         assertFalse(reloaded.node("performance", "optimized-varint").getBoolean());
+         assertTrue(reloaded.node("performance", "item-merge-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "block-entity-ticker-removal").getBoolean());
++        assertTrue(reloaded.node("performance", "chunk-spawn-range-optimization").getBoolean());
+         assertTrue(reloaded.node("custom-extension", "retained").getBoolean());
+         assertTrue(upgraded.contains("# User-managed LeavesX settings."), upgraded);
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.item-merge-optimizations")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.block-entity-ticker-removal")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.chunk-spawn-range-optimization")));
+     }
+ 
+     @Test
+@@ -108,6 +111,7 @@ class LeavesXConfigLoaderTest {
+               ai-optimizations: false
+               item-merge-optimizations: false
+               block-entity-ticker-removal: false
++              chunk-spawn-range-optimization: false
+               chunk-unloading:
+                 enabled: false
+                 backlog-threshold: 2000
+@@ -134,6 +138,7 @@ class LeavesXConfigLoaderTest {
+         assertEquals(256, config.aiTargetSearchMinimumCandidates());
+         assertFalse(config.itemMergeOptimizations());
+         assertFalse(config.blockEntityTickerRemovalOptimization());
++        assertFalse(config.chunkSpawnRangeOptimization());
+         assertFalse(config.adaptiveChunkUnloading());
+         assertEquals(2_000, config.chunkUnloadBacklogThreshold());
+         assertEquals(75, config.chunkUnloadMinimumPerTick());

@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 13 Aug 2026 11:05:30 +0800
+Subject: [PATCH] Optimize configurable item merge scan
+
+
+diff --git a/net/minecraft/world/entity/item/ItemEntity.java b/net/minecraft/world/entity/item/ItemEntity.java
+index 746ed53bff37859d6dea3a23c716d462f1cc50ff..0ea8edfc05c3534a3ec93c8a300a8abc2e79930a 100644
+--- a/net/minecraft/world/entity/item/ItemEntity.java
++++ b/net/minecraft/world/entity/item/ItemEntity.java
+@@ -284,6 +284,16 @@ public class ItemEntity extends Entity implements TraceableEntity, ChangePublish
+                     if (this.isRemoved()) {
+                         break;
+                     }
++                    // LeavesX start - avoid scanning the remaining neighbours once this stack is full
++                    // The real Leaves limit is used because overstack-enabled items do not always use ItemStack's limit.
++                    if (org.leavesx.leavesx.config.LeavesXRuntime.itemMergeOptimizations()) {
++                        final ItemStack currentItem = this.getItem();
++                        if (currentItem.getCount()
++                            >= org.leavesmc.leaves.util.ItemOverstackUtils.getItemStackMaxCount(currentItem)) {
++                            break;
++                        }
++                    }
++                    // LeavesX end - avoid scanning the remaining neighbours once this stack is full
+                 }
+             }
+         }

@@ -1,0 +1,229 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 00:39:07 +0800
+Subject: [PATCH] Optimize syncable attribute collection for beta123
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 8a9d1e036cdf8ed51b47d44f480a7d9eb8f69748..90d0eb98fee34503aa7a2b666dc846c506f47e00 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 51;
++    public static final int CURRENT_CONFIG_VERSION = 52;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index da6d96921fbb42dbfe350711d2183ca78faa98a5..4a09d230c40b8d39ee13f3e9b01952b631080b1b 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：51。");
++        comments.put("config-version", "配置版本，请勿修改。默认：52。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index c9f22efa1eb7a8c515c0edcf766dde9c5864bc41..f7f9e14e0dde7f147025f3666e02a27439fe4640 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -423,6 +423,10 @@ enum LeavesXOptimization {
+     LAZY_CHUNK_EXTRA_PACKETS(
+         "performance.network.lazy-chunk-extra-packets",
+         "区块没有额外方块实体包时不创建空列表，关闭后始终创建。默认：true。"
++    ),
++    SYNCABLE_ATTRIBUTE_COLLECTION(
++        "performance.entity-sync.syncable-attribute-collection",
++        "属性同步直接遍历可同步属性，关闭后使用原版流。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index f6e2e2f2ee494e91cdb949e631be43f07dc7d1bc..8ae058a83e23fd393b5e6f2181f39edf2e205f89 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -50,6 +50,7 @@ public final class LeavesXRuntime {
+     private static volatile boolean lightUpdatePacketAssemblyOptimization = true;
+     private static volatile boolean lightLayerSnapshotCopyOptimization = true;
+     private static volatile boolean lazyChunkExtraPacketsOptimization = true;
++    private static volatile boolean syncableAttributeCollectionOptimization = true;
+     private static boolean goalSelectorOptimization = true;
+     private static boolean brainTickTraversalOptimization = true;
+     private static boolean sensingCacheOptimization = true;
+@@ -129,6 +130,9 @@ public final class LeavesXRuntime {
+         lazyChunkExtraPacketsOptimization = validated.optimizationEnabled(
+             LeavesXOptimization.LAZY_CHUNK_EXTRA_PACKETS
+         );
++        syncableAttributeCollectionOptimization = validated.optimizationEnabled(
++            LeavesXOptimization.SYNCABLE_ATTRIBUTE_COLLECTION
++        );
+         goalSelectorOptimization = validated.optimizationEnabled(LeavesXOptimization.GOAL_SELECTOR);
+         brainTickTraversalOptimization = validated.optimizationEnabled(LeavesXOptimization.BRAIN_TICK_TRAVERSAL);
+         sensingCacheOptimization = validated.optimizationEnabled(LeavesXOptimization.SENSING_CACHE);
+@@ -612,6 +616,11 @@ public final class LeavesXRuntime {
+         return lazyChunkExtraPacketsOptimization;
+     }
+ 
++    /** Returns whether syncable attribute collection may use a pre-sized direct traversal. */
++    public static boolean syncableAttributeCollectionOptimization() {
++        return syncableAttributeCollectionOptimization;
++    }
++
+     /** Returns whether goal selection may replace repeated flag-map lookups with reusable indexed state. */
+     public static boolean goalSelectorOptimization() {
+         return aiOptimizations && goalSelectorOptimization;
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+index 045ae564c1d9493abb4c24656fc462fdf521574a..792e00772a28ae0191473d243d4f507dd2e75961 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+@@ -48,6 +48,10 @@ class FineGrainedOptimizationWiringTest {
+                 "net.minecraft.network.protocol.game.ClientboundLevelChunkPacketData",
+                 "lazyChunkExtraPacketsOptimization"
+             ),
++            new Wiring(
++                "net.minecraft.world.entity.ai.attributes.AttributeMap",
++                "syncableAttributeCollectionOptimization"
++            ),
+             new Wiring(
+                 "net.minecraft.network.protocol.game.ClientboundLightUpdatePacketData",
+                 "lightUpdatePacketAssemblyOptimization"
+diff --git a/src/test/java/org/leavesx/leavesx/performance/SyncableAttributeCollectionHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/SyncableAttributeCollectionHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..d9c875b13bdd00c39f862f59e5361f7483259f7f
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/SyncableAttributeCollectionHotPathTest.java
+@@ -0,0 +1,127 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertInstanceOf;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.Collection;
++import java.util.List;
++import java.util.Set;
++import net.minecraft.core.Holder;
++import net.minecraft.world.entity.ai.attributes.Attribute;
++import net.minecraft.world.entity.ai.attributes.AttributeInstance;
++import net.minecraft.world.entity.ai.attributes.AttributeMap;
++import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++
++/** Verifies direct syncable-attribute traversal preserves the original collection contract and values. */
++@Normal
++class SyncableAttributeCollectionHotPathTest {
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @Test
++    void optimizedTraversalMatchesTheStreamFallbackAndReturnsMutableList() throws IOException {
++        final AttributeMap map = createAttributeMap();
++        final List<AttributeInstance> optimized;
++        final List<AttributeInstance> fallback;
++        try {
++            publish(LeavesXConfig.safeDefaults());
++            optimized = new ArrayList<>(map.getSyncableAttributes());
++
++            final Path fallbackConfig = this.temporaryDirectory.resolve("fallback.yml");
++            Files.writeString(fallbackConfig, """
++                config-version: 51
++                performance:
++                  entity-sync:
++                    syncable-attribute-collection: false
++                """, StandardCharsets.UTF_8);
++            publish(LeavesXConfigLoader.load(fallbackConfig));
++            fallback = new ArrayList<>(map.getSyncableAttributes());
++
++            assertFalse(LeavesXRuntime.syncableAttributeCollectionOptimization());
++            assertEquals(fallback, optimized);
++            assertEquals(2, optimized.size());
++            assertEquals(2, Set.copyOf(optimized).size());
++            assertTrue(optimized.stream().allMatch(instance -> instance.getAttribute().value().isClientSyncable()));
++            assertInstanceOf(ArrayList.class, map.getSyncableAttributes());
++
++            final Collection<AttributeInstance> mutable = map.getSyncableAttributes();
++            mutable.clear();
++            assertTrue(mutable.isEmpty());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void version51ConfigurationGainsTheDocumentedSwitchWithoutBackupFiles() throws IOException {
++        final Path path = this.temporaryDirectory.resolve("version-51.yml");
++        Files.writeString(path, """
++            config-version: 51
++            performance:
++              entity-sync:
++                syncable-attribute-collection: false
++            """, StandardCharsets.UTF_8);
++
++        final LeavesXConfig configuration = LeavesXConfigLoader.load(path);
++        try {
++            publish(configuration);
++            assertFalse(LeavesXRuntime.syncableAttributeCollectionOptimization());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++
++        final String upgraded = Files.readString(path);
++        assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
++        assertTrue(upgraded.contains("syncable-attribute-collection: false"));
++        assertTrue(upgraded.contains("# 属性同步直接遍历可同步属性，关闭后使用原版流。默认：true。"));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
++    }
++
++    private static AttributeMap createAttributeMap() {
++        final Holder<Attribute> syncableOne = Holder.direct(new TestAttribute("syncable-one", true));
++        final Holder<Attribute> nonSyncable = Holder.direct(new TestAttribute("non-syncable", false));
++        final Holder<Attribute> syncableTwo = Holder.direct(new TestAttribute("syncable-two", true));
++        final AttributeSupplier supplier = AttributeSupplier.builder()
++            .add(syncableOne, 1.0D)
++            .add(nonSyncable, 2.0D)
++            .add(syncableTwo, 3.0D)
++            .build();
++        final AttributeMap map = new AttributeMap(supplier);
++        map.getInstance(syncableOne);
++        map.getInstance(nonSyncable);
++        map.getInstance(syncableTwo);
++        return map;
++    }
++
++    private static void publish(final LeavesXConfig config) {
++        try {
++            final var method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++            method.setAccessible(true);
++            method.invoke(null, config);
++        } catch (final ReflectiveOperationException exception) {
++            throw new AssertionError("Unable to publish LeavesX test configuration", exception);
++        }
++    }
++
++    private static final class TestAttribute extends Attribute {
++        private TestAttribute(final String descriptionId, final boolean syncable) {
++            super(descriptionId, 0.0D);
++            this.setSyncable(syncable);
++        }
++    }
++}

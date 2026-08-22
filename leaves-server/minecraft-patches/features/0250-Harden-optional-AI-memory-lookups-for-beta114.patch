@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 15:00:20 +0800
+Subject: [PATCH] Harden optional AI memory lookups for beta114
+
+
+diff --git a/net/minecraft/world/entity/ai/Brain.java b/net/minecraft/world/entity/ai/Brain.java
+index 30a7a71feb3232a29300eb38c70d7e6c9532bb66..9b4d07a0a716de1d27a9bfc390def1f289b15854 100644
+--- a/net/minecraft/world/entity/ai/Brain.java
++++ b/net/minecraft/world/entity/ai/Brain.java
+@@ -234,9 +234,16 @@ public class Brain<E extends LivingEntity> {
+         return Optional.ofNullable(this.getMemorySlot(type).value());
+     }
+ 
+-    /** Returns the registered memory value directly for allocation-sensitive internal AI paths. */
++    /**
++     * Returns the memory value for allocation-sensitive internal AI paths.
++     *
++     * <p>LeavesX callers are optimization paths and must not turn an optional memory into an entity-tick
++     * exception. A missing registration is therefore treated as an empty memory, while registered slots keep the
++     * same direct-value behavior as before.</p>
++     */
+     public <U> @Nullable U leavesX$getMemoryValue(final MemoryModuleType<U> type) {
+-        return this.getMemorySlot(type).value();
++        final MemorySlot<U> slot = this.getMemorySlotIfPresent(type);
++        return slot == null ? null : slot.value();
+     }
+ 
+     /** Returns null when the memory is unregistered or empty, matching {@link #isMemoryValue} lookup semantics. */

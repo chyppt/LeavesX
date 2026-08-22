@@ -1,0 +1,130 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 20 Aug 2026 21:39:20 +0800
+Subject: [PATCH] Extend stable AI distance sorting for beta139
+
+
+diff --git a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
+index f57e1c2b0974013954959e27ac7e7dc320967ec6..a568fb3446e0f416a15726a546517683fa27a9fc 100644
+--- a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
+@@ -3,6 +3,7 @@ package net.minecraft.world.entity.ai.sensing;
+ import com.google.common.collect.ImmutableSet;
+ import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+ import java.util.Comparator;
++import java.util.List;
+ import java.util.Optional;
+ import java.util.Set;
+ import net.minecraft.server.level.ServerLevel;
+@@ -24,15 +25,27 @@ public class NearestItemSensor extends Sensor<Mob> {
+     @Override
+     protected void doTick(final ServerLevel level, final Mob body) {
+         Brain<?> brain = body.getBrain();
+-        // LeavesX - collect directly into the list consumed by the sensor, avoiding the generic return-list path.
+-        final ObjectArrayList<ItemEntity> items = new ObjectArrayList<>();
+-        level.leavesX$getEntitiesOfClass(
+-            ItemEntity.class,
+-            null,
+-            body.getBoundingBox().inflate(32.0, 16.0, 32.0),
+-            item -> item.closerThan(body, MAX_DISTANCE_TO_WANTED_ITEM) && body.wantsToPickUp(level, item.getItem()),
+-            items
+-        ); // Paper - Perf: Move predicate into getEntities
++        final java.util.function.Predicate<ItemEntity> wantedItem = item ->
++            item.closerThan(body, MAX_DISTANCE_TO_WANTED_ITEM) && body.wantsToPickUp(level, item.getItem());
++        final List<ItemEntity> items;
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++            // Collect directly into the list consumed by the sensor, avoiding the generic return-list path.
++            final ObjectArrayList<ItemEntity> bufferedItems = new ObjectArrayList<>();
++            level.leavesX$getEntitiesOfClass(
++                ItemEntity.class,
++                null,
++                body.getBoundingBox().inflate(32.0, 16.0, 32.0),
++                wantedItem,
++                bufferedItems
++            ); // Paper - Perf: Move predicate into getEntities
++            items = bufferedItems;
++        } else {
++            items = level.getEntitiesOfClass(
++                ItemEntity.class,
++                body.getBoundingBox().inflate(32.0, 16.0, 32.0),
++                wantedItem
++            ); // Paper - Perf: Move predicate into getEntities
++        }
+         // LeavesX start - use the same stable, allocation-reusing distance order as living-entity sensors
+         if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortOptimization()
+             && items.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
+diff --git a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
+index b3c6d70f82d3a75869c5b0da565ee8ed675c689b..60510e2cee009b7d44516a42037d789bfa476f67 100644
+--- a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
++++ b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
+@@ -3,6 +3,7 @@ package net.minecraft.world.entity.ai.sensing;
+ import com.google.common.collect.ImmutableSet;
+ import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+ import java.util.Comparator;
++import java.util.List;
+ import java.util.Set;
+ import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.world.entity.LivingEntity;
+@@ -17,9 +18,21 @@ public class NearestLivingEntitySensor<T extends LivingEntity> extends Sensor<T>
+     protected void doTick(final ServerLevel level, final T body) {
+         double followRange = body.getAttributeValue(Attributes.FOLLOW_RANGE);
+         AABB boundingBox = body.getBoundingBox().inflate(followRange, followRange, followRange);
+-        // LeavesX - Moonrise can exclude the sensing entity before evaluating the shared, non-capturing predicate.
+-        final ObjectArrayList<LivingEntity> livingEntities = new ObjectArrayList<>();
+-        level.leavesX$getEntitiesOfClass(LivingEntity.class, body, boundingBox, LivingEntity::isAlive, livingEntities);
++        final List<LivingEntity> livingEntities;
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++            // Moonrise can exclude the sensing entity before evaluating the shared, non-capturing predicate.
++            final ObjectArrayList<LivingEntity> bufferedEntities = new ObjectArrayList<>();
++            level.leavesX$getEntitiesOfClass(LivingEntity.class, body, boundingBox, LivingEntity::isAlive, bufferedEntities);
++            livingEntities = bufferedEntities;
++        } else {
++            // Retain the exact vanilla/Paper query path while entity-query optimizations are disabled or a villager
++            // compatibility tick is active.
++            livingEntities = level.getEntitiesOfClass(
++                LivingEntity.class,
++                boundingBox,
++                candidate -> candidate != body && candidate.isAlive()
++            );
++        }
+         // LeavesX start - snapshot distance keys on the tick thread, then stably reorder without per-sensor arrays
+         if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortOptimization()
+             && livingEntities.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
+diff --git a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
+index 63a5eb93e7d6d3f34882c233fa70fff3de89392b..53fb24440174584a9af1613b62be9b393cf0f732 100644
+--- a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
+@@ -42,7 +42,7 @@ public class PlayerSensor extends Sensor<LivingEntity> {
+                     nearbyPlayers.add(player);
+                 }
+             }
+-            nearbyPlayers.sort(Comparator.comparingDouble(body::distanceToSqr));
++            sortNearbyPlayers(nearbyPlayers, body);
+             players = nearbyPlayers;
+             // LeavesX end - preserve the stream predicate order while avoiding its per-sensor pipeline allocations
+         } else {
+@@ -87,6 +87,24 @@ public class PlayerSensor extends Sensor<LivingEntity> {
+         brain.setMemory(MemoryModuleType.NEAREST_VISIBLE_ATTACKABLE_PLAYER, visibleAttackablePlayers.isEmpty() ? null : visibleAttackablePlayers.get(0));
+     }
+ 
++    /**
++     * Preserves vanilla's stable distance order while allowing very large immutable distance snapshots to use the
++     * LeavesX compute pool. Entity coordinates are captured on the tick thread before workers receive primitive keys.
++     */
++    private static void sortNearbyPlayers(final List<Player> players, final LivingEntity body) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortOptimization()
++            && players.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
++            org.leavesx.leavesx.performance.StableDistanceSorter.sortEntitiesByDistance(
++                players,
++                body,
++                org.leavesx.leavesx.config.LeavesXRuntime.parallelAiTargetSearch(),
++                org.leavesx.leavesx.config.LeavesXRuntime.aiTargetSearchMinimumCandidates()
++            );
++            return;
++        }
++        players.sort(Comparator.comparingDouble(body::distanceToSqr));
++    }
++
+     protected double getFollowDistance(final LivingEntity body) {
+         return body.getAttributeValue(Attributes.FOLLOW_RANGE);
+     }

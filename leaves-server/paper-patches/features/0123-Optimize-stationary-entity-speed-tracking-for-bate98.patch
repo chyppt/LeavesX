@@ -1,0 +1,273 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 06:01:34 +0800
+Subject: [PATCH] Optimize stationary entity speed tracking for bate98
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index b85f6e3026ed574db5dbe615ee4496d5357f6ff9..48da17eb1eb861727de7dcd74e1d4d0cfd2bb47d 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 28;
++    public static final int CURRENT_CONFIG_VERSION = 29;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 839c51c02002a3574f31d8c12250bf8357c2f332..3494984f453cd66467a3f069755fa548792e3f32 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：28。");
++        comments.put("config-version", "配置版本，请勿修改。默认：29。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index a7bd512c4ba88e4d3bec43793e50f7c8c648d1ad..034347f392d014f6a45e7fad3989d70ea2a6e6e8 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -195,6 +195,10 @@ enum LeavesXOptimization {
+     SENSING_CACHE(
+         "performance.ai.sensing-cache",
+         "合并生物视线缓存并减少重复查找，关闭后使用原版缓存。默认：true。"
++    ),
++    STATIONARY_ENTITY_SPEED(
++        "performance.entity-update.stationary-speed-vector",
++        "静止实体复用零速度向量，关闭后每 Tick 重新计算。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index bc12496ed2647b6d4c735a4f17ae7278cf086e80..2681291de4717f3e0f7ccfa667909f91590bf856 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -49,6 +49,7 @@ public final class LeavesXRuntime {
+     private static boolean goalSelectorOptimization = true;
+     private static boolean brainTickTraversalOptimization = true;
+     private static boolean sensingCacheOptimization = true;
++    private static boolean stationaryEntitySpeedOptimization = true;
+     private static long fineGrainedOptimizationMaskLow = LeavesXOptimization.allEnabledMaskLow();
+     private static long fineGrainedOptimizationMaskHigh = LeavesXOptimization.allEnabledMaskHigh();
+ 
+@@ -110,6 +111,7 @@ public final class LeavesXRuntime {
+         goalSelectorOptimization = validated.optimizationEnabled(LeavesXOptimization.GOAL_SELECTOR);
+         brainTickTraversalOptimization = validated.optimizationEnabled(LeavesXOptimization.BRAIN_TICK_TRAVERSAL);
+         sensingCacheOptimization = validated.optimizationEnabled(LeavesXOptimization.SENSING_CACHE);
++        stationaryEntitySpeedOptimization = validated.optimizationEnabled(LeavesXOptimization.STATIONARY_ENTITY_SPEED);
+         fineGrainedOptimizationMaskLow = validated.fineGrainedOptimizationMaskLow();
+         fineGrainedOptimizationMaskHigh = validated.fineGrainedOptimizationMaskHigh();
+         configuration = validated;
+@@ -526,6 +528,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && sensingCacheOptimization;
+     }
+ 
++    /** Returns whether stationary entities may reuse the immutable zero speed vector. */
++    public static boolean stationaryEntitySpeedOptimization() {
++        return entityStateOptimizations && stationaryEntitySpeedOptimization;
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(fineGrainedOptimizationMaskLow, fineGrainedOptimizationMaskHigh);
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 4cd84fb6c79a562fec67c8bea5eee6bb1ca654b2..68dc80bec5a2451530a9a486db8564092181b224 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -306,6 +306,7 @@ class LeavesXConfigLoaderTest {
+               entity-sync:
+                 lazy-equipment-lists: false
+               entity-update:
++                stationary-speed-vector: false
+                 tick-diagnostic-state: false
+               network:
+                 chunk-packet-assembly: false
+@@ -330,12 +331,13 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.TICKET_QUEUE_ALLOCATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_LOAD_OPTIONAL_CHAINS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_SYNC_EQUIPMENT_LISTS));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.STATIONARY_ENTITY_SPEED));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_TICK_DIAGNOSTIC_STATE));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_PACKET_ASSEMBLY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 20,
++            LeavesXConfig.fineGrainedOptimizationCount() - 21,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -357,6 +359,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.ticketQueueAllocationOptimization());
+             assertFalse(LeavesXRuntime.entityLoadOptionalChainsOptimization());
+             assertFalse(LeavesXRuntime.entitySyncEquipmentListsOptimization());
++            assertFalse(LeavesXRuntime.stationaryEntitySpeedOptimization());
+             assertFalse(LeavesXRuntime.entityTickDiagnosticStateOptimization());
+             assertFalse(LeavesXRuntime.chunkPacketAssemblyOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+@@ -375,6 +378,7 @@ class LeavesXConfigLoaderTest {
+             performance:
+               ai-optimizations: false
+               block-entity-optimizations: false
++              entity-state-optimizations: false
+               entity-query-optimizations: false
+               mob-spawning-optimizations: false
+               ai:
+@@ -384,6 +388,8 @@ class LeavesXConfigLoaderTest {
+               entity-queries:
+                 cat-spawning-density: true
+                 pressure-plate-scans: true
++              entity-update:
++                stationary-speed-vector: true
+             """));
+ 
+         try {
+@@ -393,6 +399,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.catSpawningHomeCountOptimization());
+             assertFalse(LeavesXRuntime.catSpawningEntityDensityOptimization());
++            assertFalse(LeavesXRuntime.stationaryEntitySpeedOptimization());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntitySpeedTrackingHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntitySpeedTrackingHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..b9e306b279f22b42aecbe51c3bac4e49c2dbda6d
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EntitySpeedTrackingHotPathTest.java
+@@ -0,0 +1,128 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotSame;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.ArrayList;
++import java.util.List;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.phys.Vec3;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.ClassVisitor;
++import org.objectweb.asm.MethodVisitor;
++import org.objectweb.asm.Opcodes;
++
++/** Verifies allocation-free stationary entity speed tracking without changing movement arithmetic. */
++@Normal
++class EntitySpeedTrackingHotPathTest {
++
++    @Test
++    void stationaryOptimizationReusesTheCanonicalZeroVector() throws ReflectiveOperationException {
++        final Vec3 position = new Vec3(12.25, -0.0, -48.5);
++
++        final Vec3 optimized = calculate(position, new Vec3(12.25, -0.0, -48.5), true);
++        final Vec3 fallback = calculate(position, new Vec3(12.25, -0.0, -48.5), false);
++
++        assertSame(Vec3.ZERO, optimized);
++        assertEquals(Vec3.ZERO, fallback);
++        assertNotSame(Vec3.ZERO, fallback);
++    }
++
++    @Test
++    void movingEntitiesKeepTheExactOriginalSubtraction() throws ReflectiveOperationException {
++        final List<Vec3> previousPositions = List.of(
++            Vec3.ZERO,
++            new Vec3(-30_000_000.0, -64.0, 30_000_000.0),
++            new Vec3(0.125, 255.875, -0.5)
++        );
++        final List<Vec3> currentPositions = List.of(
++            new Vec3(0.25, -0.5, 1.0),
++            new Vec3(-29_999_999.75, -63.5, 29_999_999.0),
++            new Vec3(-0.375, 256.0, 0.75)
++        );
++
++        for (int index = 0; index < previousPositions.size(); ++index) {
++            final Vec3 previous = previousPositions.get(index);
++            final Vec3 current = currentPositions.get(index);
++            final Vec3 expected = current.subtract(previous);
++            assertExactVector(expected, calculate(current, previous, true));
++            assertExactVector(expected, calculate(current, previous, false));
++        }
++    }
++
++    @Test
++    void computeSpeedReadsPositionOnceAndKeepsTheRuntimeFallback() throws IOException {
++        final List<Invocation> calls = invocations(Entity.class, "computeSpeed");
++
++        assertEquals(1L, calls.stream().filter(call -> call.owner().equals("net/minecraft/world/entity/Entity")
++            && call.name().equals("position")).count());
++        assertTrue(calls.stream().anyMatch(call -> call.owner().equals("org/leavesx/leavesx/config/LeavesXRuntime")
++            && call.name().equals("stationaryEntitySpeedOptimization")));
++        assertTrue(calls.stream().anyMatch(call -> call.owner().equals("net/minecraft/world/entity/Entity")
++            && call.name().equals("leavesX$calculateKnownSpeed")));
++    }
++
++    private static Vec3 calculate(final Vec3 current, final Vec3 previous, final boolean optimized)
++        throws ReflectiveOperationException {
++        final Method method = Entity.class.getDeclaredMethod(
++            "leavesX$calculateKnownSpeed",
++            Vec3.class,
++            Vec3.class,
++            boolean.class
++        );
++        method.setAccessible(true);
++        return (Vec3)method.invoke(null, current, previous, optimized);
++    }
++
++    private static void assertExactVector(final Vec3 expected, final Vec3 actual) {
++        assertEquals(Double.doubleToLongBits(expected.x), Double.doubleToLongBits(actual.x));
++        assertEquals(Double.doubleToLongBits(expected.y), Double.doubleToLongBits(actual.y));
++        assertEquals(Double.doubleToLongBits(expected.z), Double.doubleToLongBits(actual.z));
++    }
++
++    private static List<Invocation> invocations(final Class<?> owner, final String methodName) throws IOException {
++        final List<Invocation> calls = new ArrayList<>();
++        final boolean[] found = {false};
++        new ClassReader(owner.getName()).accept(
++            new ClassVisitor(Opcodes.ASM9) {
++                @Override
++                public MethodVisitor visitMethod(
++                    final int access,
++                    final String name,
++                    final String descriptor,
++                    final String signature,
++                    final String[] exceptions
++                ) {
++                    if (!name.equals(methodName)) {
++                        return null;
++                    }
++                    found[0] = true;
++                    return new MethodVisitor(Opcodes.ASM9) {
++                        @Override
++                        public void visitMethodInsn(
++                            final int opcode,
++                            final String calledOwner,
++                            final String calledName,
++                            final String calledDescriptor,
++                            final boolean isInterface
++                        ) {
++                            calls.add(new Invocation(calledOwner, calledName));
++                        }
++                    };
++                }
++            },
++            ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES
++        );
++        assertTrue(found[0], () -> "Missing method " + owner.getName() + '#' + methodName);
++        return calls;
++    }
++
++    private record Invocation(String owner, String name) {
++    }
++}

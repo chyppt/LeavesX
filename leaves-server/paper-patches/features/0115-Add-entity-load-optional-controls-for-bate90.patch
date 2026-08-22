@@ -1,0 +1,156 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 03:17:23 +0800
+Subject: [PATCH] Add entity load optional controls for bate90
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index f689bf77bce7765e2c2665f322f5538fbc80eb64..954f4f76abdfaa06bf6c361ce41f56281541e571 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -44,7 +44,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMask
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 21;
++    public static final int CURRENT_CONFIG_VERSION = 22;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index ed681be8bc9dc42281b641d4f2b61686d25343b4..92d6c7368f7597c4eb6f9002bade2cb5e6647a8c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：21。");
++        comments.put("config-version", "配置版本，请勿修改。默认：22。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 3f4a012475587d2bb03fc1f34966c9097ab6de44..682b922bf370e46505935baf3a5d454478027aba 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -167,6 +167,10 @@ enum LeavesXOptimization {
+     CHUNK_LOAD_COMPOUND_LISTS(
+         "performance.chunk.load-compound-lists",
+         "直接读取区块实体和方块实体列表，关闭后使用原版流程。默认：true。"
++    ),
++    ENTITY_LOAD_OPTIONAL_CHAINS(
++        "performance.entity-loading.optional-chains",
++        "减少实体加载时的 Optional 和临时函数，关闭后使用原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index d806b07ae2ed768ec363ff9549434d1cc98e7fc4..4873c89fc3cccb8e9dfef83e75bc8b100e0ab72f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -481,6 +481,11 @@ public final class LeavesXRuntime {
+         return enabled(LeavesXOptimization.CHUNK_LOAD_COMPOUND_LISTS);
+     }
+ 
++    /** Returns whether recursive entity loading may avoid Optional mapping chains. */
++    public static boolean entityLoadOptionalChainsOptimization() {
++        return enabled(LeavesXOptimization.ENTITY_LOAD_OPTIONAL_CHAINS);
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(fineGrainedOptimizationMask);
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index a90b0a88e1c7191885c8a1d6b8320ce5945a6617..5bacbc8829127c46826056eb65442c62a3431567 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -298,6 +298,8 @@ class LeavesXConfigLoaderTest {
+                 nbt-list-capacity: false
+                 ticket-queue-allocation: false
+                 unload-serialization: false
++              entity-loading:
++                optional-chains: false
+               entity-queries:
+                 pressure-plate-scans: false
+                 fox-item-search: false
+@@ -314,10 +316,11 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_NBT_LIST_CAPACITY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_SERIALIZATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.TICKET_QUEUE_ALLOCATION));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_LOAD_OPTIONAL_CHAINS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 13,
++            LeavesXConfig.fineGrainedOptimizationCount() - 14,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -334,6 +337,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.chunkNbtListCapacityOptimization());
+             assertFalse(LeavesXRuntime.chunkUnloadSerializationOptimization());
+             assertFalse(LeavesXRuntime.ticketQueueAllocationOptimization());
++            assertFalse(LeavesXRuntime.entityLoadOptionalChainsOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.foxItemSearchOptimization());
+             assertTrue(LeavesXRuntime.wardenTargetSensorOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityLoadOptionalHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityLoadOptionalHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..ee9b30afb0cadd767ea9129e1bb4085c5a490836
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityLoadOptionalHotPathTest.java
+@@ -0,0 +1,53 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.EntityType;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies recursive entity loading retains both the allocation-light and vanilla Optional paths. */
++@Normal
++class EntityLoadOptionalHotPathTest {
++
++    @Test
++    void valueInputOverloadsKeepOptimizedAndVanillaPaths() throws IOException {
++        final ClassNode owner = classNode(EntityType.class);
++        final List<MethodNode> overloads = owner.methods.stream()
++            .filter(method -> method.name.equals("loadEntityRecursive"))
++            .filter(method -> method.desc.contains("Lnet/minecraft/world/level/storage/ValueInput;"))
++            .filter(method -> method.desc.contains("Lnet/minecraft/world/entity/EntityProcessor;"))
++            .toList();
++
++        assertEquals(2, overloads.size());
++        for (final MethodNode overload : overloads) {
++            final List<MethodInsnNode> calls = invocations(overload);
++            assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityLoadOptionalChainsOptimization")));
++            assertTrue(calls.stream().anyMatch(call -> call.name.equals("process")));
++            assertTrue(calls.stream().anyMatch(call -> call.name.equals("loadPassengersRecursive")));
++            assertTrue(calls.stream().anyMatch(call -> call.owner.equals("java/util/Optional") && call.name.equals("map")));
++        }
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++}

@@ -1,0 +1,184 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 08:12:20 +0800
+Subject: [PATCH] Optimize minecart motion synchronization for bate106
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index dec15fa4306add4b5ebe4c56dbbea4a56942542b..b2ef65aa75335375664aceb8c6ed09c28e3d3a07 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 36;
++    public static final int CURRENT_CONFIG_VERSION = 37;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 806e6decf9c4539e7bd83656fb51c525c98f0c53..e2db162c4fbfd0d5d491120710536d2b28bc6db3 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：36。");
++        comments.put("config-version", "配置版本，请勿修改。默认：37。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 96f52e9c6bb7140757fa5f587f5b775c21193311..e4251b32cc3a5cebe62ed390e08abcec2728021c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -227,6 +227,10 @@ enum LeavesXOptimization {
+     BUKKIT_ENTITY_TYPE_CACHE(
+         "performance.entity-mapping.bukkit-type-cache",
+         "缓存实体类型的 Bukkit 映射，关闭后每次查询注册表。默认：true。"
++    ),
++    MINECART_MOTION_DISTANCE(
++        "performance.entity-sync.minecart-motion-distance",
++        "矿车速度未变时跳过距离计算，关闭后每次计算。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index fbfb4ff28ed9b21032976ca4d384f71c6cd9ef7e..300cceb1591819e672ea99686964a3777e29be81 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -540,6 +540,11 @@ public final class LeavesXRuntime {
+         return enabled(LeavesXOptimization.ENTITY_SYNC_EQUIPMENT_LISTS);
+     }
+ 
++    /** Returns whether minecart synchronization may skip a provably zero motion-distance calculation. */
++    public static boolean minecartMotionDistanceOptimization() {
++        return enabled(LeavesXOptimization.MINECART_MOTION_DISTANCE);
++    }
++
+     /** Returns whether chunk packet assembly may avoid stream and list growth allocations. */
+     public static boolean chunkPacketAssemblyOptimization() {
+         return chunkPacketAssemblyOptimization;
+diff --git a/src/test/java/org/leavesx/leavesx/performance/MinecartMotionSyncHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/MinecartMotionSyncHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..47a5b42201d17df35ddbdfc159fdcbf3a81846e5
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/MinecartMotionSyncHotPathTest.java
+@@ -0,0 +1,115 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.Arrays;
++import net.minecraft.server.level.ServerEntity;
++import net.minecraft.world.phys.Vec3;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.JumpInsnNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies minecart synchronization skips only a provably zero movement-distance calculation. */
++@Normal
++class MinecartMotionSyncHotPathTest {
++
++    @TempDir
++    Path tempDir;
++
++    @Test
++    void identityShortcutMatchesVanillaDistanceForRepresentativeVectors() {
++        final Vec3 shared = new Vec3(1.25D, -0.5D, 8.0D);
++        final Vec3 equalCopy = new Vec3(1.25D, -0.5D, 8.0D);
++        final Vec3 changed = new Vec3(1.5D, -0.25D, 7.5D);
++
++        assertDistanceEquivalent(shared, shared);
++        assertDistanceEquivalent(shared, equalCopy);
++        assertDistanceEquivalent(changed, shared);
++        assertDistanceEquivalent(Vec3.ZERO, shared);
++    }
++
++    @Test
++    void dedicatedSwitchCanDisableTheIdentityShortcut() throws Exception {
++        try {
++            publish(this.configuration(true, "enabled.yml"));
++            assertTrue(LeavesXRuntime.minecartMotionDistanceOptimization());
++
++            publish(this.configuration(false, "disabled.yml"));
++            assertFalse(LeavesXRuntime.minecartMotionDistanceOptimization());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void minecartSyncKeepsIdentityAndDistancePaths() throws IOException {
++        final MethodNode method = method(classNode(), "handleMinecartPosRot");
++        final MethodInsnNode[] calls = Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++        final boolean hasIdentityBranch = Arrays.stream(method.instructions.toArray())
++            .filter(JumpInsnNode.class::isInstance)
++            .map(JumpInsnNode.class::cast)
++            .anyMatch(instruction -> instruction.getOpcode() == Opcodes.IF_ACMPNE || instruction.getOpcode() == Opcodes.IF_ACMPEQ);
++
++        assertEquals(1L, countCall(calls, "org/leavesx/leavesx/config/LeavesXRuntime", "minecartMotionDistanceOptimization"));
++        assertEquals(1L, countCall(calls, "net/minecraft/world/phys/Vec3", "distanceToSqr"));
++        assertTrue(hasIdentityBranch);
++    }
++
++    private static void assertDistanceEquivalent(final Vec3 movement, final Vec3 lastSentMovement) {
++        final double vanilla = movement.distanceToSqr(lastSentMovement);
++        final double optimized = movement == lastSentMovement ? 0.0D : movement.distanceToSqr(lastSentMovement);
++        assertEquals(vanilla, optimized);
++    }
++
++    private LeavesXConfig configuration(final boolean enabled, final String fileName) throws IOException {
++        final Path path = this.tempDir.resolve(fileName);
++        Files.writeString(path, """
++            config-version: 1
++            performance:
++              entity-sync:
++                minecart-motion-distance: %s
++            """.formatted(enabled));
++        return LeavesXConfigLoader.load(path);
++    }
++
++    private static void publish(final LeavesXConfig config) throws ReflectiveOperationException {
++        final Method method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++        method.setAccessible(true);
++        method.invoke(null, config);
++    }
++
++    private static ClassNode classNode() throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(ServerEntity.class.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + name));
++    }
++
++    private static long countCall(final MethodInsnNode[] calls, final String owner, final String name) {
++        return Arrays.stream(calls).filter(call -> call.owner.equals(owner) && call.name.equals(name)).count();
++    }
++}

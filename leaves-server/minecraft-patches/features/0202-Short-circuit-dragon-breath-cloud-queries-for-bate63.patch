@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 21:30:37 +0800
+Subject: [PATCH] Short-circuit dragon breath cloud queries for bate63
+
+
+diff --git a/net/minecraft/world/item/BottleItem.java b/net/minecraft/world/item/BottleItem.java
+index e45fb987b709cbd798b7bcd179a559d8ab70e6ff..8ae24b26e473dc2a326f91af9391d587a2244b6c 100644
+--- a/net/minecraft/world/item/BottleItem.java
++++ b/net/minecraft/world/item/BottleItem.java
+@@ -1,6 +1,7 @@
+ package net.minecraft.world.item;
+ 
+ import java.util.List;
++import java.util.function.Predicate;
+ import net.minecraft.advancements.CriteriaTriggers;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.server.level.ServerPlayer;
+@@ -28,12 +29,18 @@ public class BottleItem extends Item {
+ 
+     @Override
+     public InteractionResult use(final Level level, final Player player, final InteractionHand hand) {
+-        List<AreaEffectCloud> clouds = level.getEntitiesOfClass(
+-            AreaEffectCloud.class, player.getBoundingBox().inflate(2.0), input -> input.isAlive() && input.getOwner() instanceof EnderDragon
+-        );
++        final Predicate<AreaEffectCloud> dragonBreath = input -> input.isAlive() && input.getOwner() instanceof EnderDragon;
++        final AreaEffectCloud cloud;
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++            cloud = level.leavesX$getFirstEntityOfClass(AreaEffectCloud.class, player.getBoundingBox().inflate(2.0), dragonBreath);
++        } else {
++            final List<AreaEffectCloud> clouds = level.getEntitiesOfClass(
++                AreaEffectCloud.class, player.getBoundingBox().inflate(2.0), dragonBreath
++            );
++            cloud = clouds.isEmpty() ? null : clouds.getFirst();
++        }
+         ItemStack itemStack = player.getItemInHand(hand);
+-        if (!clouds.isEmpty()) {
+-            AreaEffectCloud cloud = clouds.get(0);
++        if (cloud != null) {
+             cloud.setRadius(cloud.getRadius() - 0.5F);
+             level.playSound(null, player.getX(), player.getY(), player.getZ(), SoundEvents.BOTTLE_FILL_DRAGONBREATH, SoundSource.NEUTRAL, 1.0F, 1.0F);
+             level.gameEvent(player, GameEvent.FLUID_PICKUP, player.position());

@@ -1,0 +1,398 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 03:48:43 +0800
+Subject: [PATCH] Add entity state optimization controls for bate30
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 6c8bcde5d93fd687866f1100b399716fa6ee26bb..948dd8bc7a5cc74bc51164ab73b26177fa27c800 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -921,6 +921,7 @@ public final class LeavesXCommand extends Command {
+     private static void sendConfig(final CommandSender sender) {
+         final LeavesXConfig config = LeavesXRuntime.configuration();
+         sendHeader(sender, "LeavesX 配置状态");
++        sender.sendMessage(line("实体状态优化", onOff(config.entityStateOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("AI/寻路", onOff(config.aiOptimizations()) + " / " + onOff(config.pathfindingOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("动物空闲降频", onOff(config.animalIdleGoalThrottling()) + "，倍数 " + config.animalIdleGoalIntervalMultiplier(), config.animalIdleGoalThrottling() ? NamedTextColor.YELLOW : NamedTextColor.GREEN));
+         sender.sendMessage(line("刷怪优化", onOff(config.mobSpawningOptimizations()) + "，并行 " + onOff(config.parallelMobSpawnCounting()), NamedTextColor.AQUA));
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 8dab400391b07b08512ac61096503a60f8096cff..0278fc9158fca77acac72b770c9f398ab211364e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -17,6 +17,7 @@ public record LeavesXConfig(
+     boolean immutableCacheOptimizations,
+     boolean resourceIdentifierCache,
+     boolean skipEmptyEvents,
++    boolean entityStateOptimizations,
+     boolean aiOptimizations,
+     boolean pathfindingOptimizations,
+     boolean mobSpawningOptimizations,
+@@ -37,7 +38,7 @@ public record LeavesXConfig(
+     int chunkUnloadMaximumPerTick
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 4;
++    public static final int CURRENT_CONFIG_VERSION = 5;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -101,6 +102,7 @@ public record LeavesXConfig(
+             true,
+             true,
+             true,
++            true,
+             false,
+             2,
+             true,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 59ce6f5df5a3b45a16409bd55801b2342769e5b3..d8a4245b8fcdb073b336a5d7dccfe10810b5716e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -67,12 +67,13 @@ public final class LeavesXConfigBootstrap {
+     private static void logConfiguration(final LeavesXConfig config) {
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+-            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, AI {}, pathfinding {}, mob spawning {}, item merge {}, block entities {}, spawn range {}",
++            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, entity state {}, AI {}, pathfinding {}, mob spawning {}, item merge {}, block entities {}, spawn range {}",
+             config.optimizedVarInt(),
+             config.networkFlushConsolidation(),
+             config.immutableCacheOptimizations(),
+             config.resourceIdentifierCache(),
+             config.skipEmptyEvents(),
++            config.entityStateOptimizations(),
+             config.aiOptimizations(),
+             config.pathfindingOptimizations(),
+             config.mobSpawningOptimizations(),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 89a2a43085fe9ec0a48b538bf5993cce8c411b21..0419daee592e6f6f54a51fbc2f33d3406e115f6a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -7,6 +7,7 @@ import java.nio.channels.FileChannel;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.nio.file.StandardOpenOption;
++import java.util.regex.Pattern;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ import org.spongepowered.configurate.CommentedConfigurationNode;
+@@ -19,6 +20,10 @@ public final class LeavesXConfigLoader {
+ 
+     private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXConfigLoader.class);
+     private static final String HEADER = "LeavesX 性能配置。默认设置保持 Paper、Bukkit 和原版行为。";
++    // Schema-owned version comments may be replaced; all other leading user comments stay untouched.
++    private static final Pattern GENERATED_CONFIG_VERSION_COMMENT = Pattern.compile(
++        "(?m)^[\\t ]*#[\\t ]*配置版本，请勿修改。默认：\\d+。[\\t ]*(?:\\r\\n|\\r|\\n|$)"
++    );
+ 
+     private LeavesXConfigLoader() {
+     }
+@@ -112,6 +117,11 @@ public final class LeavesXConfigLoader {
+                     true
+                 ),
+                 readBoolean(node.node("performance", "skip-empty-events"), "performance.skip-empty-events", true),
++                readBoolean(
++                    node.node("performance", "entity-state-optimizations"),
++                    "performance.entity-state-optimizations",
++                    true
++                ),
+                 readBoolean(node.node("performance", "ai-optimizations"), "performance.ai-optimizations", true),
+                 readBoolean(
+                     node.node("performance", "pathfinding-optimizations"),
+@@ -245,7 +255,14 @@ public final class LeavesXConfigLoader {
+             lineStart = preambleEnd;
+         }
+         final int bomLength = !content.isEmpty() && content.charAt(0) == '\uFEFF' ? 1 : 0;
+-        return new OriginalFormatting(content.substring(0, Math.max(preambleEnd, bomLength)), lineSeparator);
++        final String preamble = content.substring(0, Math.max(preambleEnd, bomLength));
++        return new OriginalFormatting(removeGeneratedConfigVersionComment(preamble), lineSeparator);
++    }
++
++    private static String removeGeneratedConfigVersionComment(final String preamble) {
++        final int contentStart = preamble.startsWith("\uFEFF") ? 1 : 0;
++        return preamble.substring(0, contentStart)
++            + GENERATED_CONFIG_VERSION_COMMENT.matcher(preamble.substring(contentStart)).replaceAll("");
+     }
+ 
+     private static String detectLineSeparator(final String content) {
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 2554e56800c72fda1b592f2d2094c2dafa6f5903..fec6d86d9a4f14eb8efeac9a0bf07313025750ed 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -123,6 +123,12 @@ public final class LeavesXConfigWriter {
+             config.skipEmptyEvents(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "entity-state-optimizations"),
++            "performance.entity-state-optimizations",
++            config.entityStateOptimizations(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "ai-optimizations"),
+             "performance.ai-optimizations",
+@@ -244,7 +250,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：4。");
++        comments.put("config-version", "配置版本，请勿修改。默认：5。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -254,6 +260,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.immutable-cache-optimizations", "缓存不变的碰撞结果。默认：true。");
+         comments.put("performance.resource-identifier-cache", "缓存资源名称和哈希值。默认：true。");
+         comments.put("performance.skip-empty-events", "没有监听器时跳过事件对象创建。默认：true。");
++        comments.put("performance.entity-state-optimizations", "减少实体装备等状态检查的临时对象。默认：true。");
+         comments.put("performance.ai-optimizations", "减少 AI 和村民 POI 搜索的重复计算。默认：true。");
+         comments.put("performance.pathfinding-optimizations", "减少寻路重建和临时对象开销。默认：true。");
+         comments.put("performance.mob-spawning-optimizations", "减少刷怪统计的临时对象和重复遍历。默认：true。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index f6e923cb594f26904d884ab20a5e8e169010ff09..35d2451c978a7c0325d4ed0d77a02b074de83fb7 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -23,6 +23,7 @@ public final class LeavesXRuntime {
+     private static volatile boolean immutableCacheOptimizations = true;
+     private static volatile boolean resourceIdentifierCache = true;
+     private static volatile boolean skipEmptyEvents = true;
++    private static boolean entityStateOptimizations = true;
+     private static boolean aiOptimizations = true;
+     private static boolean pathfindingOptimizations = true;
+     private static boolean mobSpawningOptimizations = true;
+@@ -68,6 +69,7 @@ public final class LeavesXRuntime {
+         immutableCacheOptimizations = validated.immutableCacheOptimizations();
+         resourceIdentifierCache = validated.resourceIdentifierCache();
+         skipEmptyEvents = validated.skipEmptyEvents();
++        entityStateOptimizations = validated.entityStateOptimizations();
+         aiOptimizations = validated.aiOptimizations();
+         pathfindingOptimizations = validated.pathfindingOptimizations();
+         mobSpawningOptimizations = validated.mobSpawningOptimizations();
+@@ -147,6 +149,11 @@ public final class LeavesXRuntime {
+         return skipEmptyEvents;
+     }
+ 
++    /** Returns whether behavior-equivalent entity state checks use allocation-free scans. */
++    public static boolean entityStateOptimizations() {
++        return entityStateOptimizations;
++    }
++
+     /** Returns whether behavior-equivalent synchronous AI hot-path optimizations are enabled. */
+     public static boolean aiOptimizations() {
+         return aiOptimizations;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 4f6d3c8bf43bcdefcd4c864ccb7ea019c0f9ba50..ca5685ba1d25f8a1c5345919eebb11ed1b8a89e3 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -81,17 +81,20 @@ class LeavesXConfigLoaderTest {
+         assertTrue(config.blockEntityTickerRemovalOptimization());
+         assertTrue(config.chunkSpawnRangeOptimization());
+         assertTrue(config.mobSpawningOptimizations());
++        assertTrue(config.entityStateOptimizations());
+         assertFalse(reloaded.node("performance", "optimized-varint").getBoolean());
+         assertTrue(reloaded.node("performance", "item-merge-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "block-entity-ticker-removal").getBoolean());
+         assertTrue(reloaded.node("performance", "chunk-spawn-range-optimization").getBoolean());
+         assertTrue(reloaded.node("performance", "mob-spawning-optimizations").getBoolean());
++        assertTrue(reloaded.node("performance", "entity-state-optimizations").getBoolean());
+         assertTrue(reloaded.node("custom-extension", "retained").getBoolean());
+         assertTrue(upgraded.contains("# User-managed LeavesX settings."), upgraded);
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.item-merge-optimizations")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.block-entity-ticker-removal")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.chunk-spawn-range-optimization")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.mob-spawning-optimizations")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.entity-state-optimizations")));
+     }
+ 
+     @Test
+@@ -111,6 +114,27 @@ class LeavesXConfigLoaderTest {
+         assertFalse(upgraded.replace("\r\n", "").contains("\n"), upgraded);
+     }
+ 
++    @Test
++    void replacesTheGeneratedConfigVersionCommentWithoutDuplicatingIt() throws IOException {
++        final Path path = write("""
++            # User-managed LeavesX settings.
++
++            # 配置版本，请勿修改。默认：4。
++            config-version: 4
++            performance:
++              optimized-varint: false
++            """);
++
++        LeavesXConfigLoader.load(path);
++
++        final String upgraded = Files.readString(path);
++        final String currentComment = "# " + LeavesXConfigWriter.comments().get("config-version");
++        assertTrue(upgraded.startsWith("# User-managed LeavesX settings."), upgraded);
++        assertFalse(upgraded.contains("# 配置版本，请勿修改。默认：4。"), upgraded);
++        assertTrue(upgraded.contains(currentComment), upgraded);
++        assertEquals(upgraded.indexOf(currentComment), upgraded.lastIndexOf(currentComment), upgraded);
++    }
++
+     @Test
+     void loadsBehaviorEquivalentOptimizationSwitches() throws IOException {
+         final Path path = write("""
+@@ -122,6 +146,7 @@ class LeavesXConfigLoaderTest {
+               immutable-cache-optimizations: false
+               resource-identifier-cache: false
+               skip-empty-events: false
++              entity-state-optimizations: false
+               ai-optimizations: false
+               pathfinding-optimizations: false
+               mob-spawning-optimizations: false
+@@ -154,6 +179,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.immutableCacheOptimizations());
+         assertFalse(config.resourceIdentifierCache());
+         assertFalse(config.skipEmptyEvents());
++        assertFalse(config.entityStateOptimizations());
+         assertFalse(config.aiOptimizations());
+         assertFalse(config.pathfindingOptimizations());
+         assertFalse(config.mobSpawningOptimizations());
+@@ -174,6 +200,7 @@ class LeavesXConfigLoaderTest {
+         assertEquals(768, config.mobSpawnCountingMinimumEntities());
+         try {
+             LeavesXRuntime.publish(config);
++            assertFalse(LeavesXRuntime.entityStateOptimizations());
+             assertEquals(524_288, LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities());
+             assertEquals(262_144, LeavesXRuntime.aiTargetSearchMinimumCandidates());
+         } finally {
+@@ -204,7 +231,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(assertThrows(LeavesXConfigException.class, () -> LeavesXConfigLoader.load(older))
+             .getMessage().contains("config-version must be at least 1"));
+ 
+-        final Path newer = write("config-version: 5\n");
++        final Path newer = write("config-version: 6\n");
+         assertTrue(assertThrows(LeavesXConfigException.class, () -> LeavesXConfigLoader.load(newer))
+             .getMessage().contains("newer than supported"));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EnchantmentSlotMatchingTest.java b/src/test/java/org/leavesx/leavesx/performance/EnchantmentSlotMatchingTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..ed61d4c809d2a98be90e715d9b508ab30e848531
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EnchantmentSlotMatchingTest.java
+@@ -0,0 +1,123 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.AbstractList;
++import java.util.ArrayList;
++import java.util.List;
++import net.minecraft.world.entity.EquipmentSlot;
++import net.minecraft.world.entity.EquipmentSlotGroup;
++import net.minecraft.world.item.enchantment.Enchantment;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.ClassVisitor;
++import org.objectweb.asm.MethodVisitor;
++import org.objectweb.asm.Opcodes;
++
++/** Verifies the behavior-equivalent equipment-slot scan used by enchantments. */
++@Normal
++class EnchantmentSlotMatchingTest {
++
++    @Test
++    void directScanMatchesVanillaAnyMatchForEverySlot() throws ReflectiveOperationException {
++        final Method method = directScanMethod();
++        final List<List<EquipmentSlotGroup>> groupSets = List.of(
++            List.of(),
++            List.of(EquipmentSlotGroup.ANY),
++            List.of(EquipmentSlotGroup.MAINHAND),
++            List.of(EquipmentSlotGroup.ARMOR),
++            List.of(EquipmentSlotGroup.OFFHAND, EquipmentSlotGroup.HAND),
++            List.of(EquipmentSlotGroup.FEET, EquipmentSlotGroup.LEGS, EquipmentSlotGroup.CHEST),
++            List.of(EquipmentSlotGroup.BODY, EquipmentSlotGroup.SADDLE, EquipmentSlotGroup.ANY)
++        );
++
++        for (final List<EquipmentSlotGroup> groups : groupSets) {
++            for (final EquipmentSlot slot : EquipmentSlot.VALUES) {
++                final boolean vanilla = groups.stream().anyMatch(group -> group.test(slot));
++                final boolean optimized = (boolean)method.invoke(null, groups, slot);
++                assertEquals(vanilla, optimized, () -> "groups=" + groups + ", slot=" + slot);
++            }
++        }
++    }
++
++    @Test
++    void directScanStopsAfterTheFirstMatchingGroup() throws ReflectiveOperationException {
++        final List<EquipmentSlotGroup> guardedGroups = new AbstractList<>() {
++            @Override
++            public EquipmentSlotGroup get(final int index) {
++                if (index == 0) {
++                    return EquipmentSlotGroup.FEET;
++                }
++                if (index == 1) {
++                    return EquipmentSlotGroup.MAINHAND;
++                }
++                throw new AssertionError("Scan continued after the first matching group");
++            }
++
++            @Override
++            public int size() {
++                return 3;
++            }
++        };
++
++        assertTrue((boolean)directScanMethod().invoke(null, guardedGroups, EquipmentSlot.MAINHAND));
++    }
++
++    @Test
++    void directSlotHelperDoesNotCreateStreams() throws IOException {
++        final List<Invocation> calls = new ArrayList<>();
++        final boolean[] found = {false};
++        new ClassReader(Enchantment.class.getName()).accept(
++            new ClassVisitor(Opcodes.ASM9) {
++                @Override
++                public MethodVisitor visitMethod(
++                    final int access,
++                    final String name,
++                    final String descriptor,
++                    final String signature,
++                    final String[] exceptions
++                ) {
++                    if (!name.equals("matchesSlotDirect")) {
++                        return null;
++                    }
++                    found[0] = true;
++                    return new MethodVisitor(Opcodes.ASM9) {
++                        @Override
++                        public void visitMethodInsn(
++                            final int opcode,
++                            final String owner,
++                            final String calledName,
++                            final String calledDescriptor,
++                            final boolean isInterface
++                        ) {
++                            calls.add(new Invocation(owner, calledName));
++                        }
++                    };
++                }
++            },
++            ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES
++        );
++
++        assertTrue(found[0], "Missing Enchantment#matchesSlotDirect");
++        assertFalse(calls.stream().anyMatch(call -> call.name().equals("stream")));
++        assertFalse(calls.stream().anyMatch(call -> call.owner().startsWith("java/util/stream/")));
++    }
++
++    private static Method directScanMethod() throws NoSuchMethodException {
++        final Method method = Enchantment.class.getDeclaredMethod(
++            "matchesSlotDirect",
++            List.class,
++            EquipmentSlot.class
++        );
++        method.setAccessible(true);
++        return method;
++    }
++
++    private record Invocation(String owner, String name) {
++    }
++}

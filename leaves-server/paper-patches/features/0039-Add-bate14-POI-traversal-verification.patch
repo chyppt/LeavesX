@@ -1,0 +1,199 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 21:50:28 +0800
+Subject: [PATCH] Add bate14 POI traversal verification
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/performance/PoiSearchCapacity.java b/src/main/java/org/leavesx/leavesx/performance/PoiSearchCapacity.java
+index 981f60b97db16b5f59f1102a12ee6cbe6b333867..a3e97d015a8fd48860e2c3b6d4c1b62247b4f16e 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/PoiSearchCapacity.java
++++ b/src/main/java/org/leavesx/leavesx/performance/PoiSearchCapacity.java
+@@ -3,9 +3,9 @@ package org.leavesx.leavesx.performance;
+ /**
+  * Sizes the visited-section set used by the deterministic POI breadth-first search.
+  *
+- * <p>The search inserts every section inside its inclusive bounds and the six face-adjacent shells. Pre-sizing for
+- * that upper bound avoids repeated hash-table growth during villager bed and job-site searches. The result is capped
+- * so unusually large or heavily distance-pruned searches do not reserve excessive memory up front.</p>
++ * <p>With bounded neighbour traversal enabled, the search inserts at most every section inside its inclusive bounds.
++ * Pre-sizing for that upper bound avoids repeated hash-table growth during villager bed and job-site searches. The
++ * result is capped so unusually large or heavily distance-pruned searches do not reserve excessive memory up front.</p>
+  */
+ public final class PoiSearchCapacity {
+ 
+@@ -42,15 +42,28 @@ public final class PoiSearchCapacity {
+         }
+ 
+         final long volume = saturatedMultiply(saturatedMultiply(width, height), depth);
+-        final long faceShell = saturatedMultiply(
+-            2L,
+-            saturatedAdd(
+-                saturatedAdd(saturatedMultiply(width, height), saturatedMultiply(width, depth)),
+-                saturatedMultiply(height, depth)
+-            )
+-        );
+-        final long expected = saturatedAdd(volume, faceShell);
+-        return (int)Math.clamp(expected, MINIMUM_EXPECTED_SECTIONS, MAXIMUM_EXPECTED_SECTIONS);
++        return (int)Math.clamp(volume, MINIMUM_EXPECTED_SECTIONS, MAXIMUM_EXPECTED_SECTIONS);
++    }
++
++    /**
++     * Tests whether a section coordinate is inside an inclusive three-dimensional section box.
++     *
++     * @return {@code true} when all three coordinates are within their corresponding bounds
++     */
++    public static boolean contains(
++        final int x,
++        final int y,
++        final int z,
++        final int lowerX,
++        final int lowerY,
++        final int lowerZ,
++        final int upperX,
++        final int upperY,
++        final int upperZ
++    ) {
++        return x >= lowerX && x <= upperX
++            && y >= lowerY && y <= upperY
++            && z >= lowerZ && z <= upperZ;
+     }
+ 
+     private static long inclusiveLength(final int lower, final int upper) {
+@@ -64,7 +77,4 @@ public final class PoiSearchCapacity {
+         return left > Long.MAX_VALUE / right ? Long.MAX_VALUE : left * right;
+     }
+ 
+-    private static long saturatedAdd(final long left, final long right) {
+-        return left > Long.MAX_VALUE - right ? Long.MAX_VALUE : left + right;
+-    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PoiSearchCapacityTest.java b/src/test/java/org/leavesx/leavesx/performance/PoiSearchCapacityTest.java
+index 59c8d78d75db62fb9322ce11e41d06bfec9bbef5..2a6039f3c29bee32dd95f6b6b8dea923d463f4d9 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/PoiSearchCapacityTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/PoiSearchCapacityTest.java
+@@ -1,8 +1,15 @@
+ package org.leavesx.leavesx.performance;
+ 
+ import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
++import java.util.ArrayDeque;
++import java.util.ArrayList;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Set;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+ 
+@@ -10,9 +17,8 @@ import org.junit.jupiter.api.Test;
+ class PoiSearchCapacityTest {
+ 
+     @Test
+-    void includesTheVisitedBoxAndItsSixFaceShells() {
+-        // 7 * 24 * 7 in-bounds sections plus two faces for each pair of dimensions.
+-        assertEquals(1_946, PoiSearchCapacity.forBounds(-3, -4, -3, 3, 19, 3));
++    void includesEverySectionInsideTheVisitedBox() {
++        assertEquals(1_176, PoiSearchCapacity.forBounds(-3, -4, -3, 3, 19, 3));
+     }
+ 
+     @Test
+@@ -38,6 +44,97 @@ class PoiSearchCapacityTest {
+         assertEquals(2_048, PoiSearchCapacity.forBounds(Integer.MIN_VALUE, -64, -64, Integer.MAX_VALUE, 64, 64));
+     }
+ 
++    @Test
++    void testsInclusiveBoundsWithoutPackingCoordinates() {
++        assertTrue(PoiSearchCapacity.contains(-3, -4, -3, -3, -4, -3, 3, 19, 3));
++        assertTrue(PoiSearchCapacity.contains(3, 19, 3, -3, -4, -3, 3, 19, 3));
++        assertFalse(PoiSearchCapacity.contains(4, 0, 0, -3, -4, -3, 3, 19, 3));
++        assertFalse(PoiSearchCapacity.contains(0, -5, 0, -3, -4, -3, 3, 19, 3));
++    }
++
++    @Test
++    void boundedTraversalPreservesReferenceInBoundsOrder() {
++        assertTraversalEquivalent(new Bounds(-3, -4, -3, 3, 19, 3), new SectionPosition(0, 4, 0));
++        assertTraversalEquivalent(new Bounds(10, 2, -8, 14, 7, -2), new SectionPosition(11, 6, -7));
++        assertTraversalEquivalent(new Bounds(5, 5, 5, 5, 5, 5), new SectionPosition(5, 5, 5));
++    }
++
++    private static void assertTraversalEquivalent(final Bounds bounds, final SectionPosition center) {
++        final TraversalResult reference = traverse(bounds, center, false);
++        final TraversalResult bounded = traverse(bounds, center, true);
++
++        assertEquals(reference.inBoundsOrder, bounded.inBoundsOrder);
++        assertEquals(bounds.volume(), bounded.seenCount);
++        assertTrue(bounded.seenCount < reference.seenCount);
++    }
++
++    private static TraversalResult traverse(final Bounds bounds, final SectionPosition center, final boolean boundedNeighbours) {
++        final ArrayDeque<SectionPosition> queue = new ArrayDeque<>();
++        final Set<SectionPosition> seen = new HashSet<>();
++        final List<SectionPosition> inBoundsOrder = new ArrayList<>();
++        seen.add(center);
++        queue.add(center);
++
++        while (!queue.isEmpty()) {
++            final SectionPosition current = queue.removeFirst();
++            if (!bounds.contains(current)) {
++                continue;
++            }
++            inBoundsOrder.add(current);
++
++            for (int dz = -1; dz <= 1; dz++) {
++                for (int dx = -1; dx <= 1; dx++) {
++                    for (int dy = -1; dy <= 1; dy++) {
++                        if ((dx & 1) + (dy & 1) + (dz & 1) != 1) {
++                            continue;
++                        }
++                        final SectionPosition neighbour = new SectionPosition(
++                            current.x + dx,
++                            current.y + dy,
++                            current.z + dz
++                        );
++                        if (boundedNeighbours && !bounds.contains(neighbour)) {
++                            continue;
++                        }
++                        if (seen.add(neighbour)) {
++                            queue.addLast(neighbour);
++                        }
++                    }
++                }
++            }
++        }
++        return new TraversalResult(List.copyOf(inBoundsOrder), seen.size());
++    }
++
++    private record Bounds(int lowerX, int lowerY, int lowerZ, int upperX, int upperY, int upperZ) {
++
++        private boolean contains(final SectionPosition position) {
++            return PoiSearchCapacity.contains(
++                position.x,
++                position.y,
++                position.z,
++                this.lowerX,
++                this.lowerY,
++                this.lowerZ,
++                this.upperX,
++                this.upperY,
++                this.upperZ
++            );
++        }
++
++        private int volume() {
++            return (this.upperX - this.lowerX + 1)
++                * (this.upperY - this.lowerY + 1)
++                * (this.upperZ - this.lowerZ + 1);
++        }
++    }
++
++    private record SectionPosition(int x, int y, int z) {
++    }
++
++    private record TraversalResult(List<SectionPosition> inBoundsOrder, int seenCount) {
++    }
++
+     private static final class RehashCountingSet extends LongOpenHashSet {
+ 
+         private int rehashCount;

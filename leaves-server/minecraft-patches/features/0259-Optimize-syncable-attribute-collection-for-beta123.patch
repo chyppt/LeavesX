@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 00:39:07 +0800
+Subject: [PATCH] Optimize syncable attribute collection for beta123
+
+
+diff --git a/net/minecraft/world/entity/ai/attributes/AttributeMap.java b/net/minecraft/world/entity/ai/attributes/AttributeMap.java
+index 2c626adab31d93a25fd93d78bcdb77424ca2f1e2..1f12b6d849fcedf008f03d9fd31d184eb98e6816 100644
+--- a/net/minecraft/world/entity/ai/attributes/AttributeMap.java
++++ b/net/minecraft/world/entity/ai/attributes/AttributeMap.java
+@@ -41,6 +41,16 @@ public class AttributeMap {
+     }
+ 
+     public Collection<AttributeInstance> getSyncableAttributes() {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.syncableAttributeCollectionOptimization()) {
++            final List<AttributeInstance> syncable = new ArrayList<>(this.attributes.size());
++            // FastUtil's iterator order differs from its spliterator order; retain the stream's packet order.
++            this.attributes.values().spliterator().forEachRemaining(instance -> {
++                if (instance.getAttribute().value().isClientSyncable()) {
++                    syncable.add(instance);
++                }
++            });
++            return syncable;
++        }
+         return this.attributes.values().stream().filter(instance -> instance.getAttribute().value().isClientSyncable()).collect(Collectors.toList());
+     }
+ 

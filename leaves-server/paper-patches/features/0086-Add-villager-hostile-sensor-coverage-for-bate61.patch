@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 21:11:44 +0800
+Subject: [PATCH] Add villager hostile sensor coverage for bate61
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/VillagerHostileSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/VillagerHostileSensorHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..d27fb4e9d9c40cc55ea60716fd468e661f45bdf3
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/VillagerHostileSensorHotPathTest.java
+@@ -0,0 +1,52 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ai.sensing.VillagerHostilesSensor;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies villager hostile sensing uses the configured distance from a single optimized lookup. */
++@Normal
++class VillagerHostileSensorHotPathTest {
++
++    @Test
++    void matchingKeepsOptimizedAndVanillaPaths() throws IOException {
++        final MethodNode matching = method(classNode(VillagerHostilesSensor.class), "isMatchingEntity");
++        final List<MethodInsnNode> calls = invocations(matching);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("aiOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("get")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("distanceToSqr")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("isHostile")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("isClose")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

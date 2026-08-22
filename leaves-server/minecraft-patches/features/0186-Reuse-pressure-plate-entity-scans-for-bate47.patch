@@ -1,0 +1,147 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 18:48:37 +0800
+Subject: [PATCH] Reuse pressure plate entity scans for bate47
+
+
+diff --git a/net/minecraft/world/level/block/BasePressurePlateBlock.java b/net/minecraft/world/level/block/BasePressurePlateBlock.java
+index e22cade1f4258f9660f1f5ac3a330432cdf326d1..0e2c63b57d1ead2514ea21784e88336de4b764ae 100644
+--- a/net/minecraft/world/level/block/BasePressurePlateBlock.java
++++ b/net/minecraft/world/level/block/BasePressurePlateBlock.java
+@@ -1,6 +1,8 @@
+ package net.minecraft.world.level.block;
+ 
+ import com.mojang.serialization.MapCodec;
++import java.util.List;
++import java.util.function.Predicate;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.core.Direction;
+ import net.minecraft.server.level.ServerLevel;
+@@ -27,6 +29,10 @@ public abstract class BasePressurePlateBlock extends Block {
+     private static final VoxelShape SHAPE_PRESSED = Block.column(14.0, 0.0, 0.5);
+     private static final VoxelShape SHAPE = Block.column(14.0, 0.0, 1.0);
+     protected static final AABB TOUCH_AABB = Block.column(14.0, 0.0, 4.0).toAabbs().getFirst();
++    private static final Predicate<Entity> LEAVESX_ENTITY_SELECTOR =
++        EntitySelector.NO_SPECTATORS.and(entity -> !entity.isIgnoringBlockTriggers());
++    private static final ThreadLocal<LeavesXEntityScan> LEAVESX_ENTITY_SCAN =
++        ThreadLocal.withInitial(() -> new LeavesXEntityScan(true));
+     protected final BlockSetType type;
+ 
+     protected BasePressurePlateBlock(final BlockBehaviour.Properties properties, final BlockSetType type) {
+@@ -178,11 +184,59 @@ public abstract class BasePressurePlateBlock extends Block {
+         return BasePressurePlateBlock.getEntities(level, entityDetectionBox, entityClass).size();
+     }
+ 
+-    protected static <T extends Entity> java.util.List<T> getEntities(Level level, AABB box, Class<T> entityClass) {
+-        return level.getEntitiesOfClass(entityClass, box, EntitySelector.NO_SPECTATORS.and(e -> !e.isIgnoringBlockTriggers()));
++    protected static <T extends Entity> List<T> getEntities(Level level, AABB box, Class<T> entityClass) {
++        return level.getEntitiesOfClass(entityClass, box, LEAVESX_ENTITY_SELECTOR);
+         // CraftBukkit end
+     }
+ 
++    protected static LeavesXEntityScan leavesXAcquireEntityScan() {
++        final LeavesXEntityScan pooledScan = LEAVESX_ENTITY_SCAN.get();
++        if (pooledScan.acquire()) {
++            return pooledScan;
++        }
++        // Bukkit events may synchronously trigger another pressure plate scan on this thread.
++        return new LeavesXEntityScan(false);
++    }
++
++    protected static final class LeavesXEntityScan implements AutoCloseable {
++
++        private final List<Entity> results = new java.util.ArrayList<>();
++        private final boolean pooled;
++        private boolean inUse;
++
++        private LeavesXEntityScan(final boolean pooled) {
++            this.pooled = pooled;
++        }
++
++        private boolean acquire() {
++            if (this.inUse) {
++                return false;
++            }
++            this.inUse = true;
++            this.results.clear();
++            return true;
++        }
++
++        protected List<Entity> query(final Level level, final AABB box, final Class<? extends Entity> entityClass) {
++            this.results.clear();
++            level.leavesX$getEntitiesOfClass(
++                entityClass,
++                box,
++                LEAVESX_ENTITY_SELECTOR,
++                this.results
++            );
++            return this.results;
++        }
++
++        @Override
++        public void close() {
++            this.results.clear();
++            if (this.pooled) {
++                this.inUse = false;
++            }
++        }
++    }
++
+     protected abstract int getSignalStrength(Level level, BlockPos pos);
+ 
+     protected abstract int getSignalForState(BlockState state);
+diff --git a/net/minecraft/world/level/block/PressurePlateBlock.java b/net/minecraft/world/level/block/PressurePlateBlock.java
+index a3dd45486d58056d376b9e0238867913744efd5e..d57912c7a2983f9cd551fa5ee29794588e282513 100644
+--- a/net/minecraft/world/level/block/PressurePlateBlock.java
++++ b/net/minecraft/world/level/block/PressurePlateBlock.java
+@@ -41,12 +41,22 @@ public class PressurePlateBlock extends BasePressurePlateBlock {
+ 
+     @Override
+     protected int getSignalStrength(final Level level, final BlockPos pos) {
+-        Class<? extends Entity> entityClass = switch (this.type.pressurePlateSensitivity()) {
++        final Class<? extends Entity> entityClass = switch (this.type.pressurePlateSensitivity()) {
+             case EVERYTHING -> Entity.class;
+             case MOBS -> LivingEntity.class;
+         };
++        final net.minecraft.world.phys.AABB searchBox = PressurePlateBlock.TOUCH_AABB.move(pos);
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++            try (LeavesXEntityScan scan = leavesXAcquireEntityScan()) {
++                return this.getSignalStrength(level, pos, scan.query(level, searchBox, entityClass));
++            }
++        }
++        return this.getSignalStrength(level, pos, getEntities(level, searchBox, entityClass));
++    }
++
++    private int getSignalStrength(final Level level, final BlockPos pos, final java.util.List<? extends Entity> entities) {
+         // CraftBukkit start - Call interact event when turning on a pressure plate
+-        for (Entity entity : getEntities(level, PressurePlateBlock.TOUCH_AABB.move(pos), entityClass)) {
++        for (final Entity entity : entities) {
+             if (this.getSignalForState(level.getBlockState(pos)) == 0) {
+                 org.bukkit.event.Cancellable cancellable;
+ 
+diff --git a/net/minecraft/world/level/block/WeightedPressurePlateBlock.java b/net/minecraft/world/level/block/WeightedPressurePlateBlock.java
+index e26385eb25338e7f0770b9154a542273b651c2f4..ccf6ae0012a4587c6a7d4be0336473f2fd27d3f9 100644
+--- a/net/minecraft/world/level/block/WeightedPressurePlateBlock.java
++++ b/net/minecraft/world/level/block/WeightedPressurePlateBlock.java
+@@ -39,10 +39,20 @@ public class WeightedPressurePlateBlock extends BasePressurePlateBlock {
+ 
+     @Override
+     protected int getSignalStrength(final Level level, final BlockPos pos) {
++        final net.minecraft.world.phys.AABB searchBox = TOUCH_AABB.move(pos);
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++            try (LeavesXEntityScan scan = leavesXAcquireEntityScan()) {
++                return this.getSignalStrength(level, pos, scan.query(level, searchBox, Entity.class));
++            }
++        }
++        return this.getSignalStrength(level, pos, getEntities(level, searchBox, Entity.class));
++    }
++
++    private int getSignalStrength(final Level level, final BlockPos pos, final java.util.List<? extends Entity> entities) {
+         // CraftBukkit start
+         // int min = Math.min(getEntityCount(level, TOUCH_AABB.move(pos), Entity.class), this.maxWeight);
+         int count = 0;
+-        for (Entity entity : getEntities(level, TOUCH_AABB.move(pos), Entity.class)) {
++        for (final Entity entity : entities) {
+             org.bukkit.event.Cancellable cancellable;
+ 
+             if (entity instanceof net.minecraft.world.entity.player.Player player) {

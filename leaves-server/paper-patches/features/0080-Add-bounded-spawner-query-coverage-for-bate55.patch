@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 20:13:04 +0800
+Subject: [PATCH] Add bounded spawner query coverage for bate55
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/SpawnerNearbyEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/SpawnerNearbyEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..a22950a8d1e1a66e201c4d80fca768b956e167a1
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/SpawnerNearbyEntityQueryHotPathTest.java
+@@ -0,0 +1,64 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.level.BaseSpawner;
++import net.minecraft.world.level.Level;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies spawner density checks stop once the configured nearby-entity limit is reached. */
++@Normal
++class SpawnerNearbyEntityQueryHotPathTest {
++
++    @Test
++    void spawnerKeepsBoundedAndVanillaQueryPaths() throws IOException {
++        final MethodNode serverTick = method(classNode(BaseSpawner.class), "serverTick");
++        final List<MethodInsnNode> calls = invocations(serverTick);
++
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++        ));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$acquireEntityQueryBuffer")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("countUpTo")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntities")));
++    }
++
++    @Test
++    void reusableBufferDelegatesToTheBoundedLevelQuery() throws IOException {
++        final ClassNode buffer = classNode(Level.LeavesXEntityQueryBuffer.class);
++        final MethodNode countUpTo = method(buffer, "countUpTo");
++
++        assertTrue(invocations(countUpTo).stream().anyMatch(call ->
++            call.owner.equals("net/minecraft/world/level/Level") && call.name.equals("getEntities")
++        ));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

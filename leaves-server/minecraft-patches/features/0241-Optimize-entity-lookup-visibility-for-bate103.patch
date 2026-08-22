@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 07:25:25 +0800
+Subject: [PATCH] Optimize entity lookup visibility for bate103
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+index 56e71bf01f22579c294c6b33450bd282e082f6ae..7c6c1be358ad67083dbd837fd3ac6217614d8758 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+@@ -93,6 +93,15 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+         if (entity == null) {
+             return null;
+         }
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityLookupVisibilityOptimization()) {
++            // LeavesX start - preserve always-ticking entities while avoiding the generic visibility mapping
++            if (entity.isAlwaysTicking()) {
++                return entity;
++            }
++            final FullChunkStatus entityStatus = ((ChunkSystemEntity)entity).moonrise$getChunkStatus();
++            return entityStatus != null && entityStatus != FullChunkStatus.INACCESSIBLE ? entity : null;
++            // LeavesX end - preserve always-ticking entities while avoiding the generic visibility mapping
++        }
+         final Visibility visibility = EntityLookup.getEntityStatus(entity);
+         return visibility.isAccessible() ? entity : null;
+     }
+@@ -398,6 +407,16 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+             return Visibility.TICKING;
+         }
+         final FullChunkStatus entityStatus = ((ChunkSystemEntity)entity).moonrise$getChunkStatus();
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityLookupVisibilityOptimization()) {
++            // LeavesX start - map the four stable FullChunkStatus values directly
++            return switch (entityStatus) {
++                case INACCESSIBLE -> Visibility.HIDDEN;
++                case FULL, BLOCK_TICKING -> Visibility.TRACKED;
++                case ENTITY_TICKING -> Visibility.TICKING;
++                case null -> Visibility.HIDDEN;
++            };
++            // LeavesX end - map the four stable FullChunkStatus values directly
++        }
+         return Visibility.fromFullChunkStatus(entityStatus == null ? FullChunkStatus.INACCESSIBLE : entityStatus);
+     }
+ 

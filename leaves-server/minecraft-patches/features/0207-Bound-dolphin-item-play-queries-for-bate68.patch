@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 22:24:26 +0800
+Subject: [PATCH] Bound dolphin item play queries for bate68
+
+
+diff --git a/net/minecraft/world/entity/animal/dolphin/Dolphin.java b/net/minecraft/world/entity/animal/dolphin/Dolphin.java
+index cd01b389c862d363de7e78f042305d2e9e231d15..0a6681e316e28db7d2bda2852619e3c74cd217a8 100644
+--- a/net/minecraft/world/entity/animal/dolphin/Dolphin.java
++++ b/net/minecraft/world/entity/animal/dolphin/Dolphin.java
+@@ -528,17 +528,14 @@ public class Dolphin extends AgeableWaterCreature {
+                 return false;
+             }
+ 
+-            List<ItemEntity> items = Dolphin.this.level()
+-                .getEntitiesOfClass(ItemEntity.class, Dolphin.this.getBoundingBox().inflate(8.0, 8.0, 8.0), Dolphin.ALLOWED_ITEMS);
+-            return !items.isEmpty() || !Dolphin.this.getItemBySlot(EquipmentSlot.MAINHAND).isEmpty();
++            return this.findNearbyItem() != null || !Dolphin.this.getItemBySlot(EquipmentSlot.MAINHAND).isEmpty();
+         }
+ 
+         @Override
+         public void start() {
+-            List<ItemEntity> items = Dolphin.this.level()
+-                .getEntitiesOfClass(ItemEntity.class, Dolphin.this.getBoundingBox().inflate(8.0, 8.0, 8.0), Dolphin.ALLOWED_ITEMS);
+-            if (!items.isEmpty()) {
+-                Dolphin.this.getNavigation().moveTo(items.get(0), 1.2F);
++            final ItemEntity item = this.findNearbyItem();
++            if (item != null) {
++                Dolphin.this.getNavigation().moveTo(item, 1.2F);
+                 Dolphin.this.playSound(SoundEvents.DOLPHIN_PLAY, 1.0F, 1.0F);
+             }
+ 
+@@ -557,17 +554,30 @@ public class Dolphin extends AgeableWaterCreature {
+ 
+         @Override
+         public void tick() {
+-            List<ItemEntity> items = Dolphin.this.level()
+-                .getEntitiesOfClass(ItemEntity.class, Dolphin.this.getBoundingBox().inflate(8.0, 8.0, 8.0), Dolphin.ALLOWED_ITEMS);
++            final ItemEntity item = this.findNearbyItem();
+             ItemStack itemStack = Dolphin.this.getItemBySlot(EquipmentSlot.MAINHAND);
+             if (!itemStack.isEmpty()) {
+                 this.drop(itemStack);
+                 Dolphin.this.setItemSlot(EquipmentSlot.MAINHAND, ItemStack.EMPTY);
+-            } else if (!items.isEmpty()) {
+-                Dolphin.this.getNavigation().moveTo(items.get(0), 1.2F);
++            } else if (item != null) {
++                Dolphin.this.getNavigation().moveTo(item, 1.2F);
+             }
+         }
+ 
++        private @Nullable ItemEntity findNearbyItem() {
++            if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++                return Dolphin.this.level().leavesX$getFirstEntityOfClass(
++                    ItemEntity.class,
++                    Dolphin.this.getBoundingBox().inflate(8.0, 8.0, 8.0),
++                    Dolphin.ALLOWED_ITEMS
++                );
++            }
++
++            final List<ItemEntity> items = Dolphin.this.level()
++                .getEntitiesOfClass(ItemEntity.class, Dolphin.this.getBoundingBox().inflate(8.0, 8.0, 8.0), Dolphin.ALLOWED_ITEMS);
++            return items.isEmpty() ? null : items.getFirst();
++        }
++
+         private void drop(final ItemStack itemStack) {
+             if (!itemStack.isEmpty()) {
+                 double yHandPos = Dolphin.this.getEyeY() - 0.3F;

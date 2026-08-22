@@ -1,0 +1,165 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 01:24:24 +0800
+Subject: [PATCH] Add hurt-by sensor control for bate80
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index c31d09e1eca4adc096aaca5f48c8f4fca8f77eab..27980fab3e1c99083423a1b28d7dd65ba1224add 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -44,7 +44,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMask
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 12;
++    public static final int CURRENT_CONFIG_VERSION = 13;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 6dc8bf64ac0555cd426e89a69e77ec0835d2ae85..cf9fbe5c557f6bf9225e1795be62acd060d727ff 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：12。");
++        comments.put("config-version", "配置版本，请勿修改。默认：13。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 7177dfac0a15b3b0be13cd48cc36e42f9f81e413..86bdd1b6cb91ebc835d97d5f8f80b5b625cc91bc 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -131,6 +131,10 @@ enum LeavesXOptimization {
+     ADULT_SENSOR(
+         "performance.ai.adult-sensor",
+         "减少成年同类传感器的临时对象，关闭后使用原版流程。默认：true。"
++    ),
++    HURT_BY_SENSOR(
++        "performance.ai.hurt-by-sensor",
++        "减少受伤感知器的重复读取和临时对象，关闭后使用原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index d34ac6b41be415a6184cc0d27ec4963e156b1649..1d106f0afbe603ae52652b74e8efd82811c9c6c9 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -281,6 +281,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && enabled(LeavesXOptimization.ADULT_SENSOR);
+     }
+ 
++    /** Returns whether hurt-by sensing may reuse damage state and read nullable memory without Optional wrappers. */
++    public static boolean hurtBySensorOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.HURT_BY_SENSOR);
++    }
++
+     /** Returns whether armor-stand placement may stop after the first blocking entity. */
+     public static boolean armorStandPlacementOptimization() {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.ARMOR_STAND_PLACEMENT);
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 72a268bd017af100117702838af6403f7ba7bb8f..372ba1835fb966a87dfc3cf6d18d96ef9a8863c9 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -270,6 +270,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.villagerHostileSensorOptimization());
+             assertFalse(LeavesXRuntime.breezeAttackSensorOptimization());
+             assertFalse(LeavesXRuntime.wardenTargetSensorOptimization());
++            assertFalse(LeavesXRuntime.hurtBySensorOptimization());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+@@ -282,6 +283,7 @@ class LeavesXConfigLoaderTest {
+             performance:
+               ai:
+                 breeze-attack-sensor: false
++                hurt-by-sensor: false
+               block-entity:
+                 hopper-entity-queries: false
+               entity-queries:
+@@ -290,17 +292,19 @@ class LeavesXConfigLoaderTest {
+             """));
+ 
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.BREEZE_ATTACK_SENSOR));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.HURT_BY_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_ENTITY_QUERIES));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 4,
++            LeavesXConfig.fineGrainedOptimizationCount() - 5,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+         try {
+             LeavesXRuntime.publish(config);
+             assertFalse(LeavesXRuntime.breezeAttackSensorOptimization());
++            assertFalse(LeavesXRuntime.hurtBySensorOptimization());
+             assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.foxItemSearchOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/HurtBySensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/HurtBySensorHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..b5ccb85740d8c3f02dced078fb3db477d5b111aa
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/HurtBySensorHotPathTest.java
+@@ -0,0 +1,55 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ai.sensing.HurtBySensor;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies hurt-by sensing keeps an allocation-light path and the vanilla Optional fallback. */
++@Normal
++class HurtBySensorHotPathTest {
++
++    @Test
++    void sensorKeepsDirectAndVanillaMemoryPaths() throws IOException {
++        final ClassNode hurtBySensor = classNode(HurtBySensor.class);
++        final MethodNode doTick = method(hurtBySensor, "doTick");
++        final List<MethodInsnNode> calls = invocations(doTick);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("hurtBySensorOptimization")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getMemoryValue")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getMemory")));
++        assertTrue(hurtBySensor.methods.stream()
++            .filter(method -> method.name.startsWith("lambda$doTick"))
++            .flatMap(method -> invocations(method).stream())
++            .anyMatch(call -> call.name.equals("isAlive")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

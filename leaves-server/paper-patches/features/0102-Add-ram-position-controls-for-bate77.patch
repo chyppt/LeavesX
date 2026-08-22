@@ -1,0 +1,324 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 00:33:27 +0800
+Subject: [PATCH] Add ram position controls for bate77
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 1bff9ddbf570b3a29e2bae1ecc669b64a83b2ddf..b91779165b3b7673f43c4d31505d284f815744d9 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -926,6 +926,7 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(line("AI/寻路", onOff(config.aiOptimizations()) + " / " + onOff(config.pathfindingOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("村民职业查找", onOff(LeavesXRuntime.villagerProfessionAssignmentOptimization()), NamedTextColor.AQUA));
+         sender.sendMessage(line("长跳候选构建", onOff(LeavesXRuntime.longJumpCandidateOptimization()), NamedTextColor.AQUA));
++        sender.sendMessage(line("山羊冲撞选点", onOff(LeavesXRuntime.ramPositionSelectionOptimization()), NamedTextColor.AQUA));
+         sender.sendMessage(line("动物空闲降频", onOff(config.animalIdleGoalThrottling()) + "，倍数 " + config.animalIdleGoalIntervalMultiplier(), config.animalIdleGoalThrottling() ? NamedTextColor.YELLOW : NamedTextColor.GREEN));
+         sender.sendMessage(line("刷怪优化", onOff(config.mobSpawningOptimizations()) + "，并行 " + onOff(config.parallelMobSpawnCounting()), NamedTextColor.AQUA));
+         sender.sendMessage(line("刷怪并行阈值", LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities() + " 实体", NamedTextColor.AQUA));
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 41d9c3a9fa42d080deaa4a8849cb7169f7fb0545..6ea3ba30d67274118f557b7ceb8aa29c76bf6104 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -22,6 +22,7 @@ public record LeavesXConfig(
+     boolean aiOptimizations,
+     boolean villagerProfessionAssignmentOptimization,
+     boolean longJumpCandidateOptimization,
++    boolean ramPositionSelectionOptimization,
+     boolean pathfindingOptimizations,
+     boolean mobSpawningOptimizations,
+     boolean animalIdleGoalThrottling,
+@@ -42,7 +43,7 @@ public record LeavesXConfig(
+     int chunkUnloadMaximumPerTick
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 9;
++    public static final int CURRENT_CONFIG_VERSION = 10;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -110,6 +111,7 @@ public record LeavesXConfig(
+             true,
+             true,
+             true,
++            true,
+             false,
+             2,
+             true,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 9a6bbfc386ff9071ddb79d640ab76849bbce6399..fd461f3ce79726d61fec19c0b5f28ba4a6f11d91 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -67,7 +67,7 @@ public final class LeavesXConfigBootstrap {
+     private static void logConfiguration(final LeavesXConfig config) {
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+-            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, entity state {}, entity queries {}, AI {}, villager profession {}, long jump {}, pathfinding {}, mob spawning {}, item merge {}, block entity hot paths {}, block entity removal {}, spawn range {}",
++            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, entity state {}, entity queries {}, AI {}, villager profession {}, long jump {}, ram selection {}, pathfinding {}, mob spawning {}, item merge {}, block entity hot paths {}, block entity removal {}, spawn range {}",
+             config.optimizedVarInt(),
+             config.networkFlushConsolidation(),
+             config.immutableCacheOptimizations(),
+@@ -78,6 +78,7 @@ public final class LeavesXConfigBootstrap {
+             config.aiOptimizations(),
+             LeavesXRuntime.villagerProfessionAssignmentOptimization(),
+             LeavesXRuntime.longJumpCandidateOptimization(),
++            LeavesXRuntime.ramPositionSelectionOptimization(),
+             config.pathfindingOptimizations(),
+             config.mobSpawningOptimizations(),
+             config.itemMergeOptimizations(),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 90b30868982c04851649c759e9fdd4faca567cc2..94d2a23a4aa01874206e60e5cb0fdd6b8dcb9786 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -138,6 +138,11 @@ public final class LeavesXConfigLoader {
+                     "performance.ai.long-jump-candidates",
+                     true
+                 ),
++                readBoolean(
++                    node.node("performance", "ai", "ram-position-selection"),
++                    "performance.ai.ram-position-selection",
++                    true
++                ),
+                 readBoolean(
+                     node.node("performance", "pathfinding-optimizations"),
+                     "performance.pathfinding-optimizations",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 679fa559e754bc391cd119b8d2f468ba80c34556..1c5cf46e5666154288690fb6012a41b10dd15c17 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -153,6 +153,12 @@ public final class LeavesXConfigWriter {
+             config.longJumpCandidateOptimization(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "ai", "ram-position-selection"),
++            "performance.ai.ram-position-selection",
++            config.ramPositionSelectionOptimization(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "pathfinding-optimizations"),
+             "performance.pathfinding-optimizations",
+@@ -274,7 +280,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：9。");
++        comments.put("config-version", "配置版本，请勿修改。默认：10。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -289,6 +295,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.ai-optimizations", "减少 AI 和村民 POI 搜索的重复计算。默认：true。");
+         comments.put("performance.ai.villager-profession-assignment", "优化村民领取职业时的职业查找，关闭后使用原版查找。默认：true。");
+         comments.put("performance.ai.long-jump-candidates", "优化山羊和青蛙准备长跳时的候选位置构建，关闭后使用原版构建。默认：true。");
++        comments.put("performance.ai.ram-position-selection", "优化山羊蓄力冲撞时的起点排序与筛选，关闭后使用原版流程。默认：true。");
+         comments.put("performance.pathfinding-optimizations", "减少寻路重建和临时对象开销。默认：true。");
+         comments.put("performance.mob-spawning-optimizations", "减少刷怪统计的临时对象和重复遍历。默认：true。");
+         comments.put("performance.animal-idle-goals.enabled", "降低动物空闲游走和环顾频率，会改变空闲行为。默认：false。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index c6771bdb496c70b5e81dd5683dc6e14f3326ed29..ae7f33f140a268ad632a05e4a22d876121aea413 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -28,6 +28,7 @@ public final class LeavesXRuntime {
+     private static boolean aiOptimizations = true;
+     private static boolean villagerProfessionAssignmentOptimization = true;
+     private static boolean longJumpCandidateOptimization = true;
++    private static boolean ramPositionSelectionOptimization = true;
+     private static boolean pathfindingOptimizations = true;
+     private static boolean mobSpawningOptimizations = true;
+     private static boolean animalIdleGoalThrottling;
+@@ -78,6 +79,7 @@ public final class LeavesXRuntime {
+         aiOptimizations = validated.aiOptimizations();
+         villagerProfessionAssignmentOptimization = validated.villagerProfessionAssignmentOptimization();
+         longJumpCandidateOptimization = validated.longJumpCandidateOptimization();
++        ramPositionSelectionOptimization = validated.ramPositionSelectionOptimization();
+         pathfindingOptimizations = validated.pathfindingOptimizations();
+         mobSpawningOptimizations = validated.mobSpawningOptimizations();
+         animalIdleGoalThrottling = validated.animalIdleGoalThrottling();
+@@ -182,6 +184,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && longJumpCandidateOptimization;
+     }
+ 
++    /** Returns whether ram start positions may use the allocation-free stable small-list scan. */
++    public static boolean ramPositionSelectionOptimization() {
++        return aiOptimizations && ramPositionSelectionOptimization;
++    }
++
+     /** Returns whether behavior-equivalent path reconstruction optimizations are enabled. */
+     public static boolean pathfindingOptimizations() {
+         return pathfindingOptimizations;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index dfcd73b4b24ae20cd266c6e884c10ab31489addf..54003656774a812d8bb26b3e81c3788b6cc5a1e0 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -36,6 +36,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(generated.contains("slow-plugin-task-ms:"));
+         assertTrue(generated.contains("villager-profession-assignment:"));
+         assertTrue(generated.contains("long-jump-candidates:"));
++        assertTrue(generated.contains("ram-position-selection:"));
+         assertTrue(generated.contains("workers:"));
+         assertFalse(generated.contains("threading:"));
+         assertFalse(generated.contains("folia"));
+@@ -88,6 +89,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(config.entityQueryOptimizations());
+         assertTrue(config.villagerProfessionAssignmentOptimization());
+         assertTrue(config.longJumpCandidateOptimization());
++        assertTrue(config.ramPositionSelectionOptimization());
+         assertFalse(reloaded.node("performance", "optimized-varint").getBoolean());
+         assertTrue(reloaded.node("performance", "item-merge-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "block-entity-optimizations").getBoolean());
+@@ -98,6 +100,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(reloaded.node("performance", "entity-query-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "ai", "villager-profession-assignment").getBoolean());
+         assertTrue(reloaded.node("performance", "ai", "long-jump-candidates").getBoolean());
++        assertTrue(reloaded.node("performance", "ai", "ram-position-selection").getBoolean());
+         assertTrue(reloaded.node("custom-extension", "retained").getBoolean());
+         assertTrue(upgraded.contains("# User-managed LeavesX settings."), upgraded);
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.item-merge-optimizations")));
+@@ -109,6 +112,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.entity-query-optimizations")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.ai.villager-profession-assignment")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.ai.long-jump-candidates")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.ai.ram-position-selection")));
+     }
+ 
+     @Test
+@@ -166,6 +170,7 @@ class LeavesXConfigLoaderTest {
+               ai:
+                 villager-profession-assignment: false
+                 long-jump-candidates: false
++                ram-position-selection: false
+               pathfinding-optimizations: false
+               mob-spawning-optimizations: false
+               animal-idle-goals:
+@@ -203,6 +208,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.aiOptimizations());
+         assertFalse(config.villagerProfessionAssignmentOptimization());
+         assertFalse(config.longJumpCandidateOptimization());
++        assertFalse(config.ramPositionSelectionOptimization());
+         assertFalse(config.pathfindingOptimizations());
+         assertFalse(config.mobSpawningOptimizations());
+         assertTrue(config.animalIdleGoalThrottling());
+@@ -226,6 +232,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.entityStateOptimizations());
+             assertFalse(LeavesXRuntime.villagerProfessionAssignmentOptimization());
+             assertFalse(LeavesXRuntime.longJumpCandidateOptimization());
++            assertFalse(LeavesXRuntime.ramPositionSelectionOptimization());
+             assertEquals(524_288, LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities());
+             assertEquals(262_144, LeavesXRuntime.aiTargetSearchMinimumCandidates());
+         } finally {
+@@ -245,10 +252,12 @@ class LeavesXConfigLoaderTest {
+ 
+         assertTrue(config.villagerProfessionAssignmentOptimization());
+         assertTrue(config.longJumpCandidateOptimization());
++        assertTrue(config.ramPositionSelectionOptimization());
+         try {
+             LeavesXRuntime.publish(config);
+             assertFalse(LeavesXRuntime.villagerProfessionAssignmentOptimization());
+             assertFalse(LeavesXRuntime.longJumpCandidateOptimization());
++            assertFalse(LeavesXRuntime.ramPositionSelectionOptimization());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/RamPositionSelectionTest.java b/src/test/java/org/leavesx/leavesx/performance/RamPositionSelectionTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..1276d4c950f68fbfc2405276a18210d725408967
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/RamPositionSelectionTest.java
+@@ -0,0 +1,95 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.Comparator;
++import java.util.List;
++import net.minecraft.core.BlockPos;
++import net.minecraft.world.entity.ai.behavior.PrepareRamNearestTarget;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies ram-position selection keeps vanilla's stable distance order and fallback path. */
++@Normal
++class RamPositionSelectionTest {
++
++    @Test
++    void insertionSortMatchesVanillaStableComparatorOrder() throws Exception {
++        final Method sort = PrepareRamNearestTarget.class.getDeclaredMethod(
++            "sortRamPositionsByDistance",
++            List.class,
++            BlockPos.class
++        );
++        sort.setAccessible(true);
++
++        final BlockPos origin = new BlockPos(5, 80, -3);
++        final List<BlockPos> original = List.of(
++            origin.offset(3, 0, 0),
++            origin.offset(0, 0, -2),
++            origin.offset(-3, 0, 0),
++            origin.offset(0, 0, 1)
++        );
++        final List<BlockPos> expected = original.stream()
++            .sorted(Comparator.comparingDouble(origin::distSqr))
++            .toList();
++        final List<BlockPos> actual = new ArrayList<>(original);
++
++        sort.invoke(null, actual, origin);
++
++        assertEquals(expected, actual);
++        assertEquals(original.get(0), actual.get(2), "Equal-distance candidates must retain their original order");
++        assertEquals(original.get(2), actual.get(3), "Equal-distance candidates must retain their original order");
++    }
++
++    @Test
++    void optimizedAndVanillaSelectionPathsRemainPresent() throws IOException {
++        final ClassNode behavior = classNode(PrepareRamNearestTarget.class);
++        final List<MethodInsnNode> sortCalls = invocations(method(behavior, "sortRamPositionsByDistance"));
++        final List<MethodInsnNode> selectionCalls = behavior.methods.stream()
++            .filter(method -> method.name.equals("calculateRammingStartPosition")
++                || method.name.startsWith("lambda$calculateRammingStartPosition$"))
++            .flatMap(method -> invocations(method).stream())
++            .toList();
++
++        assertFalse(sortCalls.stream().anyMatch(call -> call.name.equals("stream") || call.name.equals("sorted")));
++        assertTrue(sortCalls.stream().anyMatch(call -> call.name.equals("compare")));
++        assertTrue(sortCalls.stream().anyMatch(call -> call.name.equals("set")));
++        assertTrue(selectionCalls.stream().anyMatch(call -> call.name.equals("ramPositionSelectionOptimization")));
++        assertTrue(selectionCalls.stream().anyMatch(call -> call.name.equals("sortRamPositionsByDistance")));
++        assertTrue(selectionCalls.stream().anyMatch(call -> call.name.equals("createPath")));
++        assertTrue(selectionCalls.stream().anyMatch(call -> call.name.equals("stream")));
++        assertTrue(selectionCalls.stream().anyMatch(call -> call.name.equals("sorted")));
++        assertTrue(selectionCalls.stream().anyMatch(call -> call.name.equals("findFirst")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

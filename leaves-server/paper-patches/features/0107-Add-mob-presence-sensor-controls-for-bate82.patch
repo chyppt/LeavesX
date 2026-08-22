@@ -1,0 +1,172 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 01:42:04 +0800
+Subject: [PATCH] Add mob presence sensor controls for bate82
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 27980fab3e1c99083423a1b28d7dd65ba1224add..f3c85d3ee1f2927016f73025873a132e3febd7aa 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -44,7 +44,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMask
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 13;
++    public static final int CURRENT_CONFIG_VERSION = 14;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index cf9fbe5c557f6bf9225e1795be62acd060d727ff..3ba373d51f9312a276f55177e6503fcc5943c326 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：13。");
++        comments.put("config-version", "配置版本，请勿修改。默认：14。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 86bdd1b6cb91ebc835d97d5f8f80b5b625cc91bc..0c7aab43aec07a3e43a635b167f8b42c20b60aac 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -135,6 +135,10 @@ enum LeavesXOptimization {
+     HURT_BY_SENSOR(
+         "performance.ai.hurt-by-sensor",
+         "减少受伤感知器的重复读取和临时对象，关闭后使用原版流程。默认：true。"
++    ),
++    MOB_PRESENCE_SENSORS(
++        "performance.ai.mob-presence-sensors",
++        "减少附近生物存在性检测的临时对象，关闭后使用原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 1d106f0afbe603ae52652b74e8efd82811c9c6c9..40da87cd99e15be045c0d4a19e5be321e8d6df1e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -286,6 +286,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && enabled(LeavesXOptimization.HURT_BY_SENSOR);
+     }
+ 
++    /** Returns whether mob-presence sensors may scan nullable memory directly without Optional and stream wrappers. */
++    public static boolean mobPresenceSensorOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.MOB_PRESENCE_SENSORS);
++    }
++
+     /** Returns whether armor-stand placement may stop after the first blocking entity. */
+     public static boolean armorStandPlacementOptimization() {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.ARMOR_STAND_PLACEMENT);
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 372ba1835fb966a87dfc3cf6d18d96ef9a8863c9..d2bdca5ba9d7fba4f51c799897f2a7c772dd0370 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -271,6 +271,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.breezeAttackSensorOptimization());
+             assertFalse(LeavesXRuntime.wardenTargetSensorOptimization());
+             assertFalse(LeavesXRuntime.hurtBySensorOptimization());
++            assertFalse(LeavesXRuntime.mobPresenceSensorOptimization());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+@@ -284,6 +285,7 @@ class LeavesXConfigLoaderTest {
+               ai:
+                 breeze-attack-sensor: false
+                 hurt-by-sensor: false
++                mob-presence-sensors: false
+               block-entity:
+                 hopper-entity-queries: false
+               entity-queries:
+@@ -293,11 +295,12 @@ class LeavesXConfigLoaderTest {
+ 
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.BREEZE_ATTACK_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HURT_BY_SENSOR));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.MOB_PRESENCE_SENSORS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_ENTITY_QUERIES));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 5,
++            LeavesXConfig.fineGrainedOptimizationCount() - 6,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -305,6 +308,7 @@ class LeavesXConfigLoaderTest {
+             LeavesXRuntime.publish(config);
+             assertFalse(LeavesXRuntime.breezeAttackSensorOptimization());
+             assertFalse(LeavesXRuntime.hurtBySensorOptimization());
++            assertFalse(LeavesXRuntime.mobPresenceSensorOptimization());
+             assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.foxItemSearchOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/MobPresenceSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/MobPresenceSensorHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..63b5756510a91642ba0b6ff1060ff8bc5ce2865e
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/MobPresenceSensorHotPathTest.java
+@@ -0,0 +1,61 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ai.sensing.GolemSensor;
++import net.minecraft.world.entity.ai.sensing.MobSensor;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies nearby-mob sensors keep direct loops and vanilla Optional/stream fallbacks. */
++@Normal
++class MobPresenceSensorHotPathTest {
++
++    @Test
++    void genericMobSensorKeepsBothPaths() throws IOException {
++        assertDirectAndVanillaPaths(method(classNode(MobSensor.class), "checkForMobsNearby"));
++    }
++
++    @Test
++    void golemSensorKeepsBothPaths() throws IOException {
++        assertDirectAndVanillaPaths(method(classNode(GolemSensor.class), "checkForNearbyGolem"));
++    }
++
++    private static void assertDirectAndVanillaPaths(final MethodNode method) {
++        final List<MethodInsnNode> calls = invocations(method);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("mobPresenceSensorOptimization")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getMemoryValue")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getMemory")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("stream")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("anyMatch")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

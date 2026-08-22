@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 10:39:53 +0800
+Subject: [PATCH] Optimize list-backed container scans for beta127
+
+
+diff --git a/net/minecraft/world/level/block/entity/ListBackedContainer.java b/net/minecraft/world/level/block/entity/ListBackedContainer.java
+index 89a86543ccb6ca2c9a292a425c6b17e7cb646bce..a4e6d0c87eab25c2c7e3e6e15332b2d370cf2f61 100644
+--- a/net/minecraft/world/level/block/entity/ListBackedContainer.java
++++ b/net/minecraft/world/level/block/entity/ListBackedContainer.java
+@@ -10,9 +10,23 @@ public interface ListBackedContainer extends Container {
+     NonNullList<ItemStack> getItems();
+ 
+     default int count() {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.listBackedContainerScansOptimization()) {
++            return leavesX$countItems(this.getItems());
++        }
+         return (int)this.getItems().stream().filter(Predicate.not(ItemStack::isEmpty)).count();
+     }
+ 
++    /** Counts occupied slots without creating a stream pipeline or iterator. */
++    private static int leavesX$countItems(final NonNullList<ItemStack> items) {
++        int occupied = 0;
++        for (int slot = 0, size = items.size(); slot < size; slot++) {
++            if (!items.get(slot).isEmpty()) {
++                occupied++;
++            }
++        }
++        return occupied;
++    }
++
+     @Override
+     default int getContainerSize() {
+         return this.getItems().size();
+@@ -25,9 +39,22 @@ public interface ListBackedContainer extends Container {
+ 
+     @Override
+     default boolean isEmpty() {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.listBackedContainerScansOptimization()) {
++            return leavesX$itemsAreEmpty(this.getItems());
++        }
+         return this.getItems().stream().allMatch(ItemStack::isEmpty);
+     }
+ 
++    /** Stops at the first occupied slot, preserving the stream's short-circuit behavior. */
++    private static boolean leavesX$itemsAreEmpty(final NonNullList<ItemStack> items) {
++        for (int slot = 0, size = items.size(); slot < size; slot++) {
++            if (!items.get(slot).isEmpty()) {
++                return false;
++            }
++        }
++        return true;
++    }
++
+     @Override
+     default ItemStack getItem(final int slot) {
+         return this.getItems().get(slot);

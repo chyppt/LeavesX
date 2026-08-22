@@ -1,0 +1,181 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 21 Aug 2026 21:47:00 +0800
+Subject: [PATCH] Add configurable entity activation query buffer reuse for
+ beta148
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 114f07d6869ffd04be310ea6a9014841af8e19fa..f20f229269445787eaeab498072b4305daf2e854 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -51,7 +51,7 @@ public record LeavesXConfig(
+     boolean villagerCompatibilityMode
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 60;
++    public static final int CURRENT_CONFIG_VERSION = 61;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 3131eb438e2f2ced54fa8359950e3e98f04d49c9..0d18943868e9014bee7c917a8932cb1561c32568 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -324,7 +324,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：60。");
++        comments.put("config-version", "配置版本，请勿修改。默认：61。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index ac0a1965edabf523d5f2a39e2f6935ca484c26b3..33ecd8395db6943c1e1669825365d30482d8973a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -16,6 +16,10 @@ enum LeavesXOptimization {
+         "performance.entity-queries.first-match-queries",
+         "只需要一个实体时提前停止搜索，关闭后构建完整列表。默认：true。"
+     ),
++    ENTITY_ACTIVATION_BUFFER_REUSE(
++        "performance.entity-queries.entity-activation-buffer-reuse",
++        "复用实体激活扫描列表，关闭后使用 Paper 原版查询。默认：true。"
++    ),
+     PRESSURE_PLATE_ENTITY_SCANS(
+         "performance.entity-queries.pressure-plate-scans",
+         "复用压力板实体扫描结果，关闭后使用原版扫描。默认：true。"
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 062821a1767d8c9bae13ecbf87cc2e7b07e15923..538d7e534c3a049e081a7c9f87e79593589a268b 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -273,6 +273,11 @@ public final class LeavesXRuntime {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.FIRST_MATCH_ENTITY_QUERIES);
+     }
+ 
++    /** Returns whether entity activation may reuse its per-thread full-query result buffer. */
++    public static boolean entityActivationQueryBufferReuseOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.ENTITY_ACTIVATION_BUFFER_REUSE);
++    }
++
+     /** Returns whether Moonrise entity lookup may map chunk visibility without the generic enum helper. */
+     public static boolean entityLookupVisibilityOptimization() {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.ENTITY_LOOKUP_VISIBILITY);
+diff --git a/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java b/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f7373eec6de52b7e4b407a0aa8ddc6a81f96edd7
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java
+@@ -0,0 +1,73 @@
++package org.leavesx.leavesx.config;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++
++/** Verifies the independently configurable entity-activation query buffer. */
++@Normal
++class EntityActivationQueryBufferConfigTest {
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @AfterEach
++    void restoreRuntimeDefaults() {
++        LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++    }
++
++    @Test
++    void dedicatedSwitchRespectsTheEntityQueryMasterSwitch() throws IOException {
++        LeavesXRuntime.publish(this.configuration(true, true, "enabled.yml"));
++        assertTrue(LeavesXRuntime.entityActivationQueryBufferReuseOptimization());
++
++        LeavesXRuntime.publish(this.configuration(true, false, "disabled.yml"));
++        assertFalse(LeavesXRuntime.entityActivationQueryBufferReuseOptimization());
++
++        LeavesXRuntime.publish(this.configuration(false, true, "master-disabled.yml"));
++        assertFalse(LeavesXRuntime.entityActivationQueryBufferReuseOptimization());
++    }
++
++    @Test
++    void upgradesVersionSixtyWithoutReplacingOperatorSettings() throws IOException {
++        final Path path = this.temporaryDirectory.resolve("version-sixty.yml");
++        Files.writeString(path, """
++            # 用户配置。
++            config-version: 60
++            custom-extension:
++              retained: true
++            """);
++
++        final LeavesXConfig config = LeavesXConfigLoader.load(path);
++        final String upgraded = Files.readString(path);
++
++        assertTrue(config.optimizationEnabled(LeavesXOptimization.ENTITY_ACTIVATION_BUFFER_REUSE));
++        assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
++        assertTrue(upgraded.contains("entity-activation-buffer-reuse: true"));
++        assertTrue(upgraded.contains("retained: true"));
++        assertTrue(upgraded.startsWith("# 用户配置。"));
++    }
++
++    private LeavesXConfig configuration(
++        final boolean entityQueryOptimizations,
++        final boolean bufferReuse,
++        final String fileName
++    ) throws IOException {
++        final Path path = this.temporaryDirectory.resolve(fileName);
++        Files.writeString(path, """
++            config-version: 1
++            performance:
++              entity-query-optimizations: %s
++              entity-queries:
++                entity-activation-buffer-reuse: %s
++            """.formatted(entityQueryOptimizations, bufferReuse));
++        return LeavesXConfigLoader.load(path);
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java
+index 32a8fef49b972d9ff77ddaff3f3749e13b9acb61..a10f137fc3dcc51dba3b891facae2e552dff5cca 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java
+@@ -18,7 +18,7 @@ import org.objectweb.asm.tree.MethodNode;
+ class ActivationRangeHotPathTest {
+ 
+     @Test
+-    void activationLoopReusesPlayerBoundingBoxAndAvoidsListIterators() throws IOException {
++    void activationLoopReusesPlayerBoundsAndEntityQueryStorage() throws IOException {
+         final MethodNode method = methodNode(ActivationRange.class, "activateEntities");
+         final MethodInsnNode[] calls = Arrays.stream(method.instructions.toArray())
+             .filter(MethodInsnNode.class::isInstance)
+@@ -41,6 +41,24 @@ class ActivationRangeHotPathTest {
+             ) && call.name.equals("activateEntities")).count(),
+             "Large candidate batches should have one explicit snapshot boundary"
+         );
++        assertEquals(
++            1L,
++            Arrays.stream(calls).filter(call -> call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime")
++                && call.name.equals("entityActivationQueryBufferReuseOptimization")).count(),
++            "Entity activation must consult its dedicated runtime switch once per world tick"
++        );
++        assertEquals(
++            1L,
++            Arrays.stream(calls).filter(call -> call.owner.equals("net/minecraft/world/level/Level")
++                && call.name.equals("leavesX$acquireEntityQueryBuffer")).count(),
++            "Entity activation should reuse one re-entry-safe query buffer for every player scan"
++        );
++        assertEquals(
++            1L,
++            Arrays.stream(calls).filter(call -> call.owner.equals("net/minecraft/world/level/Level")
++                && call.name.equals("getEntities")).count(),
++            "Disabling buffer reuse must retain Paper's original allocating entity query"
++        );
+     }
+ 
+     private static MethodNode methodNode(final Class<?> owner, final String methodName) throws IOException {

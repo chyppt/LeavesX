@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 01:01:26 +0800
+Subject: [PATCH] Optimize frog tongue target lookup for beta125
+
+
+diff --git a/net/minecraft/world/entity/animal/frog/Frog.java b/net/minecraft/world/entity/animal/frog/Frog.java
+index ef9f543aea1e88e1f81d888c7b21aeac934f102b..6cb2d15502848b6bf3b1d21435df380a6c0f4510 100644
+--- a/net/minecraft/world/entity/animal/frog/Frog.java
++++ b/net/minecraft/world/entity/animal/frog/Frog.java
+@@ -114,7 +114,18 @@ public class Frog extends Animal {
+     }
+ 
+     public Optional<Entity> getTongueTarget() {
+-        return this.entityData.get(DATA_TONGUE_TARGET_ID).stream().mapToObj(this.level()::getEntity).filter(Objects::nonNull).findFirst();
++        final OptionalInt targetId = this.entityData.get(DATA_TONGUE_TARGET_ID);
++        if (org.leavesx.leavesx.config.LeavesXRuntime.frogTongueTargetLookupOptimization()) {
++            return leavesX$resolveTongueTarget(targetId, this.level());
++        }
++        return targetId.stream().mapToObj(this.level()::getEntity).filter(Objects::nonNull).findFirst();
++    }
++
++    static Optional<Entity> leavesX$resolveTongueTarget(final OptionalInt targetId, final Level level) {
++        if (targetId.isEmpty()) {
++            return Optional.empty();
++        }
++        return Optional.ofNullable(level.getEntity(targetId.getAsInt()));
+     }
+ 
+     public void setTongueTarget(final Entity target) {

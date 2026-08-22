@@ -1,0 +1,181 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 02:02:37 +0800
+Subject: [PATCH] Add player sensor controls for bate84
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index d705b8880f70a8fd4ab21b636af9f0ee1215a580..f26507d54b565e8916e6c8e2c7c99cf8cdbedccf 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -44,7 +44,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMask
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 15;
++    public static final int CURRENT_CONFIG_VERSION = 16;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index ea589e6cc4b1b8232f5f0ec1affb6de78b4c1cea..6084bd66c0e83c89aef9135ebf5e463c0bc65adf 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：15。");
++        comments.put("config-version", "配置版本，请勿修改。默认：16。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 67179f5c1edf4653a3455bbf071762a97022192c..8e035e2df75e1402fb63fa6f5aa752a107e7bba4 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -143,6 +143,10 @@ enum LeavesXOptimization {
+     VILLAGER_BABIES_SENSOR(
+         "performance.ai.villager-babies-sensor",
+         "减少幼年村民感知器的临时对象，关闭后使用原版流程。默认：true。"
++    ),
++    PLAYER_SENSOR(
++        "performance.ai.player-sensor",
++        "减少生物查找附近玩家时的临时对象和重复读取，关闭后使用原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 573d6b49e39df4ffc686efda844c85e114c47929..e3f44cd7a4ffb7e087f5b94a3b1b38a54311b1a8 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -296,6 +296,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && enabled(LeavesXOptimization.VILLAGER_BABIES_SENSOR);
+     }
+ 
++    /** Returns whether player sensing may use direct loops and one attack-target snapshot. */
++    public static boolean playerSensorOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.PLAYER_SENSOR);
++    }
++
+     /** Returns whether armor-stand placement may stop after the first blocking entity. */
+     public static boolean armorStandPlacementOptimization() {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.ARMOR_STAND_PLACEMENT);
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index f2b384d116e924551a5a37e983349a14eb6664ce..10b25c17106ef214b086a7989482cb4b3c5af0d2 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -273,6 +273,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.hurtBySensorOptimization());
+             assertFalse(LeavesXRuntime.mobPresenceSensorOptimization());
+             assertFalse(LeavesXRuntime.villagerBabiesSensorOptimization());
++            assertFalse(LeavesXRuntime.playerSensorOptimization());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+@@ -287,6 +288,7 @@ class LeavesXConfigLoaderTest {
+                 breeze-attack-sensor: false
+                 hurt-by-sensor: false
+                 mob-presence-sensors: false
++                player-sensor: false
+                 villager-babies-sensor: false
+               block-entity:
+                 hopper-entity-queries: false
+@@ -298,12 +300,13 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.BREEZE_ATTACK_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HURT_BY_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.MOB_PRESENCE_SENSORS));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.PLAYER_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.VILLAGER_BABIES_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_ENTITY_QUERIES));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 7,
++            LeavesXConfig.fineGrainedOptimizationCount() - 8,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -312,6 +315,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.breezeAttackSensorOptimization());
+             assertFalse(LeavesXRuntime.hurtBySensorOptimization());
+             assertFalse(LeavesXRuntime.mobPresenceSensorOptimization());
++            assertFalse(LeavesXRuntime.playerSensorOptimization());
+             assertFalse(LeavesXRuntime.villagerBabiesSensorOptimization());
+             assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PlayerSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/PlayerSensorHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4423542e4783b3f8612064c5877f3c099dc189c
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/PlayerSensorHotPathTest.java
+@@ -0,0 +1,52 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ai.sensing.PlayerSensor;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies player sensing keeps allocation-light loops and the vanilla stream fallback. */
++@Normal
++class PlayerSensorHotPathTest {
++
++    @Test
++    void sensorKeepsDirectAndVanillaPaths() throws IOException {
++        final List<MethodInsnNode> calls = invocations(method(classNode(PlayerSensor.class), "doTick"));
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("playerSensorOptimization")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getMemoryValue")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("sort")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("stream")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("collect")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("toList")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java
+index f1d24cfc57b5f126af67dacd7c0f224e0b03c155..ad9877dcea3564e9bb7d6e883e11d98a068b7305 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java
+@@ -70,7 +70,11 @@ class SensorMemoryLookupHotPathTest {
+         final String snapshotDescriptor =
+             "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/entity/LivingEntity;Lnet/minecraft/world/entity/LivingEntity;Z)Z";
+ 
+-        assertEquals(1L, calls.stream().filter(call -> call.owner.equals("net/minecraft/world/entity/ai/Brain") && call.name.equals("getMemory")).count());
++        assertEquals(1L, calls.stream()
++            .filter(call -> call.owner.equals("net/minecraft/world/entity/ai/Brain"))
++            .filter(call -> call.name.equals("leavesX$getMemoryValue"))
++            .count());
++        assertFalse(calls.stream().anyMatch(call -> call.owner.equals("net/minecraft/world/entity/ai/Brain") && call.name.equals("getMemory")));
+         assertTrue(calls.stream().anyMatch(call -> call.owner.equals("net/minecraft/world/entity/ai/sensing/PlayerSensor")
+             && call.name.equals("isEntityTargetable")
+             && call.desc.equals(snapshotDescriptor)));

@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 12:35:23 +0800
+Subject: [PATCH] Cache block entity ticker positions safely
+
+
+diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
+index 892a3d92e784e7b0d58977282a44d57c7a899e50..e7d69147e72c735844ccc5cef601f40217e181f5 100644
+--- a/net/minecraft/world/level/chunk/LevelChunk.java
++++ b/net/minecraft/world/level/chunk/LevelChunk.java
+@@ -1031,21 +1031,23 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+ 
+     public static class RebindableTickingBlockEntityWrapper implements TickingBlockEntity { // Leaves - default -> public
+         public TickingBlockEntity ticker; // Leaves - private -> public
+-        // LeavesX start - keep the concrete block entity beside the wrapper for the hot removal check
++        // LeavesX start - cache immutable ticker state used by every block-entity tick
+         private @Nullable BlockEntity blockEntityReference;
+-        // LeavesX end - keep the concrete block entity beside the wrapper for the hot removal check
++        private BlockPos cachedPos;
++        // LeavesX end - cache immutable ticker state used by every block-entity tick
+ 
+         private RebindableTickingBlockEntityWrapper(final TickingBlockEntity ticker) {
+-            this.ticker = ticker;
+-            // BoundTickingBlockEntity exposes the same state as the wrapper without another virtual call.
+-            if (ticker instanceof BoundTickingBlockEntity<?> boundTicker) {
+-                this.blockEntityReference = boundTicker.blockEntity;
+-            }
++            this.bindTickerState(ticker);
+         }
+ 
+-        public void rebind(TickingBlockEntity ticker) { // Leaves - default -> public
++        public void rebind(final TickingBlockEntity ticker) { // Leaves - default -> public
++            this.bindTickerState(ticker);
++        }
++
++        private void bindTickerState(final TickingBlockEntity ticker) {
++            // Refresh every derived value together so sleeping and removed ticker rebinds cannot leave stale state.
+             this.ticker = ticker;
+-            // A null ticker is used when a block entity is removed; clear the cached reference before falling back.
++            this.cachedPos = ticker.getPos();
+             if (ticker instanceof BoundTickingBlockEntity<?> boundTicker) {
+                 this.blockEntityReference = boundTicker.blockEntity;
+             } else {
+@@ -1060,7 +1062,8 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+ 
+         @Override
+         public boolean isRemoved() {
+-            if (this.blockEntityReference != null) {
++            if (org.leavesx.leavesx.config.LeavesXRuntime.blockEntityTickerRemovalOptimization()
++                && this.blockEntityReference != null) {
+                 return this.blockEntityReference.isRemoved();
+             }
+             return this.ticker.isRemoved();
+@@ -1068,6 +1071,9 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+ 
+         @Override
+         public BlockPos getPos() {
++            if (org.leavesx.leavesx.config.LeavesXRuntime.blockEntityTickerRemovalOptimization()) {
++                return this.cachedPos;
++            }
+             return this.ticker.getPos();
+         }
+ 

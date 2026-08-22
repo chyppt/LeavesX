@@ -1,0 +1,495 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 01:08:54 +0800
+Subject: [PATCH] Optimize villager AI allocation hot paths for bate23
+
+
+diff --git a/net/minecraft/world/entity/ai/behavior/AcquirePoi.java b/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
+index 7115dbb6782475b9ea4d33eaf890b40eb51d5f2f..174994f12944e70856c6f854b98dce87d1d3f6ce 100644
+--- a/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
++++ b/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
+@@ -2,13 +2,16 @@ package net.minecraft.world.entity.ai.behavior;
+ 
+ import com.mojang.datafixers.util.Pair;
+ import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
++import it.unimi.dsi.fastutil.longs.Long2ObjectMaps;
+ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
++import it.unimi.dsi.fastutil.objects.ObjectIterator;
++import java.util.ArrayList;
+ import java.util.HashSet;
++import java.util.List;
+ import java.util.Optional;
+ import java.util.Set;
+ import java.util.function.BiPredicate;
+ import java.util.function.Predicate;
+-import java.util.stream.Collectors;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.core.GlobalPos;
+ import net.minecraft.core.Holder;
+@@ -16,16 +19,18 @@ import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.util.RandomSource;
+ import net.minecraft.world.entity.Mob;
+ import net.minecraft.world.entity.PathfinderMob;
+-import net.minecraft.world.entity.ai.behavior.declarative.BehaviorBuilder;
++import net.minecraft.world.entity.ai.Brain;
+ import net.minecraft.world.entity.ai.memory.MemoryModuleType;
++import net.minecraft.world.entity.ai.memory.MemoryStatus;
+ import net.minecraft.world.entity.ai.village.poi.PoiManager;
+ import net.minecraft.world.entity.ai.village.poi.PoiType;
+ import net.minecraft.world.level.pathfinder.Path;
+-import org.apache.commons.lang3.mutable.MutableLong;
+ import org.jspecify.annotations.Nullable;
+ 
+ public class AcquirePoi {
+     public static final int SCAN_RANGE = 48;
++    private static final int BATCH_SIZE = 5;
++    private static final int RATE = 20;
+ 
+     public static BehaviorControl<PathfinderMob> create(
+         final Predicate<Holder<PoiType>> poiType,
+@@ -54,79 +59,16 @@ public class AcquirePoi {
+         final Optional<Byte> onPoiAcquisitionEvent,
+         final BiPredicate<ServerLevel, BlockPos> validPoi
+     ) {
+-        int batchSize = 5;
+-        int rate = 20;
+-        MutableLong nextScheduledStart = new MutableLong(0L);
+-        Long2ObjectMap<AcquirePoi.JitteredLinearRetry> batchCache = new Long2ObjectOpenHashMap<>();
+-        OneShot<PathfinderMob> acquirePoi = BehaviorBuilder.create(
+-            i -> i.group(i.absent(memoryToAcquire))
+-                .apply(
+-                    i,
+-                    toAcquire -> (level, body, timestamp) -> {
+-                        if (onlyIfAdult && body.isBaby()) {
+-                            return false;
+-                        }
+-
+-                        RandomSource random = level.getRandom();
+-                        if (nextScheduledStart.longValue() == 0L) {
+-                            nextScheduledStart.setValue(level.getGameTime() + random.nextInt(20));
+-                            return false;
+-                        }
+-
+-                        if (level.getGameTime() < nextScheduledStart.longValue()) {
+-                            return false;
+-                        }
+-
+-                        nextScheduledStart.setValue(timestamp + 20L + random.nextInt(20));
+-                        if (!org.leavesmc.leaves.LeavesConfig.modify.mcTechnicalMode && level.paperConfig().entities.behavior.stuckEntityPoiRetryDelay.enabled() && body.getNavigation().isStuck()) nextScheduledStart.add(level.paperConfig().entities.behavior.stuckEntityPoiRetryDelay.intValue()); // Paper - Next stuck check delay config // Leaves - mc technical survival mode
+-                        PoiManager poiManager = level.getPoiManager();
+-                        batchCache.long2ObjectEntrySet().removeIf(entry -> !entry.getValue().isStillValid(timestamp));
+-                        Predicate<BlockPos> cacheTest = pos -> {
+-                            AcquirePoi.JitteredLinearRetry retryMarker = batchCache.get(pos.asLong());
+-                            if (retryMarker == null) {
+-                                return true;
+-                            }
+-
+-                            if (!retryMarker.shouldRetry(timestamp)) {
+-                                return false;
+-                            }
+-
+-                            retryMarker.markAttempt(timestamp);
+-                            return true;
+-                        };
+-                        // Paper start - optimise POI searches
+-                        java.util.List<Pair<Holder<PoiType>, BlockPos>> poiPositionsRaw = new java.util.ArrayList<>();
+-                        ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.findNearestPoiPositions(poiManager, poiType, cacheTest, body.blockPosition(), SCAN_RANGE, Double.MAX_VALUE, PoiManager.Occupancy.HAS_SPACE, ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.LOAD_FOR_SEARCHING, 5, poiPositionsRaw);
+-                        Set<Pair<Holder<PoiType>, BlockPos>> poiPositions = new java.util.HashSet<>(poiPositionsRaw.size());
+-                        for (Pair<Holder<PoiType>, BlockPos> pair : poiPositionsRaw) {
+-                            if (validPoi.test(level, pair.getSecond())) {
+-                                poiPositions.add(pair);
+-                            }
+-                        }
+-                        // Paper end - optimise POI searches
+-                        Path path = findPathToPois(body, poiPositions);
+-                        if (path != null && path.canReach()) {
+-                            BlockPos targetPos = path.getTarget();
+-                            poiManager.getType(targetPos).ifPresent(type -> {
+-                                poiManager.take(poiType, (t, poiPos) -> poiPos.equals(targetPos), targetPos, 1);
+-                                toAcquire.set(GlobalPos.of(level.dimension(), targetPos));
+-                                onPoiAcquisitionEvent.ifPresent(event -> level.broadcastEntityEvent(body, event));
+-                                batchCache.clear();
+-                                level.debugSynchronizers().updatePoi(targetPos);
+-                            });
+-                        } else {
+-                            for (Pair<Holder<PoiType>, BlockPos> p : poiPositions) {
+-                                batchCache.computeIfAbsent(p.getSecond().asLong(), key -> new AcquirePoi.JitteredLinearRetry(random, timestamp));
+-                            }
+-                        }
+-
+-                        return true;
+-                    }
+-                )
++        // LeavesX start - avoid BehaviorBuilder memory-accessor allocation on every stopped-behavior tick
++        return new AcquirePoiBehavior(
++            poiType,
++            memoryToValidate,
++            memoryToAcquire,
++            onlyIfAdult,
++            onPoiAcquisitionEvent,
++            validPoi
+         );
+-        return memoryToAcquire == memoryToValidate
+-            ? acquirePoi
+-            : BehaviorBuilder.create(i -> i.group(i.absent(memoryToValidate)).apply(i, toValidate -> acquirePoi));
++        // LeavesX end - avoid BehaviorBuilder memory-accessor allocation on every stopped-behavior tick
+     }
+ 
+     public static @Nullable Path findPathToPois(final Mob body, final Set<Pair<Holder<PoiType>, BlockPos>> pois) {
+@@ -145,6 +87,177 @@ public class AcquirePoi {
+         return body.getNavigation().createPath(targets, maxRange);
+     }
+ 
++    // LeavesX start - direct, allocation-conscious implementation of the original declarative behavior
++    private static final class AcquirePoiBehavior extends OneShot<PathfinderMob> {
++
++        private final Predicate<Holder<PoiType>> poiType;
++        private final MemoryModuleType<GlobalPos> memoryToValidate;
++        private final MemoryModuleType<GlobalPos> memoryToAcquire;
++        private final boolean onlyIfAdult;
++        private final Optional<Byte> onPoiAcquisitionEvent;
++        private final BiPredicate<ServerLevel, BlockPos> validPoi;
++        private final Long2ObjectMap<AcquirePoi.JitteredLinearRetry> batchCache = new Long2ObjectOpenHashMap<>();
++        private final List<Pair<Holder<PoiType>, BlockPos>> reusableRawPoiPositions = new ArrayList<>(BATCH_SIZE);
++        private final RetryPredicate reusableRetryPredicate = new RetryPredicate(this.batchCache);
++        private long nextScheduledStart;
++
++        private AcquirePoiBehavior(
++            final Predicate<Holder<PoiType>> poiType,
++            final MemoryModuleType<GlobalPos> memoryToValidate,
++            final MemoryModuleType<GlobalPos> memoryToAcquire,
++            final boolean onlyIfAdult,
++            final Optional<Byte> onPoiAcquisitionEvent,
++            final BiPredicate<ServerLevel, BlockPos> validPoi
++        ) {
++            this.poiType = poiType;
++            this.memoryToValidate = memoryToValidate;
++            this.memoryToAcquire = memoryToAcquire;
++            this.onlyIfAdult = onlyIfAdult;
++            this.onPoiAcquisitionEvent = onPoiAcquisitionEvent;
++            this.validPoi = validPoi;
++        }
++
++        @Override
++        public boolean trigger(final ServerLevel level, final PathfinderMob body, final long timestamp) {
++            final Brain<?> brain = body.getBrain();
++            // Match the nested BehaviorBuilder checks exactly: validation memory first, acquisition memory second.
++            if (!brain.checkMemory(this.memoryToValidate, MemoryStatus.VALUE_ABSENT)
++                || (this.memoryToAcquire != this.memoryToValidate
++                    && !brain.checkMemory(this.memoryToAcquire, MemoryStatus.VALUE_ABSENT))) {
++                return false;
++            }
++            if (this.onlyIfAdult && body.isBaby()) {
++                return false;
++            }
++
++            final RandomSource random = level.getRandom();
++            if (this.nextScheduledStart == 0L) {
++                this.nextScheduledStart = level.getGameTime() + random.nextInt(RATE);
++                return false;
++            }
++            if (level.getGameTime() < this.nextScheduledStart) {
++                return false;
++            }
++
++            this.nextScheduledStart = timestamp + RATE + random.nextInt(RATE);
++            if (!org.leavesmc.leaves.LeavesConfig.modify.mcTechnicalMode
++                && level.paperConfig().entities.behavior.stuckEntityPoiRetryDelay.enabled()
++                && body.getNavigation().isStuck()) {
++                this.nextScheduledStart += level.paperConfig().entities.behavior.stuckEntityPoiRetryDelay.intValue();
++            }
++
++            final PoiManager poiManager = level.getPoiManager();
++            this.removeExpiredRetries(timestamp);
++            final boolean optimizeAllocations = org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations();
++            final Predicate<BlockPos> cacheTest;
++            final List<Pair<Holder<PoiType>, BlockPos>> rawPoiPositions;
++            if (optimizeAllocations) {
++                // This scratch list never escapes the synchronous POI attempt, so retaining its capacity is safe.
++                this.reusableRawPoiPositions.clear();
++                rawPoiPositions = this.reusableRawPoiPositions;
++                this.reusableRetryPredicate.prepare(timestamp);
++                cacheTest = this.reusableRetryPredicate;
++            } else {
++                rawPoiPositions = new ArrayList<>();
++                cacheTest = pos -> testRetry(this.batchCache, pos, timestamp);
++            }
++
++            ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.findNearestPoiPositions(
++                poiManager,
++                this.poiType,
++                cacheTest,
++                body.blockPosition(),
++                SCAN_RANGE,
++                Double.MAX_VALUE,
++                PoiManager.Occupancy.HAS_SPACE,
++                ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.LOAD_FOR_SEARCHING,
++                BATCH_SIZE,
++                rawPoiPositions
++            );
++            // Keep fresh HashSet instances: their capacity affects iteration order and pathfinding tie resolution.
++            final Set<Pair<Holder<PoiType>, BlockPos>> poiPositions = new HashSet<>(rawPoiPositions.size());
++            for (final Pair<Holder<PoiType>, BlockPos> pair : rawPoiPositions) {
++                if (this.validPoi.test(level, pair.getSecond())) {
++                    poiPositions.add(pair);
++                }
++            }
++
++            final Path path = findPathToPois(body, poiPositions);
++            if (path != null && path.canReach()) {
++                final BlockPos targetPos = path.getTarget();
++                if (poiManager.getType(targetPos).isPresent()) {
++                    poiManager.take(this.poiType, (type, poiPos) -> poiPos.equals(targetPos), targetPos, 1);
++                    brain.setMemory(this.memoryToAcquire, GlobalPos.of(level.dimension(), targetPos));
++                    if (this.onPoiAcquisitionEvent.isPresent()) {
++                        level.broadcastEntityEvent(body, this.onPoiAcquisitionEvent.get());
++                    }
++                    this.batchCache.clear();
++                    level.debugSynchronizers().updatePoi(targetPos);
++                }
++            } else {
++                for (final Pair<Holder<PoiType>, BlockPos> poi : poiPositions) {
++                    final long key = poi.getSecond().asLong();
++                    if (this.batchCache.get(key) == null) {
++                        this.batchCache.put(key, new AcquirePoi.JitteredLinearRetry(random, timestamp));
++                    }
++                }
++            }
++            return true;
++        }
++
++        @Override
++        public Set<MemoryModuleType<?>> getRequiredMemories() {
++            // The original outer declarative wrapper reports only the validation memory when the two differ.
++            return Set.of(this.memoryToValidate);
++        }
++
++        private void removeExpiredRetries(final long timestamp) {
++            final ObjectIterator<Long2ObjectMap.Entry<AcquirePoi.JitteredLinearRetry>> iterator =
++                Long2ObjectMaps.fastIterator(this.batchCache);
++            while (iterator.hasNext()) {
++                if (!iterator.next().getValue().isStillValid(timestamp)) {
++                    iterator.remove();
++                }
++            }
++        }
++    }
++
++    private static final class RetryPredicate implements Predicate<BlockPos> {
++
++        private final Long2ObjectMap<AcquirePoi.JitteredLinearRetry> batchCache;
++        private long timestamp;
++
++        private RetryPredicate(final Long2ObjectMap<AcquirePoi.JitteredLinearRetry> batchCache) {
++            this.batchCache = batchCache;
++        }
++
++        private void prepare(final long timestamp) {
++            this.timestamp = timestamp;
++        }
++
++        @Override
++        public boolean test(final BlockPos pos) {
++            return testRetry(this.batchCache, pos, this.timestamp);
++        }
++    }
++
++    private static boolean testRetry(
++        final Long2ObjectMap<AcquirePoi.JitteredLinearRetry> batchCache,
++        final BlockPos pos,
++        final long timestamp
++    ) {
++        final AcquirePoi.JitteredLinearRetry retryMarker = batchCache.get(pos.asLong());
++        if (retryMarker == null) {
++            return true;
++        }
++        if (!retryMarker.shouldRetry(timestamp)) {
++            return false;
++        }
++        retryMarker.markAttempt(timestamp);
++        return true;
++    }
++    // LeavesX end - direct, allocation-conscious implementation of the original declarative behavior
++
+     private static class JitteredLinearRetry {
+         private static final int MIN_INTERVAL_INCREASE = 40;
+         private static final int MAX_INTERVAL_INCREASE = 80;
+diff --git a/net/minecraft/world/entity/ai/behavior/TradeWithVillager.java b/net/minecraft/world/entity/ai/behavior/TradeWithVillager.java
+index 1d405a77c4cf70bd818a4f59163e5b319808d5f3..d17dc7bde7f66c851cfd669c25c7fc0cfbb317ac 100644
+--- a/net/minecraft/world/entity/ai/behavior/TradeWithVillager.java
++++ b/net/minecraft/world/entity/ai/behavior/TradeWithVillager.java
+@@ -2,8 +2,8 @@ package net.minecraft.world.entity.ai.behavior;
+ 
+ import com.google.common.collect.ImmutableMap;
+ import com.google.common.collect.ImmutableSet;
++import java.util.HashSet;
+ import java.util.Set;
+-import java.util.stream.Collectors;
+ import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.world.SimpleContainer;
+ import net.minecraft.world.entity.EntityType;
+@@ -17,6 +17,7 @@ import net.minecraft.world.item.ItemStack;
+ import net.minecraft.world.item.Items;
+ 
+ public class TradeWithVillager extends Behavior<Villager> {
++    private static final Set<Item> WHEAT_ITEMS = ImmutableSet.of(Items.WHEAT);
+     private Set<Item> trades = ImmutableSet.of();
+ 
+     public TradeWithVillager() {
+@@ -56,7 +57,7 @@ public class TradeWithVillager extends Behavior<Villager> {
+             }
+ 
+             if (isFarmer && body.getInventory().countItem(Items.WHEAT) > Items.WHEAT.getDefaultMaxStackSize() / 2) {
+-                throwHalfStack(body, ImmutableSet.of(Items.WHEAT), target);
++                throwHalfStack(body, WHEAT_ITEMS, target);
+             }
+ 
+             if (!this.trades.isEmpty() && body.getInventory().hasAnyOf(this.trades)) {
+@@ -73,7 +74,14 @@ public class TradeWithVillager extends Behavior<Villager> {
+     private static Set<Item> figureOutWhatIAmWillingToTrade(final Villager myBody, final Villager target) {
+         ImmutableSet<Item> targetItems = target.getVillagerData().profession().value().requestedItems();
+         ImmutableSet<Item> selfItems = myBody.getVillagerData().profession().value().requestedItems();
+-        return targetItems.stream().filter(entry -> !selfItems.contains(entry)).collect(Collectors.toSet());
++        // LeavesX - a direct set difference avoids a short-lived stream pipeline while preserving membership.
++        final Set<Item> willingItems = new HashSet<>();
++        for (final Item item : targetItems) {
++            if (!selfItems.contains(item)) {
++                willingItems.add(item);
++            }
++        }
++        return willingItems;
+     }
+ 
+     private static void throwHalfStack(final Villager villager, final Set<Item> items, final LivingEntity target) {
+diff --git a/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java b/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
+index 5c967b55f6ad3b660e9cdf74fadd90c5ea67afb9..8e8f4474bec023a5f22af369ace8235b313298e9 100644
+--- a/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
++++ b/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
+@@ -1,5 +1,6 @@
+ package net.minecraft.world.entity.ai.memory;
+ 
++import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.Iterables;
+ import it.unimi.dsi.fastutil.objects.Object2BooleanOpenHashMap;
+ import java.util.List;
+@@ -51,6 +52,20 @@ public class NearestVisibleLivingEntities {
+         return Iterables.filter(this.nearbyEntities, entity -> filter.test(entity) && this.lineOfSightTest.test(entity));
+     }
+ 
++    /** Returns the same visible matches as {@link #findAll(Predicate)} without an intermediate filtered iterable. */
++    public List<LivingEntity> findAllToList(final Predicate<LivingEntity> filter) {
++        ImmutableList.Builder<LivingEntity> matches = null;
++        for (final LivingEntity nearbyEntity : this.nearbyEntities) {
++            if (filter.test(nearbyEntity) && this.lineOfSightTest.test(nearbyEntity)) {
++                if (matches == null) {
++                    matches = ImmutableList.builder();
++                }
++                matches.add(nearbyEntity);
++            }
++        }
++        return matches == null ? List.of() : matches.build();
++    }
++
+     public Stream<LivingEntity> find(final Predicate<LivingEntity> filter) {
+         return this.nearbyEntities.stream().filter(entity -> filter.test(entity) && this.lineOfSightTest.test(entity));
+     }
+diff --git a/net/minecraft/world/entity/ai/sensing/SecondaryPoiSensor.java b/net/minecraft/world/entity/ai/sensing/SecondaryPoiSensor.java
+index 4172da3fce736bf7d6be2fa5eb944df68e25e23b..7a29056de8cc3dfebafb89bc627950003499eeb6 100644
+--- a/net/minecraft/world/entity/ai/sensing/SecondaryPoiSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/SecondaryPoiSensor.java
+@@ -1,7 +1,7 @@
+ package net.minecraft.world.entity.ai.sensing;
+ 
+ import com.google.common.collect.ImmutableSet;
+-import com.google.common.collect.Lists;
++import java.util.ArrayList;
+ import java.util.List;
+ import java.util.Set;
+ import net.minecraft.core.BlockPos;
+@@ -12,6 +12,7 @@ import net.minecraft.world.entity.ai.Brain;
+ import net.minecraft.world.entity.ai.memory.MemoryModuleType;
+ import net.minecraft.world.entity.npc.villager.Villager;
+ import net.minecraft.world.level.Level;
++import net.minecraft.world.level.block.Block;
+ 
+ public class SecondaryPoiSensor extends Sensor<Villager> {
+     private static final int SCAN_RATE = 40;
+@@ -22,9 +23,10 @@ public class SecondaryPoiSensor extends Sensor<Villager> {
+ 
+     @Override
+     protected void doTick(final ServerLevel level, final Villager body) {
++        // LeavesX - the profession and its immutable secondary-POI set do not change during one synchronous scan.
++        final Set<Block> secondaryPoi = body.getVillagerData().profession().value().secondaryPoi();
+         // Leaves start - skip secondary POI sensor if absent
+         if (org.leavesmc.leaves.LeavesConfig.performance.skipSecondaryPOISensorIfAbsent) {
+-            var secondaryPoi = body.getVillagerData().profession().value().secondaryPoi();
+             if (secondaryPoi.isEmpty()) {
+                 body.getBrain().eraseMemory(MemoryModuleType.SECONDARY_JOB_SITE);
+                 return;
+@@ -33,14 +35,16 @@ public class SecondaryPoiSensor extends Sensor<Villager> {
+         // Leaves end - skip secondary POI sensor if absent
+         ResourceKey<Level> dimensionType = level.dimension();
+         BlockPos center = body.blockPosition();
+-        List<GlobalPos> jobSites = Lists.newArrayList();
+-        int horizontalSearch = 4;
++        List<GlobalPos> jobSites = null;
+ 
+         for (int x = -4; x <= 4; x++) {
+             for (int y = -2; y <= 2; y++) {
+                 for (int z = -4; z <= 4; z++) {
+                     BlockPos testPos = center.offset(x, y, z);
+-                    if (body.getVillagerData().profession().value().secondaryPoi().contains(level.getBlockState(testPos).getBlock())) {
++                    if (secondaryPoi.contains(level.getBlockState(testPos).getBlock())) {
++                        if (jobSites == null) {
++                            jobSites = new ArrayList<>();
++                        }
+                         jobSites.add(GlobalPos.of(dimensionType, testPos));
+                     }
+                 }
+@@ -48,7 +52,7 @@ public class SecondaryPoiSensor extends Sensor<Villager> {
+         }
+ 
+         Brain<?> brain = body.getBrain();
+-        if (!jobSites.isEmpty()) {
++        if (jobSites != null) {
+             brain.setMemory(MemoryModuleType.SECONDARY_JOB_SITE, jobSites);
+         } else {
+             brain.eraseMemory(MemoryModuleType.SECONDARY_JOB_SITE);
+diff --git a/net/minecraft/world/entity/ai/sensing/VillagerBabiesSensor.java b/net/minecraft/world/entity/ai/sensing/VillagerBabiesSensor.java
+index e3b2089e74d57ae8a15e9e5d29f43054ec6ec295..aff8e5e8169127ab3e549482f8d169f0b52f382f 100644
+--- a/net/minecraft/world/entity/ai/sensing/VillagerBabiesSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/VillagerBabiesSensor.java
+@@ -1,9 +1,9 @@
+ package net.minecraft.world.entity.ai.sensing;
+ 
+-import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.ImmutableSet;
+ import java.util.List;
+ import java.util.Set;
++import java.util.function.Predicate;
+ import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.world.entity.EntityType;
+ import net.minecraft.world.entity.LivingEntity;
+@@ -11,6 +11,8 @@ import net.minecraft.world.entity.ai.memory.MemoryModuleType;
+ import net.minecraft.world.entity.ai.memory.NearestVisibleLivingEntities;
+ 
+ public class VillagerBabiesSensor extends Sensor<LivingEntity> {
++    private static final Predicate<LivingEntity> IS_VILLAGER_BABY = entity -> entity.is(EntityType.VILLAGER) && entity.isBaby();
++
+     @Override
+     public Set<MemoryModuleType<?>> requires() {
+         return ImmutableSet.of(MemoryModuleType.VISIBLE_VILLAGER_BABIES);
+@@ -22,11 +24,8 @@ public class VillagerBabiesSensor extends Sensor<LivingEntity> {
+     }
+ 
+     private List<LivingEntity> getNearestVillagerBabies(final LivingEntity myBody) {
+-        return ImmutableList.copyOf(this.getVisibleEntities(myBody).findAll(this::isVillagerBaby));
+-    }
+-
+-    private boolean isVillagerBaby(final LivingEntity entity) {
+-        return entity.is(EntityType.VILLAGER) && entity.isBaby();
++        // LeavesX - retain vanilla order and visibility checks without Guava's filtered-iterable wrapper.
++        return this.getVisibleEntities(myBody).findAllToList(IS_VILLAGER_BABY);
+     }
+ 
+     private NearestVisibleLivingEntities getVisibleEntities(final LivingEntity myBody) {

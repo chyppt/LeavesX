@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 20 Aug 2026 15:27:27 +0800
+Subject: [PATCH] Optimize zombified piglin alert queries for beta137
+
+
+diff --git a/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java b/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
+index 4086e37fef9d951ccc151a57913599abd6a5a0f3..d5c63a95c4db4ea4ca684b126ee3438f3afd94a2 100644
+--- a/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
++++ b/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
+@@ -144,12 +144,24 @@ public class ZombifiedPiglin extends Zombie implements NeutralMob {
+     private void alertOthers() {
+         double within = this.getAttributeValue(Attributes.FOLLOW_RANGE);
+         AABB searchAabb = AABB.unitCubeFromLowerCorner(this.position()).inflate(within, 10.0, within);
+-        final List<ZombifiedPiglin> nearby = this.level()
+-            .getEntitiesOfClass(ZombifiedPiglin.class, searchAabb, EntitySelector.NO_SPECTATORS);
+         if (org.leavesx.leavesx.config.LeavesXRuntime.zombifiedPiglinAlertOptimization()) {
+-            leavesX$alertOthers(this, nearby);
++            // Dense gold farms repeatedly scan similarly sized groups. Reuse the thread-local result storage, while
++            // Level provides an isolated fallback if a Bukkit target event synchronously starts another entity scan.
++            try (Level.LeavesXEntityQueryBuffer scan = Level.leavesX$acquireEntityQueryBuffer()) {
++                final List<ZombifiedPiglin> nearby = scan.queryOfClass(
++                    this.level(),
++                    ZombifiedPiglin.class,
++                    null,
++                    searchAabb,
++                    EntitySelector.NO_SPECTATORS
++                );
++                leavesX$alertOthers(this, nearby);
++            }
+             return;
+         }
++
++        final List<ZombifiedPiglin> nearby = this.level()
++            .getEntitiesOfClass(ZombifiedPiglin.class, searchAabb, EntitySelector.NO_SPECTATORS);
+         nearby.stream()
+             .filter(other -> other != this)
+             .filter(other -> other.getTarget() == null)
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index 93ddf17eaf694577fbb7b4f78dcd0c2eaa62cef8..c6eb9e97fa53e0fc02fb8f72e7c93b52a7b0a599 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -2440,6 +2440,20 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+             return this.results;
+         }
+ 
++        /** Collects one entity class into the reusable storage while preserving the typed Level query order. */
++        @SuppressWarnings({"rawtypes", "unchecked"})
++        public <T extends Entity> List<T> queryOfClass(
++            final Level level,
++            final Class<T> entityClass,
++            final @Nullable Entity except,
++            final AABB boundingBox,
++            final Predicate<? super T> predicate
++        ) {
++            this.results.clear();
++            level.leavesX$getEntitiesOfClass(entityClass, except, boundingBox, predicate, (List)this.results);
++            return (List<T>)(List<?>)this.results;
++        }
++
+         /** Counts matches without traversing beyond the caller's decision threshold. */
+         @SuppressWarnings({"rawtypes", "unchecked"})
+         public <T extends Entity> int countUpTo(

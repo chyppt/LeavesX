@@ -1,0 +1,91 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 05:08:23 +0800
+Subject: [PATCH] Optimize tempting player selection for bate32
+
+
+diff --git a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
+index c5834f7d58b45148122f8c9267186bd8bddeed87..eb4b2874077f453843b88f43b0e704333261fea0 100644
+--- a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
+@@ -1,7 +1,6 @@
+ package net.minecraft.world.entity.ai.sensing;
+ 
+ import com.google.common.collect.ImmutableSet;
+-import java.util.ArrayList;
+ import java.util.Comparator;
+ import java.util.List;
+ import java.util.Set;
+@@ -39,24 +38,11 @@ public class TemptingSensor extends Sensor<PathfinderMob> {
+     protected void doTick(final ServerLevel level, final PathfinderMob body) {
+         Brain<?> brain = body.getBrain();
+         TargetingConditions targeting = TEMPT_TARGETING.copy().range((float)body.getAttributeValue(Attributes.TEMPT_RANGE));
+-        final List<Player> players;
++        final Player player;
+         if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
+-            // LeavesX start - retain vanilla filtering and stable distance order without a stream pipeline
+-            final List<? extends Player> levelPlayers = level.players();
+-            final List<Player> temptingPlayers = new ArrayList<>(levelPlayers.size());
+-            for (final Player player : levelPlayers) {
+-                if (EntitySelector.NO_SPECTATORS.test(player)
+-                    && targeting.test(level, body, player)
+-                    && this.playerHoldingTemptation(body, player)
+-                    && !body.hasPassenger(player)) {
+-                    temptingPlayers.add(player);
+-                }
+-            }
+-            temptingPlayers.sort(Comparator.comparingDouble(body::distanceToSqr));
+-            players = temptingPlayers;
+-            // LeavesX end - retain vanilla filtering and stable distance order without a stream pipeline
++            player = this.findNearestTemptingPlayerDirect(level, body, targeting, level.players());
+         } else {
+-            players = level.players()
++            final List<Player> players = level.players()
+                 .stream()
+                 .filter(EntitySelector.NO_SPECTATORS)
+                 .filter(playerx -> targeting.test(level, body, playerx))
+@@ -64,9 +50,9 @@ public class TemptingSensor extends Sensor<PathfinderMob> {
+                 .filter(playerx -> !body.hasPassenger(playerx))
+                 .sorted(Comparator.comparingDouble(body::distanceToSqr))
+                 .collect(Collectors.toList());
++            player = players.isEmpty() ? null : players.get(0);
+         }
+-        if (!players.isEmpty()) {
+-            Player player = players.get(0);
++        if (player != null) {
+             // CraftBukkit start
+             org.bukkit.event.entity.EntityTargetLivingEntityEvent event = org.bukkit.craftbukkit.event.CraftEventFactory.callEntityTargetLivingEvent(
+                 body, player, org.bukkit.event.entity.EntityTargetEvent.TargetReason.TEMPT
+@@ -85,6 +71,32 @@ public class TemptingSensor extends Sensor<PathfinderMob> {
+         }
+     }
+ 
++    private Player findNearestTemptingPlayerDirect(
++        final ServerLevel level,
++        final PathfinderMob body,
++        final TargetingConditions targeting,
++        final List<? extends Player> players
++    ) {
++        Player nearestPlayer = null;
++        double nearestDistance = 0.0;
++        for (final Player player : players) {
++            if (
++                EntitySelector.NO_SPECTATORS.test(player)
++                    && targeting.test(level, body, player)
++                    && this.playerHoldingTemptation(body, player)
++                    && !body.hasPassenger(player)
++            ) {
++                final double distance = body.distanceToSqr(player);
++                // Comparator sorting is stable, so equal distances must retain the first player's position.
++                if (nearestPlayer == null || Double.compare(distance, nearestDistance) < 0) {
++                    nearestPlayer = player;
++                    nearestDistance = distance;
++                }
++            }
++        }
++        return nearestPlayer;
++    }
++
+     private boolean playerHoldingTemptation(final PathfinderMob mob, final Player player) {
+         return this.isTemptation(mob, player.getMainHandItem()) || this.isTemptation(mob, player.getOffhandItem());
+     }

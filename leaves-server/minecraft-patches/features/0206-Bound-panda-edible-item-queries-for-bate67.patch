@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 22:12:07 +0800
+Subject: [PATCH] Bound panda edible item queries for bate67
+
+
+diff --git a/net/minecraft/world/entity/animal/panda/Panda.java b/net/minecraft/world/entity/animal/panda/Panda.java
+index 7bb37a2efaec248a51da2b89ecad536d424d5393..bd9a2ae967e54294bb7aed62c61c3e4a4be001ef 100644
+--- a/net/minecraft/world/entity/animal/panda/Panda.java
++++ b/net/minecraft/world/entity/animal/panda/Panda.java
+@@ -1063,9 +1063,15 @@ public class Panda extends Animal {
+                 && Panda.this.getUnhappyCounter() <= 0
+                 && (
+                     !Panda.this.getItemBySlot(EquipmentSlot.MAINHAND).isEmpty()
+-                        || !Panda.this.level()
+-                            .getEntitiesOfClass(ItemEntity.class, Panda.this.getBoundingBox().inflate(6.0, 6.0, 6.0), Panda::canPickUpAndEat)
+-                            .isEmpty()
++                        || (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()
++                            ? Panda.this.level().leavesX$getFirstEntityOfClass(
++                                ItemEntity.class,
++                                Panda.this.getBoundingBox().inflate(6.0, 6.0, 6.0),
++                                Panda::canPickUpAndEat
++                            ) != null
++                            : !Panda.this.level()
++                                .getEntitiesOfClass(ItemEntity.class, Panda.this.getBoundingBox().inflate(6.0, 6.0, 6.0), Panda::canPickUpAndEat)
++                                .isEmpty())
+                 );
+         }
+ 
+@@ -1086,10 +1092,20 @@ public class Panda extends Animal {
+         @Override
+         public void start() {
+             if (Panda.this.getItemBySlot(EquipmentSlot.MAINHAND).isEmpty()) {
+-                List<ItemEntity> items = Panda.this.level()
+-                    .getEntitiesOfClass(ItemEntity.class, Panda.this.getBoundingBox().inflate(8.0, 8.0, 8.0), Panda::canPickUpAndEat);
+-                if (!items.isEmpty()) {
+-                    Panda.this.getNavigation().moveTo(items.getFirst(), 1.2F);
++                final ItemEntity item;
++                if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++                    item = Panda.this.level().leavesX$getFirstEntityOfClass(
++                        ItemEntity.class,
++                        Panda.this.getBoundingBox().inflate(8.0, 8.0, 8.0),
++                        Panda::canPickUpAndEat
++                    );
++                } else {
++                    final List<ItemEntity> items = Panda.this.level()
++                        .getEntitiesOfClass(ItemEntity.class, Panda.this.getBoundingBox().inflate(8.0, 8.0, 8.0), Panda::canPickUpAndEat);
++                    item = items.isEmpty() ? null : items.getFirst();
++                }
++                if (item != null) {
++                    Panda.this.getNavigation().moveTo(item, 1.2F);
+                 }
+             } else {
+                 Panda.this.tryToSit();

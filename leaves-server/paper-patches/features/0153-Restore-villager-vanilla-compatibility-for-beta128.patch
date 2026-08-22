@@ -1,0 +1,586 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 13:07:05 +0800
+Subject: [PATCH] Restore villager vanilla compatibility for beta128
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 2d1947e60c7a4401b3692f098ededee43628290b..d34b7eef7ff5d3d3e056b859ea5d8234e2955555 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -42,10 +42,11 @@ public record LeavesXConfig(
+     int chunkUnloadMinimumPerTick,
+     int chunkUnloadMaximumPerTick,
+     long fineGrainedOptimizationMaskLow,
+-    long fineGrainedOptimizationMaskHigh
++    long fineGrainedOptimizationMaskHigh,
++    boolean villagerCompatibilityMode
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 56;
++    public static final int CURRENT_CONFIG_VERSION = 57;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -135,7 +136,8 @@ public record LeavesXConfig(
+             100,
+             500,
+             LeavesXOptimization.allEnabledMaskLow(),
+-            LeavesXOptimization.allEnabledMaskHigh()
++            LeavesXOptimization.allEnabledMaskHigh(),
++            true
+         );
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index dc496ea80dcf16a3f9f6de0f2da36c5b10fbd654..b8f5012be941642dcbcae96cfc8fd90c0e0cc90e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -67,7 +67,7 @@ public final class LeavesXConfigBootstrap {
+     private static void logConfiguration(final LeavesXConfig config) {
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+-            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, entity state {}, entity queries {}, AI {}, villager profession {}, long jump {}, ram selection {}, pathfinding {}, mob spawning {}, item merge {}, block entity hot paths {}, block entity removal {}, spawn range {}",
++            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, entity state {}, entity queries {}, AI {}, villager compatibility {}, villager profession {}, long jump {}, ram selection {}, pathfinding {}, mob spawning {}, item merge {}, block entity hot paths {}, block entity removal {}, spawn range {}",
+             config.optimizedVarInt(),
+             config.networkFlushConsolidation(),
+             config.immutableCacheOptimizations(),
+@@ -76,6 +76,7 @@ public final class LeavesXConfigBootstrap {
+             config.entityStateOptimizations(),
+             config.entityQueryOptimizations(),
+             config.aiOptimizations(),
++            config.villagerCompatibilityMode(),
+             LeavesXRuntime.villagerProfessionAssignmentOptimization(),
+             LeavesXRuntime.longJumpCandidateOptimization(),
+             LeavesXRuntime.ramPositionSelectionOptimization(),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 7134850442285038f70fdc6e8f3f6a0ff9ec7228..7a97d0980255490f07c06384c8088c9e42fa6f36 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -235,7 +235,12 @@ public final class LeavesXConfigLoader {
+                     500
+                 ),
+                 optimizationMasks.low(),
+-                optimizationMasks.high()
++                optimizationMasks.high(),
++                readBoolean(
++                    node.node("performance", "villager-compatibility-mode"),
++                    "performance.villager-compatibility-mode",
++                    true
++                )
+             );
+         } catch (final IllegalArgumentException ex) {
+             throw new LeavesXConfigException("Invalid LeavesX configuration at " + path + ": " + ex.getMessage(), ex);
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 1552cb99307acad1fb130734f4ef88da3665f80a..20a0a95ad8ee4780d5c0e0c626577f0bcd3bfbca 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -141,6 +141,12 @@ public final class LeavesXConfigWriter {
+             config.aiOptimizations(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "villager-compatibility-mode"),
++            "performance.villager-compatibility-mode",
++            config.villagerCompatibilityMode(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "ai", "villager-profession-assignment"),
+             "performance.ai.villager-profession-assignment",
+@@ -288,7 +294,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：56。");
++        comments.put("config-version", "配置版本，请勿修改。默认：57。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -301,6 +307,10 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.entity-state-optimizations", "减少实体装备等状态检查的临时对象。默认：true。");
+         comments.put("performance.entity-query-optimizations", "只查一个实体时立即停止搜索并复用临时列表。默认：true。");
+         comments.put("performance.ai-optimizations", "减少 AI 和村民 POI 搜索的重复计算。默认：true。");
++        comments.put(
++            "performance.villager-compatibility-mode",
++            "村民 Tick 使用原版 AI、目标检测和寻路，保障恐慌与刷铁机行为。默认：true。"
++        );
+         comments.put("performance.ai.villager-profession-assignment", "优化村民领取职业时的职业查找，关闭后使用原版查找。默认：true。");
+         comments.put("performance.ai.long-jump-candidates", "优化山羊和青蛙准备长跳时的候选位置构建，关闭后使用原版构建。默认：true。");
+         comments.put("performance.ai.ram-position-selection", "优化山羊蓄力冲撞时的起点排序与筛选，关闭后使用原版流程。默认：true。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 1a7bb57e0442644e07d5f250e49adde51f010fc1..ac0a1965edabf523d5f2a39e2f6935ca484c26b3 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -443,6 +443,10 @@ enum LeavesXOptimization {
+     LIST_BACKED_CONTAINER_SCANS(
+         "performance.block-entity.list-backed-container-scans",
+         "方块容器直接扫描物品槽位，关闭后使用原版流。默认：true。"
++    ),
++    ZOMBIFIED_PIGLIN_ALERTS(
++        "performance.ai.zombified-piglin-alerts",
++        "僵尸猪灵群体告警直接遍历，关闭后使用原版流。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 23fdf109610af77bb785f54ea49bbd9886ad97e7..6c1ae79d337671c073e815bae67fb9a035e0394c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -26,6 +26,7 @@ public final class LeavesXRuntime {
+     private static boolean entityStateOptimizations = true;
+     private static boolean entityQueryOptimizations = true;
+     private static boolean aiOptimizations = true;
++    private static volatile boolean villagerCompatibilityMode = true;
+     private static boolean villagerProfessionAssignmentOptimization = true;
+     private static boolean longJumpCandidateOptimization = true;
+     private static boolean ramPositionSelectionOptimization = true;
+@@ -62,6 +63,7 @@ public final class LeavesXRuntime {
+     private static boolean naturalSpawnLocalCapAccountingOptimization = true;
+     private static long fineGrainedOptimizationMaskLow = LeavesXOptimization.allEnabledMaskLow();
+     private static long fineGrainedOptimizationMaskHigh = LeavesXOptimization.allEnabledMaskHigh();
++    private static final ThreadLocal<Boolean> VILLAGER_COMPATIBILITY_CONTEXT = ThreadLocal.withInitial(() -> false);
+ 
+     private LeavesXRuntime() {
+     }
+@@ -94,6 +96,7 @@ public final class LeavesXRuntime {
+         entityStateOptimizations = validated.entityStateOptimizations();
+         entityQueryOptimizations = validated.entityQueryOptimizations();
+         aiOptimizations = validated.aiOptimizations();
++        villagerCompatibilityMode = validated.villagerCompatibilityMode();
+         villagerProfessionAssignmentOptimization = validated.villagerProfessionAssignmentOptimization();
+         longJumpCandidateOptimization = validated.longJumpCandidateOptimization();
+         ramPositionSelectionOptimization = validated.ramPositionSelectionOptimization();
+@@ -208,12 +211,14 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether behavior-equivalent entity state checks use allocation-free scans. */
+     public static boolean entityStateOptimizations() {
+-        return entityStateOptimizations;
++        // A villager compatibility tick must also retain vanilla entity-state ordering. Some entity-state
++        // hooks run outside Brain (movement, fire and synchronized data), so the AI master switch alone is not enough.
++        return entityStateOptimizationsEnabled();
+     }
+ 
+     /** Returns whether existence-only entity searches may stop after their first deterministic match. */
+     public static boolean entityQueryOptimizations() {
+-        return entityQueryOptimizations;
++        return entityQueryOptimizationsEnabled();
+     }
+ 
+     /** Returns whether fixed hopper entity queries may reuse their private result buffers. */
+@@ -328,7 +333,55 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether behavior-equivalent synchronous AI hot-path optimizations are enabled. */
+     public static boolean aiOptimizations() {
+-        return aiOptimizations;
++        return aiOptimizationsEnabled();
++    }
++
++    /** Returns whether a villager tick should use vanilla AI and pathfinding semantics. */
++    public static boolean villagerCompatibilityMode() {
++        return villagerCompatibilityMode;
++    }
++
++    /** Enters the per-thread vanilla compatibility context used while a villager is ticking. */
++    public static boolean enterVillagerCompatibilityContext() {
++        final boolean previous = villagerCompatibilityContextActive();
++        if (villagerCompatibilityMode) {
++            VILLAGER_COMPATIBILITY_CONTEXT.set(true);
++        }
++        return previous;
++    }
++
++    /** Restores the previous per-thread optimization context after a villager tick. */
++    public static void exitVillagerCompatibilityContext(final boolean previous) {
++        if (previous) {
++            VILLAGER_COMPATIBILITY_CONTEXT.set(true);
++        } else {
++            VILLAGER_COMPATIBILITY_CONTEXT.remove();
++        }
++    }
++
++    private static boolean villagerCompatibilityContextActive() {
++        return VILLAGER_COMPATIBILITY_CONTEXT.get();
++    }
++
++    /*
++     * Fine-grained accessors use these helpers instead of reading the configuration fields directly. Keeping the
++     * context check in one place prevents a newly added AI fast path from accidentally bypassing villager vanilla
++     * compatibility mode.
++     */
++    private static boolean aiOptimizationsEnabled() {
++        return aiOptimizations && !villagerCompatibilityContextActive();
++    }
++
++    private static boolean entityQueryOptimizationsEnabled() {
++        return entityQueryOptimizations && !villagerCompatibilityContextActive();
++    }
++
++    private static boolean entityStateOptimizationsEnabled() {
++        return entityStateOptimizations && !villagerCompatibilityContextActive();
++    }
++
++    private static boolean pathfindingOptimizationsEnabled() {
++        return pathfindingOptimizations && !villagerCompatibilityContextActive();
+     }
+ 
+     /** Returns whether villager hostile sensing may reuse its immutable type-distance lookup. */
+@@ -443,32 +496,32 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether villager profession lookup may use the allocation-free registry-order scan. */
+     public static boolean villagerProfessionAssignmentOptimization() {
+-        return aiOptimizations && villagerProfessionAssignmentOptimization;
++        return aiOptimizationsEnabled() && villagerProfessionAssignmentOptimization;
+     }
+ 
+     /** Returns whether long-jump candidate lists may be built without a stream pipeline. */
+     public static boolean longJumpCandidateOptimization() {
+-        return aiOptimizations && longJumpCandidateOptimization;
++        return aiOptimizationsEnabled() && longJumpCandidateOptimization;
+     }
+ 
+     /** Returns whether ram start positions may use the allocation-free stable small-list scan. */
+     public static boolean ramPositionSelectionOptimization() {
+-        return aiOptimizations && ramPositionSelectionOptimization;
++        return aiOptimizationsEnabled() && ramPositionSelectionOptimization;
+     }
+ 
+     /** Returns whether behavior-equivalent path reconstruction optimizations are enabled. */
+     public static boolean pathfindingOptimizations() {
+-        return pathfindingOptimizations;
++        return pathfindingOptimizationsEnabled();
+     }
+ 
+     /** Returns whether behavior-equivalent batched natural-spawn accounting is enabled. */
+     public static boolean mobSpawningOptimizations() {
+-        return mobSpawningOptimizations;
++        return mobSpawningOptimizations && !villagerCompatibilityContextActive();
+     }
+ 
+     /** Returns whether passive animals may run idle movement and look goals less often. */
+     public static boolean animalIdleGoalThrottling() {
+-        return animalIdleGoalThrottling;
++        return animalIdleGoalThrottling && !villagerCompatibilityContextActive();
+     }
+ 
+     /** Returns the configured interval multiplier for optional animal idle-goal throttling. */
+@@ -478,7 +531,7 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether pure target-distance snapshots may use LeavesX compute workers. */
+     public static boolean parallelAiTargetSearch() {
+-        return parallelAiTargetSearch;
++        return parallelAiTargetSearch && !villagerCompatibilityContextActive();
+     }
+ 
+     /** Returns the benchmark-clamped threshold below which synchronous stable radix sorting is faster. */
+@@ -628,32 +681,32 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether goal selection may replace repeated flag-map lookups with reusable indexed state. */
+     public static boolean goalSelectorOptimization() {
+-        return aiOptimizations && goalSelectorOptimization;
++        return aiOptimizationsEnabled() && goalSelectorOptimization;
+     }
+ 
+     /** Returns whether Brain ticks may traverse stable sensor and memory-slot lists directly. */
+     public static boolean brainTickTraversalOptimization() {
+-        return aiOptimizations && brainTickTraversalOptimization;
++        return aiOptimizationsEnabled() && brainTickTraversalOptimization;
+     }
+ 
+     /** Returns whether Sensing may use one compact tri-state visibility cache. */
+     public static boolean sensingCacheOptimization() {
+-        return aiOptimizations && sensingCacheOptimization;
++        return aiOptimizationsEnabled() && sensingCacheOptimization;
+     }
+ 
+     /** Returns whether stationary entities may reuse the immutable zero speed vector. */
+     public static boolean stationaryEntitySpeedOptimization() {
+-        return entityStateOptimizations && stationaryEntitySpeedOptimization;
++        return entityStateOptimizationsEnabled() && stationaryEntitySpeedOptimization;
+     }
+ 
+     /** Returns whether server-side fire checks may reject zero fire ticks before immunity checks. */
+     public static boolean serverFireStateOptimization() {
+-        return entityStateOptimizations && serverFireStateOptimization;
++        return entityStateOptimizationsEnabled() && serverFireStateOptimization;
+     }
+ 
+     /** Returns whether empty inside-block effect steps may bypass the collector's ordered map traversal. */
+     public static boolean insideBlockEffectCollectorOptimization() {
+-        return entityStateOptimizations && insideBlockEffectCollectorOptimization;
++        return entityStateOptimizationsEnabled() && insideBlockEffectCollectorOptimization;
+     }
+ 
+     /** Returns whether natural-spawn distance and chunk checks may avoid temporary position objects. */
+@@ -771,6 +824,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && enabled(LeavesXOptimization.UNIVERSAL_ANGER_ALERTS);
+     }
+ 
++    /** Returns whether zombified piglins may alert nearby allies without a stream pipeline. */
++    public static boolean zombifiedPiglinAlertOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.ZOMBIFIED_PIGLIN_ALERTS);
++    }
++
+     /** Returns whether frogs may resolve a stored tongue target without an OptionalInt stream. */
+     public static boolean frogTongueTargetLookupOptimization() {
+         return aiOptimizations && enabled(LeavesXOptimization.FROG_TONGUE_TARGET_LOOKUP);
+@@ -872,6 +930,7 @@ public final class LeavesXRuntime {
+     }
+ 
+     private static boolean enabled(final LeavesXOptimization optimization) {
+-        return optimization.enabledIn(fineGrainedOptimizationMaskLow, fineGrainedOptimizationMaskHigh);
++        return !villagerCompatibilityContextActive()
++            && optimization.enabledIn(fineGrainedOptimizationMaskLow, fineGrainedOptimizationMaskHigh);
+     }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..0bdd630770e9ddded09e7c4dddd5c445c8be7e70
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -0,0 +1,89 @@
++package org.leavesx.leavesx.config;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++/** Verifies that a vanilla-compatibility villager tick disables every relevant LeavesX fast path. */
++@Normal
++class VillagerCompatibilityContextTest {
++
++    @Test
++    void compatibilityContextDisablesVillagerFastPaths() {
++        LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        final boolean previous = LeavesXRuntime.enterVillagerCompatibilityContext();
++        try {
++            assertFalse(LeavesXRuntime.aiOptimizations());
++            assertFalse(LeavesXRuntime.entityQueryOptimizations());
++            assertFalse(LeavesXRuntime.entityStateOptimizations());
++            assertFalse(LeavesXRuntime.pathfindingOptimizations());
++            assertFalse(LeavesXRuntime.villagerHostileSensorOptimization());
++            assertFalse(LeavesXRuntime.brainBehaviorSchedulingOptimization());
++            assertFalse(LeavesXRuntime.targetingRangeChecksOptimization());
++            assertFalse(LeavesXRuntime.nearestEntityDistanceSortOptimization());
++            assertFalse(LeavesXRuntime.parallelAiTargetSearch());
++            assertFalse(LeavesXRuntime.pathNodeListBuildingOptimization());
++            assertFalse(LeavesXRuntime.stationaryEntitySpeedOptimization());
++        } finally {
++            LeavesXRuntime.exitVillagerCompatibilityContext(previous);
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void disabledCompatibilityModeLeavesFastPathsAvailable() {
++        final LeavesXConfig config = new LeavesXConfig(
++            LeavesXConfig.CURRENT_CONFIG_VERSION,
++            true,
++            10,
++            60,
++            2,
++            true,
++            true,
++            true,
++            true,
++            true,
++            true,
++            true,
++            true,
++            true,
++            true,
++            true,
++            true,
++            true,
++            false,
++            2,
++            true,
++            262_144,
++            true,
++            0,
++            64,
++            524_288,
++            true,
++            true,
++            true,
++            true,
++            true,
++            1_000,
++            100,
++            500,
++            LeavesXOptimization.allEnabledMaskLow(),
++            LeavesXOptimization.allEnabledMaskHigh(),
++            false
++        );
++
++        LeavesXRuntime.publish(config);
++        final boolean previous = LeavesXRuntime.enterVillagerCompatibilityContext();
++        try {
++            assertTrue(LeavesXRuntime.aiOptimizations());
++            assertTrue(LeavesXRuntime.entityQueryOptimizations());
++            assertTrue(LeavesXRuntime.entityStateOptimizations());
++            assertTrue(LeavesXRuntime.pathfindingOptimizations());
++        } finally {
++            LeavesXRuntime.exitVillagerCompatibilityContext(previous);
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+index b05b99bdc39721d7f0d585fdfaa65a03814925e4..722da53f60daafc94a8f07bcaa1026e972f55bd4 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+@@ -56,6 +56,10 @@ class FineGrainedOptimizationWiringTest {
+                 "net.minecraft.world.entity.ai.goal.target.ResetUniversalAngerTargetGoal",
+                 "universalAngerAlertOptimization"
+             ),
++            new Wiring(
++                "net.minecraft.world.entity.monster.zombie.ZombifiedPiglin",
++                "zombifiedPiglinAlertOptimization"
++            ),
+             new Wiring(
+                 "net.minecraft.world.entity.animal.frog.Frog",
+                 "frogTongueTargetLookupOptimization"
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ZombifiedPiglinAlertHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ZombifiedPiglinAlertHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..17fcdb25acc6f46836f09b175f9a80e6df988364
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ZombifiedPiglinAlertHotPathTest.java
+@@ -0,0 +1,135 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.Mockito.clearInvocations;
++import static org.mockito.Mockito.inOrder;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.List;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.entity.monster.zombie.ZombifiedPiglin;
++import org.bukkit.event.entity.EntityTargetEvent.TargetReason;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.mockito.InOrder;
++
++/** Verifies zombified-piglin alerts preserve vanilla filtering, traversal, and target-read semantics. */
++@Normal
++class ZombifiedPiglinAlertHotPathTest {
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @Test
++    void optimizedAlertReadsTheSourceTargetAtBothOriginalCallSites() throws ReflectiveOperationException {
++        final ZombifiedPiglin source = mock(ZombifiedPiglin.class);
++        final ZombifiedPiglin candidate = mock(ZombifiedPiglin.class);
++        final LivingEntity targetDuringAllianceCheck = mock(LivingEntity.class);
++        final LivingEntity targetDuringBukkitEvent = mock(LivingEntity.class);
++
++        when(candidate.getTarget()).thenReturn(null);
++        when(source.getTarget()).thenReturn(targetDuringAllianceCheck, targetDuringBukkitEvent);
++        when(candidate.isAlliedTo(targetDuringAllianceCheck)).thenReturn(false);
++        clearInvocations(source, candidate);
++
++        invokeAlert(source, List.of(source, candidate));
++
++        final InOrder callOrder = inOrder(candidate, source);
++        callOrder.verify(candidate).getTarget();
++        callOrder.verify(source).getTarget();
++        callOrder.verify(candidate).isAlliedTo(targetDuringAllianceCheck);
++        callOrder.verify(source).getTarget();
++        callOrder.verify(candidate).setTarget(targetDuringBukkitEvent, TargetReason.TARGET_ATTACKED_NEARBY_ENTITY);
++        verify(source, never()).setTarget(any(), any());
++    }
++
++    @Test
++    void optimizedAlertPreservesFilteringAndNearbyEntityOrder() throws ReflectiveOperationException {
++        final ZombifiedPiglin source = mock(ZombifiedPiglin.class);
++        final ZombifiedPiglin alreadyTargeting = mock(ZombifiedPiglin.class);
++        final ZombifiedPiglin allied = mock(ZombifiedPiglin.class);
++        final ZombifiedPiglin first = mock(ZombifiedPiglin.class);
++        final ZombifiedPiglin second = mock(ZombifiedPiglin.class);
++        final LivingEntity target = mock(LivingEntity.class);
++
++        when(source.getTarget()).thenReturn(target);
++        when(alreadyTargeting.getTarget()).thenReturn(mock(LivingEntity.class));
++        when(allied.getTarget()).thenReturn(null);
++        when(allied.isAlliedTo(target)).thenReturn(true);
++        when(first.getTarget()).thenReturn(null);
++        when(first.isAlliedTo(target)).thenReturn(false);
++        when(second.getTarget()).thenReturn(null);
++        when(second.isAlliedTo(target)).thenReturn(false);
++        clearInvocations(source, alreadyTargeting, allied, first, second);
++
++        invokeAlert(source, List.of(source, alreadyTargeting, allied, first, second));
++
++        final InOrder targetOrder = inOrder(first, second);
++        targetOrder.verify(first).setTarget(target, TargetReason.TARGET_ATTACKED_NEARBY_ENTITY);
++        targetOrder.verify(second).setTarget(target, TargetReason.TARGET_ATTACKED_NEARBY_ENTITY);
++        verify(source, never()).setTarget(any(), any());
++        verify(alreadyTargeting, never()).setTarget(any(), any());
++        verify(allied, never()).setTarget(any(), any());
++    }
++
++    @Test
++    void version56ConfigurationGainsTheDocumentedSwitchWithoutBackupFiles() throws IOException {
++        final Path path = this.temporaryDirectory.resolve("version-56.yml");
++        Files.writeString(path, """
++            config-version: 56
++            performance:
++              ai:
++                zombified-piglin-alerts: false
++            """, StandardCharsets.UTF_8);
++
++        final LeavesXConfig configuration = LeavesXConfigLoader.load(path);
++        try {
++            publish(configuration);
++            assertFalse(LeavesXRuntime.zombifiedPiglinAlertOptimization());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++
++        final String upgraded = Files.readString(path);
++        assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
++        assertTrue(upgraded.contains("zombified-piglin-alerts: false"));
++        assertTrue(upgraded.contains("# 僵尸猪灵群体告警直接遍历，关闭后使用原版流。默认：true。"));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
++    }
++
++    private static void invokeAlert(final ZombifiedPiglin source, final List<ZombifiedPiglin> nearby)
++        throws ReflectiveOperationException {
++        final Method method = ZombifiedPiglin.class.getDeclaredMethod(
++            "leavesX$alertOthers",
++            ZombifiedPiglin.class,
++            List.class
++        );
++        method.setAccessible(true);
++        method.invoke(null, source, nearby);
++    }
++
++    private static void publish(final LeavesXConfig config) {
++        try {
++            final Method method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++            method.setAccessible(true);
++            method.invoke(null, config);
++        } catch (final ReflectiveOperationException exception) {
++            throw new AssertionError("Unable to publish LeavesX test configuration", exception);
++        }
++    }
++}

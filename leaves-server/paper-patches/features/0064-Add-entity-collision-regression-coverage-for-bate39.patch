@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 15:51:23 +0800
+Subject: [PATCH] Add entity collision regression coverage for bate39
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..5b5ccfa28a41cec78c07fdb76c6f871a8f6f2e06
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java
+@@ -0,0 +1,116 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Method;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.phys.AABB;
++import net.minecraft.world.phys.Vec3;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++@Normal
++class EntityCollisionHotPathTest {
++
++    @Test
++    void singleBoxCollisionMatchesTheLegacyListTraversal()
++        throws NoSuchMethodException, InvocationTargetException, IllegalAccessException {
++        final Method singleBoxCollision = AABB.class.getMethod("collidedAlongVector", Vec3.class, AABB.class);
++        final AABB[] movingBoxes = {
++            new AABB(0.0, 0.0, 0.0, 0.6, 1.8, 0.6),
++            new AABB(-2.0, -1.0, -3.0, 2.0, 1.0, 3.0),
++            new AABB(15.999999, 63.0, -16.000001, 16.5, 64.0, -15.5)
++        };
++        final AABB[] obstacles = {
++            new AABB(1.0, 0.0, 0.0, 2.0, 1.0, 1.0),
++            new AABB(-0.25, -0.25, -0.25, 0.25, 0.25, 0.25),
++            new AABB(16.0, 63.0, -16.0, 17.0, 64.0, -15.0),
++            new AABB(100.0, 100.0, 100.0, 101.0, 101.0, 101.0)
++        };
++        final Vec3[] movements = {
++            Vec3.ZERO,
++            new Vec3(0.4, 0.0, 0.0),
++            new Vec3(4.0, 0.0, 0.0),
++            new Vec3(-4.0, 2.0, 3.0),
++            new Vec3(32.0, -64.0, 16.0)
++        };
++
++        for (final AABB movingBox : movingBoxes) {
++            for (final AABB obstacle : obstacles) {
++                for (final Vec3 movement : movements) {
++                    final boolean expected = movingBox.collidedAlongVector(movement, List.of(obstacle));
++                    final boolean actual = (boolean)singleBoxCollision.invoke(movingBox, movement, obstacle);
++                    assertEquals(expected, actual, () -> "Mismatch for " + movingBox + ", " + obstacle + ", " + movement);
++                }
++            }
++        }
++    }
++
++    @Test
++    void insideBlockCollisionAvoidsTemporaryAabbLists() throws IOException {
++        for (final String methodName : new String[] {"checkInsideBlocks", "collidedWithFluid"}) {
++            final MethodInsnNode[] calls = methodNodes(Entity.class, methodName).stream()
++                .flatMap(method -> Arrays.stream(method.instructions.toArray()))
++                .filter(MethodInsnNode.class::isInstance)
++                .map(MethodInsnNode.class::cast)
++                .toArray(MethodInsnNode[]::new);
++
++            assertFalse(
++                Arrays.stream(calls).anyMatch(call -> call.owner.equals("net/minecraft/world/phys/shapes/VoxelShape") && call.name.equals("toAabbs")),
++                methodName + " should reuse a cached single-AABB representation when possible"
++            );
++            assertFalse(
++                Arrays.stream(calls).anyMatch(call -> call.owner.equals("java/util/List") && call.name.equals("of")),
++                methodName + " should not allocate a one-element collision list"
++            );
++        }
++
++        final MethodInsnNode[] insideBlockCalls = methodNodes(Entity.class, "checkInsideBlocks").stream()
++            .flatMap(method -> Arrays.stream(method.instructions.toArray()))
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++        assertTrue(
++            Arrays.stream(insideBlockCalls).anyMatch(call ->
++                call.name.equals("collidedWithShapeMovingFrom") && call.desc.contains("Lnet/minecraft/world/phys/shapes/VoxelShape;")
++            ),
++            () -> "Inside-block checks should use the VoxelShape overload; calls were " + Arrays.stream(insideBlockCalls)
++                .filter(call -> call.name.contains("collid"))
++                .map(call -> call.owner + '#' + call.name + call.desc)
++                .toList()
++        );
++
++        final MethodInsnNode[] fluidCalls = methodNodes(Entity.class, "collidedWithFluid").stream()
++            .flatMap(method -> Arrays.stream(method.instructions.toArray()))
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++        assertTrue(
++            Arrays.stream(fluidCalls).anyMatch(call ->
++                call.name.equals("collidedWithShapeMovingFrom") && call.desc.contains("Lnet/minecraft/world/phys/AABB;")
++            ),
++            "Fluid checks should use the single-AABB overload"
++        );
++    }
++
++    private static List<MethodNode> methodNodes(final Class<?> owner, final String methodName) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        final List<MethodNode> methods = classNode.methods.stream()
++            .filter(method -> method.name.equals(methodName) || method.name.startsWith("lambda$" + methodName + '$'))
++            .toList();
++        assertFalse(methods.isEmpty(), "Missing method " + owner.getName() + '#' + methodName);
++        return methods;
++    }
++}

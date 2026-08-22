@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 21:39:53 +0800
+Subject: [PATCH] Short-circuit equipment dispenser queries for bate64
+
+
+diff --git a/net/minecraft/core/dispenser/EquipmentDispenseItemBehavior.java b/net/minecraft/core/dispenser/EquipmentDispenseItemBehavior.java
+index bdf3395a2ee7331ad8eef432380eca10c8755e36..df3076ed292f72878b122127634a695214b9a049 100644
+--- a/net/minecraft/core/dispenser/EquipmentDispenseItemBehavior.java
++++ b/net/minecraft/core/dispenser/EquipmentDispenseItemBehavior.java
+@@ -26,12 +26,20 @@ public class EquipmentDispenseItemBehavior extends DefaultDispenseItemBehavior {
+     public static boolean dispenseEquipment(final BlockSource source, final ItemStack dispensed, final @org.jspecify.annotations.Nullable DispenseItemBehavior currentBehavior) {
+         // Paper end
+         BlockPos pos = source.pos().relative(source.state().getValue(DispenserBlock.FACING));
+-        List<LivingEntity> entities = source.level().getEntitiesOfClass(LivingEntity.class, new AABB(pos), entity -> entity.canEquipWithDispenser(dispensed));
+-        if (entities.isEmpty()) {
++        final LivingEntity target;
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++            target = source.level().leavesX$getFirstEntityOfClass(
++                LivingEntity.class, new AABB(pos), entity -> entity.canEquipWithDispenser(dispensed)
++            );
++        } else {
++            final List<LivingEntity> entities = source.level()
++                .getEntitiesOfClass(LivingEntity.class, new AABB(pos), entity -> entity.canEquipWithDispenser(dispensed));
++            target = entities.isEmpty() ? null : entities.getFirst();
++        }
++        if (target == null) {
+             return false;
+         }
+ 
+-        LivingEntity target = entities.getFirst();
+         EquipmentSlot slot = target.getEquipmentSlotForItem(dispensed);
+         ItemStack equip = dispensed.copyWithCount(1); // Paper - shrink below and single item in event
+         // CraftBukkit start

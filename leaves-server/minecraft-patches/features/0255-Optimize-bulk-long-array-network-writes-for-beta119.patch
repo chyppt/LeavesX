@@ -1,0 +1,116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 23:29:43 +0800
+Subject: [PATCH] Optimize bulk long-array network writes for beta119
+
+
+diff --git a/net/minecraft/network/FriendlyByteBuf.java b/net/minecraft/network/FriendlyByteBuf.java
+index 12cd230ebe97dab655f8546948f06b93f0babf1f..491e7a8f35c26c1a447aa4991955bb1b4295abad 100644
+--- a/net/minecraft/network/FriendlyByteBuf.java
++++ b/net/minecraft/network/FriendlyByteBuf.java
+@@ -21,6 +21,8 @@ import it.unimi.dsi.fastutil.ints.IntList;
+ import java.io.IOException;
+ import java.io.InputStream;
+ import java.io.OutputStream;
++import java.lang.invoke.MethodHandles;
++import java.lang.invoke.VarHandle;
+ import java.nio.ByteBuffer;
+ import java.nio.ByteOrder;
+ import java.nio.channels.FileChannel;
+@@ -67,6 +69,7 @@ import org.joml.Quaternionfc;
+ import org.joml.Vector3f;
+ import org.joml.Vector3fc;
+ import org.jspecify.annotations.Nullable;
++import org.leavesx.leavesx.config.LeavesXRuntime;
+ 
+ public class FriendlyByteBuf extends ByteBuf {
+     private final ByteBuf source;
+@@ -76,6 +79,11 @@ public class FriendlyByteBuf extends ByteBuf {
+     private static final int PUBLIC_KEY_SIZE = 256;
+     private static final int MAX_PUBLIC_KEY_HEADER_SIZE = 256;
+     private static final int MAX_PUBLIC_KEY_LENGTH = 512;
++    private static final int LEAVESX_MINIMUM_BULK_LONG_ARRAY_LENGTH = 16;
++    private static final VarHandle LEAVESX_BIG_ENDIAN_LONGS =
++        MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.BIG_ENDIAN);
++    private static final VarHandle LEAVESX_LITTLE_ENDIAN_LONGS =
++        MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.LITTLE_ENDIAN);
+     private static final Gson GSON = new Gson();
+     // Paper start - Track codec depth
+     public boolean trackCodecDepth;
+@@ -347,7 +355,10 @@ public class FriendlyByteBuf extends ByteBuf {
+     }
+ 
+     public FriendlyByteBuf writeLongArray(final long[] longs) {
+-        writeLongArray(this, longs);
++        VarInt.write(this, longs.length);
++        if (!this.leavesX$writeFixedSizeLongArrayBulk(longs)) {
++            writeFixedSizeLongArray(this, longs);
++        }
+         return this;
+     }
+ 
+@@ -357,7 +368,9 @@ public class FriendlyByteBuf extends ByteBuf {
+     }
+ 
+     public FriendlyByteBuf writeFixedSizeLongArray(final long[] longs) {
+-        writeFixedSizeLongArray(this, longs);
++        if (!this.leavesX$writeFixedSizeLongArrayBulk(longs)) {
++            writeFixedSizeLongArray(this, longs);
++        }
+         return this;
+     }
+ 
+@@ -367,6 +380,53 @@ public class FriendlyByteBuf extends ByteBuf {
+         }
+     }
+ 
++    /**
++     * Writes sufficiently large arrays with one capacity check and one writer-index update.
++     *
++     * <p>Heap buffers use endian-aware VarHandles. Direct buffers use Netty's reusable internal NIO view, which avoids
++     * the per-element bounds checks without allocating a temporary byte array. Unsupported buffers and insufficient
++     * maximum capacity retain the original element-by-element path.</p>
++     */
++    @SuppressWarnings("deprecation")
++    private boolean leavesX$writeFixedSizeLongArrayBulk(final long[] longs) {
++        if (longs.length < LEAVESX_MINIMUM_BULK_LONG_ARRAY_LENGTH
++            || !LeavesXRuntime.bulkLongArrayWritesOptimization()
++            || longs.length > Integer.MAX_VALUE / Long.BYTES) {
++            return false;
++        }
++
++        final ByteBuf output = this.source;
++        final int byteCount = longs.length * Long.BYTES;
++        if (!output.isContiguous() || output.maxWritableBytes() < byteCount) {
++            return false;
++        }
++
++        final boolean heapBuffer = output.hasArray();
++        if (!heapBuffer && output.nioBufferCount() != 1) {
++            return false;
++        }
++
++        output.ensureWritable(byteCount);
++        final int writerIndex = output.writerIndex();
++        final ByteOrder order = output.order();
++        if (heapBuffer) {
++            final VarHandle longView = order == ByteOrder.BIG_ENDIAN
++                ? LEAVESX_BIG_ENDIAN_LONGS
++                : LEAVESX_LITTLE_ENDIAN_LONGS;
++            final byte[] array = output.array();
++            int offset = output.arrayOffset() + writerIndex;
++            for (final long value : longs) {
++                longView.set(array, offset, value);
++                offset += Long.BYTES;
++            }
++        } else {
++            final ByteBuffer view = output.internalNioBuffer(writerIndex, byteCount).order(order);
++            view.asLongBuffer().put(longs);
++        }
++        output.writerIndex(writerIndex + byteCount);
++        return true;
++    }
++
+     public long[] readLongArray() {
+         return readLongArray(this);
+     }

@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 08:14:07 +0800
+Subject: [PATCH] Optimize minecart motion synchronization for bate106
+
+
+diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
+index be080fbbc51f512eb8e8fc2e23ad2bb29b134469..a225038bb29189600daee6a50ece241402a19e12 100644
+--- a/net/minecraft/server/level/ServerEntity.java
++++ b/net/minecraft/server/level/ServerEntity.java
+@@ -293,7 +293,12 @@ public class ServerEntity {
+         this.sendDirtyEntityData();
+         if (newMinecartBehavior.lerpSteps.isEmpty()) {
+             Vec3 movement = this.entity.getDeltaMovement();
+-            double diff = movement.distanceToSqr(this.lastSentMovement);
++            // LeavesX start - Vec3 is immutable, so identical references have exactly zero distance.
++            double diff = movement == this.lastSentMovement
++                    && org.leavesx.leavesx.config.LeavesXRuntime.minecartMotionDistanceOptimization()
++                ? 0.0D
++                : movement.distanceToSqr(this.lastSentMovement);
++            // LeavesX end - Vec3 is immutable, so identical references have exactly zero distance.
+             Vec3 currentPosition = this.entity.trackingPosition();
+             boolean positionChanged = this.positionCodec.delta(currentPosition).lengthSqr() >= 7.6293945E-6F;
+             boolean shouldSendPosition = positionChanged || this.tickCount % 60 == 0;

@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 00:24:13 +0800
+Subject: [PATCH] Optimize long-jump candidate building for bate76
+
+
+diff --git a/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java b/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
+index fe7403770b6c117cc2b9e5a3ab9f8554deed703c..7b4c19a27f8bfd1d6938885ef1f8abe8227b49b3 100644
+--- a/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
++++ b/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
+@@ -126,21 +126,48 @@ public class LongJumpToRandomPos<E extends Mob> extends Behavior<E> {
+         this.findJumpTries = FIND_JUMP_TRIES;
+         this.initialPosition = Optional.of(body.position());
+         BlockPos mobPos = body.blockPosition();
+-        int mobX = mobPos.getX();
+-        int mobY = mobPos.getY();
+-        int mobZ = mobPos.getZ();
+-        this.jumpCandidates = BlockPos.betweenClosedStream(
+-                mobX - this.maxLongJumpWidth,
+-                mobY - this.maxLongJumpHeight,
+-                mobZ - this.maxLongJumpWidth,
+-                mobX + this.maxLongJumpWidth,
+-                mobY + this.maxLongJumpHeight,
+-                mobZ + this.maxLongJumpWidth
+-            )
+-            .filter(pos -> !pos.equals(mobPos))
+-            .map(pos -> new LongJumpToRandomPos.PossibleJump(pos.immutable(), Mth.ceil(mobPos.distSqr(pos))))
+-            .collect(Collectors.toCollection(Lists::newArrayList));
++        if (org.leavesx.leavesx.config.LeavesXRuntime.longJumpCandidateOptimization()) {
++            this.jumpCandidates = buildJumpCandidatesDirect(mobPos, this.maxLongJumpHeight, this.maxLongJumpWidth);
++        } else {
++            int mobX = mobPos.getX();
++            int mobY = mobPos.getY();
++            int mobZ = mobPos.getZ();
++            this.jumpCandidates = BlockPos.betweenClosedStream(
++                    mobX - this.maxLongJumpWidth,
++                    mobY - this.maxLongJumpHeight,
++                    mobZ - this.maxLongJumpWidth,
++                    mobX + this.maxLongJumpWidth,
++                    mobY + this.maxLongJumpHeight,
++                    mobZ + this.maxLongJumpWidth
++                )
++                .filter(pos -> !pos.equals(mobPos))
++                .map(pos -> new LongJumpToRandomPos.PossibleJump(pos.immutable(), Mth.ceil(mobPos.distSqr(pos))))
++                .collect(Collectors.toCollection(Lists::newArrayList));
++        }
++    }
++
++    // LeavesX start - preserve BlockPos traversal order without stream and collector allocations
++    private static List<LongJumpToRandomPos.PossibleJump> buildJumpCandidatesDirect(
++        final BlockPos mobPos,
++        final int maxLongJumpHeight,
++        final int maxLongJumpWidth
++    ) {
++        final List<LongJumpToRandomPos.PossibleJump> candidates = Lists.newArrayList();
++        for (final BlockPos pos : BlockPos.betweenClosed(
++            mobPos.getX() - maxLongJumpWidth,
++            mobPos.getY() - maxLongJumpHeight,
++            mobPos.getZ() - maxLongJumpWidth,
++            mobPos.getX() + maxLongJumpWidth,
++            mobPos.getY() + maxLongJumpHeight,
++            mobPos.getZ() + maxLongJumpWidth
++        )) {
++            if (!pos.equals(mobPos)) {
++                candidates.add(new LongJumpToRandomPos.PossibleJump(pos.immutable(), Mth.ceil(mobPos.distSqr(pos))));
++            }
++        }
++        return candidates;
+     }
++    // LeavesX end - preserve BlockPos traversal order without stream and collector allocations
+ 
+     @Override
+     protected void tick(final ServerLevel level, final E body, final long timestamp) {

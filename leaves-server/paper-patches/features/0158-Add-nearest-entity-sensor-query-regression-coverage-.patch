@@ -1,0 +1,123 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 19 Aug 2026 18:42:00 +0800
+Subject: [PATCH] Add nearest-entity sensor query regression coverage for
+ beta132
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/NearestEntitySensorQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/NearestEntitySensorQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..31daf52bca6c1203577a5c26708f274af392462c
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/NearestEntitySensorQueryHotPathTest.java
+@@ -0,0 +1,110 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ai.sensing.NearestItemSensor;
++import net.minecraft.world.entity.ai.sensing.NearestLivingEntitySensor;
++import net.minecraft.world.level.Level;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.InvokeDynamicInsnNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++import org.objectweb.asm.tree.TypeInsnNode;
++
++/** Verifies nearest-entity sensors use the allocation-reduced Moonrise query path without changing query order. */
++@Normal
++class NearestEntitySensorQueryHotPathTest {
++
++    private static final String BUFFERED_QUERY_DESCRIPTOR =
++        "(Ljava/lang/Class;Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/phys/AABB;"
++            + "Ljava/util/function/Predicate;Ljava/util/List;)V";
++
++    @Test
++    void levelForwardsExcludedEntitiesToMoonriseLookup() throws IOException {
++        final MethodNode query = method(
++            classNode(Level.class),
++            "leavesX$getEntitiesOfClass",
++            BUFFERED_QUERY_DESCRIPTOR
++        );
++
++        assertTrue(methodCalls(query).stream().anyMatch(call ->
++            call.owner.equals("ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup")
++                && call.name.equals("getEntities")
++                && call.desc.equals(
++                    "(Ljava/lang/Class;Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/phys/AABB;"
++                        + "Ljava/util/List;Ljava/util/function/Predicate;)V"
++                )
++        ));
++    }
++
++    @Test
++    void livingEntitySensorExcludesItselfBeforeRunningTheAlivePredicate() throws IOException {
++        final MethodNode doTick = method(classNode(NearestLivingEntitySensor.class), "doTick");
++
++        assertBufferedQuery(doTick);
++        assertUsesObjectArrayList(doTick);
++        assertTrue(Arrays.stream(doTick.instructions.toArray())
++            .filter(InvokeDynamicInsnNode.class::isInstance)
++            .map(InvokeDynamicInsnNode.class::cast)
++            .anyMatch(instruction -> instruction.desc.equals("()Ljava/util/function/Predicate;")));
++    }
++
++    @Test
++    void itemSensorCollectsDirectlyIntoItsFinalCandidateList() throws IOException {
++        final MethodNode doTick = method(classNode(NearestItemSensor.class), "doTick");
++
++        assertBufferedQuery(doTick);
++        assertUsesObjectArrayList(doTick);
++    }
++
++    private static void assertBufferedQuery(final MethodNode method) {
++        final List<MethodInsnNode> calls = methodCalls(method);
++        assertTrue(calls.stream().anyMatch(call ->
++            call.name.equals("leavesX$getEntitiesOfClass") && call.desc.equals(BUFFERED_QUERY_DESCRIPTOR)
++        ));
++        assertFalse(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
++    }
++
++    private static void assertUsesObjectArrayList(final MethodNode method) {
++        assertTrue(Arrays.stream(method.instructions.toArray())
++            .filter(TypeInsnNode.class::isInstance)
++            .map(TypeInsnNode.class::cast)
++            .anyMatch(instruction -> instruction.getOpcode() == Opcodes.NEW
++                && instruction.desc.equals("it/unimi/dsi/fastutil/objects/ObjectArrayList")));
++    }
++
++    private static List<MethodInsnNode> methodCalls(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName, final String descriptor) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName) && method.desc.equals(descriptor))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName + descriptor));
++    }
++}

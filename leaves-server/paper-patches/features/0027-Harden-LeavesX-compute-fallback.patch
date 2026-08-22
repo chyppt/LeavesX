@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 13 Aug 2026 09:44:16 +0800
+Subject: [PATCH] Harden LeavesX compute fallback
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 025ef20441d1b4b9a9efc5c8f8af1cd43574ac4b..ff39b6d00a1176edda7362de6070c0d2eca1b5d7 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -4,6 +4,7 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
+ import java.util.ArrayList;
+ import java.util.List;
+ import java.util.concurrent.ArrayBlockingQueue;
++import java.util.concurrent.CancellationException;
+ import java.util.concurrent.Future;
+ import java.util.concurrent.ThreadPoolExecutor;
+ import java.util.concurrent.TimeUnit;
+@@ -89,6 +90,9 @@ public final class LeavesXComputeExecutor {
+                     succeeded = false;
+                     completed = true;
+                     LOGGER.error("LeavesX parallel computation failed; recomputing on the main thread", executionFailure);
++                } catch (final CancellationException cancellation) {
++                    succeeded = false;
++                    completed = true;
+                 }
+             }
+         }
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index 496e7c57e8d60ae7fae54bd502089f84687ea9ac..f7d62eea540a3878816a89faee65f3c45b3ba942 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -4,6 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicBoolean;
+ import java.util.concurrent.atomic.AtomicIntegerArray;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.AfterEach;
+@@ -45,4 +48,30 @@ class LeavesXComputeExecutorTest {
+             throw new AssertionError("small input must not be submitted");
+         }));
+     }
++
++    @Test
++    void waitsForSubmittedRangesBeforeReportingFailure() throws Exception {
++        LeavesXComputeExecutor.configure(2);
++        final CountDownLatch secondRangeCompleted = new CountDownLatch(1);
++        final AtomicBoolean firstRangeFailed = new AtomicBoolean();
++
++        final boolean parallel = LeavesXComputeExecutor.invokeRanges(256, 128, (taskIndex, start, end) -> {
++            if (taskIndex == 0) {
++                firstRangeFailed.set(true);
++                throw new IllegalStateException("synthetic range failure");
++            }
++            try {
++                Thread.sleep(100L);
++            } catch (final InterruptedException interruption) {
++                Thread.currentThread().interrupt();
++                throw new AssertionError("worker was interrupted before the range completed", interruption);
++            } finally {
++                secondRangeCompleted.countDown();
++            }
++        });
++
++        assertFalse(parallel);
++        assertTrue(firstRangeFailed.get());
++        assertTrue(secondRangeCompleted.await(0L, TimeUnit.MILLISECONDS));
++    }
+ }

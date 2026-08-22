@@ -1,0 +1,378 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 09:25:42 +0800
+Subject: [PATCH] Cache block entity type validation for beta108
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 67d6f40d40e1563070434cbab1d96093598c0705..54570605824104acb56aa0be99546772d7db9898 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -26,6 +26,7 @@ import java.util.Set;
+ import java.util.concurrent.TimeUnit;
+ import net.kyori.adventure.text.Component;
+ import net.kyori.adventure.text.format.NamedTextColor;
++import net.minecraft.core.BlockPos;
+ import net.minecraft.core.SectionPos;
+ import net.minecraft.core.registries.BuiltInRegistries;
+ import net.minecraft.network.Connection;
+@@ -453,7 +454,10 @@ public final class LeavesXCommand extends Command {
+             final LongOpenHashSet tickingPositions = new LongOpenHashSet(level.blockEntityTickers.size());
+             for (final TickingBlockEntity ticker : level.blockEntityTickers) {
+                 if (!ticker.isRemoved()) {
+-                    tickingPositions.add(ticker.getPos().asLong());
++                    final BlockPos position = ticker.getPos();
++                    if (position != null) {
++                        tickingPositions.add(position.asLong());
++                    }
+                 }
+             }
+ 
+@@ -1215,7 +1219,6 @@ public final class LeavesXCommand extends Command {
+         }
+ 
+         private void start() {
+-            this.sender.sendMessage(Component.text("完整诊断分 12 个 Tick 采样，避免命令本身造成长 Tick。", NamedTextColor.GRAY));
+             this.runStage("世界与状态", () -> {
+                 this.entities = collectEntities(this.selection.worlds());
+                 sendStatus(this.sender);
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 2d92e8bdefa945485d6a01571ba0ae702f94f98d..6dec93a37960dbf6da6069a08f235407cd19d1e6 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 38;
++    public static final int CURRENT_CONFIG_VERSION = 39;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 1d78fb0faad029d777c1888ba79b09b390c805fa..8882738218dc49d8c2cf4d0816e7e7677b081abc 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：38。");
++        comments.put("config-version", "配置版本，请勿修改。默认：39。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 6883943edb142747b6684c16d45318b2a0856545..a8c6ef7d36d5d48b66431ec380baad8a5f4e75ef 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -371,6 +371,10 @@ enum LeavesXOptimization {
+     NATURAL_SPAWN_STATE(
+         "performance.mob-spawning.natural-spawn-state",
+         "自然刷怪统计减少重复遍历，关闭后使用 Paper 原版流程。默认：true。"
++    ),
++    BLOCK_ENTITY_TYPE_VALIDATION(
++        "performance.block-entity.type-validation",
++        "缓存方块实体类型校验，重复映射自动使用原版查询。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 77963d13614cae35eb7269445868635811ef8cc1..5fabe8eedb404eca84a0654231fafc98431a3244 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -190,6 +190,11 @@ public final class LeavesXRuntime {
+         return blockEntityOptimizations && enabled(LeavesXOptimization.HOPPER_ENTITY_QUERIES);
+     }
+ 
++    /** Returns whether block-entity type validation may use the per-block identity cache. */
++    public static boolean blockEntityTypeValidationOptimization() {
++        return blockEntityOptimizations && enabled(LeavesXOptimization.BLOCK_ENTITY_TYPE_VALIDATION);
++    }
++
+     /** Returns whether first-match entity queries may stop in deterministic lookup order. */
+     public static boolean firstMatchEntityQueriesOptimization() {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.FIRST_MATCH_ENTITY_QUERIES);
+diff --git a/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java b/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9a6d7c3b57e28d9d38a400f0f93c2431082e348a
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java
+@@ -0,0 +1,79 @@
++package org.leavesx.leavesx.command;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.AbstractInsnNode;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.JumpInsnNode;
++import org.objectweb.asm.tree.LdcInsnNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Locks down operator-facing diagnostic safety fixes. */
++@Normal
++class LeavesXCommandSafetyTest {
++
++    private static final String REMOVED_SAMPLING_MESSAGE = "完整诊断分 12 个 Tick 采样，避免命令本身造成长 Tick。";
++
++    @Test
++    void allReportNoLongerPrintsTheSamplingImplementationMessage() throws IOException {
++        final ClassNode report = classNode(LeavesXCommand.class.getName() + "$AllReport");
++
++        assertFalse(report.methods.stream()
++            .flatMap(method -> Arrays.stream(method.instructions.toArray()))
++            .filter(LdcInsnNode.class::isInstance)
++            .map(LdcInsnNode.class::cast)
++            .anyMatch(constant -> REMOVED_SAMPLING_MESSAGE.equals(constant.cst)));
++    }
++
++    @Test
++    void blockEntityDiagnosticsGuardNullableTickerPositions() throws IOException {
++        final MethodNode collect = method(classNode(LeavesXCommand.class.getName()), "collectBlockEntities");
++        final AbstractInsnNode[] instructions = collect.instructions.toArray();
++        final int positionRead = findCall(instructions, "net/minecraft/world/level/block/entity/TickingBlockEntity", "getPos");
++        final int packedPosition = findCallAfter(instructions, positionRead, "net/minecraft/core/BlockPos", "asLong");
++
++        assertTrue(Arrays.stream(instructions, positionRead + 1, packedPosition)
++            .filter(JumpInsnNode.class::isInstance)
++            .map(JumpInsnNode.class::cast)
++            .anyMatch(jump -> jump.getOpcode() == Opcodes.IFNULL || jump.getOpcode() == Opcodes.IFNONNULL));
++    }
++
++    private static ClassNode classNode(final String className) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(className).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + name));
++    }
++
++    private static int findCall(final AbstractInsnNode[] instructions, final String owner, final String name) {
++        return findCallAfter(instructions, -1, owner, name);
++    }
++
++    private static int findCallAfter(
++        final AbstractInsnNode[] instructions,
++        final int start,
++        final String owner,
++        final String name
++    ) {
++        for (int index = start + 1; index < instructions.length; index++) {
++            if (instructions[index] instanceof MethodInsnNode call && call.owner.equals(owner) && call.name.equals(name)) {
++                return index;
++            }
++        }
++        throw new AssertionError("Missing call " + owner + '#' + name);
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..e2e28f92a369e99db33893884d1a3337c8a2becc
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
+@@ -0,0 +1,135 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.Arrays;
++import net.minecraft.world.level.block.Block;
++import net.minecraft.world.level.block.entity.BlockEntityType;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldInsnNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies the block-entity type cache retains an exact original-query fallback. */
++@Normal
++class BlockEntityTypeValidationHotPathTest {
++
++    @TempDir
++    Path tempDir;
++
++    @Test
++    void dedicatedSwitchRespectsTheBlockEntityMasterSwitch() throws Exception {
++        try {
++            publish(this.configuration(true, true, "enabled.yml"));
++            assertTrue(LeavesXRuntime.blockEntityTypeValidationOptimization());
++
++            publish(this.configuration(true, false, "setting-disabled.yml"));
++            assertFalse(LeavesXRuntime.blockEntityTypeValidationOptimization());
++
++            publish(this.configuration(false, true, "master-disabled.yml"));
++            assertFalse(LeavesXRuntime.blockEntityTypeValidationOptimization());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void version38ConfigurationGainsTheDocumentedDefaultInPlace() throws IOException {
++        final Path path = this.tempDir.resolve("version-38.yml");
++        Files.writeString(path, """
++            config-version: 38
++            performance:
++              block-entity-optimizations: true
++            """);
++
++        final LeavesXConfig config = LeavesXConfigLoader.load(path);
++        final String upgraded = Files.readString(path);
++
++        assertTrue(config.enabledFineGrainedOptimizationCount() > 0);
++        assertTrue(upgraded.contains("config-version: 39"));
++        assertTrue(upgraded.contains("type-validation: true"));
++        assertFalse(Files.exists(this.tempDir.resolve("leavesx.yml.bak")));
++        assertFalse(Files.exists(this.tempDir.resolve("leavesx-migration-report.yml")));
++    }
++
++    @Test
++    void validationBytecodeKeepsIdentityAndExactFallbackPaths() throws IOException {
++        final ClassNode blockEntityType = classNode(BlockEntityType.class);
++        final MethodNode constructor = method(blockEntityType, "<init>");
++        final MethodNode isValid = method(blockEntityType, "isValid");
++
++        assertTrue(hasCall(
++            isValid,
++            "org/leavesx/leavesx/config/LeavesXRuntime",
++            "blockEntityTypeValidationOptimization"
++        ));
++        assertTrue(hasCall(isValid, "java/util/Set", "contains"), "Duplicate mappings must retain the exact Set fallback");
++        assertTrue(hasField(isValid, Block.class, "leavesX$blockEntityType"));
++        assertTrue(hasField(isValid, Block.class, "leavesX$multipleBlockEntityTypes"));
++        assertTrue(hasField(constructor, Block.class, "leavesX$blockEntityType"));
++        assertTrue(hasField(constructor, Block.class, "leavesX$multipleBlockEntityTypes"));
++    }
++
++    private LeavesXConfig configuration(
++        final boolean masterEnabled,
++        final boolean settingEnabled,
++        final String fileName
++    ) throws IOException {
++        final Path path = this.tempDir.resolve(fileName);
++        Files.writeString(path, """
++            config-version: 1
++            performance:
++              block-entity-optimizations: %s
++              block-entity:
++                type-validation: %s
++            """.formatted(masterEnabled, settingEnabled));
++        return LeavesXConfigLoader.load(path);
++    }
++
++    private static void publish(final LeavesXConfig config) throws ReflectiveOperationException {
++        final Method method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++        method.setAccessible(true);
++        method.invoke(null, config);
++    }
++
++    private static ClassNode classNode(final Class<?> type) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(type.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + name));
++    }
++
++    private static boolean hasCall(final MethodNode method, final String owner, final String name) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals(owner) && call.name.equals(name));
++    }
++
++    private static boolean hasField(final MethodNode method, final Class<?> owner, final String name) {
++        final String internalOwner = owner.getName().replace('.', '/');
++        return Arrays.stream(method.instructions.toArray())
++            .filter(FieldInsnNode.class::isInstance)
++            .map(FieldInsnNode.class::cast)
++            .anyMatch(field -> field.owner.equals(internalOwner) && field.name.equals(name));
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PlayerSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/PlayerSensorHotPathTest.java
+index b4423542e4783b3f8612064c5877f3c099dc189c..56ee98e922028b33cd5b176c328b42b804151dc2 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/PlayerSensorHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/PlayerSensorHotPathTest.java
+@@ -1,10 +1,12 @@
+ package org.leavesx.leavesx.performance;
+ 
++import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import java.io.IOException;
+ import java.util.Arrays;
+ import java.util.List;
++import net.minecraft.world.entity.ai.Brain;
+ import net.minecraft.world.entity.ai.sensing.PlayerSensor;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+@@ -23,13 +25,22 @@ class PlayerSensorHotPathTest {
+         final List<MethodInsnNode> calls = invocations(method(classNode(PlayerSensor.class), "doTick"));
+ 
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("playerSensorOptimization")));
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getMemoryValue")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getMemoryValueIfRegistered")));
++        assertFalse(calls.stream().anyMatch(call -> call.name.equals("leavesX$getMemoryValue")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("sort")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("stream")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("collect")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("toList")));
+     }
+ 
++    @Test
++    void optionalAttackTargetLookupDoesNotRequireTheMemoryToBeRegistered() throws IOException {
++        final List<MethodInsnNode> calls = invocations(method(classNode(Brain.class), "leavesX$getMemoryValueIfRegistered"));
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getMemorySlotIfPresent")));
++        assertFalse(calls.stream().anyMatch(call -> call.name.equals("getMemorySlot")));
++    }
++
+     private static List<MethodInsnNode> invocations(final MethodNode method) {
+         return Arrays.stream(method.instructions.toArray())
+             .filter(MethodInsnNode.class::isInstance)
+diff --git a/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java
+index 6e1f60dbdf239901a557332830c4d1dca0ab0013..4317900b4b50ad0117fb312a9c467fcca5a67095 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java
+@@ -80,8 +80,10 @@ class SensorMemoryLookupHotPathTest {
+ 
+         assertEquals(1L, calls.stream()
+             .filter(call -> call.owner.equals("net/minecraft/world/entity/ai/Brain"))
+-            .filter(call -> call.name.equals("leavesX$getMemoryValue"))
++            .filter(call -> call.name.equals("leavesX$getMemoryValueIfRegistered"))
+             .count());
++        assertFalse(calls.stream().anyMatch(call -> call.owner.equals("net/minecraft/world/entity/ai/Brain")
++            && call.name.equals("leavesX$getMemoryValue")));
+         assertFalse(calls.stream().anyMatch(call -> call.owner.equals("net/minecraft/world/entity/ai/Brain") && call.name.equals("getMemory")));
+         assertTrue(calls.stream().anyMatch(call -> call.owner.equals("net/minecraft/world/entity/ai/sensing/PlayerSensor")
+             && call.name.equals("isEntityTargetable")

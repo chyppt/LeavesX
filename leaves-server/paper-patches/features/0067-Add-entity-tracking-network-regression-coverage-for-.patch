@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 16:34:34 +0800
+Subject: [PATCH] Add entity tracking network regression coverage for bate42
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityTrackingNetworkHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityTrackingNetworkHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..7fb9dc9d09d31b63a1bea3bbd3d2a3786b2c80bd
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityTrackingNetworkHotPathTest.java
+@@ -0,0 +1,73 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.Arrays;
++import net.minecraft.network.Connection;
++import net.minecraft.server.level.ServerEntity;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies entity synchronization and Netty scheduling fast paths. */
++@Normal
++class EntityTrackingNetworkHotPathTest {
++
++    @Test
++    void nonFlushingWritesUseLazySchedulingWithARegularFallback() throws IOException {
++        final MethodNode sendPacket = methodNode(Connection.class, "sendPacket");
++
++        assertTrue(hasInvocation(sendPacket, "org/leavesx/leavesx/config/LeavesXRuntime", "networkFlushConsolidation"));
++        assertTrue(hasInvocation(sendPacket, "io/netty/channel/SingleThreadEventLoop", "lazyExecute"));
++        assertTrue(hasInvocation(sendPacket, "io/netty/channel/EventLoop", "execute"));
++    }
++
++    @Test
++    void uselessMovePacketsAreRejectedBeforePacketAllocation() throws ReflectiveOperationException, IOException {
++        final Method filter = ServerEntity.class.getDeclaredMethod(
++            "shouldCreateMovePacket",
++            boolean.class,
++            boolean.class,
++            boolean.class,
++            long.class,
++            long.class,
++            long.class,
++            byte.class,
++            byte.class
++        );
++        filter.setAccessible(true);
++
++        assertTrue((boolean) filter.invoke(null, false, true, false, 0L, 0L, 0L, (byte) 0, (byte) 0));
++        assertFalse((boolean) filter.invoke(null, true, true, false, 0L, 0L, 0L, (byte) 0, (byte) 0));
++        assertTrue((boolean) filter.invoke(null, true, true, false, 1L, 0L, 0L, (byte) 0, (byte) 0));
++        assertFalse((boolean) filter.invoke(null, true, false, true, 0L, 0L, 0L, (byte) 0, (byte) 0));
++        assertTrue((boolean) filter.invoke(null, true, false, true, 0L, 0L, 0L, (byte) 1, (byte) 0));
++
++        final MethodNode sendChanges = methodNode(ServerEntity.class, "sendChanges");
++        assertTrue(hasInvocation(sendChanges, "net/minecraft/server/level/ServerEntity", "shouldCreateMovePacket"));
++        assertFalse(hasInvocation(sendChanges, "net/minecraft/server/level/ServerEntity", "isUselessPacket"));
++    }
++
++    private static boolean hasInvocation(final MethodNode method, final String owner, final String methodName) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals(owner) && call.name.equals(methodName));
++    }
++
++    private static MethodNode methodNode(final Class<?> owner, final String methodName) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.getName() + '#' + methodName));
++    }
++}

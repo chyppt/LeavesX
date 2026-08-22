@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 19:34:04 +0800
+Subject: [PATCH] Short-circuit chest cat detection for bate51
+
+
+diff --git a/net/minecraft/world/level/block/ChestBlock.java b/net/minecraft/world/level/block/ChestBlock.java
+index dbb571be36b26baae2d79293e79cb09d9ce240cd..c3398e70c332ed210fdfcb9fb96e55b2f10c0695 100644
+--- a/net/minecraft/world/level/block/ChestBlock.java
++++ b/net/minecraft/world/level/block/ChestBlock.java
+@@ -7,6 +7,7 @@ import java.util.List;
+ import java.util.Map;
+ import java.util.Optional;
+ import java.util.function.BiPredicate;
++import java.util.function.Predicate;
+ import java.util.function.Supplier;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.core.Direction;
+@@ -74,6 +75,7 @@ public class ChestBlock extends AbstractChestBlock<ChestBlockEntity> implements
+     public static final int EVENT_SET_OPEN_COUNT = 1;
+     private static final VoxelShape SHAPE = Block.column(14.0, 0.0, 14.0);
+     private static final Map<Direction, VoxelShape> HALF_SHAPES = Shapes.rotateHorizontal(Block.boxZ(14.0, 0.0, 14.0, 0.0, 15.0));
++    private static final Predicate<Cat> LEAVESX_SITTING_CAT_SELECTOR = cat -> !cat.isSpectator() && cat.isInSittingPose();
+     private final SoundEvent openSound;
+     private final SoundEvent closeSound;
+     private static final DoubleBlockCombiner.Combiner<ChestBlockEntity, Optional<Container>> CHEST_COMBINER = new DoubleBlockCombiner.Combiner<ChestBlockEntity, Optional<Container>>() {
+@@ -361,13 +363,18 @@ public class ChestBlock extends AbstractChestBlock<ChestBlockEntity> implements
+ 
+     private static boolean isCatSittingOnChest(final LevelAccessor level, final BlockPos pos) {
+         // Paper start - Option to disable chest cat detection
+-        if (level.getMinecraftWorld().paperConfig().entities.behavior.disableChestCatDetection) {
++        final ServerLevel minecraftWorld = level.getMinecraftWorld();
++        if (minecraftWorld.paperConfig().entities.behavior.disableChestCatDetection) {
+             return false;
+         }
+         // Paper end - Option to disable chest cat detection
+-        List<Cat> cats = level.getEntitiesOfClass(Cat.class, new AABB(pos.getX(), pos.getY() + 1, pos.getZ(), pos.getX() + 1, pos.getY() + 2, pos.getZ() + 1));
++        final AABB searchBox = new AABB(pos.getX(), pos.getY() + 1, pos.getZ(), pos.getX() + 1, pos.getY() + 2, pos.getZ() + 1);
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++            return minecraftWorld.leavesX$getFirstEntityOfClass(Cat.class, searchBox, LEAVESX_SITTING_CAT_SELECTOR) != null;
++        }
++        final List<Cat> cats = level.getEntitiesOfClass(Cat.class, searchBox);
+         if (!cats.isEmpty()) {
+-            for (Cat cat : cats) {
++            for (final Cat cat : cats) {
+                 if (cat.isInSittingPose()) {
+                     return true;
+                 }

@@ -1,0 +1,205 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 03:46:31 +0800
+Subject: [PATCH] Add entity sync equipment controls for bate92
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 511d8d22e7327551412a54b176800bb1eca5800c..e9079d431f63dd08feb02e7d1fec04fd13283650 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -44,7 +44,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMask
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 23;
++    public static final int CURRENT_CONFIG_VERSION = 24;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 9dbcceeaf310ab414a5aff621ffa3894a463ade3..e61bfa59bf948964a43efc587eee83e492cf4113 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：23。");
++        comments.put("config-version", "配置版本，请勿修改。默认：24。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index e08064f078d6d23d85b15c14aad87a958f285c25..2de8c07761e01a2d7f416ffa8d0499df9f2f3961 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -175,6 +175,10 @@ enum LeavesXOptimization {
+     ENTITY_TICK_DIAGNOSTIC_STATE(
+         "performance.entity-update.tick-diagnostic-state",
+         "减少实体 Tick 诊断状态的原子读取，关闭后使用 Paper 流程。默认：true。"
++    ),
++    ENTITY_SYNC_EQUIPMENT_LISTS(
++        "performance.entity-sync.lazy-equipment-lists",
++        "无装备实体首次同步时不创建装备列表，关闭后使用原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 925804670e9fa37d3dec28141335e6f3b9f7eb63..3e0b24805bd455feee0220a03240d23c0629b0cf 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -491,6 +491,11 @@ public final class LeavesXRuntime {
+         return enabled(LeavesXOptimization.ENTITY_TICK_DIAGNOSTIC_STATE);
+     }
+ 
++    /** Returns whether entity pairing may allocate equipment lists only after finding equipment. */
++    public static boolean entitySyncEquipmentListsOptimization() {
++        return enabled(LeavesXOptimization.ENTITY_SYNC_EQUIPMENT_LISTS);
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(fineGrainedOptimizationMask);
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 4ef91b5bf7724397a93fc6b4f3540bf9c2a0c962..715d9f97619bf224d1cd9f8f526273fc6333dee5 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -300,6 +300,8 @@ class LeavesXConfigLoaderTest {
+                 unload-serialization: false
+               entity-loading:
+                 optional-chains: false
++              entity-sync:
++                lazy-equipment-lists: false
+               entity-update:
+                 tick-diagnostic-state: false
+               entity-queries:
+@@ -319,11 +321,12 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_SERIALIZATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.TICKET_QUEUE_ALLOCATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_LOAD_OPTIONAL_CHAINS));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_SYNC_EQUIPMENT_LISTS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_TICK_DIAGNOSTIC_STATE));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 15,
++            LeavesXConfig.fineGrainedOptimizationCount() - 16,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -341,6 +344,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.chunkUnloadSerializationOptimization());
+             assertFalse(LeavesXRuntime.ticketQueueAllocationOptimization());
+             assertFalse(LeavesXRuntime.entityLoadOptionalChainsOptimization());
++            assertFalse(LeavesXRuntime.entitySyncEquipmentListsOptimization());
+             assertFalse(LeavesXRuntime.entityTickDiagnosticStateOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.foxItemSearchOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntitySyncEquipmentListHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntitySyncEquipmentListHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..4247e9ef82892bc0cfcc0fc0bae9170fafde841b
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EntitySyncEquipmentListHotPathTest.java
+@@ -0,0 +1,101 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import com.mojang.datafixers.util.Pair;
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.server.level.ServerEntity;
++import net.minecraft.world.entity.EquipmentSlot;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.item.ItemStack;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies entity pairing retains lazy equipment allocation and the Paper fallback. */
++@Normal
++class EntitySyncEquipmentListHotPathTest {
++
++    @Test
++    void emptyEquipmentAllocatesOnlyOnThePaperPath() throws ReflectiveOperationException {
++        final LivingEntity entity = mock(LivingEntity.class);
++        when(entity.getItemBySlot(any())).thenReturn(ItemStack.EMPTY);
++
++        assertNull(collectEquipment(entity, true));
++        final List<Pair<EquipmentSlot, ItemStack>> fallback = collectEquipment(entity, false);
++        assertNotNull(fallback);
++        assertTrue(fallback.isEmpty());
++    }
++
++    @Test
++    void equippedItemsKeepSlotOrderAndCopiedStacks() throws ReflectiveOperationException {
++        final LivingEntity entity = mock(LivingEntity.class);
++        final ItemStack equipped = mock(ItemStack.class);
++        final ItemStack copied = mock(ItemStack.class);
++        when(entity.getItemBySlot(any())).thenReturn(ItemStack.EMPTY);
++        when(entity.getItemBySlot(EquipmentSlot.MAINHAND)).thenReturn(equipped);
++        when(equipped.isEmpty()).thenReturn(false);
++        when(equipped.copy()).thenReturn(copied);
++
++        final List<Pair<EquipmentSlot, ItemStack>> equipment = collectEquipment(entity, true);
++        assertNotNull(equipment);
++        assertEquals(1, equipment.size());
++        assertSame(EquipmentSlot.MAINHAND, equipment.getFirst().getFirst());
++        assertSame(copied, equipment.getFirst().getSecond());
++    }
++
++    @Test
++    void pairingDataKeepsLazyAndPaperEquipmentListPaths() throws IOException {
++        final List<MethodInsnNode> calls = invocations(methodNode("sendPairingData"));
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entitySyncEquipmentListsOptimization")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("collectEquipmentForPairing")));
++        final List<MethodInsnNode> helperCalls = invocations(methodNode("collectEquipmentForPairing"));
++        assertTrue(helperCalls.stream().anyMatch(call -> call.owner.equals("com/google/common/collect/Lists")
++            && call.name.equals("newArrayList")));
++        assertTrue(helperCalls.stream().anyMatch(call -> call.owner.equals("java/util/ArrayList")
++            && call.name.equals("<init>") && call.desc.equals("(I)V")));
++        assertTrue(helperCalls.stream().anyMatch(call -> call.owner.equals("net/minecraft/world/item/ItemStack")
++            && call.name.equals("copy")));
++    }
++
++    @SuppressWarnings("unchecked")
++    private static List<Pair<EquipmentSlot, ItemStack>> collectEquipment(
++        final LivingEntity entity,
++        final boolean optimize
++    ) throws ReflectiveOperationException {
++        final Method method = ServerEntity.class.getDeclaredMethod("collectEquipmentForPairing", LivingEntity.class, boolean.class);
++        method.setAccessible(true);
++        return (List<Pair<EquipmentSlot, ItemStack>>)method.invoke(null, entity, optimize);
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static MethodNode methodNode(final String methodName) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(ServerEntity.class.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing ServerEntity#" + methodName));
++    }
++}

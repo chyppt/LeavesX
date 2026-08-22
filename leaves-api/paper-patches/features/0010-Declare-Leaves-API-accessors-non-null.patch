@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 13 Aug 2026 13:15:09 +0800
+Subject: [PATCH] Declare Leaves API accessors non-null
+
+
+diff --git a/src/main/java/org/bukkit/Bukkit.java b/src/main/java/org/bukkit/Bukkit.java
+index 84e263084d4e62dc30e118b2e812047599965ece..dec456972fe0ac056849dbfcc402b35291c45a8f 100644
+--- a/src/main/java/org/bukkit/Bukkit.java
++++ b/src/main/java/org/bukkit/Bukkit.java
+@@ -3008,7 +3008,7 @@ public final class Bukkit {
+     }
+ 
+     // Leaves start - Feature API
+-    public static org.leavesmc.leaves.plugin.FeatureManager getFeatureManager() {
++    public static @NotNull org.leavesmc.leaves.plugin.FeatureManager getFeatureManager() {
+         return server.getFeatureManager();
+     }
+     // Leaves end - Feature API
+@@ -3031,13 +3031,13 @@ public final class Bukkit {
+     // Leaves end - Photographer API
+ 
+     // Leaves start - Bytebuf API
+-    public static org.leavesmc.leaves.bytebuf.BytebufAllocator getBytebufManager() {
++    public static @NotNull org.leavesmc.leaves.bytebuf.BytebufAllocator getBytebufManager() {
+         return server.getBytebufAllocator();
+     }
+     // Leaves end - Bytebuf API
+ 
+     // Leaves start - Config API
+-    public static org.leavesmc.leaves.config.LeavesConfigProvider getLeavesConfig() {
++    public static @NotNull org.leavesmc.leaves.config.LeavesConfigProvider getLeavesConfig() {
+         return server.getLeavesConfig();
+     }
+     // Leaves end - Config API
+diff --git a/src/main/java/org/bukkit/Server.java b/src/main/java/org/bukkit/Server.java
+index 81c2c8339389f3b50b99b32ba765035e8cf1c28f..a37a7503694919e09b32356d162ebab95f29b9d1 100644
+--- a/src/main/java/org/bukkit/Server.java
++++ b/src/main/java/org/bukkit/Server.java
+@@ -2782,7 +2782,7 @@ public interface Server extends PluginMessageRecipient, net.kyori.adventure.audi
+     // Paper end - API to check if the server is sleeping
+ 
+     // Leaves start - Feature API
+-    org.leavesmc.leaves.plugin.FeatureManager getFeatureManager();
++    @NotNull org.leavesmc.leaves.plugin.FeatureManager getFeatureManager();
+     // Leaves End - Feature API
+ 
+     // Leaves start - Bot API
+@@ -2796,7 +2796,7 @@ public interface Server extends PluginMessageRecipient, net.kyori.adventure.audi
+ 
+     @NotNull org.leavesmc.leaves.entity.photographer.PhotographerManager getPhotographerManager(); // Leaves - Photographer API
+ 
+-    org.leavesmc.leaves.bytebuf.BytebufAllocator getBytebufAllocator(); // Leaves - Bytebuf API
++    @NotNull org.leavesmc.leaves.bytebuf.BytebufAllocator getBytebufAllocator(); // Leaves - Bytebuf API
+ 
+-    org.leavesmc.leaves.config.LeavesConfigProvider getLeavesConfig(); // Leaves - Config API
++    @NotNull org.leavesmc.leaves.config.LeavesConfigProvider getLeavesConfig(); // Leaves - Config API
+ }

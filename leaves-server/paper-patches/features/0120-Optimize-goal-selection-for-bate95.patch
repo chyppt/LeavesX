@@ -1,0 +1,529 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 04:49:44 +0800
+Subject: [PATCH] Optimize goal selection for bate95
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index e6dcea52477501a17f41ad761f7bc06663138d10..a2924e8061fea38e96d9808cccfd64525633c9ff 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -41,10 +41,11 @@ public record LeavesXConfig(
+     int chunkUnloadBacklogThreshold,
+     int chunkUnloadMinimumPerTick,
+     int chunkUnloadMaximumPerTick,
+-    long fineGrainedOptimizationMask
++    long fineGrainedOptimizationMaskLow,
++    long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 25;
++    public static final int CURRENT_CONFIG_VERSION = 26;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -86,7 +87,8 @@ public record LeavesXConfig(
+                 "performance.chunk-unloading.maximum-per-tick must be at least minimum-per-tick and at most 10000"
+             );
+         }
+-        if ((fineGrainedOptimizationMask & ~LeavesXOptimization.allEnabledMask()) != 0L) {
++        if ((fineGrainedOptimizationMaskLow & ~LeavesXOptimization.allEnabledMaskLow()) != 0L
++            || (fineGrainedOptimizationMaskHigh & ~LeavesXOptimization.allEnabledMaskHigh()) != 0L) {
+             throw new IllegalArgumentException("fine-grained optimization mask contains unsupported bits");
+         }
+     }
+@@ -132,18 +134,19 @@ public record LeavesXConfig(
+             1_000,
+             100,
+             500,
+-            LeavesXOptimization.allEnabledMask()
++            LeavesXOptimization.allEnabledMaskLow(),
++            LeavesXOptimization.allEnabledMaskHigh()
+         );
+     }
+ 
+     /** Returns whether one independently configurable optimization is enabled. */
+     boolean optimizationEnabled(final LeavesXOptimization optimization) {
+-        return optimization.enabledIn(this.fineGrainedOptimizationMask);
++        return optimization.enabledIn(this.fineGrainedOptimizationMaskLow, this.fineGrainedOptimizationMaskHigh);
+     }
+ 
+     /** Returns the number of enabled fine-grained optimization switches. */
+     public int enabledFineGrainedOptimizationCount() {
+-        return Long.bitCount(this.fineGrainedOptimizationMask);
++        return Long.bitCount(this.fineGrainedOptimizationMaskLow) + Long.bitCount(this.fineGrainedOptimizationMaskHigh);
+     }
+ 
+     /** Returns the number of supported fine-grained optimization switches. */
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 96aa16d672b23d8079c6813d7aa92cecf8238d36..7134850442285038f70fdc6e8f3f6a0ff9ec7228 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -93,6 +93,7 @@ public final class LeavesXConfigLoader {
+             final ConfigurationNode computeWorkersNode = node.node("parallelism", "workers").virtual()
+                 ? node.node("parallelism", "mob-spawning", "workers")
+                 : node.node("parallelism", "workers");
++            final FineGrainedOptimizationMasks optimizationMasks = readFineGrainedOptimizationMasks(node);
+ 
+             return new LeavesXConfig(
+                 LeavesXConfig.CURRENT_CONFIG_VERSION,
+@@ -233,21 +234,27 @@ public final class LeavesXConfigLoader {
+                     "performance.chunk-unloading.maximum-per-tick",
+                     500
+                 ),
+-                readFineGrainedOptimizationMask(node)
++                optimizationMasks.low(),
++                optimizationMasks.high()
+             );
+         } catch (final IllegalArgumentException ex) {
+             throw new LeavesXConfigException("Invalid LeavesX configuration at " + path + ": " + ex.getMessage(), ex);
+         }
+     }
+ 
+-    private static long readFineGrainedOptimizationMask(final ConfigurationNode node) {
+-        long enabledMask = 0L;
++    private static FineGrainedOptimizationMasks readFineGrainedOptimizationMasks(final ConfigurationNode node) {
++        long enabledMaskLow = 0L;
++        long enabledMaskHigh = 0L;
+         for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
+             if (readBoolean(node.node(optimization.nodePath()), optimization.path(), true)) {
+-                enabledMask |= optimization.mask();
++                if (optimization.wordIndex() == 0) {
++                    enabledMaskLow |= optimization.mask();
++                } else {
++                    enabledMaskHigh |= optimization.mask();
++                }
+             }
+         }
+-        return enabledMask;
++        return new FineGrainedOptimizationMasks(enabledMaskLow, enabledMaskHigh);
+     }
+ 
+     private static void save(final Path path, final LeavesXConfig config) throws IOException, ConfigurateException {
+@@ -373,4 +380,7 @@ public final class LeavesXConfigLoader {
+ 
+     private record OriginalFormatting(String preamble, String lineSeparator) {
+     }
++
++    private record FineGrainedOptimizationMasks(long low, long high) {
++    }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index e79acbec8de0130907590d9b9b1b0b097e4cf4a4..137176d9660bdfd083fee40327d166b77a897a46 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：25。");
++        comments.put("config-version", "配置版本，请勿修改。默认：26。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 0aa1fe9a8a7e20aa51e33ced43bb9f63a59f8b1e..4955b8903e4108da6291e282e6de5e4f9688d84e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -3,7 +3,7 @@ package org.leavesx.leavesx.config;
+ /**
+  * Fine-grained switches for independently disabling LeavesX optimizations.
+  *
+- * <p>The runtime stores these values in one primitive bit mask. Configuration stays detailed without adding map
++ * <p>The runtime stores these values in two primitive bit masks. Configuration stays detailed without adding map
+  * lookups or object traversal to entity, AI, and block-entity hot paths.</p>
+  */
+ enum LeavesXOptimization {
+@@ -183,27 +183,43 @@ enum LeavesXOptimization {
+     CHUNK_PACKET_ASSEMBLY(
+         "performance.network.chunk-packet-assembly",
+         "减少区块数据包组装时的临时对象，关闭后使用 Paper 原版流程。默认：true。"
++    ),
++    GOAL_SELECTOR(
++        "performance.ai.goal-selector",
++        "减少生物目标选择时的映射查询，关闭后使用 Paper 原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+-    private static final long ALL_ENABLED_MASK = (1L << VALUES.length) - 1L;
++    private static final int MASK_WORD_BITS = Long.SIZE;
++    private static final int MASK_WORD_COUNT = 2;
++    private static final long ALL_ENABLED_MASK_LOW = allEnabledMaskForWord(0);
++    private static final long ALL_ENABLED_MASK_HIGH = allEnabledMaskForWord(1);
+ 
+     private final String path;
+     private final String comment;
++    private final int wordIndex;
+     private final long mask;
+ 
+     LeavesXOptimization(final String path, final String comment) {
+         this.path = path;
+         this.comment = comment;
+-        this.mask = 1L << this.ordinal();
++        this.wordIndex = this.ordinal() / MASK_WORD_BITS;
++        if (this.wordIndex >= MASK_WORD_COUNT) {
++            throw new IllegalStateException("LeavesX optimization mask capacity exceeded");
++        }
++        this.mask = 1L << (this.ordinal() % MASK_WORD_BITS);
+     }
+ 
+     static LeavesXOptimization[] cachedValues() {
+         return VALUES;
+     }
+ 
+-    static long allEnabledMask() {
+-        return ALL_ENABLED_MASK;
++    static long allEnabledMaskLow() {
++        return ALL_ENABLED_MASK_LOW;
++    }
++
++    static long allEnabledMaskHigh() {
++        return ALL_ENABLED_MASK_HIGH;
+     }
+ 
+     static int count() {
+@@ -222,11 +238,21 @@ enum LeavesXOptimization {
+         return this.comment;
+     }
+ 
++    int wordIndex() {
++        return this.wordIndex;
++    }
++
+     long mask() {
+         return this.mask;
+     }
+ 
+-    boolean enabledIn(final long enabledMask) {
++    boolean enabledIn(final long enabledMaskLow, final long enabledMaskHigh) {
++        final long enabledMask = this.wordIndex == 0 ? enabledMaskLow : enabledMaskHigh;
+         return (enabledMask & this.mask) != 0L;
+     }
++
++    private static long allEnabledMaskForWord(final int wordIndex) {
++        final int bits = Math.clamp(VALUES.length - wordIndex * MASK_WORD_BITS, 0, MASK_WORD_BITS);
++        return bits == MASK_WORD_BITS ? -1L : (1L << bits) - 1L;
++    }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 1a18cac0be9b4b8a39bdaf82e7fdd7882455b4d5..70ac9b469932d260f0d03503fa589563548fb980 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -46,7 +46,9 @@ public final class LeavesXRuntime {
+     private static int chunkUnloadMinimumPerTick = 100;
+     private static int chunkUnloadMaximumPerTick = 500;
+     private static volatile boolean chunkPacketAssemblyOptimization = true;
+-    private static long fineGrainedOptimizationMask = LeavesXOptimization.allEnabledMask();
++    private static boolean goalSelectorOptimization = true;
++    private static long fineGrainedOptimizationMaskLow = LeavesXOptimization.allEnabledMaskLow();
++    private static long fineGrainedOptimizationMaskHigh = LeavesXOptimization.allEnabledMaskHigh();
+ 
+     private LeavesXRuntime() {
+     }
+@@ -103,7 +105,9 @@ public final class LeavesXRuntime {
+         chunkUnloadMinimumPerTick = validated.chunkUnloadMinimumPerTick();
+         chunkUnloadMaximumPerTick = validated.chunkUnloadMaximumPerTick();
+         chunkPacketAssemblyOptimization = validated.optimizationEnabled(LeavesXOptimization.CHUNK_PACKET_ASSEMBLY);
+-        fineGrainedOptimizationMask = validated.fineGrainedOptimizationMask();
++        goalSelectorOptimization = validated.optimizationEnabled(LeavesXOptimization.GOAL_SELECTOR);
++        fineGrainedOptimizationMaskLow = validated.fineGrainedOptimizationMaskLow();
++        fineGrainedOptimizationMaskHigh = validated.fineGrainedOptimizationMaskHigh();
+         configuration = validated;
+     }
+ 
+@@ -503,7 +507,12 @@ public final class LeavesXRuntime {
+         return chunkPacketAssemblyOptimization;
+     }
+ 
++    /** Returns whether goal selection may replace repeated flag-map lookups with reusable indexed state. */
++    public static boolean goalSelectorOptimization() {
++        return aiOptimizations && goalSelectorOptimization;
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+-        return optimization.enabledIn(fineGrainedOptimizationMask);
++        return optimization.enabledIn(fineGrainedOptimizationMaskLow, fineGrainedOptimizationMaskHigh);
+     }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/config/GoalSelectorOptimizationTest.java b/src/test/java/org/leavesx/leavesx/config/GoalSelectorOptimizationTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..e53415fbd4d3be3916086a3f807f8900f35e85d4
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/config/GoalSelectorOptimizationTest.java
+@@ -0,0 +1,195 @@
++package org.leavesx.leavesx.config;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import java.io.IOException;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.EnumSet;
++import java.util.List;
++import net.minecraft.world.entity.ai.goal.Goal;
++import net.minecraft.world.entity.ai.goal.GoalSelector;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++
++/** Verifies the indexed goal-lock path preserves Paper's observable goal ordering and replacement rules. */
++@Normal
++class GoalSelectorOptimizationTest {
++
++    @TempDir
++    Path tempDir;
++
++    @Test
++    void optimizedAndPaperPathsKeepPriorityAndTickOrder() throws IOException {
++        final List<String> paperCalls = runPriorityScenario(false);
++        assertEquals(
++            List.of(
++                "canUse:low",
++                "start:low",
++                "interruptible:low",
++                "canUse:high",
++                "stop:low",
++                "start:high",
++                "canUse:look",
++                "start:look",
++                "tick:high",
++                "tick:look"
++            ),
++            paperCalls
++        );
++        assertEquals(paperCalls, runPriorityScenario(true));
++    }
++
++    @Test
++    void optimizedAndPaperPathsKeepNonInterruptibleLocks() throws IOException {
++        final List<String> paperCalls = runNonInterruptibleScenario(false);
++        assertEquals(
++            List.of("canUse:locked", "start:locked", "interruptible:locked", "tick:locked"),
++            paperCalls
++        );
++        assertEquals(paperCalls, runNonInterruptibleScenario(true));
++    }
++
++    @Test
++    void optimizedAndPaperPathsReadFlagsAgainAfterCanUse() throws IOException {
++        final List<String> paperCalls = runDynamicFlagScenario(false);
++        assertEquals(
++            List.of("canUse:look", "start:look", "canUse:dynamic", "stop:look", "start:dynamic", "tick:dynamic"),
++            paperCalls
++        );
++        assertEquals(paperCalls, runDynamicFlagScenario(true));
++    }
++
++    @Test
++    void optimizedAndPaperPathsSkipDisabledFlagsBeforeCanUse() throws IOException {
++        final List<String> paperCalls = runDisabledFlagScenario(false);
++        assertEquals(List.of(), paperCalls);
++        assertEquals(paperCalls, runDisabledFlagScenario(true));
++    }
++
++    private List<String> runPriorityScenario(final boolean optimized) throws IOException {
++        final List<String> calls = new ArrayList<>();
++        final GoalSelector selector = new GoalSelector();
++        selector.addGoal(5, new RecordingGoal("low", calls, true, true, true, Goal.Flag.MOVE));
++        selector.addGoal(1, new RecordingGoal("high", calls, true, true, true, Goal.Flag.MOVE));
++        selector.addGoal(2, new RecordingGoal("look", calls, true, true, true, Goal.Flag.LOOK));
++        return tickWithConfiguration(selector, calls, optimized);
++    }
++
++    private List<String> runNonInterruptibleScenario(final boolean optimized) throws IOException {
++        final List<String> calls = new ArrayList<>();
++        final GoalSelector selector = new GoalSelector();
++        selector.addGoal(5, new RecordingGoal("locked", calls, true, true, false, Goal.Flag.MOVE));
++        selector.addGoal(1, new RecordingGoal("candidate", calls, true, true, true, Goal.Flag.MOVE));
++        return tickWithConfiguration(selector, calls, optimized);
++    }
++
++    private List<String> runDynamicFlagScenario(final boolean optimized) throws IOException {
++        final List<String> calls = new ArrayList<>();
++        final GoalSelector selector = new GoalSelector();
++        selector.addGoal(5, new RecordingGoal("look", calls, true, true, true, Goal.Flag.LOOK));
++        final RecordingGoal dynamic = new RecordingGoal("dynamic", calls, true, true, true, Goal.Flag.MOVE);
++        dynamic.beforeCanUse(() -> dynamic.setFlags(EnumSet.of(Goal.Flag.LOOK)));
++        selector.addGoal(1, dynamic);
++        return tickWithConfiguration(selector, calls, optimized);
++    }
++
++    private List<String> runDisabledFlagScenario(final boolean optimized) throws IOException {
++        final List<String> calls = new ArrayList<>();
++        final GoalSelector selector = new GoalSelector();
++        selector.disableControlFlag(Goal.Flag.MOVE);
++        selector.addGoal(1, new RecordingGoal("disabled", calls, true, true, true, Goal.Flag.MOVE));
++        return tickWithConfiguration(selector, calls, optimized);
++    }
++
++    private List<String> tickWithConfiguration(
++        final GoalSelector selector,
++        final List<String> calls,
++        final boolean optimized
++    ) throws IOException {
++        try {
++            LeavesXRuntime.publish(this.configuration(optimized));
++            selector.tick();
++            return List.copyOf(calls);
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    private LeavesXConfig configuration(final boolean optimized) throws IOException {
++        final Path path = this.tempDir.resolve("goal-selector-" + optimized + ".yml");
++        Files.writeString(path, """
++            config-version: 1
++            performance:
++              ai:
++                goal-selector: %s
++            """.formatted(optimized));
++        return LeavesXConfigLoader.load(path);
++    }
++
++    private static final class RecordingGoal extends Goal {
++
++        private final String name;
++        private final List<String> calls;
++        private final boolean canUse;
++        private final boolean canContinue;
++        private final boolean interruptible;
++        private Runnable beforeCanUse = () -> { };
++
++        private RecordingGoal(
++            final String name,
++            final List<String> calls,
++            final boolean canUse,
++            final boolean canContinue,
++            final boolean interruptible,
++            final Goal.Flag... flags
++        ) {
++            this.name = name;
++            this.calls = calls;
++            this.canUse = canUse;
++            this.canContinue = canContinue;
++            this.interruptible = interruptible;
++            this.setFlags(EnumSet.copyOf(List.of(flags)));
++        }
++
++        private void beforeCanUse(final Runnable callback) {
++            this.beforeCanUse = callback;
++        }
++
++        @Override
++        public boolean canUse() {
++            this.calls.add("canUse:" + this.name);
++            this.beforeCanUse.run();
++            return this.canUse;
++        }
++
++        @Override
++        public boolean canContinueToUse() {
++            this.calls.add("canContinue:" + this.name);
++            return this.canContinue;
++        }
++
++        @Override
++        public boolean isInterruptable() {
++            this.calls.add("interruptible:" + this.name);
++            return this.interruptible;
++        }
++
++        @Override
++        public void start() {
++            this.calls.add("start:" + this.name);
++        }
++
++        @Override
++        public void stop() {
++            this.calls.add("stop:" + this.name);
++        }
++
++        @Override
++        public void tick() {
++            this.calls.add("tick:" + this.name);
++        }
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index ee3d2e8d452f18d5f687954709e77da7a7550cd7..b8061378402733e5e75ca017f1a33bd86cb4cfc2 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -286,6 +286,7 @@ class LeavesXConfigLoaderTest {
+             performance:
+               ai:
+                 breeze-attack-sensor: false
++                goal-selector: false
+                 hurt-by-sensor: false
+                 mob-presence-sensors: false
+                 player-sensor: false
+@@ -312,6 +313,7 @@ class LeavesXConfigLoaderTest {
+             """));
+ 
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.BREEZE_ATTACK_SENSOR));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.GOAL_SELECTOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HURT_BY_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.MOB_PRESENCE_SENSORS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PLAYER_SENSOR));
+@@ -329,13 +331,14 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 17,
++            LeavesXConfig.fineGrainedOptimizationCount() - 18,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+         try {
+             LeavesXRuntime.publish(config);
+             assertFalse(LeavesXRuntime.breezeAttackSensorOptimization());
++            assertFalse(LeavesXRuntime.goalSelectorOptimization());
+             assertFalse(LeavesXRuntime.hurtBySensorOptimization());
+             assertFalse(LeavesXRuntime.mobPresenceSensorOptimization());
+             assertFalse(LeavesXRuntime.playerSensorOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
+index 64653e3582c76e38d5ad5d986fbf5394918586ed..ea2b106bc796ba309a59452cf495bb429cc58263 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
+@@ -23,22 +23,32 @@ class LeavesXReleaseCompatibilityTest {
+     private static final byte[] FORBIDDEN_FOLIA_API = "io/papermc/paper/threadedregions".getBytes(StandardCharsets.US_ASCII);
+ 
+     @Test
+-    void fineGrainedSwitchesRemainUniqueAndFitThePrimitiveMask() {
++    void fineGrainedSwitchesRemainUniqueAndFitThePrimitiveMasks() {
+         final LeavesXOptimization[] optimizations = LeavesXOptimization.cachedValues();
+         final Set<String> paths = new HashSet<>(optimizations.length);
+-        final Set<Long> masks = new HashSet<>(optimizations.length);
+-        long combinedMask = 0L;
++        final Set<String> maskSlots = new HashSet<>(optimizations.length);
++        long combinedMaskLow = 0L;
++        long combinedMaskHigh = 0L;
+ 
+-        assertTrue(optimizations.length < Long.SIZE, "Extend the mask representation before adding a 64th switch");
++        assertTrue(optimizations.length <= Long.SIZE * 2, "Extend the mask representation before adding a 129th switch");
+         for (final LeavesXOptimization optimization : optimizations) {
+             assertTrue(paths.add(optimization.path()), "Duplicate LeavesX path: " + optimization.path());
+-            assertTrue(masks.add(optimization.mask()), "Duplicate LeavesX mask: " + optimization.path());
+-            assertEquals(1L << optimization.ordinal(), optimization.mask(), optimization.path());
++            assertTrue(
++                maskSlots.add(optimization.wordIndex() + ":" + optimization.mask()),
++                "Duplicate LeavesX mask: " + optimization.path()
++            );
++            assertEquals(optimization.ordinal() / Long.SIZE, optimization.wordIndex(), optimization.path());
++            assertEquals(1L << (optimization.ordinal() % Long.SIZE), optimization.mask(), optimization.path());
+             assertNotNull(LeavesXConfigWriter.comments().get(optimization.path()), optimization.path());
+-            combinedMask |= optimization.mask();
++            if (optimization.wordIndex() == 0) {
++                combinedMaskLow |= optimization.mask();
++            } else {
++                combinedMaskHigh |= optimization.mask();
++            }
+         }
+ 
+-        assertEquals(LeavesXOptimization.allEnabledMask(), combinedMask);
++        assertEquals(LeavesXOptimization.allEnabledMaskLow(), combinedMaskLow);
++        assertEquals(LeavesXOptimization.allEnabledMaskHigh(), combinedMaskHigh);
+         assertEquals(optimizations.length, LeavesXConfig.fineGrainedOptimizationCount());
+     }
+ 

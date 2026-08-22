@@ -1,0 +1,273 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 09:58:05 +0800
+Subject: [PATCH] Skip empty inside-block effect collector flushes for beta109
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 6dec93a37960dbf6da6069a08f235407cd19d1e6..1007908dd8da4fa01462c582c6d3be59dfac5d9c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 39;
++    public static final int CURRENT_CONFIG_VERSION = 40;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 8882738218dc49d8c2cf4d0816e7e7677b081abc..01e11ca51d435c3869adfdbf9d3fe1b6c36a77b6 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：39。");
++        comments.put("config-version", "配置版本，请勿修改。默认：40。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index a8c6ef7d36d5d48b66431ec380baad8a5f4e75ef..555f9c7b011588dd114ae4f8273eac652e688de8 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -208,6 +208,10 @@ enum LeavesXOptimization {
+         "performance.entity-update.server-fire-state",
+         "无燃烧 Tick 时跳过实体防火检查，关闭后使用原版顺序。默认：true。"
+     ),
++    INSIDE_BLOCK_EFFECT_COLLECTOR(
++        "performance.entity-update.inside-block-effect-collector",
++        "没有方块效果时跳过收集器空遍历，关闭后使用 Paper 原版流程。默认：true。"
++    ),
+     VILLAGER_FOOD_INVENTORY(
+         "performance.ai.villager-food-inventory",
+         "村民食物计数只扫描一次库存，关闭后按食物类型重复统计。默认：true。"
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 5fabe8eedb404eca84a0654231fafc98431a3244..d5cf12b7f1342cfef0f1508a6a272738f1b281ed 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -51,6 +51,7 @@ public final class LeavesXRuntime {
+     private static boolean sensingCacheOptimization = true;
+     private static boolean stationaryEntitySpeedOptimization = true;
+     private static boolean serverFireStateOptimization = true;
++    private static boolean insideBlockEffectCollectorOptimization = true;
+     private static long fineGrainedOptimizationMaskLow = LeavesXOptimization.allEnabledMaskLow();
+     private static long fineGrainedOptimizationMaskHigh = LeavesXOptimization.allEnabledMaskHigh();
+ 
+@@ -114,6 +115,7 @@ public final class LeavesXRuntime {
+         sensingCacheOptimization = validated.optimizationEnabled(LeavesXOptimization.SENSING_CACHE);
+         stationaryEntitySpeedOptimization = validated.optimizationEnabled(LeavesXOptimization.STATIONARY_ENTITY_SPEED);
+         serverFireStateOptimization = validated.optimizationEnabled(LeavesXOptimization.SERVER_FIRE_STATE);
++        insideBlockEffectCollectorOptimization = validated.optimizationEnabled(LeavesXOptimization.INSIDE_BLOCK_EFFECT_COLLECTOR);
+         fineGrainedOptimizationMaskLow = validated.fineGrainedOptimizationMaskLow();
+         fineGrainedOptimizationMaskHigh = validated.fineGrainedOptimizationMaskHigh();
+         configuration = validated;
+@@ -580,6 +582,11 @@ public final class LeavesXRuntime {
+         return entityStateOptimizations && serverFireStateOptimization;
+     }
+ 
++    /** Returns whether empty inside-block effect steps may bypass the collector's ordered map traversal. */
++    public static boolean insideBlockEffectCollectorOptimization() {
++        return entityStateOptimizations && insideBlockEffectCollectorOptimization;
++    }
++
+     /** Returns whether POI searches may stop traversing once the requested bounded range is exhausted. */
+     public static boolean poiBoundedTraversalOptimization() {
+         return aiOptimizations && enabled(LeavesXOptimization.POI_BOUNDED_TRAVERSAL);
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
+index e2e28f92a369e99db33893884d1a3337c8a2becc..c708e30c791178613c1551196f4ba1d1c6eee3ef 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
+@@ -59,7 +59,7 @@ class BlockEntityTypeValidationHotPathTest {
+         final String upgraded = Files.readString(path);
+ 
+         assertTrue(config.enabledFineGrainedOptimizationCount() > 0);
+-        assertTrue(upgraded.contains("config-version: 39"));
++        assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
+         assertTrue(upgraded.contains("type-validation: true"));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx.yml.bak")));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx-migration-report.yml")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f0f6bcb5196cb6ac323a2f3016abcfb29e38692a
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java
+@@ -0,0 +1,175 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.Arrays;
++import net.minecraft.world.entity.InsideBlockEffectApplier;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.AbstractInsnNode;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldInsnNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies the inside-block collector skips only provably empty ordered flushes. */
++@Normal
++class InsideBlockEffectCollectorHotPathTest {
++
++    private static final String COLLECTOR_INTERNAL_NAME =
++        InsideBlockEffectApplier.StepBasedCollector.class.getName().replace('.', '/');
++
++    @TempDir
++    Path tempDir;
++
++    @Test
++    void dedicatedSwitchRespectsTheEntityStateMasterSwitch() throws Exception {
++        try {
++            publish(this.configuration(true, true, "enabled.yml"));
++            assertTrue(LeavesXRuntime.insideBlockEffectCollectorOptimization());
++
++            publish(this.configuration(true, false, "setting-disabled.yml"));
++            assertFalse(LeavesXRuntime.insideBlockEffectCollectorOptimization());
++
++            publish(this.configuration(false, true, "master-disabled.yml"));
++            assertFalse(LeavesXRuntime.insideBlockEffectCollectorOptimization());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void version39ConfigurationGainsTheDocumentedDefaultInPlace() throws IOException {
++        final Path path = this.tempDir.resolve("version-39.yml");
++        Files.writeString(path, """
++            config-version: 39
++            performance:
++              entity-state-optimizations: true
++            """);
++
++        final LeavesXConfig config = LeavesXConfigLoader.load(path);
++        final String upgraded = Files.readString(path);
++
++        assertTrue(config.enabledFineGrainedOptimizationCount() > 0);
++        assertTrue(upgraded.contains("config-version: 40"));
++        assertTrue(upgraded.contains("inside-block-effect-collector: true"));
++        assertFalse(Files.exists(this.tempDir.resolve("leavesx.yml.bak")));
++        assertFalse(Files.exists(this.tempDir.resolve("leavesx-migration-report.yml")));
++    }
++
++    @Test
++    void emptyFlushChecksPendingStateBeforeTraversingEffectTypes() throws IOException {
++        final MethodNode flushStep = method(classNode(InsideBlockEffectApplier.StepBasedCollector.class), "flushStep");
++        final AbstractInsnNode[] instructions = flushStep.instructions.toArray();
++        final int applyOrderRead = findField(instructions, Opcodes.GETSTATIC, "APPLY_ORDER");
++
++        assertTrue(findCallBefore(
++            instructions,
++            applyOrderRead,
++            "org/leavesx/leavesx/config/LeavesXRuntime",
++            "insideBlockEffectCollectorOptimization"
++        ));
++        assertTrue(findFieldBefore(instructions, applyOrderRead, Opcodes.GETFIELD, "leavesX$hasPendingEffects"));
++        assertTrue(
++            Arrays.stream(instructions, 0, applyOrderRead).anyMatch(instruction -> instruction.getOpcode() == Opcodes.RETURN),
++            "The optimized empty path must return before reading APPLY_ORDER"
++        );
++
++        for (final String methodName : new String[] {"apply", "runBefore", "runAfter"}) {
++            final MethodNode method = method(classNode(InsideBlockEffectApplier.StepBasedCollector.class), methodName);
++            assertTrue(
++                Arrays.stream(method.instructions.toArray())
++                    .filter(FieldInsnNode.class::isInstance)
++                    .map(FieldInsnNode.class::cast)
++                    .anyMatch(field -> field.getOpcode() == Opcodes.PUTFIELD
++                        && field.owner.equals(COLLECTOR_INTERNAL_NAME)
++                        && field.name.equals("leavesX$hasPendingEffects")),
++                methodName + " must mark the current step as non-empty"
++            );
++        }
++    }
++
++    private LeavesXConfig configuration(
++        final boolean masterEnabled,
++        final boolean settingEnabled,
++        final String fileName
++    ) throws IOException {
++        final Path path = this.tempDir.resolve(fileName);
++        Files.writeString(path, """
++            config-version: 1
++            performance:
++              entity-state-optimizations: %s
++              entity-update:
++                inside-block-effect-collector: %s
++            """.formatted(masterEnabled, settingEnabled));
++        return LeavesXConfigLoader.load(path);
++    }
++
++    private static void publish(final LeavesXConfig config) throws ReflectiveOperationException {
++        final Method method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++        method.setAccessible(true);
++        method.invoke(null, config);
++    }
++
++    private static ClassNode classNode(final Class<?> type) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(type.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + name));
++    }
++
++    private static int findField(final AbstractInsnNode[] instructions, final int opcode, final String name) {
++        for (int index = 0; index < instructions.length; index++) {
++            if (instructions[index] instanceof FieldInsnNode field
++                && field.getOpcode() == opcode
++                && field.owner.equals(COLLECTOR_INTERNAL_NAME)
++                && field.name.equals(name)) {
++                return index;
++            }
++        }
++        throw new AssertionError("Missing field access " + COLLECTOR_INTERNAL_NAME + '#' + name);
++    }
++
++    private static boolean findFieldBefore(
++        final AbstractInsnNode[] instructions,
++        final int end,
++        final int opcode,
++        final String name
++    ) {
++        return Arrays.stream(instructions, 0, end)
++            .filter(FieldInsnNode.class::isInstance)
++            .map(FieldInsnNode.class::cast)
++            .anyMatch(field -> field.getOpcode() == opcode
++                && field.owner.equals(COLLECTOR_INTERNAL_NAME)
++                && field.name.equals(name));
++    }
++
++    private static boolean findCallBefore(
++        final AbstractInsnNode[] instructions,
++        final int end,
++        final String owner,
++        final String name
++    ) {
++        return Arrays.stream(instructions, 0, end)
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals(owner) && call.name.equals(name));
++    }
++}

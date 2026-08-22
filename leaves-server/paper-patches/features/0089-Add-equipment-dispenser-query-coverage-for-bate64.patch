@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 21:40:00 +0800
+Subject: [PATCH] Add equipment dispenser query coverage for bate64
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EquipmentDispenserEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EquipmentDispenserEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..4b7c713dbe392be6398e6e105a3ee3b8c1bb401f
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EquipmentDispenserEntityQueryHotPathTest.java
+@@ -0,0 +1,52 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.core.dispenser.EquipmentDispenseItemBehavior;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.Type;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies equipment dispensers stop after the first eligible living entity. */
++@Normal
++class EquipmentDispenserEntityQueryHotPathTest {
++
++    @Test
++    void dispenseKeepsFirstMatchAndVanillaEntityQueries() throws IOException {
++        final MethodNode dispense = method(classNode(EquipmentDispenseItemBehavior.class), "dispenseEquipment", 3);
++        final List<MethodInsnNode> calls = invocations(dispense);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("callEvent")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName, final int parameterCount) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName) && Type.getArgumentTypes(method.desc).length == parameterCount)
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

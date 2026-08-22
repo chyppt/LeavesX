@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 19:55:09 +0800
+Subject: [PATCH] Add occupied bed villager query coverage for bate53
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BedVillagerEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BedVillagerEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3f61ce020720089d92d9dd8d0525ab0cd13da295
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/BedVillagerEntityQueryHotPathTest.java
+@@ -0,0 +1,54 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.level.block.BedBlock;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies occupied-bed handling stops after the first sleeping villager when the optimization is enabled. */
++@Normal
++class BedVillagerEntityQueryHotPathTest {
++
++    @Test
++    void villagerKickKeepsOptimizedAndVanillaQueryPaths() throws IOException {
++        final ClassNode bed = classNode(BedBlock.class);
++        final MethodNode kickVillager = method(bed, "kickVillagerOutOfBed");
++        final List<MethodInsnNode> calls = invocations(kickVillager);
++
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++        ));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("stopSleeping")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

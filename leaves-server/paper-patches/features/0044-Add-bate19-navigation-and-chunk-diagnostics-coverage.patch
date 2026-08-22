@@ -1,0 +1,296 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 15 Aug 2026 19:21:35 +0800
+Subject: [PATCH] Add bate19 navigation and chunk diagnostics coverage
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index cea8a0ef3119469b85c394d18580cfe1e957d3fe..95c067aea1399f865b831857317169a8932f9692 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -164,11 +164,13 @@ public final class LeavesXCommand extends Command {
+     private static void sendStatus(final CommandSender sender) {
+         final double[] tps = Bukkit.getTPS();
+         int chunks = 0;
++        int holders = 0;
+         long pendingUnloads = 0L;
+         int entities = 0;
+         for (final World world : Bukkit.getWorlds()) {
+             final ServerLevel level = ((CraftWorld)world).getHandle();
+             chunks += level.getChunkSource().getFullChunksCount();
++            holders += level.getChunkSource().getLoadedChunksCount();
+             pendingUnloads += level.moonrise$getChunkTaskScheduler().chunkHolderManager.leavesX$getPendingUnloadCount();
+             entities += level.getEntityCount();
+         }
+@@ -178,10 +180,14 @@ public final class LeavesXCommand extends Command {
+         sendHeader(sender, "LeavesX 性能概览");
+         sender.sendMessage(line("TPS", formatTps(tps), tpsColor(tps[0])));
+         sender.sendMessage(line("MSPT", oneDecimal(Bukkit.getAverageTickTime()) + " ms", msptColor(Bukkit.getAverageTickTime())));
+-        sender.sendMessage(line("区块", chunks + " 已加载 / " + pendingUnloads + " 待卸载", NamedTextColor.AQUA));
++        sender.sendMessage(line(
++            "区块",
++            chunks + " 已加载 / " + holders + " 持有器 / " + pendingUnloads + " 待卸载",
++            NamedTextColor.AQUA
++        ));
+         sender.sendMessage(line("实体", Integer.toString(entities), entityColor(entities)));
+         sender.sendMessage(line("内存", formatBytes(usedHeap) + " / " + formatBytes(runtime.maxMemory()), NamedTextColor.AQUA));
+-        sender.sendMessage(Component.text("详细：/leavesx worlds | entities | hotspots | memory | network | threads", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("排查：/leavesx all | tickets | stalls | memory", NamedTextColor.GRAY));
+     }
+ 
+     private static void sendWorlds(final CommandSender sender) {
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PathNavigationHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/PathNavigationHotPathTest.java
+index 014fe6eb0ae6c17dcefa969538ecae7a8d710832..164f466cde63f5373654604936abfbb569e3b95e 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/PathNavigationHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/PathNavigationHotPathTest.java
+@@ -1,12 +1,17 @@
+ package org.leavesx.leavesx.performance;
+ 
+ import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
+ import static org.mockito.Mockito.doThrow;
+ import static org.mockito.Mockito.mock;
+ import static org.mockito.Mockito.verify;
+ import static org.mockito.Mockito.when;
+ 
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Method;
+ import java.util.List;
++import java.util.Random;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.world.entity.Mob;
+ import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
+@@ -20,6 +25,8 @@ import org.junit.jupiter.api.Test;
+ @Normal
+ class PathNavigationHotPathTest {
+ 
++    private static final Method SHOULD_TARGET_NEXT_NODE = findShouldTargetNextNodeMethod();
++
+     @Test
+     void followPathReadsTheNodeWithoutCreatingABlockPosition() {
+         final Mob mob = mock(Mob.class);
+@@ -74,8 +81,182 @@ class PathNavigationHotPathTest {
+         }
+     }
+ 
++    @Test
++    void directionCheckMatchesVanillaVectorMath() {
++        final Mob mob = mock(Mob.class);
++        when(mob.getBbWidth()).thenReturn(0.6F);
++        final TestNavigation navigation = new TestNavigation(mob, mock(Level.class));
++        final Random random = new Random(0x4C454156455358L);
++
++        for (int iteration = 0; iteration < 10_000; iteration++) {
++            final Node current = new Node(random.nextInt(-64, 65), random.nextInt(-16, 129), random.nextInt(-64, 65));
++            final Node next = new Node(
++                current.x + random.nextInt(-2, 3),
++                current.y + random.nextInt(-1, 2),
++                current.z + random.nextInt(-2, 3)
++            );
++            final Path path = new Path(List.of(current, next), BlockPos.ZERO, false);
++            final Vec3 mobPosition = randomMobPosition(random, current);
++            final boolean canMoveDirectly = random.nextBoolean();
++            navigation.setPath(path);
++            navigation.setCanMoveDirectly(canMoveDirectly);
++
++            assertEquals(
++                referenceShouldTargetNextNode(path, mob, mobPosition, canMoveDirectly),
++                invokeShouldTargetNextNode(navigation, mobPosition),
++                "direction mismatch at iteration " + iteration + " for " + mobPosition
++            );
++        }
++    }
++
++    @Test
++    void directionCheckPreservesStrictBoundariesAndNonFiniteInputs() {
++        final Mob mob = mock(Mob.class);
++        when(mob.getBbWidth()).thenReturn(0.6F);
++        final TestNavigation navigation = new TestNavigation(mob, mock(Level.class));
++        final Node current = new Node(0, 64, 0);
++        final Path path = new Path(List.of(current, new Node(1, 64, 0)), BlockPos.ZERO, false);
++        navigation.setPath(path);
++        navigation.setCanMoveDirectly(false);
++
++        final List<Vec3> positions = List.of(
++            new Vec3(2.5, 64.0, 0.5),
++            new Vec3(0.5, 64.0, 0.5),
++            new Vec3(0.5 + Math.sqrt(0.5), 64.0, 0.5),
++            new Vec3(Double.NaN, 64.0, 0.5),
++            new Vec3(Double.POSITIVE_INFINITY, 64.0, 0.5)
++        );
++        for (final Vec3 position : positions) {
++            assertEquals(
++                referenceShouldTargetNextNode(path, mob, position, false),
++                invokeShouldTargetNextNode(navigation, position),
++                "direction mismatch for boundary input " + position
++            );
++        }
++    }
++
++    @Test
++    void directionCheckReadsNodesWithoutCreatingBlockPositions() {
++        final Mob mob = mock(Mob.class);
++        final Path path = mock(Path.class);
++        when(path.getNextNodeIndex()).thenReturn(0);
++        when(path.getNodeCount()).thenReturn(2);
++        when(path.getNextNode()).thenReturn(new Node(0, 64, 0));
++        when(path.getNode(1)).thenReturn(new Node(1, 64, 0));
++        when(path.getNextEntityPos(mob)).thenReturn(new Vec3(0.5, 64.0, 0.5));
++        doThrow(new AssertionError("The direction hot path must not allocate the current BlockPos"))
++            .when(path).getNextNodePos();
++        doThrow(new AssertionError("The direction hot path must not allocate the following BlockPos"))
++            .when(path).getNodePos(1);
++
++        final TestNavigation navigation = new TestNavigation(mob, mock(Level.class));
++        navigation.setPath(path);
++        navigation.setCanMoveDirectly(false);
++
++        assertTrue(invokeShouldTargetNextNode(navigation, new Vec3(0.9, 64.0, 0.5)));
++    }
++
++    @Test
++    void stuckDetectionReusesTheCurrentNodeCoordinatesBetweenTicks() {
++        final Mob mob = mock(Mob.class);
++        when(mob.getSpeed()).thenReturn(0.5F);
++        final Level level = mock(Level.class);
++        when(level.getGameTime()).thenReturn(100L, 110L);
++        final Node current = new Node(8, 64, -4);
++        final Path path = mock(Path.class);
++        when(path.isDone()).thenReturn(false);
++        when(path.getNextNode()).thenReturn(current);
++        doThrow(new AssertionError("Stuck detection must not allocate through getNextNodePos()"))
++            .when(path).getNextNodePos();
++
++        final TestNavigation navigation = new TestNavigation(mob, level);
++        navigation.setPath(path);
++        final Vec3 mobPosition = new Vec3(6.5, 64.0, -3.5);
++        navigation.detectStuck(mobPosition);
++
++        assertEquals(new BlockPos(8, 64, -4), navigation.timeoutCachedNode());
++        assertEquals(80.0D, navigation.timeoutLimit(), 0.0D);
++        assertEquals(0L, navigation.timeoutTimer());
++
++        navigation.detectStuck(mobPosition);
++        assertEquals(10L, navigation.timeoutTimer());
++        assertFalse(navigation.isDone());
++    }
++
++    private static Vec3 randomMobPosition(final Random random, final Node current) {
++        return switch (random.nextInt(40)) {
++            case 0 -> new Vec3(Double.NaN, current.y, current.z + 0.5);
++            case 1 -> new Vec3(Double.POSITIVE_INFINITY, current.y, current.z + 0.5);
++            default -> new Vec3(
++                current.x + 0.5 + random.nextDouble(-2.5, 2.5),
++                current.y + random.nextDouble(-2.5, 2.5),
++                current.z + 0.5 + random.nextDouble(-2.5, 2.5)
++            );
++        };
++    }
++
++    private static boolean referenceShouldTargetNextNode(
++        final Path path,
++        final Mob mob,
++        final Vec3 mobPosition,
++        final boolean canMoveDirectly
++    ) {
++        if (path.getNextNodeIndex() + 1 >= path.getNodeCount()) {
++            return false;
++        }
++
++        final Vec3 currentNode = Vec3.atBottomCenterOf(path.getNextNodePos());
++        if (!mobPosition.closerThan(currentNode, 2.0)) {
++            return false;
++        }
++        if (canMoveDirectly) {
++            path.getNextEntityPos(mob);
++            return true;
++        }
++
++        final Vec3 nextNode = Vec3.atBottomCenterOf(path.getNodePos(path.getNextNodeIndex() + 1));
++        final Vec3 mobToCurrent = currentNode.subtract(mobPosition);
++        final Vec3 mobToNext = nextNode.subtract(mobPosition);
++        final double mobToCurrentSqr = mobToCurrent.lengthSqr();
++        final double mobToNextSqr = mobToNext.lengthSqr();
++        if (!(mobToNextSqr < mobToCurrentSqr) && !(mobToCurrentSqr < 0.5)) {
++            return false;
++        }
++        return mobToNext.normalize().dot(mobToCurrent.normalize()) < 0.0;
++    }
++
++    private static Method findShouldTargetNextNodeMethod() {
++        try {
++            final Method method = net.minecraft.world.entity.ai.navigation.PathNavigation.class
++                .getDeclaredMethod("shouldTargetNextNodeInDirection", Vec3.class);
++            method.setAccessible(true);
++            return method;
++        } catch (final ReflectiveOperationException exception) {
++            throw new ExceptionInInitializerError(exception);
++        }
++    }
++
++    private static boolean invokeShouldTargetNextNode(final TestNavigation navigation, final Vec3 mobPosition) {
++        try {
++            return (boolean)SHOULD_TARGET_NEXT_NODE.invoke(navigation, mobPosition);
++        } catch (final IllegalAccessException exception) {
++            throw new AssertionError(exception);
++        } catch (final InvocationTargetException exception) {
++            final Throwable cause = exception.getCause();
++            if (cause instanceof RuntimeException runtimeException) {
++                throw runtimeException;
++            }
++            if (cause instanceof Error error) {
++                throw error;
++            }
++            throw new AssertionError(cause);
++        }
++    }
++
+     private static final class TestNavigation extends GroundPathNavigation {
+ 
++        private boolean canMoveDirectly;
++
+         private TestNavigation(final Mob mob, final Level level) {
+             super(mob, level);
+         }
+@@ -89,14 +270,39 @@ class PathNavigationHotPathTest {
+             this.path = path;
+         }
+ 
++        private void setCanMoveDirectly(final boolean canMoveDirectly) {
++            this.canMoveDirectly = canMoveDirectly;
++        }
++
++        private void detectStuck(final Vec3 mobPosition) {
++            super.doStuckDetection(mobPosition);
++        }
++
++        private BlockPos timeoutCachedNode() {
++            return new BlockPos(this.timeoutCachedNode);
++        }
++
++        private long timeoutTimer() {
++            return this.timeoutTimer;
++        }
++
++        private double timeoutLimit() {
++            return this.timeoutLimit;
++        }
++
+         @Override
+         protected Vec3 getTempMobPos() {
+             return new Vec3(this.mob.getX(), this.mob.getY(), this.mob.getZ());
+         }
+ 
++        @Override
++        protected boolean canMoveDirectly(final Vec3 startPos, final Vec3 stopPos) {
++            return this.canMoveDirectly;
++        }
++
+         @Override
+         protected void doStuckDetection(final Vec3 mobPos) {
+-            // Stuck detection is independent from selecting and advancing the current node.
++            // followThePath tests isolate node selection; detectStuck invokes the superclass explicitly.
+         }
+     }
+ }

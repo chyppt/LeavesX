@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 10:20:37 +0800
+Subject: [PATCH] Optimize Warden top suspect lookup for beta126
+
+
+diff --git a/net/minecraft/world/entity/monster/warden/AngerManagement.java b/net/minecraft/world/entity/monster/warden/AngerManagement.java
+index 54160854ab8728e13e9d31f4d3dc502e85684631..d79f377f1538cd11594dfcaa0af001722ff1fe62 100644
+--- a/net/minecraft/world/entity/monster/warden/AngerManagement.java
++++ b/net/minecraft/world/entity/monster/warden/AngerManagement.java
+@@ -161,9 +161,25 @@ public class AngerManagement {
+     }
+ 
+     private @Nullable Entity getTopSuspect() {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.wardenTopSuspectLookupOptimization()) {
++            return leavesX$getTopSuspect(this.suspects, this.filter);
++        }
+         return this.suspects.stream().filter(this.filter).findFirst().orElse(null);
+     }
+ 
++    /**
++     * Finds the first valid suspect using the same ordered, short-circuiting semantics as the stream pipeline.
++     * Keeping this helper side-effect free makes it safe to exercise independently and easy to disable at runtime.
++     */
++    static @Nullable Entity leavesX$getTopSuspect(final List<Entity> suspects, final Predicate<Entity> filter) {
++        for (final Entity suspect : suspects) {
++            if (filter.test(suspect)) {
++                return suspect;
++            }
++        }
++        return null;
++    }
++
+     public int getActiveAnger(final @Nullable Entity currentTarget) {
+         return currentTarget == null ? this.highestAnger : this.angerBySuspect.getInt(currentTarget);
+     }

@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 10:32:11 +0800
+Subject: [PATCH] Optimize entity tick and sync paths for bate33
+
+
+diff --git a/net/minecraft/network/syncher/SynchedEntityData.java b/net/minecraft/network/syncher/SynchedEntityData.java
+index 0075164bf057271d63a8b97473aa5c41c03eac91..9e019e1e0ed8dc4cb773e45de5124af2675d460b 100644
+--- a/net/minecraft/network/syncher/SynchedEntityData.java
++++ b/net/minecraft/network/syncher/SynchedEntityData.java
+@@ -20,6 +20,7 @@ public class SynchedEntityData {
+     private final SyncedDataHolder entity;
+     private final SynchedEntityData.DataItem<?>[] itemsById;
+     private boolean isDirty;
++    private int dirtyCount;
+ 
+     private SynchedEntityData(final SyncedDataHolder entity, final SynchedEntityData.DataItem<?>[] itemsById) {
+         this.entity = entity;
+@@ -62,14 +63,21 @@ public class SynchedEntityData {
+         if (forceDirty || ObjectUtils.notEqual(value, dataItem.getValue())) {
+             dataItem.setValue(value);
+             this.entity.onSyncedDataUpdated(accessor);
+-            dataItem.setDirty(true);
+-            this.isDirty = true;
++            this.markItemDirty(dataItem);
+         }
+     }
+ 
+     // CraftBukkit start - add method from above
+     public <T> void markDirty(final EntityDataAccessor<T> accessor) {
+-        this.getItem(accessor).setDirty(true);
++        this.markItemDirty(this.getItem(accessor));
++    }
++
++    private void markItemDirty(final SynchedEntityData.DataItem<?> dataItem) {
++        // Count each item once so packDirty can stay single-pass and allocate exactly when enabled.
++        if (!dataItem.isDirty()) {
++            dataItem.setDirty(true);
++            this.dirtyCount++;
++        }
+         this.isDirty = true;
+     }
+     // CraftBukkit end
+@@ -84,7 +92,10 @@ public class SynchedEntityData {
+         }
+ 
+         this.isDirty = false;
+-        List<SynchedEntityData.DataValue<?>> result = new ArrayList<>();
++        List<SynchedEntityData.DataValue<?>> result = org.leavesx.leavesx.config.LeavesXRuntime.entityStateOptimizations()
++            ? new ArrayList<>(this.dirtyCount)
++            : new ArrayList<>();
++        this.dirtyCount = 0;
+ 
+         for (SynchedEntityData.DataItem<?> dataItem : this.itemsById) {
+             if (dataItem.isDirty()) {
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 350c523a9a5e359c9b9cf617e2898d080f5d1268..35428a14f217c2f51e4592edb948ebe991131ae9 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -956,30 +956,33 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+ 
+     protected void tickEffects() {
+         if (this.level() instanceof ServerLevel serverLevel) {
+-            Iterator<Holder<MobEffect>> iterator = this.activeEffects.keySet().iterator();
+-
+-            this.isTickingEffects = true; // CraftBukkit
+-            try {
+-                while (iterator.hasNext()) {
+-                    Holder<MobEffect> mobEffect = iterator.next();
+-                    MobEffectInstance effect = this.activeEffects.get(mobEffect);
+-                    if (!effect.tickServer(serverLevel, this, () -> this.onEffectUpdated(effect, true, null))) {
+-                        // CraftBukkit start
+-                        EntityPotionEffectEvent event = CraftEventFactory.callEntityPotionEffectChangeEvent(this, effect, null, org.bukkit.event.entity.EntityPotionEffectEvent.Cause.EXPIRATION);
+-                        if (event.isCancelled()) {
+-                            continue;
++            if (!org.leavesx.leavesx.config.LeavesXRuntime.entityStateOptimizations() || !this.activeEffects.isEmpty()) {
++                Iterator<Holder<MobEffect>> iterator = this.activeEffects.keySet().iterator();
++
++                this.isTickingEffects = true; // CraftBukkit
++                try {
++                    while (iterator.hasNext()) {
++                        Holder<MobEffect> mobEffect = iterator.next();
++                        MobEffectInstance effect = this.activeEffects.get(mobEffect);
++                        if (!effect.tickServer(serverLevel, this, () -> this.onEffectUpdated(effect, true, null))) {
++                            // CraftBukkit start
++                            EntityPotionEffectEvent event = CraftEventFactory.callEntityPotionEffectChangeEvent(this, effect, null, org.bukkit.event.entity.EntityPotionEffectEvent.Cause.EXPIRATION);
++                            if (event.isCancelled()) {
++                                continue;
++                            }
++                            // CraftBukkit end
++                            iterator.remove();
++                            this.onEffectsRemoved(List.of(effect));
++                        } else if (effect.getDuration() % 600 == 0) {
++                            this.onEffectUpdated(effect, false, null);
+                         }
+-                        // CraftBukkit end
+-                        iterator.remove();
+-                        this.onEffectsRemoved(List.of(effect));
+-                    } else if (effect.getDuration() % 600 == 0) {
+-                        this.onEffectUpdated(effect, false, null);
+                     }
++                } catch (ConcurrentModificationException var6) {
+                 }
+-            } catch (ConcurrentModificationException var6) {
+             }
+ 
+             // CraftBukkit start
++            // Keep cleanup outside the empty-effects guard so queued plugin changes and exception recovery remain intact.
+             this.isTickingEffects = false;
+             for (ProcessableEffect effect : this.effectsToProcess) {
+                 if (effect.effect != null) {

@@ -1,0 +1,156 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 13 Aug 2026 09:43:54 +0800
+Subject: [PATCH] Add deterministic mob spawn counting
+
+
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+index d7795d0d87f1a67e2d0ed1bd47d67f680b8d2021..37b51ceb8410534e86647cbe6ecddde59fcbc5c9 100644
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -1118,6 +1118,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         LOGGER.info("Waiting for all RegionFile I/O tasks to complete...");
+         ca.spottedleaf.moonrise.patches.chunk_system.io.MoonriseRegionFileIO.flush((MinecraftServer)(Object)this);
+         LOGGER.info("All RegionFile I/O tasks to complete");
++        org.leavesx.leavesx.runtime.LeavesXComputeExecutor.shutdown();
+         if ((Object)this instanceof net.minecraft.server.dedicated.DedicatedServer) {
+             ca.spottedleaf.moonrise.common.util.MoonriseCommon.haltExecutors();
+         }
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index 902df7cbb0465868048dbf04904651d49c4a1975..cb5a3a53bb04802acd3cba897bc0e29a404b2baf 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -240,20 +240,25 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+ 
+     // Paper start - Optional per player mob spawns
+     public void updatePlayerMobTypeMap(final Entity entity) {
++        this.updatePlayerMobTypeMap(entity.chunkPosition(), entity.getType().getCategory(), 1);
++    }
++
++    /** Applies a main-thread aggregate produced from a frozen natural-spawn counting snapshot. */
++    public void updatePlayerMobTypeMap(final ChunkPos chunkPos, final net.minecraft.world.entity.MobCategory category, final int count) {
+         if (!this.level.paperConfig().entities.spawning.perPlayerMobSpawns) {
+             return;
+         }
+ 
+-        final int index = entity.getType().getCategory().ordinal();
++        final int index = category.ordinal();
+         final ca.spottedleaf.moonrise.common.list.ReferenceList<ServerPlayer> inRange =
+-            this.level.moonrise$getNearbyPlayers().getPlayers(entity.chunkPosition(), ca.spottedleaf.moonrise.common.misc.NearbyPlayers.NearbyMapType.TICK_VIEW_DISTANCE);
++            this.level.moonrise$getNearbyPlayers().getPlayers(chunkPos, ca.spottedleaf.moonrise.common.misc.NearbyPlayers.NearbyMapType.TICK_VIEW_DISTANCE);
+         if (inRange == null) {
+             return;
+         }
+ 
+         final ServerPlayer[] backingSet = inRange.getRawDataUnchecked();
+         for (int i = 0, len = inRange.size(); i < len; i++) {
+-            ++(backingSet[i].mobCounts[index]);
++            backingSet[i].mobCounts[index] += count;
+         }
+     }
+ 
+diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
+index 396ab3cdcf6f726ce7133395bb39594ef4b1c011..1454b8933c47fd5a657be0a16161217afd55c1b3 100644
+--- a/net/minecraft/server/level/ServerChunkCache.java
++++ b/net/minecraft/server/level/ServerChunkCache.java
+@@ -552,9 +552,13 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+                 }
+                 // Paper end - per player mob spawning backoff
+             }
+-            spawnCookie = NaturalSpawner.createState(chunkCount, this.level.getAllEntities(), this::getFullChunk, null, true);
++            spawnCookie = this.createNaturalSpawnState(chunkCount, null, true);
+         } else {
+-            spawnCookie = NaturalSpawner.createState(chunkCount, this.level.getAllEntities(), this::getFullChunk, !this.level.paperConfig().entities.spawning.perPlayerMobSpawns ? new LocalMobCapCalculator(this.chunkMap) : null, false);
++            spawnCookie = this.createNaturalSpawnState(
++                chunkCount,
++                !this.level.paperConfig().entities.spawning.perPlayerMobSpawns ? new LocalMobCapCalculator(this.chunkMap) : null,
++                false
++            );
+         }
+         // Paper end - Optional per player mob spawns
+         this.lastSpawnState = spawnCookie;
+@@ -605,6 +609,19 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+         profiler.pop();
+     }
+ 
++    private NaturalSpawner.SpawnState createNaturalSpawnState(
++        final int chunkCount,
++        final @Nullable LocalMobCapCalculator localMobCapCalculator,
++        final boolean countMobs
++    ) {
++        final boolean useParallelCounting = org.leavesx.leavesx.config.LeavesXRuntime.parallelMobSpawnCounting()
++            && org.leavesx.leavesx.runtime.LeavesXComputeExecutor.workerCount() > 1
++            && this.level.getEntityCount() >= org.leavesx.leavesx.config.LeavesXRuntime.mobSpawnCountingMinimumEntities();
++        return useParallelCounting
++            ? NaturalSpawner.createStateParallel(chunkCount, this.level.getAllEntities(), this::getFullChunk, localMobCapCalculator, countMobs)
++            : NaturalSpawner.createState(chunkCount, this.level.getAllEntities(), this::getFullChunk, localMobCapCalculator, countMobs);
++    }
++
+     private void tickSpawningChunk(
+         final LevelChunk chunk, final long timeDiff, final List<MobCategory> spawningCategories, final NaturalSpawner.SpawnState spawnCookie
+     ) {
+diff --git a/net/minecraft/world/level/LocalMobCapCalculator.java b/net/minecraft/world/level/LocalMobCapCalculator.java
+index 34ff3aed2dd9c0f051680433700b19c35341dfa3..80223f40c3d1e975068e163099fad2ad466c43ae 100644
+--- a/net/minecraft/world/level/LocalMobCapCalculator.java
++++ b/net/minecraft/world/level/LocalMobCapCalculator.java
+@@ -25,8 +25,13 @@ public class LocalMobCapCalculator {
+     }
+ 
+     public void addMob(final ChunkPos pos, final MobCategory category) {
++        this.addMobs(pos, category, 1);
++    }
++
++    /** Adds an already aggregated count while preserving the same per-player mob-cap result. */
++    public void addMobs(final ChunkPos pos, final MobCategory category, final int count) {
+         for (ServerPlayer player : this.getPlayersNear(pos)) {
+-            this.playerMobCounts.computeIfAbsent(player, key -> new LocalMobCapCalculator.MobCounts()).add(category);
++            this.playerMobCounts.computeIfAbsent(player, key -> new LocalMobCapCalculator.MobCounts()).add(category, count);
+         }
+     }
+ 
+@@ -46,11 +51,15 @@ public class LocalMobCapCalculator {
+         public final int[] arrCounts = new int[MobCategory.values().length]; // Leaves - store mob counts in an array
+ 
+         public void add(final MobCategory category) {
++            this.add(category, 1);
++        }
++
++        public void add(final MobCategory category, final int count) {
+             // Leaves start - store mob counts in an array
+             if (!org.leavesmc.leaves.LeavesConfig.performance.storeMobCountsInArray) {
+-                this.counts.computeInt(category, (k, count) -> count == null ? 1 : count + 1);
++                this.counts.put(category, this.counts.getInt(category) + count);
+             } else {
+-                this.arrCounts[category.ordinal()]++;
++                this.arrCounts[category.ordinal()] += count;
+             }
+             // Leaves end - store mob counts in an array
+         }
+diff --git a/net/minecraft/world/level/NaturalSpawner.java b/net/minecraft/world/level/NaturalSpawner.java
+index dd91c1e5ef80aa3710adcf95cfb22bba7b5ca2c9..3acd52772fe3547b9a41f51d2fb08e27552eec34 100644
+--- a/net/minecraft/world/level/NaturalSpawner.java
++++ b/net/minecraft/world/level/NaturalSpawner.java
+@@ -121,6 +121,23 @@ public final class NaturalSpawner {
+         return new NaturalSpawner.SpawnState(spawnableChunkCount, mobCounts, spawnPotential, localMobCapCalculator);
+     }
+ 
++    /** Uses a frozen input snapshot and leaves all world and player mutations on the tick thread. */
++    public static NaturalSpawner.SpawnState createStateParallel(
++        final int spawnableChunkCount,
++        final Iterable<Entity> entities,
++        final NaturalSpawner.ChunkGetter chunkGetter,
++        final LocalMobCapCalculator localMobCapCalculator,
++        final boolean countMobs
++    ) {
++        final MobSpawnCounting.Result result = MobSpawnCounting.count(entities, chunkGetter, localMobCapCalculator, countMobs);
++        return new NaturalSpawner.SpawnState(
++            spawnableChunkCount,
++            result.mobCounts(),
++            result.spawnPotential(),
++            localMobCapCalculator
++        );
++    }
++
+     private static Biome getRoughBiome(final BlockPos pos, final ChunkAccess chunk) {
+         return chunk.getNoiseBiome(QuartPos.fromBlock(pos.getX()), QuartPos.fromBlock(pos.getY()), QuartPos.fromBlock(pos.getZ())).value();
+     }

@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 23:51:19 +0800
+Subject: [PATCH] Add Warden target sensor coverage for bate74
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/WardenAttackSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/WardenAttackSensorHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..64d6491986a9533afa142ff7847ded5bf96bfd92
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/WardenAttackSensorHotPathTest.java
+@@ -0,0 +1,69 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ai.sensing.WardenEntitySensor;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies Warden target selection keeps player priority while avoiding stream allocations. */
++@Normal
++class WardenAttackSensorHotPathTest {
++
++    @Test
++    void closestTargetKeepsLoopAndVanillaStreamPaths() throws IOException {
++        final MethodNode closest = method(classNode(WardenEntitySensor.class), "getClosest");
++        final List<MethodInsnNode> calls = invocations(closest);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("aiOptimizations")));
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("java/util/Iterator") && call.name.equals("hasNext")
++        ));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("canTargetEntity")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("test")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("stream")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("flatMap")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("findFirst")));
++    }
++
++    @Test
++    void sensorRetainsPlayerThenNonPlayerSearches() throws IOException {
++        final ClassNode sensor = classNode(WardenEntitySensor.class);
++        final long closestCalls = sensor.methods.stream()
++            .filter(method -> method.name.equals("doTick") || method.name.startsWith("lambda$doTick$"))
++            .flatMap(method -> invocations(method).stream())
++            .filter(call -> call.name.equals("getClosest"))
++            .count();
++
++        assertEquals(2L, closestCalls);
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

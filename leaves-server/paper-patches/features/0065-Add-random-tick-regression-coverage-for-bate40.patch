@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 16:06:54 +0800
+Subject: [PATCH] Add random tick regression coverage for bate40
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/RandomTickHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/RandomTickHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..89ac5b869f2ae23202147ee1f5b9f1b9768a9d76
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/RandomTickHotPathTest.java
+@@ -0,0 +1,105 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.level.block.SpreadingSnowyBlock;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.AbstractInsnNode;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldInsnNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++@Normal
++class RandomTickHotPathTest {
++
++    @Test
++    void chunkRandomTickUsesCachedWorldAndChunkCoordinates() throws IOException {
++        for (final String methodName : new String[] {"optimiseRandomTick", "tickChunk", "tickThunder"}) {
++            final MethodInsnNode[] calls = methodCalls(methodNodes(ServerLevel.class, methodName));
++            assertFalse(
++                Arrays.stream(calls).anyMatch(call -> call.owner.equals("net/minecraft/world/level/chunk/LevelChunk") && call.name.equals("getPos")),
++                methodName + " should use the immutable chunk coordinate fields directly"
++            );
++        }
++
++        final MethodNode randomTick = methodNodes(ServerLevel.class, "optimiseRandomTick").getFirst();
++        final AbstractInsnNode[] instructions = randomTick.instructions.toArray();
++        assertFalse(
++            Arrays.stream(instructions)
++                .filter(MethodInsnNode.class::isInstance)
++                .map(MethodInsnNode.class::cast)
++                .anyMatch(call -> call.owner.equals("ca/spottedleaf/moonrise/common/util/WorldUtil") && call.name.equals("getMinSection")),
++            "The world minimum section is already cached by Level"
++        );
++
++        final int randomTickingCheck = instructionIndex(instructions, instruction ->
++            instruction instanceof MethodInsnNode call && call.name.equals("isRandomlyTickingBlocks")
++        );
++        final int stateContainerRead = instructionIndex(instructions, instruction ->
++            instruction instanceof FieldInsnNode field
++                && field.owner.equals("net/minecraft/world/level/chunk/LevelChunkSection")
++                && field.name.equals("states")
++        );
++        assertTrue(randomTickingCheck >= 0, "Missing randomly-ticking section check");
++        assertTrue(stateContainerRead > randomTickingCheck, "Empty sections should be rejected before reading their state container");
++    }
++
++    @Test
++    void spreadingBlocksCacheRegistryResolutionAndReuseTheAboveState() throws IOException, NoSuchFieldException {
++        SpreadingSnowyBlock.class.getDeclaredField("resolvedBaseBlock");
++
++        final MethodInsnNode[] randomTickCalls = methodCalls(methodNodes(SpreadingSnowyBlock.class, "randomTick"));
++        assertFalse(
++            Arrays.stream(randomTickCalls).anyMatch(call -> call.name.equals("lookupOrThrow") || call.name.equals("getOptional")),
++            "Grass and mycelium random ticks should not resolve their fixed base block repeatedly"
++        );
++        assertFalse(
++            Arrays.stream(randomTickCalls).anyMatch(call -> call.owner.equals("java/util/Optional") && call.name.equals("get")),
++            "The cached base block should be used directly"
++        );
++
++        final MethodInsnNode[] propagationCalls = methodCalls(methodNodes(SpreadingSnowyBlock.class, "canPropagate"));
++        assertFalse(
++            Arrays.stream(propagationCalls).anyMatch(call ->
++                call.owner.equals("net/minecraft/world/level/chunk/ChunkAccess") && call.name.equals("getFluidState")
++            ),
++            "The already-read above block state should provide its fluid state"
++        );
++    }
++
++    private static int instructionIndex(final AbstractInsnNode[] instructions, final java.util.function.Predicate<AbstractInsnNode> predicate) {
++        for (int index = 0; index < instructions.length; index++) {
++            if (predicate.test(instructions[index])) {
++                return index;
++            }
++        }
++        return -1;
++    }
++
++    private static MethodInsnNode[] methodCalls(final List<MethodNode> methods) {
++        return methods.stream()
++            .flatMap(method -> Arrays.stream(method.instructions.toArray()))
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++    }
++
++    private static List<MethodNode> methodNodes(final Class<?> owner, final String methodName) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        final List<MethodNode> methods = classNode.methods.stream()
++            .filter(method -> method.name.equals(methodName) || method.name.startsWith("lambda$" + methodName + '$'))
++            .toList();
++        assertFalse(methods.isEmpty(), "Missing method " + owner.getName() + '#' + methodName);
++        return methods;
++    }
++}

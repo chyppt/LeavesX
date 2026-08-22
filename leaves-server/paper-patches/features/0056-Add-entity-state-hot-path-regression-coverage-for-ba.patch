@@ -1,0 +1,209 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 04:40:16 +0800
+Subject: [PATCH] Add entity state hot-path regression coverage for bate31
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityStateHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityStateHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..1cc344d5a7f89f564c7a3111e122828c5ae14e57
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityStateHotPathTest.java
+@@ -0,0 +1,197 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.inOrder;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.times;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import java.io.IOException;
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Method;
++import java.util.ArrayList;
++import java.util.Collection;
++import java.util.List;
++import net.minecraft.core.particles.ParticleOptions;
++import net.minecraft.util.RandomSource;
++import net.minecraft.world.effect.MobEffectInstance;
++import net.minecraft.world.entity.AreaEffectCloud;
++import net.minecraft.world.entity.EquipmentSlot;
++import net.minecraft.world.entity.LivingEntity;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.mockito.InOrder;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.ClassVisitor;
++import org.objectweb.asm.MethodVisitor;
++import org.objectweb.asm.Opcodes;
++
++/** Verifies reduced-allocation entity state scans that preserve vanilla ordering and contracts. */
++@Normal
++class EntityStateHotPathTest {
++
++    @Test
++    void areaEffectCloudScanPreservesOrderAndStopsAtFirstApplicableEffect() throws ReflectiveOperationException {
++        final LivingEntity entity = mock();
++        final MobEffectInstance rejected = mock();
++        final MobEffectInstance accepted = mock();
++        final MobEffectInstance afterMatch = mock();
++        when(entity.canBeAffected(rejected)).thenReturn(false);
++        when(entity.canBeAffected(accepted)).thenReturn(true);
++
++        final boolean result = (boolean)method(
++            AreaEffectCloud.class,
++            "hasApplicableEffectDirect",
++            LivingEntity.class,
++            List.class
++        ).invoke(null, entity, List.of(rejected, accepted, afterMatch));
++
++        assertTrue(result);
++        final InOrder order = inOrder(entity);
++        order.verify(entity).canBeAffected(rejected);
++        order.verify(entity).canBeAffected(accepted);
++        verify(entity, never()).canBeAffected(afterMatch);
++    }
++
++    @Test
++    @SuppressWarnings("unchecked")
++    void visibleEffectParticlesKeepOrderAndUnmodifiableListContract() throws ReflectiveOperationException {
++        final MobEffectInstance hidden = mock();
++        final MobEffectInstance firstVisible = mock();
++        final MobEffectInstance secondVisible = mock();
++        final ParticleOptions firstParticle = mock();
++        final ParticleOptions secondParticle = mock();
++        when(hidden.isVisible()).thenReturn(false);
++        when(firstVisible.isVisible()).thenReturn(true);
++        when(secondVisible.isVisible()).thenReturn(true);
++        when(firstVisible.getParticleOptions()).thenReturn(firstParticle);
++        when(secondVisible.getParticleOptions()).thenReturn(secondParticle);
++
++        final List<ParticleOptions> result = (List<ParticleOptions>)method(
++            LivingEntity.class,
++            "collectVisibleEffectParticlesDirect",
++            Collection.class
++        ).invoke(null, List.of(hidden, firstVisible, secondVisible));
++
++        assertEquals(List.of(firstParticle, secondParticle), result);
++        assertThrows(UnsupportedOperationException.class, () -> result.add(mock()));
++        verify(hidden, never()).getParticleOptions();
++    }
++
++    @Test
++    void gliderSlotSelectionKeepsVanillaListOrderAndRandomBound() throws ReflectiveOperationException {
++        final int eligibleSlots = slotMask(EquipmentSlot.FEET, EquipmentSlot.CHEST, EquipmentSlot.BODY);
++        final RandomSource random = mock();
++        when(random.nextInt(3)).thenReturn(0, 1, 2);
++        final Method selector = method(LivingEntity.class, "selectGliderSlotDirect", int.class, RandomSource.class);
++
++        assertSame(EquipmentSlot.FEET, selector.invoke(null, eligibleSlots, random));
++        assertSame(EquipmentSlot.CHEST, selector.invoke(null, eligibleSlots, random));
++        assertSame(EquipmentSlot.BODY, selector.invoke(null, eligibleSlots, random));
++        verify(random, times(3)).nextInt(3);
++    }
++
++    @Test
++    void emptyGliderSlotSelectionKeepsVanillaRandomFailure() throws ReflectiveOperationException {
++        final RandomSource random = mock();
++        final IllegalArgumentException expected = new IllegalArgumentException("bound must be positive");
++        when(random.nextInt(0)).thenThrow(expected);
++
++        final InvocationTargetException thrown = assertThrows(
++            InvocationTargetException.class,
++            () -> method(LivingEntity.class, "selectGliderSlotDirect", int.class, RandomSource.class).invoke(null, 0, random)
++        );
++
++        assertSame(expected, thrown.getCause());
++        verify(random).nextInt(0);
++    }
++
++    @Test
++    void optimizedEntityStateHelpersDoNotCreateStreams() throws IOException {
++        assertNoStreamCalls(AreaEffectCloud.class, "hasApplicableEffectDirect");
++        assertNoStreamCalls(LivingEntity.class, "collectVisibleEffectParticlesDirect");
++        assertNoStreamCalls(LivingEntity.class, "findRandomGliderSlotDirect");
++        assertNoStreamCalls(LivingEntity.class, "selectGliderSlotDirect");
++    }
++
++    @Test
++    void vanillaCallSitesDelegateToTheDirectHelpers() throws IOException {
++        assertCalls(AreaEffectCloud.class, "serverTick", "hasApplicableEffectDirect");
++        assertCalls(LivingEntity.class, "updateSynchronizedMobEffectParticles", "collectVisibleEffectParticlesDirect");
++        assertCalls(LivingEntity.class, "updateFallFlying", "findRandomGliderSlotDirect");
++    }
++
++    private static int slotMask(final EquipmentSlot... slots) {
++        int mask = 0;
++        for (final EquipmentSlot slot : slots) {
++            mask |= 1 << EquipmentSlot.VALUES.indexOf(slot);
++        }
++        return mask;
++    }
++
++    private static Method method(final Class<?> owner, final String name, final Class<?>... parameterTypes)
++        throws NoSuchMethodException {
++        final Method method = owner.getDeclaredMethod(name, parameterTypes);
++        method.setAccessible(true);
++        return method;
++    }
++
++    private static void assertNoStreamCalls(final Class<?> owner, final String methodName) throws IOException {
++        final List<Invocation> calls = invocations(owner, methodName);
++        assertFalse(calls.stream().anyMatch(call -> call.name().equals("stream")));
++        assertFalse(calls.stream().anyMatch(call -> call.owner().startsWith("java/util/stream/")));
++    }
++
++    private static void assertCalls(final Class<?> owner, final String methodName, final String calledMethod) throws IOException {
++        assertTrue(
++            invocations(owner, methodName).stream().anyMatch(call -> call.name().equals(calledMethod)),
++            () -> owner.getName() + '#' + methodName + " does not call " + calledMethod
++        );
++    }
++
++    private static List<Invocation> invocations(final Class<?> owner, final String methodName) throws IOException {
++        final List<Invocation> calls = new ArrayList<>();
++        final boolean[] found = {false};
++        new ClassReader(owner.getName()).accept(
++            new ClassVisitor(Opcodes.ASM9) {
++                @Override
++                public MethodVisitor visitMethod(
++                    final int access,
++                    final String name,
++                    final String descriptor,
++                    final String signature,
++                    final String[] exceptions
++                ) {
++                    if (!name.equals(methodName)) {
++                        return null;
++                    }
++                    found[0] = true;
++                    return new MethodVisitor(Opcodes.ASM9) {
++                        @Override
++                        public void visitMethodInsn(
++                            final int opcode,
++                            final String calledOwner,
++                            final String calledName,
++                            final String calledDescriptor,
++                            final boolean isInterface
++                        ) {
++                            calls.add(new Invocation(calledOwner, calledName));
++                        }
++                    };
++                }
++            },
++            ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES
++        );
++        assertTrue(found[0], () -> "Missing method " + owner.getName() + '#' + methodName);
++        return calls;
++    }
++
++    private record Invocation(String owner, String name) {
++    }
++}

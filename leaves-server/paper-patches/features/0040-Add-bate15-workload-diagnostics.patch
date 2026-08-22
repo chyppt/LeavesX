@@ -1,0 +1,561 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 23:33:05 +0800
+Subject: [PATCH] Add bate15 workload diagnostics
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 02a4daa80f011bd60efc947a57738955de078d2e..5300eed1e144808f1124c2fcc336a5b7166280f6 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1,29 +1,47 @@
+ package org.leavesx.leavesx.command;
+ 
+ import io.papermc.paper.FeatureHooks;
++import ca.spottedleaf.moonrise.patches.chunk_system.player.RegionizedPlayerChunkLoader;
++import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkHolderManager;
++import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkTaskScheduler;
++import ca.spottedleaf.moonrise.patches.chunk_system.ticket.ChunkSystemTicketType;
++import ca.spottedleaf.moonrise.patches.starlight.light.StarLightInterface;
+ import it.unimi.dsi.fastutil.longs.Long2IntMap;
+ import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
++import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
++import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+ import java.lang.management.BufferPoolMXBean;
+ import java.lang.management.GarbageCollectorMXBean;
+ import java.lang.management.ManagementFactory;
+ import java.lang.management.MemoryUsage;
+ import java.lang.management.ThreadMXBean;
+ import java.util.ArrayList;
++import java.util.Collection;
+ import java.util.Comparator;
+ import java.util.HashMap;
++import java.util.HashSet;
+ import java.util.List;
+ import java.util.Locale;
+ import java.util.Map;
++import java.util.Set;
+ import net.kyori.adventure.text.Component;
+ import net.kyori.adventure.text.format.NamedTextColor;
+ import net.minecraft.core.SectionPos;
++import net.minecraft.core.registries.BuiltInRegistries;
+ import net.minecraft.network.Connection;
+ import net.minecraft.resources.Identifier;
+ import net.minecraft.server.MinecraftServer;
++import net.minecraft.server.level.ChunkHolder;
+ import net.minecraft.server.level.ServerLevel;
++import net.minecraft.server.level.Ticket;
++import net.minecraft.server.level.TicketType;
+ import net.minecraft.world.entity.EntityType;
+ import net.minecraft.world.level.ChunkPos;
++import net.minecraft.world.level.block.entity.BlockEntity;
++import net.minecraft.world.level.block.entity.TickingBlockEntity;
++import net.minecraft.world.level.chunk.LevelChunk;
+ import org.bukkit.Bukkit;
++import org.bukkit.Chunk;
+ import org.bukkit.Location;
+ import org.bukkit.NamespacedKey;
+ import org.bukkit.World;
+@@ -31,6 +49,7 @@ import org.bukkit.command.Command;
+ import org.bukkit.command.CommandSender;
+ import org.bukkit.craftbukkit.CraftWorld;
+ import org.bukkit.entity.Player;
++import org.bukkit.plugin.Plugin;
+ import org.bukkit.util.StringUtil;
+ import org.leavesx.leavesx.config.LeavesXConfig;
+ import org.leavesx.leavesx.config.LeavesXRuntime;
+@@ -40,13 +59,14 @@ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
+ public final class LeavesXCommand extends Command {
+ 
+     private static final List<String> SUBCOMMANDS = List.of(
+-        "status", "worlds", "entities", "hotspots", "memory", "network", "threads", "config", "help"
++        "status", "worlds", "entities", "hotspots", "blockentities", "blockhotspots", "tickets",
++        "memory", "network", "threads", "config", "help"
+     );
+ 
+     public LeavesXCommand(final String name) {
+         super(name);
+         this.description = "查看 LeavesX 服务器性能状态";
+-        this.usageMessage = "/leavesx <status|worlds|entities|hotspots|memory|network|threads|config>";
++        this.usageMessage = "/leavesx <status|worlds|entities|hotspots|blockentities|blockhotspots|tickets|memory|network|threads|config>";
+         this.setPermission("leavesx.command.performance");
+     }
+ 
+@@ -62,6 +82,9 @@ public final class LeavesXCommand extends Command {
+             case "worlds" -> sendWorlds(sender);
+             case "entities" -> sendEntities(sender, args);
+             case "hotspots" -> sendHotspots(sender, args);
++            case "blockentities" -> sendBlockEntities(sender, args);
++            case "blockhotspots" -> sendBlockHotspots(sender, args);
++            case "tickets" -> sendTickets(sender, args);
+             case "memory" -> sendMemory(sender);
+             case "network" -> sendNetwork(sender);
+             case "threads" -> sendThreads(sender);
+@@ -85,7 +108,11 @@ public final class LeavesXCommand extends Command {
+         if (args.length == 1) {
+             return StringUtil.copyPartialMatches(args[0], SUBCOMMANDS, new ArrayList<>());
+         }
+-        if ((args[0].equalsIgnoreCase("entities") || args[0].equalsIgnoreCase("hotspots")) && args.length == 2) {
++        if ((args[0].equalsIgnoreCase("entities")
++            || args[0].equalsIgnoreCase("hotspots")
++            || args[0].equalsIgnoreCase("blockentities")
++            || args[0].equalsIgnoreCase("blockhotspots")
++            || args[0].equalsIgnoreCase("tickets")) && args.length == 2) {
+             final List<String> worlds = new ArrayList<>();
+             for (final World world : Bukkit.getWorlds()) {
+                 worlds.add(world.getKey().toString());
+@@ -228,6 +255,180 @@ public final class LeavesXCommand extends Command {
+         }
+     }
+ 
++    private static void sendBlockEntities(final CommandSender sender, final String[] args) {
++        final Selection selection = selectWorldsAndLimit(sender, args);
++        if (selection == null) {
++            return;
++        }
++
++        final BlockEntitySnapshot snapshot = collectBlockEntities(selection.worlds());
++        final List<Map.Entry<Identifier, MutableBlockEntityCount>> ordered = new ArrayList<>(snapshot.counts().entrySet());
++        ordered.sort(Comparator.<Map.Entry<Identifier, MutableBlockEntityCount>>comparingInt(entry -> entry.getValue().total)
++            .reversed().thenComparing(entry -> entry.getKey().toString()));
++
++        sendHeader(sender, "方块实体类型");
++        sender.sendMessage(Component.text(
++            "总数 " + snapshot.total() + "，更新 " + snapshot.ticking() + "，休眠 " + (snapshot.total() - snapshot.ticking()),
++            NamedTextColor.GRAY
++        ));
++        for (int index = 0; index < Math.min(selection.limit(), ordered.size()); index++) {
++            final Map.Entry<Identifier, MutableBlockEntityCount> entry = ordered.get(index);
++            final MutableBlockEntityCount count = entry.getValue();
++            sender.sendMessage(Component.text(
++                (index + 1) + ". " + entry.getKey() + "：" + count.total + "（更新 " + count.ticking + "）",
++                count.total >= 1_000 ? NamedTextColor.RED : count.total >= 250 ? NamedTextColor.YELLOW : NamedTextColor.AQUA
++            ));
++        }
++    }
++
++    private static void sendBlockHotspots(final CommandSender sender, final String[] args) {
++        final Selection selection = selectWorldsAndLimit(sender, args);
++        if (selection == null) {
++            return;
++        }
++
++        final List<BlockEntityHotspot> hotspots = collectBlockEntities(selection.worlds()).hotspots();
++        hotspots.sort(Comparator.comparingInt(BlockEntityHotspot::total).reversed()
++            .thenComparing(BlockEntityHotspot::world)
++            .thenComparingInt(BlockEntityHotspot::chunkX)
++            .thenComparingInt(BlockEntityHotspot::chunkZ));
++
++        sendHeader(sender, "方块实体密集区块");
++        for (int index = 0; index < Math.min(selection.limit(), hotspots.size()); index++) {
++            final BlockEntityHotspot hotspot = hotspots.get(index);
++            sender.sendMessage(Component.text(
++                (index + 1) + ". " + hotspot.world() + " 区块[" + hotspot.chunkX() + ", " + hotspot.chunkZ()
++                    + "] 方块中心[" + ((hotspot.chunkX() << 4) + 8) + ", " + ((hotspot.chunkZ() << 4) + 8)
++                    + "]：" + hotspot.total() + "（更新 " + hotspot.ticking() + "）",
++                hotspot.total() >= 500 ? NamedTextColor.RED : hotspot.total() >= 100 ? NamedTextColor.YELLOW : NamedTextColor.AQUA
++            ));
++        }
++        if (hotspots.isEmpty()) {
++            sender.sendMessage(Component.text("没有找到方块实体。", NamedTextColor.GRAY));
++        }
++    }
++
++    private static BlockEntitySnapshot collectBlockEntities(final List<World> worlds) {
++        final Map<Identifier, MutableBlockEntityCount> counts = new HashMap<>();
++        final List<BlockEntityHotspot> hotspots = new ArrayList<>();
++        int total = 0;
++        int ticking = 0;
++
++        for (final World world : worlds) {
++            final ServerLevel level = ((CraftWorld)world).getHandle();
++            final LongOpenHashSet tickingPositions = new LongOpenHashSet(level.blockEntityTickers.size());
++            for (final TickingBlockEntity ticker : level.blockEntityTickers) {
++                if (!ticker.isRemoved()) {
++                    tickingPositions.add(ticker.getPos().asLong());
++                }
++            }
++
++            for (final ChunkHolder holder : ca.spottedleaf.moonrise.common.PlatformHooks.get().getVisibleChunkHolders(level)) {
++                final LevelChunk chunk = holder.getTickingChunk();
++                if (chunk == null || chunk.blockEntities.isEmpty()) {
++                    continue;
++                }
++
++                int chunkTotal = 0;
++                int chunkTicking = 0;
++                for (final BlockEntity blockEntity : chunk.blockEntities.values()) {
++                    final Identifier type = BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(blockEntity.getType());
++                    final boolean isTicking = tickingPositions.contains(blockEntity.getBlockPos().asLong());
++                    final MutableBlockEntityCount count = counts.computeIfAbsent(type, ignored -> new MutableBlockEntityCount());
++                    count.total++;
++                    total++;
++                    chunkTotal++;
++                    if (isTicking) {
++                        count.ticking++;
++                        ticking++;
++                        chunkTicking++;
++                    }
++                }
++                hotspots.add(new BlockEntityHotspot(
++                    world.getKey().toString(),
++                    chunk.getPos().x(),
++                    chunk.getPos().z(),
++                    chunkTotal,
++                    chunkTicking
++                ));
++            }
++        }
++        return new BlockEntitySnapshot(counts, hotspots, total, ticking);
++    }
++
++    private static void sendTickets(final CommandSender sender, final String[] args) {
++        final Selection selection = selectWorldsAndLimit(sender, args);
++        if (selection == null) {
++            return;
++        }
++
++        final Map<String, MutableTicketCount> counts = new HashMap<>();
++        final List<PluginTicketCount> pluginTickets = new ArrayList<>();
++        int sourceChunks = 0;
++        int ticketCount = 0;
++        for (final World world : selection.worlds()) {
++            final ServerLevel level = ((CraftWorld)world).getHandle();
++            final Long2ObjectMap<Collection<Ticket>> tickets = level.moonrise$getChunkTaskScheduler()
++                .chunkHolderManager.getTicketsCopy();
++            sourceChunks += tickets.size();
++
++            for (final Long2ObjectMap.Entry<Collection<Ticket>> entry : tickets.long2ObjectEntrySet()) {
++                final Set<String> typesAtChunk = new HashSet<>();
++                for (final Ticket ticket : entry.getValue()) {
++                    final String typeName = ticketTypeName(ticket.getType());
++                    final MutableTicketCount count = counts.computeIfAbsent(typeName, ignored -> new MutableTicketCount(ticket.getType()));
++                    count.tickets++;
++                    count.minimumLevel = Math.min(count.minimumLevel, ticket.getTicketLevel());
++                    count.maximumLevel = Math.max(count.maximumLevel, ticket.getTicketLevel());
++                    typesAtChunk.add(typeName);
++                    ticketCount++;
++                }
++                for (final String typeName : typesAtChunk) {
++                    counts.get(typeName).sourceChunks++;
++                }
++            }
++
++            for (final Map.Entry<Plugin, Collection<Chunk>> entry : world.getPluginChunkTickets().entrySet()) {
++                pluginTickets.add(new PluginTicketCount(
++                    world.getKey().toString(),
++                    entry.getKey().getName(),
++                    entry.getValue().size()
++                ));
++            }
++        }
++
++        final List<Map.Entry<String, MutableTicketCount>> ordered = new ArrayList<>(counts.entrySet());
++        ordered.sort(Comparator.<Map.Entry<String, MutableTicketCount>>comparingInt(entry -> entry.getValue().sourceChunks)
++            .reversed()
++            .thenComparing(Comparator.comparingInt((Map.Entry<String, MutableTicketCount> entry) -> entry.getValue().tickets).reversed())
++            .thenComparing(Map.Entry::getKey));
++        sendHeader(sender, "区块票据来源");
++        sender.sendMessage(Component.text("源区块 " + sourceChunks + "，票据 " + ticketCount, NamedTextColor.GRAY));
++        for (int index = 0; index < Math.min(selection.limit(), ordered.size()); index++) {
++            final Map.Entry<String, MutableTicketCount> entry = ordered.get(index);
++            final MutableTicketCount count = entry.getValue();
++            sender.sendMessage(Component.text(
++                (index + 1) + ". " + entry.getKey() + "：" + count.tickets + " 个票据 / " + count.sourceChunks
++                    + " 个源区块 / 等级 " + formatLevelRange(count.minimumLevel, count.maximumLevel) + ticketFlags(count.type),
++                count.sourceChunks >= 1_000 ? NamedTextColor.RED : count.sourceChunks >= 250 ? NamedTextColor.YELLOW : NamedTextColor.AQUA
++            ));
++        }
++
++        pluginTickets.sort(Comparator.comparingInt(PluginTicketCount::chunks).reversed()
++            .thenComparing(PluginTicketCount::plugin).thenComparing(PluginTicketCount::world));
++        if (!pluginTickets.isEmpty()) {
++            sender.sendMessage(Component.text("插件强制区块：", NamedTextColor.GOLD));
++            for (int index = 0; index < Math.min(selection.limit(), pluginTickets.size()); index++) {
++                final PluginTicketCount entry = pluginTickets.get(index);
++                sender.sendMessage(Component.text(
++                    (index + 1) + ". " + entry.plugin() + " / " + entry.world() + "：" + entry.chunks(),
++                    entry.chunks() >= 250 ? NamedTextColor.RED : entry.chunks() >= 50 ? NamedTextColor.YELLOW : NamedTextColor.AQUA
++                ));
++            }
++        }
++        sender.sendMessage(Component.text("说明：源票据会向周围传播，因此源区块数通常小于实际持有器数量。", NamedTextColor.GRAY));
++    }
++
+     private static void sendMemory(final CommandSender sender) {
+         final MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
+         final MemoryUsage nonHeap = ManagementFactory.getMemoryMXBean().getNonHeapMemoryUsage();
+@@ -297,6 +498,11 @@ public final class LeavesXCommand extends Command {
+         final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
+         final ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+         sendHeader(sender, "线程状态");
++        sender.sendMessage(line(
++            "JVM 可用处理器",
++            Integer.toString(Runtime.getRuntime().availableProcessors()),
++            NamedTextColor.AQUA
++        ));
+         sender.sendMessage(line(
+             "LeavesX 计算线程",
+             metrics.activeWorkers() + " 活跃 / " + metrics.workers() + " 总数 / " + metrics.queuedTasks() + " 排队",
+@@ -304,10 +510,23 @@ public final class LeavesXCommand extends Command {
+         ));
+         sender.sendMessage(line(
+             "并行调用",
+-            metrics.parallelInvocations() + " 成功 / " + metrics.synchronousFallbacks() + " 主线程回退 / "
++            metrics.parallelInvocations() + " 成功 / " + metrics.synchronousFallbacks() + " 同步执行 / "
+                 + metrics.failedInvocations() + " 失败",
+             metrics.failedInvocations() == 0 ? NamedTextColor.AQUA : NamedTextColor.RED
+         ));
++        sender.sendMessage(line(
++            "同步原因",
++            "低于功能阈值 " + metrics.belowFeatureThresholdFallbacks()
++                + " / 分区工作不足 " + metrics.insufficientPartitionFallbacks()
++                + " / 并行不可用 " + metrics.unavailableParallelismFallbacks(),
++            NamedTextColor.GRAY
++        ));
++        sender.sendMessage(line(
++            "计算任务",
++            metrics.completedTasks() + " 已完成 / " + metrics.largestPoolSize() + " 线程池峰值 / "
++                + metrics.invocations() + " 总调用",
++            NamedTextColor.GRAY
++        ));
+         sender.sendMessage(line(
+             "JVM 线程",
+             threads.getThreadCount() + " 当前 / " + threads.getPeakThreadCount() + " 峰值 / " + threads.getDaemonThreadCount() + " 守护",
+@@ -333,6 +552,9 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(Component.text("/leavesx worlds - 各世界区块、卸载队列、实体和方块实体", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx entities [世界] [数量] - 实体类型排行", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx hotspots [世界] [数量] - 实体密集区块坐标", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx blockentities [世界] [数量] - 方块实体类型排行", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx blockhotspots [世界] [数量] - 方块实体密集区块", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx tickets [世界] [数量] - 区块票据和插件强制区块", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx memory|network|threads|config - 对应详细状态", NamedTextColor.GRAY));
+     }
+ 
+@@ -421,6 +643,58 @@ public final class LeavesXCommand extends Command {
+         return enabled ? "开启" : "关闭";
+     }
+ 
++    private static String formatLevelRange(final int minimum, final int maximum) {
++        return minimum == maximum ? Integer.toString(minimum) : minimum + "-" + maximum;
++    }
++
++    private static String ticketFlags(final TicketType<?> type) {
++        if (type.doesLoad() && type.doesSimulate()) {
++            return "（加载、模拟）";
++        }
++        if (type.doesSimulate()) {
++            return "（模拟）";
++        }
++        if (type.doesLoad()) {
++            return "（加载）";
++        }
++        return "";
++    }
++
++    private static String ticketTypeName(final TicketType<?> type) {
++        final Identifier registeredName = BuiltInRegistries.TICKET_TYPE.getKey(type);
++        if (registeredName != null) {
++            return registeredName.toString();
++        }
++        if (type == RegionizedPlayerChunkLoader.PLAYER_TICKET) {
++            return "chunk_system:player_ticket";
++        }
++        if (type == RegionizedPlayerChunkLoader.PLAYER_TICKET_DELAYED) {
++            return "chunk_system:player_ticket_delayed";
++        }
++        if (type == ChunkHolderManager.UNLOAD_COOLDOWN) {
++            return "chunk_system:unload_cooldown";
++        }
++        if (type == ChunkTaskScheduler.CHUNK_LOAD) {
++            return "chunk_system:chunk_load";
++        }
++        if (type == ChunkTaskScheduler.NON_FULL_CHUNK_LOAD) {
++            return "chunk_system:non_full_load";
++        }
++        if (type == ChunkTaskScheduler.ENTITY_LOAD) {
++            return "chunk_system:entity_load";
++        }
++        if (type == ChunkTaskScheduler.POI_LOAD) {
++            return "chunk_system:poi_load";
++        }
++        if (type == ChunkTaskScheduler.CHUNK_RELIGHT) {
++            return "starlight:chunk_relight";
++        }
++        if (type == StarLightInterface.CHUNK_WORK_TICKET) {
++            return "starlight:chunk_work_ticket";
++        }
++        return "internal#" + ((ChunkSystemTicketType<?>)(Object)type).moonrise$getId();
++    }
++
+     private static NamedTextColor tpsColor(final double tps) {
+         return tps >= 18.0D ? NamedTextColor.GREEN : tps >= 15.0D ? NamedTextColor.YELLOW : NamedTextColor.RED;
+     }
+@@ -439,9 +713,42 @@ public final class LeavesXCommand extends Command {
+         private int ticking;
+     }
+ 
++    private static final class MutableBlockEntityCount {
++
++        private int total;
++        private int ticking;
++    }
++
++    private static final class MutableTicketCount {
++
++        private final TicketType<?> type;
++        private int tickets;
++        private int sourceChunks;
++        private int minimumLevel = Integer.MAX_VALUE;
++        private int maximumLevel = Integer.MIN_VALUE;
++
++        private MutableTicketCount(final TicketType<?> type) {
++            this.type = type;
++        }
++    }
++
+     private record Selection(List<World> worlds, int limit) {
+     }
+ 
+     private record EntityHotspot(String world, int chunkX, int chunkZ, int total, int ticking) {
+     }
++
++    private record BlockEntitySnapshot(
++        Map<Identifier, MutableBlockEntityCount> counts,
++        List<BlockEntityHotspot> hotspots,
++        int total,
++        int ticking
++    ) {
++    }
++
++    private record BlockEntityHotspot(String world, int chunkX, int chunkZ, int total, int ticking) {
++    }
++
++    private record PluginTicketCount(String world, String plugin, int chunks) {
++    }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 797ed235e8526314238a9a0d2cae9f86a866cda4..19bdbcf36425274a55733f7f962a6c034d872550 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -23,7 +23,9 @@ public final class LeavesXComputeExecutor {
+     private static volatile int minimumItemsPerWorker = 64;
+     private static final AtomicLong invocationCount = new AtomicLong();
+     private static final AtomicLong parallelInvocationCount = new AtomicLong();
+-    private static final AtomicLong synchronousFallbackCount = new AtomicLong();
++    private static final AtomicLong belowFeatureThresholdFallbackCount = new AtomicLong();
++    private static final AtomicLong insufficientPartitionFallbackCount = new AtomicLong();
++    private static final AtomicLong unavailableParallelismFallbackCount = new AtomicLong();
+     private static final AtomicLong failedInvocationCount = new AtomicLong();
+ 
+     private LeavesXComputeExecutor() {
+@@ -43,7 +45,9 @@ public final class LeavesXComputeExecutor {
+         minimumItemsPerWorker = Math.max(16, configuredMinimumItemsPerWorker);
+         invocationCount.set(0L);
+         parallelInvocationCount.set(0L);
+-        synchronousFallbackCount.set(0L);
++        belowFeatureThresholdFallbackCount.set(0L);
++        insufficientPartitionFallbackCount.set(0L);
++        unavailableParallelismFallbackCount.set(0L);
+         failedInvocationCount.set(0L);
+         executor = new ThreadPoolExecutor(
+             workerCount,
+@@ -100,14 +104,18 @@ public final class LeavesXComputeExecutor {
+     public static int invokeRangesWithCount(final int size, final int minimumSize, final RangeTask task) {
+         invocationCount.incrementAndGet();
+         final ThreadPoolExecutor current = executor;
+-        if (current == null || workerCount <= 1 || size < minimumSize) {
+-            synchronousFallbackCount.incrementAndGet();
++        if (current == null || workerCount <= 1) {
++            unavailableParallelismFallbackCount.incrementAndGet();
++            return 0;
++        }
++        if (size < minimumSize) {
++            belowFeatureThresholdFallbackCount.incrementAndGet();
+             return 0;
+         }
+ 
+         final int taskCount = taskCountFor(size, computeLaneCount(), minimumItemsPerWorker);
+         if (taskCount <= 1) {
+-            synchronousFallbackCount.incrementAndGet();
++            insufficientPartitionFallbackCount.incrementAndGet();
+             return 0;
+         }
+         final int rangeSize = (size + taskCount - 1) / taskCount;
+@@ -183,6 +191,9 @@ public final class LeavesXComputeExecutor {
+     /** Returns a lock-free snapshot used by the diagnostic command. */
+     public static Metrics metrics() {
+         final ThreadPoolExecutor current = executor;
++        final long belowFeatureThresholdFallbacks = belowFeatureThresholdFallbackCount.get();
++        final long insufficientPartitionFallbacks = insufficientPartitionFallbackCount.get();
++        final long unavailableParallelismFallbacks = unavailableParallelismFallbackCount.get();
+         return new Metrics(
+             workerCount,
+             current == null ? 0 : current.getActiveCount(),
+@@ -191,7 +202,10 @@ public final class LeavesXComputeExecutor {
+             current == null ? 0L : current.getCompletedTaskCount(),
+             invocationCount.get(),
+             parallelInvocationCount.get(),
+-            synchronousFallbackCount.get(),
++            belowFeatureThresholdFallbacks + insufficientPartitionFallbacks + unavailableParallelismFallbacks,
++            belowFeatureThresholdFallbacks,
++            insufficientPartitionFallbacks,
++            unavailableParallelismFallbacks,
+             failedInvocationCount.get()
+         );
+     }
+@@ -220,6 +234,9 @@ public final class LeavesXComputeExecutor {
+         long invocations,
+         long parallelInvocations,
+         long synchronousFallbacks,
++        long belowFeatureThresholdFallbacks,
++        long insufficientPartitionFallbacks,
++        long unavailableParallelismFallbacks,
+         long failedInvocations
+     ) {
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index c7899cec4a2aefc7166f03fcdef3ed54d2851d0b..0ce7cb66bb7cad15cd40dff5633c193b4b2e9444 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -49,6 +49,40 @@ class LeavesXComputeExecutorTest {
+         assertFalse(LeavesXComputeExecutor.invokeRanges(127, 128, (taskIndex, start, end) -> {
+             throw new AssertionError("small input must not be submitted");
+         }));
++
++        final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
++        assertEquals(1, metrics.synchronousFallbacks());
++        assertEquals(1, metrics.belowFeatureThresholdFallbacks());
++        assertEquals(0, metrics.insufficientPartitionFallbacks());
++        assertEquals(0, metrics.unavailableParallelismFallbacks());
++    }
++
++    @Test
++    void distinguishesInsufficientPartitionWorkFromFeatureThresholds() {
++        LeavesXComputeExecutor.configure(4, 64);
++        assertFalse(LeavesXComputeExecutor.invokeRanges(100, 1, (taskIndex, start, end) -> {
++            throw new AssertionError("a single useful partition must stay synchronous");
++        }));
++
++        final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
++        assertEquals(1, metrics.synchronousFallbacks());
++        assertEquals(0, metrics.belowFeatureThresholdFallbacks());
++        assertEquals(1, metrics.insufficientPartitionFallbacks());
++        assertEquals(0, metrics.unavailableParallelismFallbacks());
++    }
++
++    @Test
++    void reportsWhenNoParallelLaneIsAvailable() {
++        LeavesXComputeExecutor.configure(1);
++        assertFalse(LeavesXComputeExecutor.invokeRanges(1_024, 128, (taskIndex, start, end) -> {
++            throw new AssertionError("a single configured worker must retain the synchronous path");
++        }));
++
++        final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
++        assertEquals(1, metrics.synchronousFallbacks());
++        assertEquals(0, metrics.belowFeatureThresholdFallbacks());
++        assertEquals(0, metrics.insufficientPartitionFallbacks());
++        assertEquals(1, metrics.unavailableParallelismFallbacks());
+     }
+ 
+     @Test

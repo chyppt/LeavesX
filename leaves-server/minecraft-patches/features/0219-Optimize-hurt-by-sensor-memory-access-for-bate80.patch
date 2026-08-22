@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 01:24:24 +0800
+Subject: [PATCH] Optimize hurt-by sensor memory access for bate80
+
+
+diff --git a/net/minecraft/world/entity/ai/sensing/HurtBySensor.java b/net/minecraft/world/entity/ai/sensing/HurtBySensor.java
+index 91735513537308f45615e85ac8b8784c7b579bbc..eb05c0f8c55aba102b56565368645c28b9124eab 100644
+--- a/net/minecraft/world/entity/ai/sensing/HurtBySensor.java
++++ b/net/minecraft/world/entity/ai/sensing/HurtBySensor.java
+@@ -17,6 +17,26 @@ public class HurtBySensor extends Sensor<LivingEntity> {
+ 
+     @Override
+     protected void doTick(final ServerLevel level, final LivingEntity body) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.hurtBySensorOptimization()) {
++            final Brain<?> brain = body.getBrain();
++            final DamageSource damageSource = body.getLastDamageSource();
++            if (damageSource != null) {
++                brain.setMemory(MemoryModuleType.HURT_BY, damageSource);
++                final Entity entitySource = damageSource.getEntity();
++                if (entitySource instanceof LivingEntity livingEntity) {
++                    brain.setMemory(MemoryModuleType.HURT_BY_ENTITY, livingEntity);
++                }
++            } else {
++                brain.eraseMemory(MemoryModuleType.HURT_BY);
++            }
++
++            final LivingEntity hurtByEntity = brain.leavesX$getMemoryValue(MemoryModuleType.HURT_BY_ENTITY);
++            if (hurtByEntity != null && (!hurtByEntity.isAlive() || hurtByEntity.level() != level)) {
++                brain.eraseMemory(MemoryModuleType.HURT_BY_ENTITY);
++            }
++            return;
++        }
++
+         Brain<?> brain = body.getBrain();
+         DamageSource damageSource = body.getLastDamageSource();
+         if (damageSource != null) {

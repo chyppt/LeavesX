@@ -1,0 +1,153 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 16:34:34 +0800
+Subject: [PATCH] Optimize entity synchronization and network scheduling
+
+
+diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Connection.java
+index 3eaa80c31a7465a91688480a991dc999cd6c8874..b33bff50bcec1faf4b7fc3a62da38c8a449c2fd7 100644
+--- a/net/minecraft/network/Connection.java
++++ b/net/minecraft/network/Connection.java
+@@ -127,6 +127,7 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+     public boolean isPending = true;
+     public boolean queueImmunity;
+     // Paper end - Optimize network
++    private volatile io.netty.channel.@Nullable SingleThreadEventLoop lazyWriteEventLoop;
+ 
+     public Connection(final PacketFlow receiving) {
+         this.receiving = receiving;
+@@ -136,6 +137,10 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+     public void channelActive(final ChannelHandlerContext ctx) throws Exception {
+         super.channelActive(ctx);
+         this.channel = ctx.channel();
++        final io.netty.channel.EventLoop eventLoop = this.channel.eventLoop();
++        this.lazyWriteEventLoop = eventLoop instanceof io.netty.channel.SingleThreadEventLoop singleThreadEventLoop
++            ? singleThreadEventLoop
++            : null;
+         this.address = this.channel.remoteAddress();
+         this.preparing = false; // Spigot
+         if (this.delayedDisconnect != null) {
+@@ -442,10 +447,17 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+ 
+     private void sendPacket(final Packet<?> packet, final @Nullable ChannelFutureListener listener, final boolean flush) {
+         this.sentPackets++;
+-        if (this.channel.eventLoop().inEventLoop()) {
++        final io.netty.channel.EventLoop eventLoop = this.channel.eventLoop();
++        if (eventLoop.inEventLoop()) {
+             this.doSendPacket(packet, listener, flush);
+         } else {
+-            this.channel.eventLoop().execute(() -> this.doSendPacket(packet, listener, flush));
++            final io.netty.channel.SingleThreadEventLoop lazyEventLoop = this.lazyWriteEventLoop;
++            if (!flush && org.leavesx.leavesx.config.LeavesXRuntime.networkFlushConsolidation() && lazyEventLoop != null) {
++                // The regular flush task wakes this loop later in the same tick, preserving FIFO packet order.
++                lazyEventLoop.lazyExecute(() -> this.doSendPacket(packet, listener, false));
++            } else {
++                eventLoop.execute(() -> this.doSendPacket(packet, listener, flush));
++            }
+         }
+     }
+ 
+diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
+index 64e14a0ffd0756ea99b5f4664db0ced64f6cb6bc..f9863ec2f50dcb738641301a7fcc16f3f9d99aea 100644
+--- a/net/minecraft/server/level/ServerEntity.java
++++ b/net/minecraft/server/level/ServerEntity.java
+@@ -167,38 +167,48 @@ public class ServerEntity {
+                 boolean pos = positionChanged || this.tickCount % 60 == 0;
+                 boolean sentPosition = false;
+                 boolean sentRotation = false;
+-                long xa = this.positionCodec.encodeX(currentPosition);
+-                long ya = this.positionCodec.encodeY(currentPosition);
+-                long za = this.positionCodec.encodeZ(currentPosition);
+-                boolean deltaTooBig = xa < -32768L || xa > 32767L || ya < -32768L || ya > 32767L || za < -32768L || za > 32767L;
+-                if (this.forceStateResync || this.entity.getRequiresPrecisePosition() // Paper - fix desync when a player is added to the tracker
+-                    || deltaTooBig
++                final boolean onGround = this.entity.onGround();
++                final boolean onGroundChanged = this.wasOnGround != onGround;
++                final boolean requiresFullSync = this.forceStateResync || this.entity.getRequiresPrecisePosition() // Paper - fix desync when a player is added to the tracker
+                     || this.teleportDelay > 400
+                     || this.wasRiding
+-                    || this.wasOnGround != this.entity.onGround()) {
+-                    this.wasOnGround = this.entity.onGround();
++                    || onGroundChanged;
++                long xa = 0L;
++                long ya = 0L;
++                long za = 0L;
++                boolean deltaTooBig = false;
++                if (!requiresFullSync && (pos || this.entity instanceof AbstractArrow)) {
++                    xa = this.positionCodec.encodeX(currentPosition);
++                    ya = this.positionCodec.encodeY(currentPosition);
++                    za = this.positionCodec.encodeZ(currentPosition);
++                    deltaTooBig = xa < -32768L || xa > 32767L || ya < -32768L || ya > 32767L || za < -32768L || za > 32767L;
++                }
++                final boolean filterUselessMovePackets = org.leavesmc.leaves.LeavesConfig.performance.dontSendUselessEntityPackets;
++                if (requiresFullSync || deltaTooBig) {
++                    this.wasOnGround = onGround;
+                     this.teleportDelay = 0;
+                     packet = ClientboundEntityPositionSyncPacket.of(this.entity);
+                     sentPosition = true;
+                     sentRotation = true;
+                 } else if ((!pos || !shouldSendRotation) && !(this.entity instanceof AbstractArrow)) {
+                     if (pos) {
+-                        packet = new ClientboundMoveEntityPacket.Pos(this.entity.getId(), (short)xa, (short)ya, (short)za, this.entity.onGround());
+                         sentPosition = true;
++                        if (shouldCreateMovePacket(filterUselessMovePackets, true, false, xa, ya, za, yRotn, xRotn)) {
++                            packet = new ClientboundMoveEntityPacket.Pos(this.entity.getId(), (short)xa, (short)ya, (short)za, onGround);
++                        }
+                     } else if (shouldSendRotation) {
+-                        packet = new ClientboundMoveEntityPacket.Rot(this.entity.getId(), yRotn, xRotn, this.entity.onGround());
+                         sentRotation = true;
++                        if (shouldCreateMovePacket(filterUselessMovePackets, false, true, xa, ya, za, yRotn, xRotn)) {
++                            packet = new ClientboundMoveEntityPacket.Rot(this.entity.getId(), yRotn, xRotn, onGround);
++                        }
+                     }
+                 } else {
+-                    packet = new ClientboundMoveEntityPacket.PosRot(this.entity.getId(), (short)xa, (short)ya, (short)za, yRotn, xRotn, this.entity.onGround());
+                     sentPosition = true;
+                     sentRotation = true;
++                    if (shouldCreateMovePacket(filterUselessMovePackets, true, true, xa, ya, za, yRotn, xRotn)) {
++                        packet = new ClientboundMoveEntityPacket.PosRot(this.entity.getId(), (short)xa, (short)ya, (short)za, yRotn, xRotn, onGround);
++                    }
+                 }
+-                // Leaves start - dont send useless entity packets
+-                if (packet != null && org.leavesmc.leaves.LeavesConfig.performance.dontSendUselessEntityPackets && isUselessPacket(packet)) {
+-                    packet = null;
+-                }
+-                // Leaves end - dont send useless entity packets
+ 
+                 if (this.entity.needsSync || this.trackDelta || this.entity instanceof LivingEntity && ((LivingEntity)this.entity).isFallFlying()) {
+                     Vec3 movement = this.entity.getDeltaMovement();
+@@ -310,20 +320,21 @@ public class ServerEntity {
+         this.positionCodec.setBase(this.entity.position());
+     }
+ 
+-    // Leaves start - dont send useless entity packets
+-    private boolean isUselessPacket(Packet<?> possibleUselessPacket) {
+-        if (possibleUselessPacket instanceof ClientboundMoveEntityPacket packet) {
+-            if (possibleUselessPacket instanceof ClientboundMoveEntityPacket.Pos) {
+-                return packet.getXa() == 0 && packet.getYa() == 0 && packet.getZa() == 0;
+-            } else if (possibleUselessPacket instanceof ClientboundMoveEntityPacket.PosRot) {
+-                return packet.getXa() == 0 && packet.getYa() == 0 && packet.getZa() == 0 && packet.getYRot() == 0 && packet.getXRot() == 0;
+-            } else if (possibleUselessPacket instanceof ClientboundMoveEntityPacket.Rot) {
+-                return packet.getYRot() == 0 && packet.getXRot() == 0;
+-            }
+-        }
+-        return false;
++    private static boolean shouldCreateMovePacket(
++        final boolean filterUselessPackets,
++        final boolean includesPosition,
++        final boolean includesRotation,
++        final long xa,
++        final long ya,
++        final long za,
++        final byte yRot,
++        final byte xRot
++    ) {
++        // Match the existing Leaves packet filter before allocating the packet object.
++        return !filterUselessPackets
++            || (includesPosition && (xa != 0L || ya != 0L || za != 0L))
++            || (includesRotation && (yRot != 0 || xRot != 0));
+     }
+-    // Leaves end - dont send useless entity packets
+ 
+     public void removePairing(final ServerPlayer player) {
+         this.entity.stopSeenByPlayer(player);

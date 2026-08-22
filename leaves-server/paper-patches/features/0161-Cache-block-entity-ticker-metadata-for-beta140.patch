@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 20 Aug 2026 22:36:04 +0800
+Subject: [PATCH] Cache block entity ticker metadata for beta140
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BlockEntityTickerHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTickerHotPathTest.java
+index bb0cbaded73b5a809a09db7a67e39207cc972120..cba7fbc0339fd03b6a6801ea7c537569ff13f5b8 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/BlockEntityTickerHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTickerHotPathTest.java
+@@ -5,9 +5,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import java.io.IOException;
+ import java.util.Arrays;
++import net.minecraft.world.level.Level;
++import net.minecraft.world.level.block.entity.BlockEntityType;
++import net.minecraft.world.level.block.entity.TickingBlockEntity;
+ import net.minecraft.world.level.chunk.LevelChunk;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
++import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.objectweb.asm.ClassReader;
+ import org.objectweb.asm.Opcodes;
+ import org.objectweb.asm.tree.ClassNode;
+@@ -20,6 +24,7 @@ class BlockEntityTickerHotPathTest {
+ 
+     private static final String BLOCK_ENTITY_OWNER = "net/minecraft/world/level/block/entity/BlockEntity";
+     private static final String BLOCK_POS_DESCRIPTOR = "Lnet/minecraft/core/BlockPos;";
++    private static final String BLOCK_ENTITY_TYPE_DESCRIPTOR = "Lnet/minecraft/world/level/block/entity/BlockEntityType;";
+ 
+     @Test
+     void boundTickerCachesItsImmutablePosition() throws IOException {
+@@ -29,10 +34,37 @@ class BlockEntityTickerHotPathTest {
+             boundTicker.fields.stream().anyMatch(field -> field.name.equals("cachedPos") && field.desc.equals(BLOCK_POS_DESCRIPTOR)),
+             "The bound ticker should retain the immutable block-entity position"
+         );
++        assertTrue(hasField(boundTicker, "cachedChunkKey", "J"));
++        assertTrue(hasField(boundTicker, "cachedType", BLOCK_ENTITY_TYPE_DESCRIPTOR));
++        assertTrue(hasField(boundTicker, "cachedTypeName", "Ljava/lang/String;"));
+         assertEquals(0, invocationCount(method(boundTicker, "tick"), BLOCK_ENTITY_OWNER, "getBlockPos"));
+         assertEquals(0, invocationCount(method(boundTicker, "getPos"), BLOCK_ENTITY_OWNER, "getBlockPos"));
+     }
+ 
++    @Test
++    void tickerGateUsesCachedChunkKeyAndKeepsTheOriginalFallback() throws IOException {
++        final ClassNode tickerContract = classNode(TickingBlockEntity.class.getName());
++        final ClassNode level = classNode(Level.class.getName());
++        final MethodNode gate = method(level, "shouldTickBlockEntityFilterNull");
++
++        method(tickerContract, "leavesX$getChunkKey");
++        assertTrue(hasCall(gate, LeavesXRuntime.class, "blockEntityOptimizations"));
++        assertTrue(hasCall(gate, TickingBlockEntity.class, "leavesX$getChunkKey"));
++        assertTrue(hasCall(gate, Level.class, "shouldTickBlocksAt", "(J)Z"));
++        assertTrue(hasCall(gate, Level.class, "shouldTickBlocksAt", "(Lnet/minecraft/core/BlockPos;)Z"));
++    }
++
++    @Test
++    void boundTickerCachesProfilerAndValidationMetadataWithFallbacks() throws IOException {
++        final ClassNode boundTicker = classNode(LevelChunk.class.getName() + "$BoundTickingBlockEntity");
++        final MethodNode tick = method(boundTicker, "tick");
++
++        assertTrue(hasCall(tick, LeavesXRuntime.class, "blockEntityOptimizations"));
++        assertTrue(hasCall(tick, BlockEntityType.class, "isValid"));
++        assertTrue(hasCall(tick, "net/minecraft/util/profiling/ProfilerFiller", "push", "(Ljava/lang/String;)V"));
++        assertTrue(hasCall(tick, "net/minecraft/util/profiling/ProfilerFiller", "push", "(Ljava/util/function/Supplier;)V"));
++    }
++
+     private static ClassNode classNode(final String className) throws IOException {
+         final ClassNode classNode = new ClassNode(Opcodes.ASM9);
+         new ClassReader(className).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+@@ -46,6 +78,27 @@ class BlockEntityTickerHotPathTest {
+             .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
+     }
+ 
++    private static boolean hasField(final ClassNode owner, final String name, final String descriptor) {
++        return owner.fields.stream().anyMatch(field -> field.name.equals(name) && field.desc.equals(descriptor));
++    }
++
++    private static boolean hasCall(final MethodNode method, final Class<?> owner, final String methodName) {
++        return hasCall(method, owner.getName().replace('.', '/'), methodName, null);
++    }
++
++    private static boolean hasCall(final MethodNode method, final Class<?> owner, final String methodName, final String descriptor) {
++        return hasCall(method, owner.getName().replace('.', '/'), methodName, descriptor);
++    }
++
++    private static boolean hasCall(final MethodNode method, final String owner, final String methodName, final String descriptor) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals(owner)
++                && call.name.equals(methodName)
++                && (descriptor == null || call.desc.equals(descriptor)));
++    }
++
+     private static long invocationCount(
+         final MethodNode method,
+         final String owner,

@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 15 Aug 2026 19:25:00 +0800
+Subject: [PATCH] Optimize navigation and chunk unload allocation hot paths
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+index 28010217bc9255e525a238cec10f7c7720540ce5..a89cc17a817ba796234865421c0e19decb89a40e 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+@@ -1196,10 +1196,15 @@ public final class ChunkHolderManager {
+             this.world.getServer().tickRateManager().nanosecondsPerTick()
+         );
+         int processedCount = 0;
++        // LeavesX start - reuse the three unload-stage buffers across sections handled during this world tick.
++        final ArrayList<NewChunkHolder> stage1 = new ArrayList<>();
++        final ArrayList<NewChunkHolder.UnloadState> stage2 = new ArrayList<>();
++        final ArrayList<NewChunkHolder> stage3 = new ArrayList<>();
+ 
+         for (final ChunkUnloadQueue.SectionToUnload sectionRef : unloadSectionsForRegion) {
+-            final List<NewChunkHolder> stage1 = new ArrayList<>();
+-            final List<NewChunkHolder.UnloadState> stage2 = new ArrayList<>();
++            stage1.clear();
++            stage2.clear();
++            stage3.clear();
+ 
+             final int sectionLowerX = sectionRef.sectionX() << sectionShift;
+             final int sectionLowerZ = sectionRef.sectionZ() << sectionShift;
+@@ -1271,7 +1276,7 @@ public final class ChunkHolderManager {
+             }
+ 
+             // stage 2: invoke expensive unload logic, designed to run without locks thanks to stage 1
+-            final List<NewChunkHolder> stage3 = new ArrayList<>(stage2.size());
++            stage3.ensureCapacity(stage2.size());
+ 
+             final Boolean before = this.blockTicketUpdates();
+             try {
+@@ -1314,6 +1319,7 @@ public final class ChunkHolderManager {
+                 break;
+             }
+         }
++        // LeavesX end - reuse the three unload-stage buffers across sections handled during this world tick.
+     }
+ 
+     public enum TicketOperationType {
+diff --git a/net/minecraft/world/entity/ai/navigation/PathNavigation.java b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
+index ab0fe98ea774904b5e7b33d104c70d652c0835e5..0ef220b57ae5b415b782a7b77dd1332c799067d8 100644
+--- a/net/minecraft/world/entity/ai/navigation/PathNavigation.java
++++ b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
+@@ -331,6 +331,66 @@ public abstract class PathNavigation {
+             return false;
+         }
+ 
++        if (org.leavesx.leavesx.config.LeavesXRuntime.pathfindingOptimizations()) {
++            // LeavesX start - preserve Vec3's arithmetic while avoiding up to eight short-lived path-following objects.
++            final Node currentNode = this.path.getNextNode();
++            final double currentX = currentNode.x + 0.5;
++            final double currentY = currentNode.y;
++            final double currentZ = currentNode.z + 0.5;
++            final double mobToCurrentSqr = mobPosition.distanceToSqr(currentX, currentY, currentZ);
++            if (!(mobToCurrentSqr < 4.0)) {
++                return false;
++            }
++
++            if (this.canMoveDirectly(mobPosition, this.path.getNextEntityPos(this.mob))) {
++                return true;
++            }
++
++            final Node nextNode = this.path.getNode(this.path.getNextNodeIndex() + 1);
++            final double mobToCurrentX = currentX - mobPosition.x;
++            final double mobToCurrentY = currentY - mobPosition.y;
++            final double mobToCurrentZ = currentZ - mobPosition.z;
++            final double mobToNextX = nextNode.x + 0.5 - mobPosition.x;
++            final double mobToNextY = nextNode.y - mobPosition.y;
++            final double mobToNextZ = nextNode.z + 0.5 - mobPosition.z;
++            final double mobToNextSqr = mobToNextX * mobToNextX + mobToNextY * mobToNextY + mobToNextZ * mobToNextZ;
++            final boolean closerToNextThanCurrent = mobToNextSqr < mobToCurrentSqr;
++            final boolean withinCurrentBlock = mobToCurrentSqr < 0.5;
++            if (!closerToNextThanCurrent && !withinCurrentBlock) {
++                return false;
++            }
++
++            final double mobToCurrentLength = Math.sqrt(mobToCurrentSqr);
++            final double mobDirectionX;
++            final double mobDirectionY;
++            final double mobDirectionZ;
++            if (mobToCurrentLength < 1.0E-5F) {
++                mobDirectionX = 0.0;
++                mobDirectionY = 0.0;
++                mobDirectionZ = 0.0;
++            } else {
++                mobDirectionX = mobToCurrentX / mobToCurrentLength;
++                mobDirectionY = mobToCurrentY / mobToCurrentLength;
++                mobDirectionZ = mobToCurrentZ / mobToCurrentLength;
++            }
++
++            final double mobToNextLength = Math.sqrt(mobToNextSqr);
++            final double pathDirectionX;
++            final double pathDirectionY;
++            final double pathDirectionZ;
++            if (mobToNextLength < 1.0E-5F) {
++                pathDirectionX = 0.0;
++                pathDirectionY = 0.0;
++                pathDirectionZ = 0.0;
++            } else {
++                pathDirectionX = mobToNextX / mobToNextLength;
++                pathDirectionY = mobToNextY / mobToNextLength;
++                pathDirectionZ = mobToNextZ / mobToNextLength;
++            }
++            return pathDirectionX * mobDirectionX + pathDirectionY * mobDirectionY + pathDirectionZ * mobDirectionZ < 0.0;
++            // LeavesX end - preserve Vec3's arithmetic while avoiding up to eight short-lived path-following objects.
++        }
++
+         Vec3 currentNode = Vec3.atBottomCenterOf(this.path.getNextNodePos());
+         if (!mobPosition.closerThan(currentNode, 2.0)) {
+             return false;
+@@ -372,14 +432,36 @@ public abstract class PathNavigation {
+         }
+ 
+         if (this.path != null && !this.path.isDone()) {
+-            Vec3i pos = this.path.getNextNodePos();
+-            long time = this.level.getGameTime();
+-            if (pos.equals(this.timeoutCachedNode)) {
+-                this.timeoutTimer = this.timeoutTimer + (time - this.lastTimeoutCheck);
++            final long time;
++            if (org.leavesx.leavesx.config.LeavesXRuntime.pathfindingOptimizations()) {
++                // LeavesX start - the timeout target only needs a new BlockPos when the path advances to another node.
++                final Node pos = this.path.getNextNode();
++                time = this.level.getGameTime();
++                if (this.timeoutCachedNode.getX() == pos.x
++                    && this.timeoutCachedNode.getY() == pos.y
++                    && this.timeoutCachedNode.getZ() == pos.z) {
++                    this.timeoutTimer = this.timeoutTimer + (time - this.lastTimeoutCheck);
++                } else {
++                    this.timeoutCachedNode = pos.asBlockPos();
++                    final double xDistance = pos.x + 0.5 - mobPos.x;
++                    final double yDistance = pos.y - mobPos.y;
++                    final double zDistance = pos.z + 0.5 - mobPos.z;
++                    final double distToNode = Math.sqrt(
++                        xDistance * xDistance + yDistance * yDistance + zDistance * zDistance
++                    );
++                    this.timeoutLimit = this.mob.getSpeed() > 0.0F ? distToNode / this.mob.getSpeed() * 20.0 : 0.0;
++                }
++                // LeavesX end - the timeout target only needs a new BlockPos when the path advances to another node.
+             } else {
+-                this.timeoutCachedNode = pos;
+-                double distToNode = mobPos.distanceTo(Vec3.atBottomCenterOf(this.timeoutCachedNode));
+-                this.timeoutLimit = this.mob.getSpeed() > 0.0F ? distToNode / this.mob.getSpeed() * 20.0 : 0.0;
++                Vec3i pos = this.path.getNextNodePos();
++                time = this.level.getGameTime();
++                if (pos.equals(this.timeoutCachedNode)) {
++                    this.timeoutTimer = this.timeoutTimer + (time - this.lastTimeoutCheck);
++                } else {
++                    this.timeoutCachedNode = pos;
++                    double distToNode = mobPos.distanceTo(Vec3.atBottomCenterOf(this.timeoutCachedNode));
++                    this.timeoutLimit = this.mob.getSpeed() > 0.0F ? distToNode / this.mob.getSpeed() * 20.0 : 0.0;
++                }
+             }
+ 
+             if (this.timeoutLimit > 0.0 && this.timeoutTimer > this.timeoutLimit * 3.0) {

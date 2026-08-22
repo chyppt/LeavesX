@@ -1,0 +1,244 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 15:00:33 +0800
+Subject: [PATCH] Reuse ticket update buffers for beta115
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 13085b743132f01e5a6ad65389583e9f36e03857..e39f27a86072f26584b6e7d77ceb90c91c670eb6 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 44;
++    public static final int CURRENT_CONFIG_VERSION = 45;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 2958fff2371ce2a3e7745772f5adfaa5fbd3541a..0bbfa16f0ed43b1f90e97dccf0e0e1cc2477598c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：44。");
++        comments.put("config-version", "配置版本，请勿修改。默认：45。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 3475ec402958aa45b69fdee2ae6c249bc30aa80f..f3b2cefdb2c83eec4b9fee64968cf5c8d8683b5e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -164,6 +164,10 @@ enum LeavesXOptimization {
+         "performance.chunk.ticket-removal-probe",
+         "移除区块票据时不创建临时票据对象，关闭后使用原版流程。默认：true。"
+     ),
++    TICKET_UPDATE_BUFFER_REUSE(
++        "performance.chunk.ticket-update-buffer-reuse",
++        "区块票据传播时复用临时列表，关闭后每次新建。默认：true。"
++    ),
+     EXPIRING_TICKET_BUFFERS(
+         "performance.chunk.expiring-ticket-buffers",
+         "没有到期票据时不创建处理缓冲，关闭后使用原版流程。默认：true。"
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index dbcd1948684e6d9309545ea7e02477e8e7bfce5b..5b81c6b1c1f05df43cdd75ec80ef61d835248daa 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -536,6 +536,11 @@ public final class LeavesXRuntime {
+         return enabled(LeavesXOptimization.TICKET_REMOVAL_PROBE);
+     }
+ 
++    /** Returns whether ticket propagation may reuse per-thread temporary lists. */
++    public static boolean ticketUpdateBufferReuseOptimization() {
++        return enabled(LeavesXOptimization.TICKET_UPDATE_BUFFER_REUSE);
++    }
++
+     /** Returns whether per-tick expiring-ticket buffers may be allocated only when the first section is visited. */
+     public static boolean expiringTicketBuffersOptimization() {
+         return enabled(LeavesXOptimization.EXPIRING_TICKET_BUFFERS);
+diff --git a/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java b/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
+index 09c08c73cbdc378eaf86127ce74026be72aa48f6..ae94ad68c089cae94b4d458b771928c1345aa3d3 100644
+--- a/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
++++ b/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
+@@ -160,7 +160,7 @@ public class NaturalSpawnPositionHotPathTest {
+         LeavesXConfigLoader.load(path);
+         final String upgraded = Files.readString(path);
+ 
+-        assertTrue(upgraded.contains("config-version: 43"));
++        assertTrue(upgraded.contains("config-version: 45"));
+         assertTrue(upgraded.contains("spawn-position-distance-checks: true"));
+         assertTrue(upgraded.contains("spawn-chunk-readiness-checks: true"));
+         assertTrue(upgraded.contains("local-cap-accounting: true"));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/TicketRemovalProbeOptimizationTest.java b/src/test/java/org/leavesx/leavesx/performance/TicketRemovalProbeOptimizationTest.java
+index ea63d167b10cde1f0652a0a4283a2988c09280e5..d366bd2f11f32386eed011c4671fcc7230a46fa8 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/TicketRemovalProbeOptimizationTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/TicketRemovalProbeOptimizationTest.java
+@@ -113,7 +113,7 @@ class TicketRemovalProbeOptimizationTest {
+         }
+ 
+         final String upgraded = Files.readString(path);
+-        assertTrue(upgraded.contains("config-version: 44"));
++        assertTrue(upgraded.contains("config-version: 45"));
+         assertTrue(upgraded.contains("ticket-removal-probe: false"));
+         assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
+         assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/TicketUpdateBufferReuseTest.java b/src/test/java/org/leavesx/leavesx/performance/TicketUpdateBufferReuseTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..2c9e2cc589091cf97947938c8b40f03985a6f2e0
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/TicketUpdateBufferReuseTest.java
+@@ -0,0 +1,149 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkHolderManager;
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.Arrays;
++import java.util.List;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++import org.objectweb.asm.tree.TypeInsnNode;
++
++/** Verifies ticket propagation can reuse temporary lists without changing Paper's fallback path. */
++@Normal
++class TicketUpdateBufferReuseTest {
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @Test
++    void processTicketUpdatesKeepsReusableAndFallbackPaths() throws IOException {
++        final ClassNode manager = classNode(ChunkHolderManager.class);
++        final MethodNode regionalUpdates = method(manager, "processTicketUpdates", "(II)Z");
++        final MethodNode globalUpdates = method(manager, "processTicketUpdates", "()Z");
++        final MethodNode acquireBuffers = method(
++            manager,
++            "leavesX$acquireTicketUpdateBuffers",
++            "()Lca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager$LeavesXTicketUpdateBuffers;"
++        );
++
++        assertTrue(calls(
++            acquireBuffers,
++            "org/leavesx/leavesx/config/LeavesXRuntime",
++            "ticketUpdateBufferReuseOptimization"
++        ));
++        assertTrue(calls(acquireBuffers, "java/lang/ThreadLocal", "get"));
++        assertReusableAndFallbackPath(manager, regionalUpdates);
++        assertReusableAndFallbackPath(manager, globalUpdates);
++    }
++
++    @Test
++    void reusableBuffersRejectReentryAndClearBeforeReuse() throws ReflectiveOperationException {
++        final Class<?> buffersType = Arrays.stream(ChunkHolderManager.class.getDeclaredClasses())
++            .filter(type -> type.getSimpleName().equals("LeavesXTicketUpdateBuffers"))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing LeavesX ticket update buffers"));
++        final var constructor = buffersType.getDeclaredConstructor();
++        final Method tryAcquire = buffersType.getDeclaredMethod("tryAcquire");
++        final Method release = buffersType.getDeclaredMethod("release");
++        final var scheduledTasksField = buffersType.getDeclaredField("scheduledTasks");
++        final var changedFullStatusField = buffersType.getDeclaredField("changedFullStatus");
++        constructor.setAccessible(true);
++        tryAcquire.setAccessible(true);
++        release.setAccessible(true);
++        scheduledTasksField.setAccessible(true);
++        changedFullStatusField.setAccessible(true);
++
++        final Object buffers = constructor.newInstance();
++        @SuppressWarnings("unchecked")
++        final List<Object> scheduledTasks = (List<Object>)scheduledTasksField.get(buffers);
++        @SuppressWarnings("unchecked")
++        final List<Object> changedFullStatus = (List<Object>)changedFullStatusField.get(buffers);
++
++        assertTrue((boolean)tryAcquire.invoke(buffers));
++        assertFalse((boolean)tryAcquire.invoke(buffers), "Same-thread reentry must use fresh Paper lists");
++        scheduledTasks.add(null);
++        changedFullStatus.add(null);
++        release.invoke(buffers);
++
++        assertTrue(scheduledTasks.isEmpty());
++        assertTrue(changedFullStatus.isEmpty());
++        assertTrue((boolean)tryAcquire.invoke(buffers), "Released buffers must be reusable");
++        release.invoke(buffers);
++    }
++
++    @Test
++    void version44ConfigurationMigratesTheDocumentedSwitchInPlace() throws Exception {
++        final Path path = this.temporaryDirectory.resolve("leavesx.yml");
++        Files.writeString(path, """
++            config-version: 44
++            performance:
++              chunk:
++                ticket-update-buffer-reuse: false
++            """);
++
++        final LeavesXConfig configuration = LeavesXConfigLoader.load(path);
++        final Method runtimeSwitch = Class.forName("org.leavesx.leavesx.config.LeavesXRuntime")
++            .getMethod("ticketUpdateBufferReuseOptimization");
++        final Method publish = runtimeSwitch.getDeclaringClass().getDeclaredMethod("publish", LeavesXConfig.class);
++        publish.setAccessible(true);
++        publish.invoke(null, configuration);
++        try {
++            assertFalse((boolean)runtimeSwitch.invoke(null));
++        } finally {
++            publish.invoke(null, LeavesXConfig.safeDefaults());
++        }
++
++        final String upgraded = Files.readString(path);
++        assertTrue(upgraded.contains("config-version: 45"));
++        assertTrue(upgraded.contains("ticket-update-buffer-reuse: false"));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
++    }
++
++    private static ClassNode classNode(final Class<?> type) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(type.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name, final String descriptor) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(name) && method.desc.equals(descriptor))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + name + descriptor));
++    }
++
++    private static void assertReusableAndFallbackPath(final ClassNode owner, final MethodNode method) {
++        assertTrue(calls(method, owner.name, "leavesX$acquireTicketUpdateBuffers"));
++        assertTrue(calls(method, owner.name + "$LeavesXTicketUpdateBuffers", "release"));
++        assertTrue(allocates(method, "java/util/ArrayList"), "Paper fallback must retain fresh lists");
++    }
++
++    private static boolean calls(final MethodNode method, final String owner, final String name) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals(owner) && call.name.equals(name));
++    }
++
++    private static boolean allocates(final MethodNode method, final String type) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(TypeInsnNode.class::isInstance)
++            .map(TypeInsnNode.class::cast)
++            .anyMatch(instruction -> instruction.getOpcode() == Opcodes.NEW && instruction.desc.equals(type));
++    }
++}

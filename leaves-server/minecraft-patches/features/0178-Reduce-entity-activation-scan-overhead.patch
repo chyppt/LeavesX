@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 15:33:10 +0800
+Subject: [PATCH] Reduce entity activation scan overhead
+
+
+diff --git a/io/papermc/paper/entity/activation/ActivationRange.java b/io/papermc/paper/entity/activation/ActivationRange.java
+index ce6b57eeeeb1bd652f4bb53c19dcfbc05126c7e9..101683ea4a14bab33ba18298ed694f560f20e2e8 100644
+--- a/io/papermc/paper/entity/activation/ActivationRange.java
++++ b/io/papermc/paper/entity/activation/ActivationRange.java
+@@ -121,17 +121,18 @@ public final class ActivationRange {
+      * @param world
+      */
+     public static void activateEntities(final Level world) {
+-        final int miscActivationRange = world.spigotConfig.miscActivationRange;
+-        final int raiderActivationRange = world.spigotConfig.raiderActivationRange;
+-        final int animalActivationRange = world.spigotConfig.animalActivationRange;
+-        final int monsterActivationRange = world.spigotConfig.monsterActivationRange;
+-        final int waterActivationRange = world.spigotConfig.waterActivationRange;
+-        final int flyingActivationRange = world.spigotConfig.flyingMonsterActivationRange;
+-        final int villagerActivationRange = world.spigotConfig.villagerActivationRange;
+-        world.wakeupInactiveRemainingAnimals = Math.min(world.wakeupInactiveRemainingAnimals + 1, world.spigotConfig.wakeUpInactiveAnimals);
+-        world.wakeupInactiveRemainingVillagers = Math.min(world.wakeupInactiveRemainingVillagers + 1, world.spigotConfig.wakeUpInactiveVillagers);
+-        world.wakeupInactiveRemainingMonsters = Math.min(world.wakeupInactiveRemainingMonsters + 1, world.spigotConfig.wakeUpInactiveMonsters);
+-        world.wakeupInactiveRemainingFlying = Math.min(world.wakeupInactiveRemainingFlying + 1, world.spigotConfig.wakeUpInactiveFlying);
++        final SpigotWorldConfig config = world.spigotConfig;
++        final int miscActivationRange = config.miscActivationRange;
++        final int raiderActivationRange = config.raiderActivationRange;
++        final int animalActivationRange = config.animalActivationRange;
++        final int monsterActivationRange = config.monsterActivationRange;
++        final int waterActivationRange = config.waterActivationRange;
++        final int flyingActivationRange = config.flyingMonsterActivationRange;
++        final int villagerActivationRange = config.villagerActivationRange;
++        world.wakeupInactiveRemainingAnimals = Math.min(world.wakeupInactiveRemainingAnimals + 1, config.wakeUpInactiveAnimals);
++        world.wakeupInactiveRemainingVillagers = Math.min(world.wakeupInactiveRemainingVillagers + 1, config.wakeUpInactiveVillagers);
++        world.wakeupInactiveRemainingMonsters = Math.min(world.wakeupInactiveRemainingMonsters + 1, config.wakeUpInactiveMonsters);
++        world.wakeupInactiveRemainingFlying = Math.min(world.wakeupInactiveRemainingFlying + 1, config.wakeUpInactiveFlying);
+ 
+         int maxRange = Math.max(monsterActivationRange, animalActivationRange);
+         maxRange = Math.max(maxRange, raiderActivationRange);
+@@ -139,32 +140,38 @@ public final class ActivationRange {
+         maxRange = Math.max(maxRange, flyingActivationRange);
+         maxRange = Math.max(maxRange, waterActivationRange);
+         maxRange = Math.max(maxRange, villagerActivationRange);
+-        maxRange = Math.min((world.spigotConfig.simulationDistance << 4) - 8, maxRange);
++        maxRange = Math.min((config.simulationDistance << 4) - 8, maxRange);
+ 
+-        for (final Player player : world.players()) {
+-            player.activatedTick = MinecraftServer.currentTick;
+-            if (world.spigotConfig.ignoreSpectatorActivation && player.isSpectator()) {
++        final long currentTick = MinecraftServer.currentTick;
++        final int worldHeight = world.getHeight();
++        final boolean tickMarkers = world.paperConfig().entities.markers.tick;
++        final List<? extends Player> players = world.players();
++        for (int playerIndex = 0, playerCount = players.size(); playerIndex < playerCount; playerIndex++) {
++            final Player player = players.get(playerIndex);
++            player.activatedTick = currentTick;
++            if (config.ignoreSpectatorActivation && player.isSpectator()) {
+                 continue;
+             }
+ 
+-            final int worldHeight = world.getHeight();
+-            ActivationRange.maxBB = player.getBoundingBox().inflate(maxRange, worldHeight, maxRange);
+-            ActivationType.MISC.boundingBox = player.getBoundingBox().inflate(miscActivationRange, worldHeight, miscActivationRange);
+-            ActivationType.RAIDER.boundingBox = player.getBoundingBox().inflate(raiderActivationRange, worldHeight, raiderActivationRange);
+-            ActivationType.ANIMAL.boundingBox = player.getBoundingBox().inflate(animalActivationRange, worldHeight, animalActivationRange);
+-            ActivationType.MONSTER.boundingBox = player.getBoundingBox().inflate(monsterActivationRange, worldHeight, monsterActivationRange);
+-            ActivationType.WATER.boundingBox = player.getBoundingBox().inflate(waterActivationRange, worldHeight, waterActivationRange);
+-            ActivationType.FLYING_MONSTER.boundingBox = player.getBoundingBox().inflate(flyingActivationRange, worldHeight, flyingActivationRange);
+-            ActivationType.VILLAGER.boundingBox = player.getBoundingBox().inflate(villagerActivationRange, worldHeight, villagerActivationRange);
++            // Entity#getBoundingBox returns the same immutable box until movement updates it. Reuse it for all ranges.
++            final AABB playerBoundingBox = player.getBoundingBox();
++            ActivationRange.maxBB = playerBoundingBox.inflate(maxRange, worldHeight, maxRange);
++            ActivationType.MISC.boundingBox = playerBoundingBox.inflate(miscActivationRange, worldHeight, miscActivationRange);
++            ActivationType.RAIDER.boundingBox = playerBoundingBox.inflate(raiderActivationRange, worldHeight, raiderActivationRange);
++            ActivationType.ANIMAL.boundingBox = playerBoundingBox.inflate(animalActivationRange, worldHeight, animalActivationRange);
++            ActivationType.MONSTER.boundingBox = playerBoundingBox.inflate(monsterActivationRange, worldHeight, monsterActivationRange);
++            ActivationType.WATER.boundingBox = playerBoundingBox.inflate(waterActivationRange, worldHeight, waterActivationRange);
++            ActivationType.FLYING_MONSTER.boundingBox = playerBoundingBox.inflate(flyingActivationRange, worldHeight, flyingActivationRange);
++            ActivationType.VILLAGER.boundingBox = playerBoundingBox.inflate(villagerActivationRange, worldHeight, villagerActivationRange);
+ 
+             final List<Entity> entities = world.getEntities((Entity) null, ActivationRange.maxBB, e -> true);
+-            final boolean tickMarkers = world.paperConfig().entities.markers.tick;
+-            for (final Entity entity : entities) {
++            for (int entityIndex = 0, entityCount = entities.size(); entityIndex < entityCount; entityIndex++) {
++                final Entity entity = entities.get(entityIndex);
+                 if (!tickMarkers && entity instanceof Marker) {
+                     continue;
+                 }
+ 
+-                ActivationRange.activateEntity(entity);
++                ActivationRange.activateEntity(entity, currentTick);
+             }
+         }
+     }
+@@ -174,14 +181,14 @@ public final class ActivationRange {
+      *
+      * @param entity
+      */
+-    private static void activateEntity(final Entity entity) {
+-        if (MinecraftServer.currentTick > entity.activatedTick) {
++    private static void activateEntity(final Entity entity, final long currentTick) {
++        if (currentTick > entity.activatedTick) {
+             if (entity.defaultActivationState) {
+-                entity.activatedTick = MinecraftServer.currentTick;
++                entity.activatedTick = currentTick;
+                 return;
+             }
+             if (entity.activationType.boundingBox.intersects(entity.getBoundingBox())) {
+-                entity.activatedTick = MinecraftServer.currentTick;
++                entity.activatedTick = currentTick;
+             }
+         }
+     }

@@ -1,0 +1,151 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 21 Aug 2026 15:22:51 +0800
+Subject: [PATCH] Harden villager AI and pure distance computation for beta142
+
+
+diff --git a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
+index a568fb3446e0f416a15726a546517683fa27a9fc..5a5bb99598fe539e1c0c724e06a2530f3de671f6 100644
+--- a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
+@@ -47,12 +47,12 @@ public class NearestItemSensor extends Sensor<Mob> {
+             ); // Paper - Perf: Move predicate into getEntities
+         }
+         // LeavesX start - use the same stable, allocation-reusing distance order as living-entity sensors
+-        if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortOptimization()
++        if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortPureComputation()
+             && items.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
+             org.leavesx.leavesx.performance.StableDistanceSorter.sortEntitiesByDistance(
+                 items,
+                 body,
+-                org.leavesx.leavesx.config.LeavesXRuntime.parallelAiTargetSearch(),
++                org.leavesx.leavesx.config.LeavesXRuntime.parallelAiPureComputation(),
+                 org.leavesx.leavesx.config.LeavesXRuntime.aiTargetSearchMinimumCandidates()
+             );
+         } else {
+diff --git a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
+index 60510e2cee009b7d44516a42037d789bfa476f67..9cd5e8e6b976fb46f3e5a66df7439605fbc72992 100644
+--- a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
++++ b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
+@@ -34,12 +34,12 @@ public class NearestLivingEntitySensor<T extends LivingEntity> extends Sensor<T>
+             );
+         }
+         // LeavesX start - snapshot distance keys on the tick thread, then stably reorder without per-sensor arrays
+-        if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortOptimization()
++        if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortPureComputation()
+             && livingEntities.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
+             org.leavesx.leavesx.performance.StableDistanceSorter.sortEntitiesByDistance(
+                 livingEntities,
+                 body,
+-                org.leavesx.leavesx.config.LeavesXRuntime.parallelAiTargetSearch(),
++                org.leavesx.leavesx.config.LeavesXRuntime.parallelAiPureComputation(),
+                 org.leavesx.leavesx.config.LeavesXRuntime.aiTargetSearchMinimumCandidates()
+             );
+         } else {
+diff --git a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
+index 53fb24440174584a9af1613b62be9b393cf0f732..d1d42cde36ec8f2ba6db4a9179f63c32e31a1a09 100644
+--- a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
+@@ -42,7 +42,6 @@ public class PlayerSensor extends Sensor<LivingEntity> {
+                     nearbyPlayers.add(player);
+                 }
+             }
+-            sortNearbyPlayers(nearbyPlayers, body);
+             players = nearbyPlayers;
+             // LeavesX end - preserve the stream predicate order while avoiding its per-sensor pipeline allocations
+         } else {
+@@ -50,9 +49,11 @@ public class PlayerSensor extends Sensor<LivingEntity> {
+                 .stream()
+                 .filter(EntitySelector.NO_SPECTATORS)
+                 .filter(player -> body.closerThan(player, this.getFollowDistance(body)))
+-                .sorted(Comparator.comparingDouble(body::distanceToSqr))
+                 .collect(Collectors.toList());
+         }
++        // Keep distance ordering separate from the eligibility path so the pure primitive sorter remains available
++        // during a villager compatibility tick without enabling any other AI fast path.
++        sortNearbyPlayers(players, body);
+         brain.setMemory(MemoryModuleType.NEAREST_PLAYERS, players);
+         final LivingEntity attackTarget = optimizeAllocations
+             ? brain.leavesX$getMemoryValueIfRegistered(MemoryModuleType.ATTACK_TARGET)
+@@ -92,12 +93,12 @@ public class PlayerSensor extends Sensor<LivingEntity> {
+      * LeavesX compute pool. Entity coordinates are captured on the tick thread before workers receive primitive keys.
+      */
+     private static void sortNearbyPlayers(final List<Player> players, final LivingEntity body) {
+-        if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortOptimization()
++        if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortPureComputation()
+             && players.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
+             org.leavesx.leavesx.performance.StableDistanceSorter.sortEntitiesByDistance(
+                 players,
+                 body,
+-                org.leavesx.leavesx.config.LeavesXRuntime.parallelAiTargetSearch(),
++                org.leavesx.leavesx.config.LeavesXRuntime.parallelAiPureComputation(),
+                 org.leavesx.leavesx.config.LeavesXRuntime.aiTargetSearchMinimumCandidates()
+             );
+             return;
+diff --git a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
+index c31c44de1cbc1af7c01ad0a531683e7828a74efc..7a1ec3c1e699d50336d61ddd8f197caa9940a430 100644
+--- a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
+@@ -1,6 +1,7 @@
+ package net.minecraft.world.entity.ai.sensing;
+ 
+ import com.google.common.collect.ImmutableSet;
++import java.util.ArrayList;
+ import java.util.Comparator;
+ import java.util.List;
+ import java.util.Set;
+@@ -77,6 +78,30 @@ public class TemptingSensor extends Sensor<PathfinderMob> {
+         final TargetingConditions targeting,
+         final List<? extends Player> players
+     ) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.parallelAiPureComputation()
++            && players.size() >= org.leavesx.leavesx.config.LeavesXRuntime.aiTargetSearchMinimumCandidates()) {
++            // All predicates remain on the tick thread. Only the final coordinate-distance reduction is delegated,
++            // and the returned index keeps the original player order for equal distances.
++            final List<Player> eligiblePlayers = new ArrayList<>(players.size());
++            for (final Player player : players) {
++                if (
++                    EntitySelector.NO_SPECTATORS.test(player)
++                        && targeting.test(level, body, player)
++                        && this.playerHoldingTemptation(body, player)
++                        && !body.hasPassenger(player)
++                ) {
++                    eligiblePlayers.add(player);
++                }
++            }
++            final int nearestIndex = org.leavesx.leavesx.performance.StableDistanceSorter.findNearestIndex(
++                eligiblePlayers,
++                body,
++                true,
++                org.leavesx.leavesx.config.LeavesXRuntime.aiTargetSearchMinimumCandidates()
++            );
++            return nearestIndex < 0 ? null : eligiblePlayers.get(nearestIndex);
++        }
++
+         Player nearestPlayer = null;
+         double nearestDistance = 0.0;
+         for (final Player player : players) {
+diff --git a/net/minecraft/world/entity/npc/villager/Villager.java b/net/minecraft/world/entity/npc/villager/Villager.java
+index 4c86271413f2fed00d48e1fea8d8095c620ebafc..5317b39559a3163767c0e88be4c2ccfdd475a3f1 100644
+--- a/net/minecraft/world/entity/npc/villager/Villager.java
++++ b/net/minecraft/world/entity/npc/villager/Villager.java
+@@ -277,7 +277,18 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+         // Paper end - EAR 2
+         ProfilerFiller profiler = Profiler.get();
+         profiler.push("villagerBrain");
+-        if (!inactive) this.getBrain().tick(level, this); // Paper - EAR 2
++        if (!inactive) { // Paper - EAR 2
++            // LeavesX start - always preserve the authoritative villager panic and golem-decision chain
++            // This narrow guard intentionally does not depend on villager-compatibility-mode. Old configurations may
++            // disable the wider full-tick guard, but Brain sensors and behaviors must still retain vanilla ordering.
++            final boolean previousBrainSafetyContext = org.leavesx.leavesx.config.LeavesXRuntime.enterVillagerBrainSafetyContext();
++            try {
++                this.getBrain().tick(level, this);
++            } finally {
++                org.leavesx.leavesx.config.LeavesXRuntime.exitVillagerBrainSafetyContext(previousBrainSafetyContext);
++            }
++            // LeavesX end - always preserve the authoritative villager panic and golem-decision chain
++        }
+         profiler.pop();
+         if (this.assignProfessionWhenSpawned) {
+             this.assignProfessionWhenSpawned = false;

@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 15:51:23 +0800
+Subject: [PATCH] Optimize entity inside-block collision paths
+
+
+diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
+index 831b199ec928df707ad319bb9740db8f2b91e164..b7f692fb84971e2f07beaef67874d9b6457ef8dc 100644
+--- a/net/minecraft/world/entity/Entity.java
++++ b/net/minecraft/world/entity/Entity.java
+@@ -1814,8 +1814,9 @@ public abstract class Entity
+                 } else {
+                     VoxelShape intersectShape = state.getEntityInsideCollisionShape(this.level(), blockIntersection, this);
+                     boolean insideBlock = intersectShape == Shapes.block()
+-                        || this.collidedWithShapeMovingFrom(from, to, intersectShape.move(new Vec3(blockIntersection)).toAabbs());
+-                    boolean insideFluid = this.collidedWithFluid(state.getFluidState(), blockIntersection, from, to);
++                        || this.collidedWithShapeMovingFrom(from, to, intersectShape.move(blockIntersection));
++                    FluidState fluidState = state.getFluidState();
++                    boolean insideFluid = !fluidState.isEmpty() && this.collidedWithFluid(fluidState, blockIntersection, from, to);
+                     if ((insideBlock || insideFluid) && visitedBlocks.add(blockIntersection.asLong())) {
+                         if (insideBlock) {
+                             try {
+@@ -1835,7 +1836,7 @@ public abstract class Entity
+ 
+                         if (insideFluid) {
+                             effectCollector.advanceStep(iteration, blockIntersection); // Paper - track position inside effect was triggered on
+-                            state.getFluidState().entityInside(this.level(), blockIntersection, this, effectCollector);
++                            fluidState.entityInside(this.level(), blockIntersection, this, effectCollector);
+                         }
+ 
+                         if (debugEntityBlockIntersections) {
+@@ -1867,7 +1868,7 @@ public abstract class Entity
+ 
+     public boolean collidedWithFluid(final FluidState fluidState, final BlockPos blockPos, final Vec3 from, final Vec3 to) {
+         AABB fluidAABB = fluidState.getAABB(this.level(), blockPos);
+-        return fluidAABB != null && this.collidedWithShapeMovingFrom(from, to, List.of(fluidAABB));
++        return fluidAABB != null && this.collidedWithShapeMovingFrom(from, to, fluidAABB);
+     }
+ 
+     public boolean collidedWithShapeMovingFrom(final Vec3 from, final Vec3 to, final List<AABB> aabbs) {
+@@ -1876,6 +1877,20 @@ public abstract class Entity
+         return boundingBoxAtFrom.collidedAlongVector(travelVector, aabbs);
+     }
+ 
++    public final boolean collidedWithShapeMovingFrom(final Vec3 from, final Vec3 to, final AABB aabb) {
++        AABB boundingBoxAtFrom = this.makeBoundingBox(from);
++        Vec3 travelVector = to.subtract(from);
++        return boundingBoxAtFrom.collidedAlongVector(travelVector, aabb);
++    }
++
++    public final boolean collidedWithShapeMovingFrom(final Vec3 from, final Vec3 to, final VoxelShape shape) {
++        // Simple collision shapes already expose a cached AABB; avoid materialising a one-element list for every entity move.
++        AABB singleAABB = shape.moonrise$getSingleAABBRepresentation();
++        return singleAABB != null
++            ? this.collidedWithShapeMovingFrom(from, to, singleAABB)
++            : this.collidedWithShapeMovingFrom(from, to, shape.toAabbs());
++    }
++
+     protected void onInsideBlock(final BlockState state) {
+     }
+ 
+diff --git a/net/minecraft/world/phys/AABB.java b/net/minecraft/world/phys/AABB.java
+index efb79617cebe7234d85721da7b7f1fd6ef1a6a73..8fcb4a5b38f90487c81299ebef662a2c6eec23e3 100644
+--- a/net/minecraft/world/phys/AABB.java
++++ b/net/minecraft/world/phys/AABB.java
+@@ -405,6 +405,18 @@ public class AABB {
+         return false;
+     }
+ 
++    public final boolean collidedAlongVector(final Vec3 vector, final AABB aabb) {
++        // Fluids and simple voxel shapes have one box, so use the same collision math without allocating a temporary list.
++        Vec3 from = this.getCenter();
++        Vec3 to = from.add(vector);
++        AABB inflated = aabb.inflate(this.getXsize() * 0.5 - 1.0E-7, this.getYsize() * 0.5 - 1.0E-7, this.getZsize() * 0.5 - 1.0E-7);
++        if (inflated.contains(to) || inflated.contains(from)) {
++            return true;
++        }
++
++        return inflated.clip(from, to).isPresent();
++    }
++
+     public double distanceToSqr(final Vec3 point) {
+         double dx = Math.max(Math.max(this.minX - point.x, point.x - this.maxX), 0.0);
+         double dy = Math.max(Math.max(this.minY - point.y, point.y - this.maxY), 0.0);

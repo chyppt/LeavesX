@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 20:42:48 +0800
+Subject: [PATCH] Add cat spawning density coverage for bate58
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/CatSpawnerDensityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/CatSpawnerDensityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..e3467e033c56cf482c28b5c5f092f7730f82e7b6
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/CatSpawnerDensityQueryHotPathTest.java
+@@ -0,0 +1,69 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ai.village.poi.PoiManager;
++import net.minecraft.world.entity.npc.CatSpawner;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies cat spawning density checks stop at their vanilla decision thresholds. */
++@Normal
++class CatSpawnerDensityQueryHotPathTest {
++
++    @Test
++    void villageCatSpawnKeepsBoundedAndVanillaPaths() throws IOException {
++        final MethodNode villageSpawn = method(classNode(CatSpawner.class), "spawnInVillage");
++        final List<MethodInsnNode> calls = invocations(villageSpawn);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("mobSpawningOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$hasAtLeastInRange")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getCountInRange")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("countUpTo")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
++    }
++
++    @Test
++    void hutCatSpawnKeepsFirstMatchAndVanillaPaths() throws IOException {
++        final MethodNode hutSpawn = method(classNode(CatSpawner.class), "spawnInHut");
++        final List<MethodInsnNode> calls = invocations(hutSpawn);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$hasEntityOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
++    }
++
++    @Test
++    void poiThresholdUsesBoundedMoonriseLookup() throws IOException {
++        final MethodNode threshold = method(classNode(PoiManager.class), "leavesX$hasAtLeastInRange");
++
++        assertTrue(invocations(threshold).stream().anyMatch(call -> call.name.equals("findAnyPoiRecords")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

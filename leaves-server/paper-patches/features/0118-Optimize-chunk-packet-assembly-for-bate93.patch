@@ -1,0 +1,237 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 04:09:05 +0800
+Subject: [PATCH] Optimize chunk packet assembly for bate93
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index e9079d431f63dd08feb02e7d1fec04fd13283650..e6dcea52477501a17f41ad761f7bc06663138d10 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -44,7 +44,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMask
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 24;
++    public static final int CURRENT_CONFIG_VERSION = 25;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index e61bfa59bf948964a43efc587eee83e492cf4113..e79acbec8de0130907590d9b9b1b0b097e4cf4a4 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：24。");
++        comments.put("config-version", "配置版本，请勿修改。默认：25。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 2de8c07761e01a2d7f416ffa8d0499df9f2f3961..0aa1fe9a8a7e20aa51e33ced43bb9f63a59f8b1e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -179,6 +179,10 @@ enum LeavesXOptimization {
+     ENTITY_SYNC_EQUIPMENT_LISTS(
+         "performance.entity-sync.lazy-equipment-lists",
+         "无装备实体首次同步时不创建装备列表，关闭后使用原版流程。默认：true。"
++    ),
++    CHUNK_PACKET_ASSEMBLY(
++        "performance.network.chunk-packet-assembly",
++        "减少区块数据包组装时的临时对象，关闭后使用 Paper 原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 3e0b24805bd455feee0220a03240d23c0629b0cf..1a18cac0be9b4b8a39bdaf82e7fdd7882455b4d5 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -45,6 +45,7 @@ public final class LeavesXRuntime {
+     private static int chunkUnloadBacklogThreshold = 1_000;
+     private static int chunkUnloadMinimumPerTick = 100;
+     private static int chunkUnloadMaximumPerTick = 500;
++    private static volatile boolean chunkPacketAssemblyOptimization = true;
+     private static long fineGrainedOptimizationMask = LeavesXOptimization.allEnabledMask();
+ 
+     private LeavesXRuntime() {
+@@ -101,6 +102,7 @@ public final class LeavesXRuntime {
+         chunkUnloadBacklogThreshold = validated.chunkUnloadBacklogThreshold();
+         chunkUnloadMinimumPerTick = validated.chunkUnloadMinimumPerTick();
+         chunkUnloadMaximumPerTick = validated.chunkUnloadMaximumPerTick();
++        chunkPacketAssemblyOptimization = validated.optimizationEnabled(LeavesXOptimization.CHUNK_PACKET_ASSEMBLY);
+         fineGrainedOptimizationMask = validated.fineGrainedOptimizationMask();
+         configuration = validated;
+     }
+@@ -496,6 +498,11 @@ public final class LeavesXRuntime {
+         return enabled(LeavesXOptimization.ENTITY_SYNC_EQUIPMENT_LISTS);
+     }
+ 
++    /** Returns whether chunk packet assembly may avoid stream and list growth allocations. */
++    public static boolean chunkPacketAssemblyOptimization() {
++        return chunkPacketAssemblyOptimization;
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(fineGrainedOptimizationMask);
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 715d9f97619bf224d1cd9f8f526273fc6333dee5..ee3d2e8d452f18d5f687954709e77da7a7550cd7 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -304,6 +304,8 @@ class LeavesXConfigLoaderTest {
+                 lazy-equipment-lists: false
+               entity-update:
+                 tick-diagnostic-state: false
++              network:
++                chunk-packet-assembly: false
+               entity-queries:
+                 pressure-plate-scans: false
+                 fox-item-search: false
+@@ -323,10 +325,11 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_LOAD_OPTIONAL_CHAINS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_SYNC_EQUIPMENT_LISTS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_TICK_DIAGNOSTIC_STATE));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_PACKET_ASSEMBLY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 16,
++            LeavesXConfig.fineGrainedOptimizationCount() - 17,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -346,6 +349,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.entityLoadOptionalChainsOptimization());
+             assertFalse(LeavesXRuntime.entitySyncEquipmentListsOptimization());
+             assertFalse(LeavesXRuntime.entityTickDiagnosticStateOptimization());
++            assertFalse(LeavesXRuntime.chunkPacketAssemblyOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.foxItemSearchOptimization());
+             assertTrue(LeavesXRuntime.wardenTargetSensorOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChunkPacketAssemblyHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ChunkPacketAssemblyHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..ac54552bae40117f0887a7c112f0218c59adfe3e
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ChunkPacketAssemblyHotPathTest.java
+@@ -0,0 +1,118 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.Arrays;
++import java.util.Collection;
++import java.util.List;
++import java.util.Map;
++import net.minecraft.network.protocol.game.ClientboundLevelChunkPacketData;
++import net.minecraft.world.level.levelgen.Heightmap;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies chunk packet assembly retains cloned data and the Paper allocation path. */
++@Normal
++class ChunkPacketAssemblyHotPathTest {
++
++    @Test
++    void optimizedHeightmapsMatchPaperFilteringAndCloning() throws ReflectiveOperationException {
++        final long[] clientData = {3L, 7L, 11L};
++        final Heightmap clientHeightmap = mock(Heightmap.class);
++        when(clientHeightmap.getRawData()).thenReturn(clientData);
++
++        final Heightmap serverHeightmap = mock(Heightmap.class);
++        when(serverHeightmap.getRawData()).thenReturn(new long[] {13L});
++
++        final Collection<Map.Entry<Heightmap.Types, Heightmap>> entries = List.of(
++            Map.entry(Heightmap.Types.WORLD_SURFACE, clientHeightmap),
++            Map.entry(Heightmap.Types.OCEAN_FLOOR, serverHeightmap)
++        );
++        final Map<Heightmap.Types, long[]> optimized = collectHeightmaps(entries, true);
++        final Map<Heightmap.Types, long[]> fallback = collectHeightmaps(entries, false);
++
++        assertEquals(fallback.keySet(), optimized.keySet());
++        assertFalse(optimized.containsKey(Heightmap.Types.OCEAN_FLOOR));
++        assertArrayEquals(clientData, optimized.get(Heightmap.Types.WORLD_SURFACE));
++        assertNotSame(clientData, optimized.get(Heightmap.Types.WORLD_SURFACE));
++        assertNotSame(fallback.get(Heightmap.Types.WORLD_SURFACE), optimized.get(Heightmap.Types.WORLD_SURFACE));
++    }
++
++    @Test
++    void constructorKeepsOptimizedAndPaperAllocationBranches() throws IOException {
++        final MethodNode constructor = constructorNode();
++        final List<MethodInsnNode> constructorCalls = invocations(constructor);
++
++        assertTrue(hasCall(constructorCalls, "org/leavesx/leavesx/config/LeavesXRuntime", "chunkPacketAssemblyOptimization"));
++        assertTrue(hasCall(constructorCalls, "net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData", "collectHeightmaps"));
++        assertTrue(hasCall(constructorCalls, "java/lang/Math", "min"));
++        assertTrue(constructorCalls.stream().anyMatch(call -> call.owner.equals("java/util/ArrayList")
++            && call.name.equals("<init>") && call.desc.equals("(I)V")));
++        assertTrue(hasCall(constructorCalls, "com/google/common/collect/Lists", "newArrayList"));
++
++        final List<MethodInsnNode> helperCalls = invocations(methodNode("collectHeightmaps"));
++        assertTrue(hasCall(helperCalls, "java/util/Collection", "stream"));
++        assertTrue(hasCall(helperCalls, "java/util/stream/Collectors", "toMap"));
++        assertTrue(hasCall(helperCalls, "java/util/HashMap", "<init>"));
++        assertTrue(hasCall(helperCalls, "java/util/Map", "put"));
++    }
++
++    @SuppressWarnings("unchecked")
++    private static Map<Heightmap.Types, long[]> collectHeightmaps(
++        final Collection<Map.Entry<Heightmap.Types, Heightmap>> entries,
++        final boolean optimize
++    ) throws ReflectiveOperationException {
++        final Method method = ClientboundLevelChunkPacketData.class.getDeclaredMethod("collectHeightmaps", Collection.class, boolean.class);
++        method.setAccessible(true);
++        return (Map<Heightmap.Types, long[]>)method.invoke(null, entries, optimize);
++    }
++
++    private static boolean hasCall(final List<MethodInsnNode> calls, final String owner, final String name) {
++        return calls.stream().anyMatch(call -> call.owner.equals(owner) && call.name.equals(name));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static MethodNode constructorNode() throws IOException {
++        return classNode().methods.stream()
++            .filter(method -> method.name.equals("<init>"))
++            .filter(method -> method.desc.contains("Lnet/minecraft/world/level/chunk/LevelChunk;"))
++            .filter(method -> method.desc.contains("Lio/papermc/paper/antixray/ChunkPacketInfo;"))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing chunk packet data constructor"));
++    }
++
++    private static MethodNode methodNode(final String methodName) throws IOException {
++        return classNode().methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing ClientboundLevelChunkPacketData#" + methodName));
++    }
++
++    private static ClassNode classNode() throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(ClientboundLevelChunkPacketData.class.getName()).accept(
++            classNode,
++            ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES
++        );
++        return classNode;
++    }
++}

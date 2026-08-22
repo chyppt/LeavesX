@@ -1,0 +1,161 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 16:22:10 +0800
+Subject: [PATCH] Add bate12 runtime diagnostics and path optimizations
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+index 4dfccf6a3e1f891dfca866e4c6a579884db3f8f1..28010217bc9255e525a238cec10f7c7720540ce5 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+@@ -117,6 +117,11 @@ public final class ChunkHolderManager {
+         this.unloadQueue = new ChunkUnloadQueue(((ChunkSystemServerLevel)world).moonrise$getRegionChunkShift());
+     }
+ 
++    /** Returns the exact pending unload count for the main-thread LeavesX diagnostic command. */
++    public long leavesX$getPendingUnloadCount() {
++        return this.unloadQueue.pendingChunkCount();
++    }
++
+     public boolean processTicketUpdates(final int chunkX, final int chunkZ) {
+         final int ticketShift = ThreadedTicketLevelPropagator.SECTION_SHIFT;
+         final int ticketMask = (1 << ticketShift) - 1;
+diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Connection.java
+index 074786da4475bef0ba26c5cebd8ca2afc67b29af..3eaa80c31a7465a91688480a991dc999cd6c8874 100644
+--- a/net/minecraft/network/Connection.java
++++ b/net/minecraft/network/Connection.java
+@@ -854,6 +854,11 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+         return this.averageSentPackets;
+     }
+ 
++    /** Returns the queued cross-thread network actions for the LeavesX diagnostic command. */
++    public int leavesX$getPendingActionCount() {
++        return this.pendingActions.size();
++    }
++
+     public void setBandwidthLogger(final LocalSampleLogger bandwidthLogger) {
+         this.bandwidthDebugMonitor = new BandwidthDebugMonitor(bandwidthLogger);
+     }
+diff --git a/net/minecraft/server/network/ServerConnectionListener.java b/net/minecraft/server/network/ServerConnectionListener.java
+index 68c417ce2d88f673af8313be2577043bf8225b73..f7eef39faf489959e1f6be6a10614ae27ebe0f21 100644
+--- a/net/minecraft/server/network/ServerConnectionListener.java
++++ b/net/minecraft/server/network/ServerConnectionListener.java
+@@ -93,7 +93,9 @@ public class ServerConnectionListener {
+                                     } catch (ChannelException var5) {
+                                     }
+ 
+-                                    if (!disableFlushConsolidation) channel.pipeline().addFirst(new io.netty.handler.flush.FlushConsolidationHandler()); // Paper - Optimize network
++                                    if (org.leavesx.leavesx.config.LeavesXRuntime.networkFlushConsolidation() && !disableFlushConsolidation) { // LeavesX - configurable Paper network optimization
++                                        channel.pipeline().addFirst(new io.netty.handler.flush.FlushConsolidationHandler());
++                                    }
+                                     ChannelPipeline pipeline = channel.pipeline().addLast(HandlerNames.TIMEOUT, new ReadTimeoutHandler(30));
+                                     if (ServerConnectionListener.this.server.repliesToStatus()) {
+                                         pipeline.addLast(HandlerNames.LEGACY_QUERY, new LegacyQueryHandler(ServerConnectionListener.this.getServer()));
+diff --git a/net/minecraft/world/entity/ai/goal/RandomLookAroundGoal.java b/net/minecraft/world/entity/ai/goal/RandomLookAroundGoal.java
+index b8551e9b79d898ab67419d4870e406e13d3789b3..6b31882d423679276ca6b2308938030951cfd1cb 100644
+--- a/net/minecraft/world/entity/ai/goal/RandomLookAroundGoal.java
++++ b/net/minecraft/world/entity/ai/goal/RandomLookAroundGoal.java
+@@ -16,7 +16,15 @@ public class RandomLookAroundGoal extends Goal {
+ 
+     @Override
+     public boolean canUse() {
+-        return this.mob.getRandom().nextFloat() < 0.02F;
++        float chance = 0.02F;
++        if (org.leavesx.leavesx.config.LeavesXRuntime.animalIdleGoalThrottling()
++            && this.mob instanceof net.minecraft.world.entity.animal.Animal) {
++            chance = org.leavesx.leavesx.performance.AnimalIdleGoalPolicy.scaleChance(
++                chance,
++                org.leavesx.leavesx.config.LeavesXRuntime.animalIdleGoalIntervalMultiplier()
++            );
++        }
++        return this.mob.getRandom().nextFloat() < chance;
+     }
+ 
+     @Override
+diff --git a/net/minecraft/world/entity/ai/goal/RandomStrollGoal.java b/net/minecraft/world/entity/ai/goal/RandomStrollGoal.java
+index 7e4fb5bb4e1df8e09ad7b08ca482ce44a47d0b28..f8967c379c0e65db405d552232e0dc5a7610990e 100644
+--- a/net/minecraft/world/entity/ai/goal/RandomStrollGoal.java
++++ b/net/minecraft/world/entity/ai/goal/RandomStrollGoal.java
+@@ -44,7 +44,15 @@ public class RandomStrollGoal extends Goal {
+                 return false;
+             }
+ 
+-            if (this.mob.getRandom().nextInt(reducedTickDelay(this.interval)) != 0) {
++            int effectiveInterval = this.interval;
++            if (org.leavesx.leavesx.config.LeavesXRuntime.animalIdleGoalThrottling()
++                && this.mob instanceof net.minecraft.world.entity.animal.Animal) {
++                effectiveInterval = org.leavesx.leavesx.performance.AnimalIdleGoalPolicy.scaleInterval(
++                    effectiveInterval,
++                    org.leavesx.leavesx.config.LeavesXRuntime.animalIdleGoalIntervalMultiplier()
++                );
++            }
++            if (this.mob.getRandom().nextInt(reducedTickDelay(effectiveInterval)) != 0) {
+                 return false;
+             }
+         }
+diff --git a/net/minecraft/world/level/pathfinder/PathFinder.java b/net/minecraft/world/level/pathfinder/PathFinder.java
+index 253074a0a14115cd3d18aaae6fa5822cf32346c9..3ade59d41756eca500f1e1d7bb3ab5421dfd69a9 100644
+--- a/net/minecraft/world/level/pathfinder/PathFinder.java
++++ b/net/minecraft/world/level/pathfinder/PathFinder.java
+@@ -137,13 +137,24 @@ public class PathFinder {
+         // Paper start - Perf: remove streams and optimize collection
+         Path best = null;
+         boolean entryListIsEmpty = reachedTargets.isEmpty();
+-        Comparator<Path> comparator = entryListIsEmpty
+-            ? Comparator.comparingInt(Path::getNodeCount)
+-            : Comparator.comparingDouble(Path::getDistToTarget).thenComparingInt(Path::getNodeCount);
+-        for (Map.Entry<Target, BlockPos> entry : entryListIsEmpty ? targets : reachedTargets) {
+-            Path path = this.reconstructPath(entry.getKey().getBestNode(), entry.getValue(), !entryListIsEmpty);
+-            if (best == null || comparator.compare(path, best) < 0) {
+-                best = path;
++        if (org.leavesx.leavesx.config.LeavesXRuntime.pathfindingOptimizations()) {
++            // LeavesX start - compare candidates directly and avoid allocating a comparator for every path search
++            for (Map.Entry<Target, BlockPos> entry : entryListIsEmpty ? targets : reachedTargets) {
++                Path path = this.reconstructPath(entry.getKey().getBestNode(), entry.getValue(), !entryListIsEmpty);
++                if (best == null || isBetterPath(path, best, entryListIsEmpty)) {
++                    best = path;
++                }
++            }
++            // LeavesX end - compare candidates directly and avoid allocating a comparator for every path search
++        } else {
++            Comparator<Path> comparator = entryListIsEmpty
++                ? Comparator.comparingInt(Path::getNodeCount)
++                : Comparator.comparingDouble(Path::getDistToTarget).thenComparingInt(Path::getNodeCount);
++            for (Map.Entry<Target, BlockPos> entry : entryListIsEmpty ? targets : reachedTargets) {
++                Path path = this.reconstructPath(entry.getKey().getBestNode(), entry.getValue(), !entryListIsEmpty);
++                if (best == null || comparator.compare(path, best) < 0) {
++                    best = path;
++                }
+             }
+         }
+         profiler.pop();
+@@ -162,6 +173,18 @@ public class PathFinder {
+         return from.distanceTo(to);
+     }
+ 
++    // LeavesX start - preserve Comparator ordering without constructing comparator objects
++    private static boolean isBetterPath(final Path candidate, final Path current, final boolean compareNodeCountOnly) {
++        if (!compareNodeCountOnly) {
++            final int distanceComparison = Double.compare(candidate.getDistToTarget(), current.getDistToTarget());
++            if (distanceComparison != 0) {
++                return distanceComparison < 0;
++            }
++        }
++        return candidate.getNodeCount() < current.getNodeCount();
++    }
++    // LeavesX end - preserve Comparator ordering without constructing comparator objects
++
+     private float getBestH(final Node from, final List<Map.Entry<Target, BlockPos>> targets) { // Paper - Perf: remove streams and optimize collection; Set<Target> -> List<Map.Entry<Target, BlockPos>>
+         float bestH = Float.MAX_VALUE;
+ 
+@@ -178,6 +201,10 @@ public class PathFinder {
+     }
+ 
+     private Path reconstructPath(final Node closest, final BlockPos target, final boolean reached) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.pathfindingOptimizations()) {
++            // LeavesX - vanilla inserted at index zero repeatedly, making long path reconstruction quadratic
++            return new Path(org.leavesx.leavesx.performance.PathNodeListBuilder.build(closest), target, reached);
++        }
+         List<Node> nodes = Lists.newArrayList();
+         Node node = closest;
+         nodes.add(0, node);

@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 02:29:46 +0800
+Subject: [PATCH] Pre-size chunk NBT lists for bate86
+
+
+diff --git a/net/minecraft/world/level/chunk/storage/SerializableChunkData.java b/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
+index 109b6cf540733d62675ec5d50538aeaeb518cf7d..bb856dd42608fc36b1df813454caae02ad25ac0c 100644
+--- a/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
++++ b/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
+@@ -574,6 +574,7 @@ public record SerializableChunkData(
+     }
+ 
+     public CompoundTag write() {
++        final boolean optimizeNbtListCapacity = org.leavesx.leavesx.config.LeavesXRuntime.chunkNbtListCapacityOptimization();
+         CompoundTag tag = NbtUtils.addCurrentDataVersion(new CompoundTag());
+         tag.putInt("xPos", this.chunkPos.x());
+         tag.putInt("yPos", this.minSectionY);
+@@ -587,7 +588,7 @@ public record SerializableChunkData(
+             tag.put("UpgradeData", this.upgradeData.write());
+         }
+ 
+-        ListTag sectionTags = new ListTag();
++        ListTag sectionTags = createListTag(this.sectionData.size(), optimizeNbtListCapacity);
+         Codec<PalettedContainer<BlockState>> blockStatesCodec = this.containerFactory.blockStatesContainerCodec();
+         Codec<PalettedContainerRO<Holder<Biome>>> biomeCodec = this.containerFactory.biomeContainerCodec();
+ 
+@@ -631,11 +632,11 @@ public record SerializableChunkData(
+             tag.putBoolean("isLightOn", true);
+         }
+ 
+-        ListTag blockEntityTags = new ListTag();
++        ListTag blockEntityTags = createListTag(this.blockEntities.size(), optimizeNbtListCapacity);
+         blockEntityTags.addAll(this.blockEntities);
+         tag.put("block_entities", blockEntityTags);
+         if (this.chunkStatus.getChunkType() == ChunkType.PROTOCHUNK) {
+-            ListTag entityTags = new ListTag();
++            ListTag entityTags = createListTag(this.entities.size(), optimizeNbtListCapacity);
+             entityTags.addAll(this.entities);
+             tag.put("entities", entityTags);
+             if (this.carvingMask != null) {
+@@ -644,7 +645,7 @@ public record SerializableChunkData(
+         }
+ 
+         saveTicks(tag, this.packedTicks);
+-        tag.put("PostProcessing", packOffsets(this.postProcessingSections));
++        tag.put("PostProcessing", packOffsets(this.postProcessingSections, optimizeNbtListCapacity));
+         CompoundTag heightmapsTag = new CompoundTag();
+         this.heightmaps.forEach((type, data) -> heightmapsTag.put(type.getSerializationKey(), new LongArrayTag(data)));
+         tag.put("Heightmaps", heightmapsTag);
+@@ -786,11 +787,11 @@ public record SerializableChunkData(
+         return outmap;
+     }
+ 
+-    private static ListTag packOffsets(final @Nullable ShortList[] sections) {
+-        ListTag listTag = new ListTag();
++    private static ListTag packOffsets(final @Nullable ShortList[] sections, final boolean optimizeNbtListCapacity) {
++        ListTag listTag = createListTag(sections.length, optimizeNbtListCapacity);
+ 
+         for (ShortList offsetList : sections) {
+-            ListTag offsetsTag = new ListTag();
++            ListTag offsetsTag = createListTag(offsetList == null ? 0 : offsetList.size(), optimizeNbtListCapacity);
+             if (offsetList != null) {
+                 for (int i = 0; i < offsetList.size(); i++) {
+                     offsetsTag.add(ShortTag.valueOf(offsetList.getShort(i)));
+@@ -803,6 +804,12 @@ public record SerializableChunkData(
+         return listTag;
+     }
+ 
++    private static ListTag createListTag(final int expectedSize, final boolean optimizeNbtListCapacity) {
++        return optimizeNbtListCapacity && expectedSize > 0
++            ? new ListTag(new ArrayList<>(expectedSize))
++            : new ListTag();
++    }
++
+     public static class ChunkReadException extends NbtException {
+         public ChunkReadException(final String message) {
+             super(message);

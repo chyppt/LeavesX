@@ -1,0 +1,212 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 22:59:30 +0800
+Subject: [PATCH] Optimize POI visited-section tracking for beta118
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
+index cd6b407b05a3c09598636520bd247e489a40db50..eed5f026625a96355f9e89c0ab916af0bb87fc1a 100644
+--- a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
++++ b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
+@@ -6,7 +6,6 @@ import com.mojang.datafixers.util.Pair;
+ import it.unimi.dsi.fastutil.doubles.Double2ObjectMap;
+ import it.unimi.dsi.fastutil.doubles.Double2ObjectRBTreeMap;
+ import it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue;
+-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+ import java.util.function.BiPredicate;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.core.Holder;
+@@ -23,7 +22,7 @@ import java.util.Map;
+ import java.util.Optional;
+ import java.util.Set;
+ import java.util.function.Predicate;
+-import org.leavesx.leavesx.performance.PoiSearchCapacity;
++import org.leavesx.leavesx.performance.PoiVisitedSectionSet;
+ 
+ /**
+  * Provides optimised access to POI data. All returned values will be identical to vanilla.
+@@ -62,22 +61,40 @@ public final class PoiAccess {
+         return (val < min ? min : (val > max ? max : val));
+     }
+ 
+-    // LeavesX start - pre-size the deterministic BFS visited set without changing traversal order
+-    private static LongOpenHashSet createVisitedSectionSet(
++    // LeavesX start - preserve the original Z-, X-, Y-, Y+, X+, Z+ neighbour order without hash probes.
++    private static void enqueueBoundedNeighbours(
++        final LongArrayFIFOQueue queue,
++        final PoiVisitedSectionSet seen,
++        final int sectionX,
++        final int sectionY,
++        final int sectionZ,
+         final int lowerX,
+         final int lowerY,
+         final int lowerZ,
+         final int upperX,
+         final int upperY,
+-        final int upperZ,
+-        final boolean boundedTraversal
++        final int upperZ
+     ) {
+-        if (!boundedTraversal) {
+-            return new LongOpenHashSet();
++        if (sectionZ > lowerZ && seen.mark(sectionX, sectionY, sectionZ - 1)) {
++            queue.enqueue(CoordinateUtils.getChunkSectionKey(sectionX, sectionY, sectionZ - 1));
++        }
++        if (sectionX > lowerX && seen.mark(sectionX - 1, sectionY, sectionZ)) {
++            queue.enqueue(CoordinateUtils.getChunkSectionKey(sectionX - 1, sectionY, sectionZ));
++        }
++        if (sectionY > lowerY && seen.mark(sectionX, sectionY - 1, sectionZ)) {
++            queue.enqueue(CoordinateUtils.getChunkSectionKey(sectionX, sectionY - 1, sectionZ));
++        }
++        if (sectionY < upperY && seen.mark(sectionX, sectionY + 1, sectionZ)) {
++            queue.enqueue(CoordinateUtils.getChunkSectionKey(sectionX, sectionY + 1, sectionZ));
++        }
++        if (sectionX < upperX && seen.mark(sectionX + 1, sectionY, sectionZ)) {
++            queue.enqueue(CoordinateUtils.getChunkSectionKey(sectionX + 1, sectionY, sectionZ));
++        }
++        if (sectionZ < upperZ && seen.mark(sectionX, sectionY, sectionZ + 1)) {
++            queue.enqueue(CoordinateUtils.getChunkSectionKey(sectionX, sectionY, sectionZ + 1));
+         }
+-        return new LongOpenHashSet(PoiSearchCapacity.forBounds(lowerX, lowerY, lowerZ, upperX, upperY, upperZ));
+     }
+-    // LeavesX end - pre-size the deterministic BFS visited set without changing traversal order
++    // LeavesX end - preserve the original Z-, X-, Y-, Y+, X+, Z+ neighbour order without hash probes.
+ 
+     protected static double getSmallestDistanceSquared(final double boxMinX, final double boxMinY, final double boxMinZ,
+                                                        final double boxMaxX, final double boxMaxY, final double boxMaxZ,
+@@ -136,8 +153,17 @@ public final class PoiAccess {
+ 
+         final boolean boundedTraversal = org.leavesx.leavesx.config.LeavesXRuntime.poiBoundedTraversalOptimization();
+         final LongArrayFIFOQueue queue = new LongArrayFIFOQueue();
+-        final LongOpenHashSet seen = createVisitedSectionSet(lowerX, lowerY, lowerZ, upperX, upperY, upperZ, boundedTraversal);
+-        seen.add(centerKey);
++        final PoiVisitedSectionSet seen = PoiVisitedSectionSet.create(
++            lowerX,
++            lowerY,
++            lowerZ,
++            upperX,
++            upperY,
++            upperZ,
++            boundedTraversal,
++            org.leavesx.leavesx.config.LeavesXRuntime.poiSectionBitSetOptimization()
++        );
++        seen.mark(centerX, centerY, centerZ);
+         queue.enqueue(centerKey);
+ 
+         while (!queue.isEmpty()) {
+@@ -165,28 +191,26 @@ public final class PoiAccess {
+             }
+ 
+             // queue all neighbours
+-            for (int dz = -1; dz <= 1; ++dz) {
+-                for (int dx = -1; dx <= 1; ++dx) {
+-                    for (int dy = -1; dy <= 1; ++dy) {
+-                        // -1 and 1 have the 1st bit set. so just add up the first bits, and it will tell us how many
+-                        // values are set. we only care about cardinal neighbours, so, we only care if one value is set
+-                        if ((dx & 1) + (dy & 1) + (dz & 1) != 1) {
+-                            continue;
+-                        }
+-
+-                        final int neighbourX = sectionX + dx;
+-                        final int neighbourY = sectionY + dy;
+-                        final int neighbourZ = sectionZ + dz;
++            if (boundedTraversal) {
++                enqueueBoundedNeighbours(
++                    queue, seen, sectionX, sectionY, sectionZ, lowerX, lowerY, lowerZ, upperX, upperY, upperZ
++                );
++            } else {
++                for (int dz = -1; dz <= 1; ++dz) {
++                    for (int dx = -1; dx <= 1; ++dx) {
++                        for (int dy = -1; dy <= 1; ++dy) {
++                            // -1 and 1 have the 1st bit set. so just add up the first bits, and it will tell us how many
++                            // values are set. we only care about cardinal neighbours, so, we only care if one value is set
++                            if ((dx & 1) + (dy & 1) + (dz & 1) != 1) {
++                                continue;
++                            }
+ 
+-                        // LeavesX - boundary nodes are discarded immediately when dequeued, so do not enqueue them.
+-                        if (boundedTraversal && !PoiSearchCapacity.contains(
+-                            neighbourX, neighbourY, neighbourZ, lowerX, lowerY, lowerZ, upperX, upperY, upperZ
+-                        )) {
+-                            continue;
+-                        }
+-                        final long neighbourKey = CoordinateUtils.getChunkSectionKey(neighbourX, neighbourY, neighbourZ);
+-                        if (seen.add(neighbourKey)) {
+-                            queue.enqueue(neighbourKey);
++                            final int neighbourX = sectionX + dx;
++                            final int neighbourY = sectionY + dy;
++                            final int neighbourZ = sectionZ + dz;
++                            if (seen.mark(neighbourX, neighbourY, neighbourZ)) {
++                                queue.enqueue(CoordinateUtils.getChunkSectionKey(neighbourX, neighbourY, neighbourZ));
++                            }
+                         }
+                     }
+                 }
+@@ -386,8 +410,17 @@ public final class PoiAccess {
+ 
+         final boolean boundedTraversal = org.leavesx.leavesx.config.LeavesXRuntime.poiBoundedTraversalOptimization();
+         final LongArrayFIFOQueue queue = new LongArrayFIFOQueue();
+-        final LongOpenHashSet seen = createVisitedSectionSet(lowerX, lowerY, lowerZ, upperX, upperY, upperZ, boundedTraversal);
+-        seen.add(centerKey);
++        final PoiVisitedSectionSet seen = PoiVisitedSectionSet.create(
++            lowerX,
++            lowerY,
++            lowerZ,
++            upperX,
++            upperY,
++            upperZ,
++            boundedTraversal,
++            org.leavesx.leavesx.config.LeavesXRuntime.poiSectionBitSetOptimization()
++        );
++        seen.mark(centerX, centerY, centerZ);
+         queue.enqueue(centerKey);
+ 
+         while (!queue.isEmpty()) {
+@@ -416,28 +449,26 @@ public final class PoiAccess {
+             }
+ 
+             // queue all neighbours
+-            for (int dz = -1; dz <= 1; ++dz) {
+-                for (int dx = -1; dx <= 1; ++dx) {
+-                    for (int dy = -1; dy <= 1; ++dy) {
+-                        // -1 and 1 have the 1st bit set. so just add up the first bits, and it will tell us how many
+-                        // values are set. we only care about cardinal neighbours, so, we only care if one value is set
+-                        if ((dx & 1) + (dy & 1) + (dz & 1) != 1) {
+-                            continue;
+-                        }
+-
+-                        final int neighbourX = sectionX + dx;
+-                        final int neighbourY = sectionY + dy;
+-                        final int neighbourZ = sectionZ + dz;
++            if (boundedTraversal) {
++                enqueueBoundedNeighbours(
++                    queue, seen, sectionX, sectionY, sectionZ, lowerX, lowerY, lowerZ, upperX, upperY, upperZ
++                );
++            } else {
++                for (int dz = -1; dz <= 1; ++dz) {
++                    for (int dx = -1; dx <= 1; ++dx) {
++                        for (int dy = -1; dy <= 1; ++dy) {
++                            // -1 and 1 have the 1st bit set. so just add up the first bits, and it will tell us how many
++                            // values are set. we only care about cardinal neighbours, so, we only care if one value is set
++                            if ((dx & 1) + (dy & 1) + (dz & 1) != 1) {
++                                continue;
++                            }
+ 
+-                        // LeavesX - boundary nodes are discarded immediately when dequeued, so do not enqueue them.
+-                        if (boundedTraversal && !PoiSearchCapacity.contains(
+-                            neighbourX, neighbourY, neighbourZ, lowerX, lowerY, lowerZ, upperX, upperY, upperZ
+-                        )) {
+-                            continue;
+-                        }
+-                        final long neighbourKey = CoordinateUtils.getChunkSectionKey(neighbourX, neighbourY, neighbourZ);
+-                        if (seen.add(neighbourKey)) {
+-                            queue.enqueue(neighbourKey);
++                            final int neighbourX = sectionX + dx;
++                            final int neighbourY = sectionY + dy;
++                            final int neighbourZ = sectionZ + dz;
++                            if (seen.mark(neighbourX, neighbourY, neighbourZ)) {
++                                queue.enqueue(CoordinateUtils.getChunkSectionKey(neighbourX, neighbourY, neighbourZ));
++                            }
+                         }
+                     }
+                 }

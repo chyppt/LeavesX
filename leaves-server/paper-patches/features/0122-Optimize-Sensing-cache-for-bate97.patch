@@ -1,0 +1,224 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 05:39:56 +0800
+Subject: [PATCH] Optimize Sensing cache for bate97
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 2afbf52f20ceb46e79458aa3e8ed3977fd9cd3ca..b85f6e3026ed574db5dbe615ee4496d5357f6ff9 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 27;
++    public static final int CURRENT_CONFIG_VERSION = 28;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index ebd83f39fdb14ea48db181bb5bab140a8e1a9ac0..839c51c02002a3574f31d8c12250bf8357c2f332 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：27。");
++        comments.put("config-version", "配置版本，请勿修改。默认：28。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index c0ba59d257141915055d23afea540539298efd56..a7bd512c4ba88e4d3bec43793e50f7c8c648d1ad 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -191,6 +191,10 @@ enum LeavesXOptimization {
+     BRAIN_TICK_TRAVERSAL(
+         "performance.ai.brain-tick-traversal",
+         "减少生物感知器和记忆更新的迭代开销，关闭后使用原版流程。默认：true。"
++    ),
++    SENSING_CACHE(
++        "performance.ai.sensing-cache",
++        "合并生物视线缓存并减少重复查找，关闭后使用原版缓存。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index f70929d7a087ca0688572f20260d9ef2805308c5..bc12496ed2647b6d4c735a4f17ae7278cf086e80 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -48,6 +48,7 @@ public final class LeavesXRuntime {
+     private static volatile boolean chunkPacketAssemblyOptimization = true;
+     private static boolean goalSelectorOptimization = true;
+     private static boolean brainTickTraversalOptimization = true;
++    private static boolean sensingCacheOptimization = true;
+     private static long fineGrainedOptimizationMaskLow = LeavesXOptimization.allEnabledMaskLow();
+     private static long fineGrainedOptimizationMaskHigh = LeavesXOptimization.allEnabledMaskHigh();
+ 
+@@ -108,6 +109,7 @@ public final class LeavesXRuntime {
+         chunkPacketAssemblyOptimization = validated.optimizationEnabled(LeavesXOptimization.CHUNK_PACKET_ASSEMBLY);
+         goalSelectorOptimization = validated.optimizationEnabled(LeavesXOptimization.GOAL_SELECTOR);
+         brainTickTraversalOptimization = validated.optimizationEnabled(LeavesXOptimization.BRAIN_TICK_TRAVERSAL);
++        sensingCacheOptimization = validated.optimizationEnabled(LeavesXOptimization.SENSING_CACHE);
+         fineGrainedOptimizationMaskLow = validated.fineGrainedOptimizationMaskLow();
+         fineGrainedOptimizationMaskHigh = validated.fineGrainedOptimizationMaskHigh();
+         configuration = validated;
+@@ -519,6 +521,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && brainTickTraversalOptimization;
+     }
+ 
++    /** Returns whether Sensing may use one compact tri-state visibility cache. */
++    public static boolean sensingCacheOptimization() {
++        return aiOptimizations && sensingCacheOptimization;
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(fineGrainedOptimizationMaskLow, fineGrainedOptimizationMaskHigh);
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 03d0e302feb7e934caedecda5cf16fc0264ac810..4cd84fb6c79a562fec67c8bea5eee6bb1ca654b2 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -291,6 +291,7 @@ class LeavesXConfigLoaderTest {
+                 hurt-by-sensor: false
+                 mob-presence-sensors: false
+                 player-sensor: false
++                sensing-cache: false
+                 villager-babies-sensor: false
+               block-entity:
+                 hopper-entity-queries: false
+@@ -319,6 +320,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HURT_BY_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.MOB_PRESENCE_SENSORS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PLAYER_SENSOR));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.SENSING_CACHE));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.VILLAGER_BABIES_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_ENTITY_QUERIES));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.EXPIRING_TICKET_BUFFERS));
+@@ -333,7 +335,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 19,
++            LeavesXConfig.fineGrainedOptimizationCount() - 20,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -345,6 +347,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.hurtBySensorOptimization());
+             assertFalse(LeavesXRuntime.mobPresenceSensorOptimization());
+             assertFalse(LeavesXRuntime.playerSensorOptimization());
++            assertFalse(LeavesXRuntime.sensingCacheOptimization());
+             assertFalse(LeavesXRuntime.villagerBabiesSensorOptimization());
+             assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
+             assertFalse(LeavesXRuntime.expiringTicketBuffersOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/config/SensingCacheOptimizationTest.java b/src/test/java/org/leavesx/leavesx/config/SensingCacheOptimizationTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9d0a1d7b6a8672127421e4ac8345458a9c0dc3d0
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/config/SensingCacheOptimizationTest.java
+@@ -0,0 +1,102 @@
++package org.leavesx.leavesx.config;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.times;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import java.io.IOException;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.List;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.entity.Mob;
++import net.minecraft.world.entity.ai.sensing.Sensing;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++
++@Normal
++class SensingCacheOptimizationTest {
++
++    @TempDir
++    Path tempDir;
++
++    @Test
++    void optimizedAndPaperCachesKeepPerTickVisibilitySemantics() throws IOException {
++        final List<Boolean> paperResults = this.runPerTickScenario(false);
++
++        assertEquals(List.of(true, true, false, false, false, true), paperResults);
++        assertEquals(paperResults, this.runPerTickScenario(true));
++    }
++
++    @Test
++    void switchingCacheModeDoesNotReuseEntriesFromThePreviousMode() throws IOException {
++        final Mob mob = mock(Mob.class);
++        final Entity target = targetWithId(31);
++        when(mob.hasLineOfSight(target)).thenReturn(true, false, true);
++        final Sensing sensing;
++
++        try {
++            LeavesXRuntime.publish(this.configuration(true, "mode-enabled-first.yml"));
++            sensing = new Sensing(mob);
++            assertTrue(sensing.hasLineOfSight(target));
++            assertTrue(sensing.hasLineOfSight(target));
++
++            LeavesXRuntime.publish(this.configuration(false, "mode-disabled.yml"));
++            assertFalse(sensing.hasLineOfSight(target));
++
++            LeavesXRuntime.publish(this.configuration(true, "mode-enabled-again.yml"));
++            assertTrue(sensing.hasLineOfSight(target));
++            verify(mob, times(3)).hasLineOfSight(target);
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    private List<Boolean> runPerTickScenario(final boolean optimized) throws IOException {
++        final Mob mob = mock(Mob.class);
++        final Entity visible = targetWithId(11);
++        final Entity hidden = targetWithId(12);
++        when(mob.hasLineOfSight(visible)).thenReturn(true, false);
++        when(mob.hasLineOfSight(hidden)).thenReturn(false, true);
++
++        try {
++            LeavesXRuntime.publish(this.configuration(optimized, "per-tick-" + optimized + ".yml"));
++            final Sensing sensing = new Sensing(mob);
++            final boolean firstVisible = sensing.hasLineOfSight(visible);
++            final boolean cachedVisible = sensing.hasLineOfSight(visible);
++            final boolean firstHidden = sensing.hasLineOfSight(hidden);
++            final boolean cachedHidden = sensing.hasLineOfSight(hidden);
++            sensing.tick();
++            final boolean nextTickVisible = sensing.hasLineOfSight(visible);
++            final boolean nextTickHidden = sensing.hasLineOfSight(hidden);
++
++            verify(mob, times(2)).hasLineOfSight(visible);
++            verify(mob, times(2)).hasLineOfSight(hidden);
++            return List.of(firstVisible, cachedVisible, firstHidden, cachedHidden, nextTickVisible, nextTickHidden);
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    private LeavesXConfig configuration(final boolean optimized, final String fileName) throws IOException {
++        final Path path = this.tempDir.resolve(fileName);
++        Files.writeString(path, """
++            config-version: 1
++            performance:
++              ai:
++                sensing-cache: %s
++            """.formatted(optimized));
++        return LeavesXConfigLoader.load(path);
++    }
++
++    private static Entity targetWithId(final int id) {
++        final Entity target = mock(Entity.class);
++        when(target.getId()).thenReturn(id);
++        return target;
++    }
++}

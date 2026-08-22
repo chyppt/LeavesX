@@ -1,0 +1,348 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 18:33:48 +0800
+Subject: [PATCH] Add bounded entity query controls for bate46
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 6178079da7681a0301c3bbfd217b0892a86de533..644847e754689b838e193ffb46c6e0212825c1e6 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -922,6 +922,7 @@ public final class LeavesXCommand extends Command {
+         final LeavesXConfig config = LeavesXRuntime.configuration();
+         sendHeader(sender, "LeavesX 配置状态");
+         sender.sendMessage(line("实体状态优化", onOff(config.entityStateOptimizations()), NamedTextColor.AQUA));
++        sender.sendMessage(line("实体查询优化", onOff(config.entityQueryOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("AI/寻路", onOff(config.aiOptimizations()) + " / " + onOff(config.pathfindingOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("动物空闲降频", onOff(config.animalIdleGoalThrottling()) + "，倍数 " + config.animalIdleGoalIntervalMultiplier(), config.animalIdleGoalThrottling() ? NamedTextColor.YELLOW : NamedTextColor.GREEN));
+         sender.sendMessage(line("刷怪优化", onOff(config.mobSpawningOptimizations()) + "，并行 " + onOff(config.parallelMobSpawnCounting()), NamedTextColor.AQUA));
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 832de1875359671da77abbfc6cca69b801122862..c2c64aaf7d3b15eb49b313a7bf445403ed4c3951 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -18,6 +18,7 @@ public record LeavesXConfig(
+     boolean resourceIdentifierCache,
+     boolean skipEmptyEvents,
+     boolean entityStateOptimizations,
++    boolean entityQueryOptimizations,
+     boolean aiOptimizations,
+     boolean pathfindingOptimizations,
+     boolean mobSpawningOptimizations,
+@@ -39,7 +40,7 @@ public record LeavesXConfig(
+     int chunkUnloadMaximumPerTick
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 6;
++    public static final int CURRENT_CONFIG_VERSION = 7;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -104,6 +105,7 @@ public record LeavesXConfig(
+             true,
+             true,
+             true,
++            true,
+             false,
+             2,
+             true,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index ddb5d9a36ebab196371f51143772823913fef917..98d95c37b706d2a2ba7235e6391227d4b3e67ea9 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -67,13 +67,14 @@ public final class LeavesXConfigBootstrap {
+     private static void logConfiguration(final LeavesXConfig config) {
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+-            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, entity state {}, AI {}, pathfinding {}, mob spawning {}, item merge {}, block entity hot paths {}, block entity removal {}, spawn range {}",
++            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, entity state {}, entity queries {}, AI {}, pathfinding {}, mob spawning {}, item merge {}, block entity hot paths {}, block entity removal {}, spawn range {}",
+             config.optimizedVarInt(),
+             config.networkFlushConsolidation(),
+             config.immutableCacheOptimizations(),
+             config.resourceIdentifierCache(),
+             config.skipEmptyEvents(),
+             config.entityStateOptimizations(),
++            config.entityQueryOptimizations(),
+             config.aiOptimizations(),
+             config.pathfindingOptimizations(),
+             config.mobSpawningOptimizations(),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 075b29a0098cf833b8c221e0ea35b88c5c2db058..785a42f7094884a095d5c59b11f12e8d2a7c765f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -122,6 +122,11 @@ public final class LeavesXConfigLoader {
+                     "performance.entity-state-optimizations",
+                     true
+                 ),
++                readBoolean(
++                    node.node("performance", "entity-query-optimizations"),
++                    "performance.entity-query-optimizations",
++                    true
++                ),
+                 readBoolean(node.node("performance", "ai-optimizations"), "performance.ai-optimizations", true),
+                 readBoolean(
+                     node.node("performance", "pathfinding-optimizations"),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 8b8557641d17144bf37005d3be00dad000b43f43..1471e56158b3f785a0f8de7c9f0b19c25b6982d3 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -129,6 +129,12 @@ public final class LeavesXConfigWriter {
+             config.entityStateOptimizations(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "entity-query-optimizations"),
++            "performance.entity-query-optimizations",
++            config.entityQueryOptimizations(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "ai-optimizations"),
+             "performance.ai-optimizations",
+@@ -256,7 +262,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：6。");
++        comments.put("config-version", "配置版本，请勿修改。默认：7。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -267,6 +273,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.resource-identifier-cache", "缓存资源名称和哈希值。默认：true。");
+         comments.put("performance.skip-empty-events", "没有监听器时跳过事件对象创建。默认：true。");
+         comments.put("performance.entity-state-optimizations", "减少实体装备等状态检查的临时对象。默认：true。");
++        comments.put("performance.entity-query-optimizations", "只查一个实体时立即停止搜索并复用临时列表。默认：true。");
+         comments.put("performance.ai-optimizations", "减少 AI 和村民 POI 搜索的重复计算。默认：true。");
+         comments.put("performance.pathfinding-optimizations", "减少寻路重建和临时对象开销。默认：true。");
+         comments.put("performance.mob-spawning-optimizations", "减少刷怪统计的临时对象和重复遍历。默认：true。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 630d4d8b912fdabfd9ab1d00a8895cc8f02e6b44..fa05ffc1ed2caf1dd4a22d6ef795817109b04ba3 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -24,6 +24,7 @@ public final class LeavesXRuntime {
+     private static volatile boolean resourceIdentifierCache = true;
+     private static volatile boolean skipEmptyEvents = true;
+     private static boolean entityStateOptimizations = true;
++    private static boolean entityQueryOptimizations = true;
+     private static boolean aiOptimizations = true;
+     private static boolean pathfindingOptimizations = true;
+     private static boolean mobSpawningOptimizations = true;
+@@ -71,6 +72,7 @@ public final class LeavesXRuntime {
+         resourceIdentifierCache = validated.resourceIdentifierCache();
+         skipEmptyEvents = validated.skipEmptyEvents();
+         entityStateOptimizations = validated.entityStateOptimizations();
++        entityQueryOptimizations = validated.entityQueryOptimizations();
+         aiOptimizations = validated.aiOptimizations();
+         pathfindingOptimizations = validated.pathfindingOptimizations();
+         mobSpawningOptimizations = validated.mobSpawningOptimizations();
+@@ -156,6 +158,11 @@ public final class LeavesXRuntime {
+         return entityStateOptimizations;
+     }
+ 
++    /** Returns whether existence-only entity searches may stop after their first deterministic match. */
++    public static boolean entityQueryOptimizations() {
++        return entityQueryOptimizations;
++    }
++
+     /** Returns whether behavior-equivalent synchronous AI hot-path optimizations are enabled. */
+     public static boolean aiOptimizations() {
+         return aiOptimizations;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 447049ce0ba5c58646db63b21182b9e1af090eb3..dbde5716f57837763a702ea42cd30b8dab5f0439 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -83,6 +83,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(config.chunkSpawnRangeOptimization());
+         assertTrue(config.mobSpawningOptimizations());
+         assertTrue(config.entityStateOptimizations());
++        assertTrue(config.entityQueryOptimizations());
+         assertFalse(reloaded.node("performance", "optimized-varint").getBoolean());
+         assertTrue(reloaded.node("performance", "item-merge-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "block-entity-optimizations").getBoolean());
+@@ -90,6 +91,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(reloaded.node("performance", "chunk-spawn-range-optimization").getBoolean());
+         assertTrue(reloaded.node("performance", "mob-spawning-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "entity-state-optimizations").getBoolean());
++        assertTrue(reloaded.node("performance", "entity-query-optimizations").getBoolean());
+         assertTrue(reloaded.node("custom-extension", "retained").getBoolean());
+         assertTrue(upgraded.contains("# User-managed LeavesX settings."), upgraded);
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.item-merge-optimizations")));
+@@ -98,6 +100,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.chunk-spawn-range-optimization")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.mob-spawning-optimizations")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.entity-state-optimizations")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.entity-query-optimizations")));
+     }
+ 
+     @Test
+@@ -150,6 +153,7 @@ class LeavesXConfigLoaderTest {
+               resource-identifier-cache: false
+               skip-empty-events: false
+               entity-state-optimizations: false
++              entity-query-optimizations: false
+               ai-optimizations: false
+               pathfinding-optimizations: false
+               mob-spawning-optimizations: false
+@@ -184,6 +188,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.resourceIdentifierCache());
+         assertFalse(config.skipEmptyEvents());
+         assertFalse(config.entityStateOptimizations());
++        assertFalse(config.entityQueryOptimizations());
+         assertFalse(config.aiOptimizations());
+         assertFalse(config.pathfindingOptimizations());
+         assertFalse(config.mobSpawningOptimizations());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityQueryShortCircuitTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityQueryShortCircuitTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..a45f90555173675ee9123c6a484a29d5fc6d1657
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityQueryShortCircuitTest.java
+@@ -0,0 +1,149 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.Constructor;
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Method;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.monster.warden.WardenSpawnTracker;
++import net.minecraft.world.level.Level;
++import net.minecraft.world.level.block.ButtonBlock;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies existence-only entity queries stop after their first deterministic match. */
++@Normal
++class EntityQueryShortCircuitTest {
++
++    @Test
++    void levelUsesAReentrancySafeThreadLocalBufferForFirstMatchQueries() throws IOException {
++        final ClassNode level = classNode(Level.class);
++        final String bufferName = level.name + "$LeavesXFirstEntityQueryBuffer";
++        final FieldNode threadLocal = field(level, "LEAVESX_FIRST_ENTITY_QUERY_BUFFER");
++        assertEquals("Ljava/lang/ThreadLocal;", threadLocal.desc);
++
++        final MethodNode first = method(
++            level,
++            "leavesX$getFirstEntityOfClass",
++            "(Ljava/lang/Class;Lnet/minecraft/world/phys/AABB;Ljava/util/function/Predicate;)Lnet/minecraft/world/entity/Entity;"
++        );
++        assertTrue(hasInvocation(first, "java/lang/ThreadLocal", "get"));
++        assertTrue(hasInvocation(first, bufferName, "acquire"));
++        assertTrue(hasInvocation(first, bufferName, "release"));
++        final List<MethodInsnNode> boundedQueries = invocations(first).stream()
++            .filter(call -> call.owner.equals("ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup"))
++            .filter(call -> call.name.equals("getEntities") && call.desc.endsWith("I)V"))
++            .toList();
++        assertEquals(2, boundedQueries.size(), "Both the shared and nested paths must use the limited lookup");
++        assertTrue(
++            boundedQueries.stream().allMatch(call -> call.getPrevious().getOpcode() == Opcodes.ICONST_1),
++            "Every first-match query must pass maxCount=1"
++        );
++
++        final ClassNode buffer = classNode(bufferName.replace('/', '.'));
++        assertEquals("Ljava/util/List;", field(buffer, "results").desc);
++        assertEquals("Z", field(buffer, "inUse").desc);
++    }
++
++    @Test
++    void nestedUseDeclinesTheSharedBufferUntilTheOuterQueryReleasesIt()
++        throws NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
++        final Class<?> bufferClass = Arrays.stream(Level.class.getDeclaredClasses())
++            .filter(type -> type.getSimpleName().equals("LeavesXFirstEntityQueryBuffer"))
++            .findFirst()
++            .orElseThrow();
++        final Constructor<?> constructor = bufferClass.getDeclaredConstructor();
++        constructor.setAccessible(true);
++        final Object buffer = constructor.newInstance();
++        final Method acquire = bufferClass.getDeclaredMethod("acquire");
++        final Method release = bufferClass.getDeclaredMethod("release");
++        acquire.setAccessible(true);
++        release.setAccessible(true);
++
++        assertTrue((boolean)acquire.invoke(buffer));
++        assertFalse((boolean)acquire.invoke(buffer), "Nested queries must use their one-off fallback list");
++        release.invoke(buffer);
++        assertTrue((boolean)acquire.invoke(buffer));
++        release.invoke(buffer);
++    }
++
++    @Test
++    void woodenButtonAvoidsStreamAllocationAndUsesTheShortCircuitQuery() throws IOException {
++        final MethodNode checkPressed = method(classNode(ButtonBlock.class), "checkPressed");
++        final List<MethodInsnNode> calls = invocations(checkPressed);
++
++        assertFalse(calls.stream().anyMatch(call -> call.owner.equals("java/util/stream/Stream") && call.name.equals("findFirst")));
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++        ));
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("net/minecraft/world/level/Level") && call.name.equals("leavesX$getFirstEntityOfClass")
++        ));
++    }
++
++    @Test
++    void wardenExistenceCheckUsesTheSameBoundedQuery() throws IOException {
++        final MethodNode check = method(classNode(WardenSpawnTracker.class), "hasNearbyWarden");
++        final List<MethodInsnNode> calls = invocations(check);
++
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++        ));
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("net/minecraft/server/level/ServerLevel") && call.name.equals("leavesX$hasEntityOfClass")
++        ));
++    }
++
++    private static FieldNode field(final ClassNode owner, final String name) {
++        return owner.fields.stream()
++            .filter(field -> field.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing field " + owner.name + '#' + name));
++    }
++
++    private static boolean hasInvocation(final MethodNode method, final String owner, final String name) {
++        return invocations(method).stream().anyMatch(call -> call.owner.equals(owner) && call.name.equals(name));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        return classNode(owner.getName());
++    }
++
++    private static ClassNode classNode(final String className) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(className).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName, final String descriptor) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName) && method.desc.equals(descriptor))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName + descriptor));
++    }
++}

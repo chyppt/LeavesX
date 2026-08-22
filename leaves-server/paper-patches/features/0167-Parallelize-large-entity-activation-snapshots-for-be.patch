@@ -1,0 +1,841 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 21 Aug 2026 20:14:46 +0800
+Subject: [PATCH] Parallelize large entity activation snapshots for beta147
+
+
+diff --git a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..600efb2a81f84a716fa8acf2c9952d9166149d44
+--- /dev/null
++++ b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+@@ -0,0 +1,231 @@
++package io.papermc.paper.entity.activation;
++
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.entity.Marker;
++import net.minecraft.world.phys.AABB;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
++
++/**
++ * Evaluates unusually large entity-activation batches without exposing live entities to compute workers.
++ *
++ * <p>The server thread snapshots immutable AABB components and activation-type ordinals. Workers only compare those
++ * primitive arrays, then the server thread commits {@link Entity#activatedTick} in the original list order. Small
++ * batches stay on Paper's single-pass path because dispatch and snapshot costs exceed the six scalar comparisons.</p>
++ */
++final class ActivationRangeSnapshot {
++
++    private static final int AABB_COMPONENTS = 6;
++    private static final int MINIMUM_CAPACITY = 64;
++    static final byte SKIP_ENTITY = -1;
++    static final byte ALWAYS_ACTIVATE = -2;
++    private static final ActivationType[] ACTIVATION_TYPES = ActivationType.values();
++    private static final ThreadLocal<Workspace> WORKSPACE = ThreadLocal.withInitial(() -> new Workspace(true));
++
++    private ActivationRangeSnapshot() {
++    }
++
++    /**
++     * Activates one player's candidate list when the batch is large enough to amortize a primitive snapshot.
++     *
++     * @return {@code true} when this method handled the list; {@code false} requests Paper's direct loop
++     */
++    static boolean activateEntities(
++        final List<Entity> entities,
++        final boolean tickMarkers,
++        final long currentTick
++    ) {
++        final int size = entities.size();
++        final int minimumCandidates = LeavesXRuntime.entityActivationMinimumEntities();
++        if (!LeavesXRuntime.parallelEntityActivation()
++            || size < minimumCandidates
++            || LeavesXComputeExecutor.computeLaneCount() <= 1) {
++            return false;
++        }
++
++        final Workspace workspace = acquireWorkspace(size);
++        try {
++            snapshotActivationBounds(workspace.activationBounds);
++            snapshotEntityBounds(entities, workspace, tickMarkers, currentTick, size);
++            evaluateSnapshot(
++                workspace.entityBounds,
++                workspace.activationTypes,
++                workspace.activationBounds,
++                workspace.intersections,
++                size,
++                minimumCandidates,
++                LeavesXRuntime.entityActivationMinimumItemsPerWorker()
++            );
++            commitActivations(entities, workspace.intersections, tickMarkers, currentTick, size);
++            return true;
++        } finally {
++            releaseWorkspace(workspace);
++        }
++    }
++
++    /** Runs disjoint primitive ranges and replaces every partial result if a worker fails. */
++    static int evaluateSnapshot(
++        final double[] entityBounds,
++        final byte[] activationTypes,
++        final double[] activationBounds,
++        final boolean[] intersections,
++        final int size,
++        final int minimumCandidates,
++        final int minimumItemsPerWorker
++    ) {
++        final int completedPartitions = LeavesXComputeExecutor.invokeRangesWithCount(
++            LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION,
++            size,
++            minimumCandidates,
++            minimumItemsPerWorker,
++            (taskIndex, start, end) -> evaluateRange(
++                entityBounds,
++                activationTypes,
++                activationBounds,
++                intersections,
++                start,
++                end
++            )
++        );
++        if (completedPartitions == 0) {
++            // A failed range may have written part of the output. Recompute the complete immutable snapshot so no
++            // mixture of successful and failed partitions can affect the main-thread commit.
++            evaluateRange(entityBounds, activationTypes, activationBounds, intersections, 0, size);
++        }
++        return completedPartitions;
++    }
++
++    /** Compares one disjoint range using the same strict inequalities as {@link AABB#intersects(AABB)}. */
++    static void evaluateRange(
++        final double[] entityBounds,
++        final byte[] activationTypes,
++        final double[] activationBounds,
++        final boolean[] intersections,
++        final int start,
++        final int end
++    ) {
++        for (int index = start; index < end; index++) {
++            final byte activationType = activationTypes[index];
++            if (activationType < 0) {
++                intersections[index] = activationType == ALWAYS_ACTIVATE;
++                continue;
++            }
++            final int entityOffset = index * AABB_COMPONENTS;
++            final int activationOffset = activationType * AABB_COMPONENTS;
++            intersections[index] = activationBounds[activationOffset] < entityBounds[entityOffset + 3]
++                && activationBounds[activationOffset + 3] > entityBounds[entityOffset]
++                && activationBounds[activationOffset + 1] < entityBounds[entityOffset + 4]
++                && activationBounds[activationOffset + 4] > entityBounds[entityOffset + 1]
++                && activationBounds[activationOffset + 2] < entityBounds[entityOffset + 5]
++                && activationBounds[activationOffset + 5] > entityBounds[entityOffset + 2];
++        }
++    }
++
++    private static void snapshotActivationBounds(final double[] destination) {
++        for (int typeIndex = 0; typeIndex < ACTIVATION_TYPES.length; typeIndex++) {
++            writeBounds(destination, typeIndex * AABB_COMPONENTS, ACTIVATION_TYPES[typeIndex].boundingBox);
++        }
++    }
++
++    private static void snapshotEntityBounds(
++        final List<Entity> entities,
++        final Workspace workspace,
++        final boolean tickMarkers,
++        final long currentTick,
++        final int size
++    ) {
++        for (int index = 0; index < size; index++) {
++            final Entity entity = entities.get(index);
++            if ((!tickMarkers && entity instanceof Marker) || currentTick <= entity.activatedTick) {
++                workspace.activationTypes[index] = SKIP_ENTITY;
++                continue;
++            }
++            if (entity.defaultActivationState) {
++                workspace.activationTypes[index] = ALWAYS_ACTIVATE;
++                continue;
++            }
++            workspace.activationTypes[index] = (byte)entity.activationType.ordinal();
++            writeBounds(workspace.entityBounds, index * AABB_COMPONENTS, entity.getBoundingBox());
++        }
++    }
++
++    private static void writeBounds(final double[] destination, final int offset, final AABB bounds) {
++        destination[offset] = bounds.minX;
++        destination[offset + 1] = bounds.minY;
++        destination[offset + 2] = bounds.minZ;
++        destination[offset + 3] = bounds.maxX;
++        destination[offset + 4] = bounds.maxY;
++        destination[offset + 5] = bounds.maxZ;
++    }
++
++    private static void commitActivations(
++        final List<Entity> entities,
++        final boolean[] intersections,
++        final boolean tickMarkers,
++        final long currentTick,
++        final int size
++    ) {
++        for (int index = 0; index < size; index++) {
++            if (intersections[index]) {
++                final Entity entity = entities.get(index);
++                // No live entity state is observed by a worker. Rechecking the tick guards the commit if this helper
++                // is ever called from a re-entrant server-thread path in the future.
++                if (currentTick <= entity.activatedTick || (!tickMarkers && entity instanceof Marker)) {
++                    continue;
++                }
++                entity.activatedTick = currentTick;
++            }
++        }
++    }
++
++    private static Workspace acquireWorkspace(final int size) {
++        final Workspace cached = WORKSPACE.get();
++        final Workspace workspace;
++        if (cached.inUse) {
++            // World ticks are normally non-reentrant. A private workspace still makes unexpected re-entry safe.
++            workspace = new Workspace(false);
++        } else {
++            cached.inUse = true;
++            workspace = cached;
++        }
++        workspace.ensureCapacity(size);
++        return workspace;
++    }
++
++    private static void releaseWorkspace(final Workspace workspace) {
++        if (workspace.pooled) {
++            workspace.inUse = false;
++        }
++    }
++
++    private static int expandedCapacity(final int current, final int required) {
++        final int grown = current + (current >>> 1) + 1;
++        return Math.max(required, Math.max(MINIMUM_CAPACITY, grown));
++    }
++
++    private static final class Workspace {
++
++        private final boolean pooled;
++        private final double[] activationBounds = new double[ACTIVATION_TYPES.length * AABB_COMPONENTS];
++        private double[] entityBounds = new double[0];
++        private byte[] activationTypes = new byte[0];
++        private boolean[] intersections = new boolean[0];
++        private boolean inUse;
++
++        private Workspace(final boolean pooled) {
++            this.pooled = pooled;
++        }
++
++        private void ensureCapacity(final int size) {
++            if (this.activationTypes.length >= size) {
++                return;
++            }
++            final int capacity = expandedCapacity(this.activationTypes.length, size);
++            this.entityBounds = Arrays.copyOf(this.entityBounds, Math.multiplyExact(capacity, AABB_COMPONENTS));
++            this.activationTypes = Arrays.copyOf(this.activationTypes, capacity);
++            this.intersections = Arrays.copyOf(this.intersections, capacity);
++        }
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index b86143f8d3ff5b8ce74664e3881780884256b55b..c448895a5b9f02dfba5893b8db743e7bb978f774 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1005,6 +1005,14 @@ public final class LeavesXCommand extends Command {
+                 + LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker(),
+             NamedTextColor.AQUA
+         ));
++        sender.sendMessage(line(
++            "实体激活并行",
++            onOff(config.parallelEntityActivation()) + "，生效阈值 "
++                + LeavesXRuntime.entityActivationMinimumEntities() + "（配置 "
++                + config.entityActivationMinimumEntities() + "），每分片 "
++                + LeavesXRuntime.entityActivationMinimumItemsPerWorker(),
++            NamedTextColor.AQUA
++        ));
+         sender.sendMessage(line("区块卸载", onOff(config.adaptiveChunkUnloading()) + "，预算 " + config.chunkUnloadMinimumPerTick() + '-' + config.chunkUnloadMaximumPerTick(), NamedTextColor.AQUA));
+         sender.sendMessage(line("网络 flush 合并", onOff(config.networkFlushConsolidation()), NamedTextColor.AQUA));
+         sender.sendMessage(line(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 030eaa4c5dc0ae2d8b9f3dc159dd8912ca4e5283..114f07d6869ffd04be310ea6a9014841af8e19fa 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -30,6 +30,9 @@ public record LeavesXConfig(
+     boolean parallelAiTargetSearch,
+     int aiTargetSearchMinimumCandidates,
+     int aiTargetSearchMinimumItemsPerWorker,
++    boolean parallelEntityActivation,
++    int entityActivationMinimumEntities,
++    int entityActivationMinimumItemsPerWorker,
+     boolean parallelMobSpawnCounting,
+     int computeWorkers,
+     int minimumItemsPerWorker,
+@@ -48,7 +51,7 @@ public record LeavesXConfig(
+     boolean villagerCompatibilityMode
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 59;
++    public static final int CURRENT_CONFIG_VERSION = 60;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -84,6 +87,17 @@ public record LeavesXConfig(
+                 "parallelism.ai-target-search.minimum-items-per-worker must be between 64 and 32768"
+             );
+         }
++        if (entityActivationMinimumEntities < 2_048) {
++            throw new IllegalArgumentException(
++                "parallelism.entity-activation.minimum-entities must be at least 2048"
++            );
++        }
++        if (entityActivationMinimumItemsPerWorker < 1_024
++            || entityActivationMinimumItemsPerWorker > 65_536) {
++            throw new IllegalArgumentException(
++                "parallelism.entity-activation.minimum-items-per-worker must be between 1024 and 65536"
++            );
++        }
+         if (chunkUnloadBacklogThreshold < 100) {
+             throw new IllegalArgumentException("performance.chunk-unloading.backlog-threshold must be at least 100");
+         }
+@@ -132,6 +146,9 @@ public record LeavesXConfig(
+             2_048,
+             1_024,
+             true,
++            65_536,
++            8_192,
++            true,
+             0,
+             64,
+             true,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 62ce3a57c9d4049cf310721271fa8b6dffbc4ea3..12a600062a84125cfdb6fca2c9a1e55e272a0d39 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -107,6 +107,14 @@ public final class LeavesXConfigBootstrap {
+             LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker(),
+             config.aiTargetSearchMinimumItemsPerWorker()
+         );
++        LOGGER.info(
++            "LeavesX entity-activation workers: {}, parallel from {} candidates (configured {}), minimum {} items per lane (configured {})",
++            config.parallelEntityActivation() ? "enabled" : "disabled",
++            LeavesXRuntime.entityActivationMinimumEntities(),
++            config.entityActivationMinimumEntities(),
++            LeavesXRuntime.entityActivationMinimumItemsPerWorker(),
++            config.entityActivationMinimumItemsPerWorker()
++        );
+         LOGGER.info(
+             "LeavesX animal idle-goal throttling: {}, interval multiplier {} (disabled by default because it changes idle behavior)",
+             config.animalIdleGoalThrottling() ? "enabled" : "disabled",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 78662f0c6af0637b51b6ff2e13aa9055cf4bd0dd..55f28027efa06ef903e9b956c94d95d0fc1892eb 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -186,6 +186,21 @@ public final class LeavesXConfigLoader {
+                     "parallelism.ai-target-search.minimum-items-per-worker",
+                     1_024
+                 ),
++                readBoolean(
++                    node.node("parallelism", "entity-activation", "enabled"),
++                    "parallelism.entity-activation.enabled",
++                    true
++                ),
++                readInt(
++                    node.node("parallelism", "entity-activation", "minimum-entities"),
++                    "parallelism.entity-activation.minimum-entities",
++                    65_536
++                ),
++                readInt(
++                    node.node("parallelism", "entity-activation", "minimum-items-per-worker"),
++                    "parallelism.entity-activation.minimum-items-per-worker",
++                    8_192
++                ),
+                 readBoolean(
+                     node.node("parallelism", "mob-spawning", "enabled"),
+                     "parallelism.mob-spawning.enabled",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 5923060ea7817fc0546dc03e5da5e01a3b99bb14..3131eb438e2f2ced54fa8359950e3e98f04d49c9 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -207,6 +207,24 @@ public final class LeavesXConfigWriter {
+             config.aiTargetSearchMinimumItemsPerWorker(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("parallelism", "entity-activation", "enabled"),
++            "parallelism.entity-activation.enabled",
++            config.parallelEntityActivation(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("parallelism", "entity-activation", "minimum-entities"),
++            "parallelism.entity-activation.minimum-entities",
++            config.entityActivationMinimumEntities(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("parallelism", "entity-activation", "minimum-items-per-worker"),
++            "parallelism.entity-activation.minimum-items-per-worker",
++            config.entityActivationMinimumItemsPerWorker(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "item-merge-optimizations"),
+             "performance.item-merge-optimizations",
+@@ -306,7 +324,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：59。");
++        comments.put("config-version", "配置版本，请勿修改。默认：60。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -346,6 +364,9 @@ public final class LeavesXConfigWriter {
+         comments.put("parallelism.ai-target-search.enabled", "多线程计算大量 AI 目标的距离。默认：true。");
+         comments.put("parallelism.ai-target-search.minimum-candidates", "AI 候选达到此数量才使用多线程。默认：2048。");
+         comments.put("parallelism.ai-target-search.minimum-items-per-worker", "每个 AI 计算分片至少处理的候选数。默认：1024。");
++        comments.put("parallelism.entity-activation.enabled", "允许超大实体激活批次使用多线程。默认：true。");
++        comments.put("parallelism.entity-activation.minimum-entities", "激活实体达到此数量才使用多线程。默认：65536。");
++        comments.put("parallelism.entity-activation.minimum-items-per-worker", "每个激活计算分片至少处理的实体数。默认：8192。");
+         for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
+             comments.put(optimization.path(), optimization.comment());
+         }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 58c6be1cde1a0061b0f426bcf866f79b5654f5a2..062821a1767d8c9bae13ecbf87cc2e7b07e15923 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -19,6 +19,10 @@ public final class LeavesXRuntime {
+      */
+     private static final int AI_TARGET_SEARCH_PROFITABLE_FLOOR = 2_048;
+     private static final int AI_TARGET_SEARCH_MINIMUM_ITEMS_FLOOR = 1_024;
++    // AABB intersection is much cheaper than AI distance sorting. Measurements on the target 9950X host show that
++    // worker dispatch becomes worthwhile only for unusually large per-player candidate batches.
++    private static final int ENTITY_ACTIVATION_PROFITABLE_FLOOR = 65_536;
++    private static final int ENTITY_ACTIVATION_MINIMUM_ITEMS_FLOOR = 8_192;
+     private static final int MOB_SPAWN_COUNTING_PROFITABLE_FLOOR = 524_288;
+ 
+     private static volatile LeavesXConfig configuration = LeavesXConfig.safeDefaults();
+@@ -45,6 +49,9 @@ public final class LeavesXRuntime {
+     private static boolean parallelAiTargetSearch = true;
+     private static int aiTargetSearchMinimumCandidates = AI_TARGET_SEARCH_PROFITABLE_FLOOR;
+     private static int aiTargetSearchMinimumItemsPerWorker = AI_TARGET_SEARCH_MINIMUM_ITEMS_FLOOR;
++    private static boolean parallelEntityActivation = true;
++    private static int entityActivationMinimumEntities = ENTITY_ACTIVATION_PROFITABLE_FLOOR;
++    private static int entityActivationMinimumItemsPerWorker = ENTITY_ACTIVATION_MINIMUM_ITEMS_FLOOR;
+     private static boolean itemMergeOptimizations = true;
+     private static boolean blockEntityOptimizations = true;
+     private static boolean blockEntityTickerRemovalOptimization = true;
+@@ -126,6 +133,15 @@ public final class LeavesXRuntime {
+             validated.aiTargetSearchMinimumItemsPerWorker(),
+             AI_TARGET_SEARCH_MINIMUM_ITEMS_FLOOR
+         );
++        parallelEntityActivation = validated.parallelEntityActivation();
++        entityActivationMinimumEntities = Math.max(
++            validated.entityActivationMinimumEntities(),
++            ENTITY_ACTIVATION_PROFITABLE_FLOOR
++        );
++        entityActivationMinimumItemsPerWorker = Math.max(
++            validated.entityActivationMinimumItemsPerWorker(),
++            ENTITY_ACTIVATION_MINIMUM_ITEMS_FLOOR
++        );
+         itemMergeOptimizations = validated.itemMergeOptimizations();
+         blockEntityOptimizations = validated.blockEntityOptimizations();
+         blockEntityTickerRemovalOptimization = validated.blockEntityTickerRemovalOptimization();
+@@ -614,6 +630,21 @@ public final class LeavesXRuntime {
+         return aiTargetSearchMinimumItemsPerWorker;
+     }
+ 
++    /** Returns whether unusually large entity-activation scans may use immutable AABB snapshots. */
++    public static boolean parallelEntityActivation() {
++        return parallelEntityActivation;
++    }
++
++    /** Returns the benchmark-clamped activation candidate threshold. */
++    public static int entityActivationMinimumEntities() {
++        return entityActivationMinimumEntities;
++    }
++
++    /** Returns the benchmark-clamped minimum activation candidates assigned to each compute lane. */
++    public static int entityActivationMinimumItemsPerWorker() {
++        return entityActivationMinimumItemsPerWorker;
++    }
++
+     /** Returns whether full item stacks may stop their neighbour scan early. */
+     public static boolean itemMergeOptimizations() {
+         return itemMergeOptimizations;
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 7260e8915f119c2c291e4e5cfa0a0eb58fe9032f..d7051e81652fe4c357b1333d2dcebf7ee637b9c7 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -299,6 +299,7 @@ public final class LeavesXComputeExecutor {
+         AI_TARGET_SORT("AI 目标排序"),
+         AI_TARGET_MERGE("AI 排序归并"),
+         AI_TARGET_SELECT("AI 目标选择"),
++        ENTITY_ACTIVATION("实体激活范围"),
+         MOB_SPAWN_COUNTING("刷怪统计");
+ 
+         private final String displayName;
+diff --git a/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java b/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..e2c12a7497cc1bc9033fd16d947fd48ec6bb87f7
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
+@@ -0,0 +1,210 @@
++package io.papermc.paper.entity.activation;
++
++import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.Random;
++import net.minecraft.world.phys.AABB;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldInsnNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++@Normal
++public class ActivationRangeSnapshotTest {
++
++    private static final int AABB_COMPONENTS = 6;
++
++    @AfterEach
++    void shutdownExecutor() {
++        LeavesXComputeExecutor.shutdown();
++    }
++
++    @Test
++    void parallelIntersectionMatchesPaperForEveryActivationTypeAndBoundary() {
++        final int randomCases = 8_192;
++        final int size = randomCases + 6;
++        final double[] entityBounds = new double[size * AABB_COMPONENTS];
++        final byte[] activationTypes = new byte[size];
++        final double[] activationBounds = activationBounds();
++        final Random random = new Random(0x4163746976617465L);
++        for (int index = 0; index < randomCases; index++) {
++            final double minX = random.nextDouble(-128.0D, 128.0D);
++            final double minY = random.nextDouble(-64.0D, 64.0D);
++            final double minZ = random.nextDouble(-128.0D, 128.0D);
++            writeBounds(
++                entityBounds,
++                index,
++                minX,
++                minY,
++                minZ,
++                minX + random.nextDouble(0.01D, 8.0D),
++                minY + random.nextDouble(0.01D, 8.0D),
++                minZ + random.nextDouble(0.01D, 8.0D)
++            );
++            activationTypes[index] = (byte)(index % ActivationType.values().length);
++        }
++
++        // Touching faces and a zero-width box exercise Paper's strict (<, >) boundary semantics.
++        writeBounds(entityBounds, randomCases, 16.0D, -2.0D, -2.0D, 18.0D, 2.0D, 2.0D);
++        writeBounds(entityBounds, randomCases + 1, -18.0D, -2.0D, -2.0D, -16.0D, 2.0D, 2.0D);
++        writeBounds(entityBounds, randomCases + 2, -1.0D, 16.0D, -1.0D, 1.0D, 18.0D, 1.0D);
++        writeBounds(entityBounds, randomCases + 3, 0.0D, 0.0D, 0.0D, 0.0D, 0.0D, 0.0D);
++        activationTypes[randomCases + 4] = ActivationRangeSnapshot.SKIP_ENTITY;
++        activationTypes[randomCases + 5] = ActivationRangeSnapshot.ALWAYS_ACTIVATE;
++
++        final boolean[] expected = referenceIntersections(entityBounds, activationTypes, activationBounds, size);
++        final boolean[] actual = new boolean[size];
++        LeavesXComputeExecutor.configure(4, 16);
++
++        final int partitions = ActivationRangeSnapshot.evaluateSnapshot(
++            entityBounds,
++            activationTypes,
++            activationBounds,
++            actual,
++            size,
++            1,
++            1_024
++        );
++
++        assertArrayEquals(expected, actual);
++        assertEquals(5, partitions, "four workers plus the calling thread should process this deterministic batch");
++        final LeavesXComputeExecutor.WorkloadMetrics metrics = workload();
++        assertEquals(1L, metrics.parallelInvocations());
++        assertEquals(size, metrics.totalItems());
++    }
++
++    @Test
++    void synchronousFallbackRecomputesTheCompleteSnapshot() {
++        final int size = 256;
++        final double[] entityBounds = new double[size * AABB_COMPONENTS];
++        final byte[] activationTypes = new byte[size];
++        final double[] activationBounds = activationBounds();
++        final boolean[] actual = new boolean[size];
++        for (int index = 0; index < size; index++) {
++            writeBounds(entityBounds, index, -1.0D, -1.0D, -1.0D, 1.0D, 1.0D, 1.0D);
++            activationTypes[index] = (byte)(index % ActivationType.values().length);
++            actual[index] = (index & 1) == 0;
++        }
++
++        LeavesXComputeExecutor.configure(4, 64);
++        final int partitions = ActivationRangeSnapshot.evaluateSnapshot(
++            entityBounds,
++            activationTypes,
++            activationBounds,
++            actual,
++            size,
++            1_024,
++            64
++        );
++
++        assertEquals(0, partitions);
++        assertArrayEquals(referenceIntersections(entityBounds, activationTypes, activationBounds, size), actual);
++        assertEquals(1L, workload().belowFeatureThresholdFallbacks());
++    }
++
++    @Test
++    void workerRangeCannotReachLiveEntityOrWorldState() throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(ActivationRangeSnapshot.class.getName()).accept(
++            classNode,
++            ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES
++        );
++        final MethodNode method = classNode.methods.stream()
++            .filter(candidate -> candidate.name.equals("evaluateRange"))
++            .findFirst()
++            .orElseThrow();
++
++        assertEquals("([D[B[D[ZII)V", method.desc, "worker input must remain primitive arrays and indexes");
++        assertFalse(
++            Arrays.stream(method.instructions.toArray())
++                .filter(MethodInsnNode.class::isInstance)
++                .map(MethodInsnNode.class::cast)
++                .anyMatch(call -> call.owner.startsWith("net/minecraft/world/")),
++            "worker range must not call entity or world methods"
++        );
++        assertFalse(
++            Arrays.stream(method.instructions.toArray())
++                .filter(FieldInsnNode.class::isInstance)
++                .map(FieldInsnNode.class::cast)
++                .anyMatch(field -> field.owner.startsWith("net/minecraft/world/")),
++            "worker range must not read entity or world fields"
++        );
++    }
++
++    private static double[] activationBounds() {
++        final double[] bounds = new double[ActivationType.values().length * AABB_COMPONENTS];
++        for (int typeIndex = 0; typeIndex < ActivationType.values().length; typeIndex++) {
++            final double radius = 16.0D + typeIndex * 4.0D;
++            writeBounds(bounds, typeIndex, -radius, -32.0D, -radius, radius, 32.0D, radius);
++        }
++        return bounds;
++    }
++
++    private static boolean[] referenceIntersections(
++        final double[] entityBounds,
++        final byte[] activationTypes,
++        final double[] activationBounds,
++        final int size
++    ) {
++        final boolean[] expected = new boolean[size];
++        for (int index = 0; index < size; index++) {
++            final byte activationType = activationTypes[index];
++            if (activationType < 0) {
++                expected[index] = activationType == ActivationRangeSnapshot.ALWAYS_ACTIVATE;
++                continue;
++            }
++            final int entityOffset = index * AABB_COMPONENTS;
++            final int activationOffset = activationType * AABB_COMPONENTS;
++            final AABB activationBox = boxAt(activationBounds, activationOffset);
++            expected[index] = activationBox.intersects(boxAt(entityBounds, entityOffset));
++        }
++        return expected;
++    }
++
++    private static AABB boxAt(final double[] bounds, final int offset) {
++        return new AABB(
++            bounds[offset],
++            bounds[offset + 1],
++            bounds[offset + 2],
++            bounds[offset + 3],
++            bounds[offset + 4],
++            bounds[offset + 5]
++        );
++    }
++
++    private static void writeBounds(
++        final double[] destination,
++        final int index,
++        final double minX,
++        final double minY,
++        final double minZ,
++        final double maxX,
++        final double maxY,
++        final double maxZ
++    ) {
++        final int offset = index * AABB_COMPONENTS;
++        destination[offset] = minX;
++        destination[offset + 1] = minY;
++        destination[offset + 2] = minZ;
++        destination[offset + 3] = maxX;
++        destination[offset + 4] = maxY;
++        destination[offset + 5] = maxZ;
++    }
++
++    private static LeavesXComputeExecutor.WorkloadMetrics workload() {
++        return LeavesXComputeExecutor.metrics().workloads().stream()
++            .filter(metrics -> metrics.workload() == LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION)
++            .findFirst()
++            .orElseThrow();
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 5a22680aff67bc9b7294886c48532c024686a526..4d88431bca506c506f49c60673996ffd0785e14e 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -41,6 +41,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(generated.contains("hopper-entity-queries:"));
+         assertTrue(generated.contains("warden-target-sensor:"));
+         assertTrue(generated.contains("workers:"));
++        assertTrue(generated.contains("entity-activation:"));
+         assertFalse(generated.contains("threading:"));
+         assertFalse(generated.contains("folia"));
+         for (final String comment : LeavesXConfigWriter.comments().values()) {
+@@ -202,6 +203,10 @@ class LeavesXConfigLoaderTest {
+                 enabled: false
+                 minimum-candidates: 4096
+                 minimum-items-per-worker: 2048
++              entity-activation:
++                enabled: false
++                minimum-entities: 131072
++                minimum-items-per-worker: 16384
+               mob-spawning:
+                 enabled: false
+                 minimum-entities: 768
+@@ -227,6 +232,9 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.parallelAiTargetSearch());
+         assertEquals(4_096, config.aiTargetSearchMinimumCandidates());
+         assertEquals(2_048, config.aiTargetSearchMinimumItemsPerWorker());
++        assertFalse(config.parallelEntityActivation());
++        assertEquals(131_072, config.entityActivationMinimumEntities());
++        assertEquals(16_384, config.entityActivationMinimumItemsPerWorker());
+         assertFalse(config.itemMergeOptimizations());
+         assertFalse(config.blockEntityOptimizations());
+         assertFalse(config.blockEntityTickerRemovalOptimization());
+@@ -249,6 +257,9 @@ class LeavesXConfigLoaderTest {
+             assertEquals(524_288, LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities());
+             assertEquals(4_096, LeavesXRuntime.aiTargetSearchMinimumCandidates());
+             assertEquals(2_048, LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker());
++            assertFalse(LeavesXRuntime.parallelEntityActivation());
++            assertEquals(131_072, LeavesXRuntime.entityActivationMinimumEntities());
++            assertEquals(16_384, LeavesXRuntime.entityActivationMinimumItemsPerWorker());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+@@ -686,6 +697,34 @@ class LeavesXConfigLoaderTest {
+         assertEquals(512, customized.aiTargetSearchMinimumCandidates(), "operator-defined thresholds must be retained");
+     }
+ 
++    @Test
++    void upgradesVersion59WithDocumentedEntityActivationDefaults() throws Exception {
++        final Path path = write("""
++            # 用户配置。
++            config-version: 59
++            parallelism:
++              ai-target-search:
++                minimum-candidates: 4096
++            """);
++
++        final LeavesXConfig migrated = LeavesXConfigLoader.load(path);
++        final org.spongepowered.configurate.ConfigurationNode migratedNode =
++            io.papermc.paper.configuration.ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
++
++        assertEquals(LeavesXConfig.CURRENT_CONFIG_VERSION, migratedNode.node("config-version").getInt());
++        assertTrue(migrated.parallelEntityActivation());
++        assertEquals(65_536, migrated.entityActivationMinimumEntities());
++        assertEquals(8_192, migrated.entityActivationMinimumItemsPerWorker());
++        assertTrue(migratedNode.node("parallelism", "entity-activation", "enabled").getBoolean());
++        assertEquals(65_536, migratedNode.node("parallelism", "entity-activation", "minimum-entities").getInt());
++        assertEquals(
++            8_192,
++            migratedNode.node("parallelism", "entity-activation", "minimum-items-per-worker").getInt()
++        );
++        assertEquals(4_096, migratedNode.node("parallelism", "ai-target-search", "minimum-candidates").getInt());
++        assertTrue(Files.readString(path).startsWith("# 用户配置。"));
++    }
++
+     @Test
+     void rejectsInvalidChunkUnloadBudgetRange() throws IOException {
+         final Path path = write("""
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
+index ea2b106bc796ba309a59452cf495bb429cc58263..d7049fcc5cae70bc096e401acfc62efcab684040 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
+@@ -63,6 +63,9 @@ class LeavesXReleaseCompatibilityTest {
+         assertTrue(defaults.aiOptimizations());
+         assertTrue(defaults.pathfindingOptimizations());
+         assertTrue(defaults.mobSpawningOptimizations());
++        assertTrue(defaults.parallelEntityActivation());
++        assertEquals(65_536, defaults.entityActivationMinimumEntities());
++        assertEquals(8_192, defaults.entityActivationMinimumItemsPerWorker());
+     }
+ 
+     @Test
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index fbe13a8516c509c3bacfc40fb58178b6bcf44423..49daf818b3698ed4bb30f19d8f5fe90b24146694 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -140,6 +140,9 @@ class VillagerCompatibilityContextTest {
+             2_048,
+             1_024,
+             true,
++            65_536,
++            8_192,
++            true,
+             0,
+             64,
+             true,
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java
+index 25e6133c158e876fe34497ff440ab783e2f55b40..32a8fef49b972d9ff77ddaff3f3749e13b9acb61 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java
+@@ -34,6 +34,13 @@ class ActivationRangeHotPathTest {
+             Arrays.stream(calls).anyMatch(call -> call.name.equals("iterator")),
+             "The per-tick activation scan should use the stable indexed entity and player lists"
+         );
++        assertEquals(
++            1L,
++            Arrays.stream(calls).filter(call -> call.owner.equals(
++                "io/papermc/paper/entity/activation/ActivationRangeSnapshot"
++            ) && call.name.equals("activateEntities")).count(),
++            "Large candidate batches should have one explicit snapshot boundary"
++        );
+     }
+ 
+     private static MethodNode methodNode(final Class<?> owner, final String methodName) throws IOException {
+diff --git a/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java b/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java
+index 5021a69e67e4425fd104bd90444404314c5e6321..cee6ef481af4bf8231769d2a658cb37fec833c73 100644
+--- a/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java
++++ b/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java
+@@ -1,6 +1,7 @@
+ package org.leavesx.leavesx.support;
+ 
+ import io.papermc.paper.ServerBuildInfoCompatibilityTest;
++import io.papermc.paper.entity.activation.ActivationRangeSnapshotTest;
+ import net.minecraft.world.level.MobSpawnCountAccumulatorTest;
+ import net.minecraft.world.level.NaturalSpawnPositionHotPathTest;
+ import net.minecraft.world.level.PotentialCalculatorTest;
+@@ -22,6 +23,7 @@ import org.junit.platform.suite.api.SuiteDisplayName;
+ @SelectPackages("org.leavesx")
+ @SelectClasses({
+     ServerBuildInfoCompatibilityTest.class,
++    ActivationRangeSnapshotTest.class,
+     MobSpawnCountAccumulatorTest.class,
+     NaturalSpawnPositionHotPathTest.class,
+     PotentialCalculatorTest.class

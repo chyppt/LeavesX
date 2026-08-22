@@ -1,0 +1,380 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 18:15:19 +0800
+Subject: [PATCH] Add hopper query controls and regression coverage for bate45
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index ee31e45f98da51ee69d5f2a4b5a855d3274aff80..6178079da7681a0301c3bbfd217b0892a86de533 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -926,6 +926,7 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(line("动物空闲降频", onOff(config.animalIdleGoalThrottling()) + "，倍数 " + config.animalIdleGoalIntervalMultiplier(), config.animalIdleGoalThrottling() ? NamedTextColor.YELLOW : NamedTextColor.GREEN));
+         sender.sendMessage(line("刷怪优化", onOff(config.mobSpawningOptimizations()) + "，并行 " + onOff(config.parallelMobSpawnCounting()), NamedTextColor.AQUA));
+         sender.sendMessage(line("刷怪并行阈值", LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities() + " 实体", NamedTextColor.AQUA));
++        sender.sendMessage(line("方块实体优化", onOff(config.blockEntityOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line(
+             "目标距离并行",
+             onOff(config.parallelAiTargetSearch()) + "，生效阈值 " + LeavesXRuntime.aiTargetSearchMinimumCandidates()
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 0278fc9158fca77acac72b770c9f398ab211364e..832de1875359671da77abbfc6cca69b801122862 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -30,6 +30,7 @@ public record LeavesXConfig(
+     int minimumItemsPerWorker,
+     int mobSpawnCountingMinimumEntities,
+     boolean itemMergeOptimizations,
++    boolean blockEntityOptimizations,
+     boolean blockEntityTickerRemovalOptimization,
+     boolean chunkSpawnRangeOptimization,
+     boolean adaptiveChunkUnloading,
+@@ -38,7 +39,7 @@ public record LeavesXConfig(
+     int chunkUnloadMaximumPerTick
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 5;
++    public static final int CURRENT_CONFIG_VERSION = 6;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -115,6 +116,7 @@ public record LeavesXConfig(
+             true,
+             true,
+             true,
++            true,
+             1_000,
+             100,
+             500
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index d8a4245b8fcdb073b336a5d7dccfe10810b5716e..ddb5d9a36ebab196371f51143772823913fef917 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -67,7 +67,7 @@ public final class LeavesXConfigBootstrap {
+     private static void logConfiguration(final LeavesXConfig config) {
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+-            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, entity state {}, AI {}, pathfinding {}, mob spawning {}, item merge {}, block entities {}, spawn range {}",
++            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, entity state {}, AI {}, pathfinding {}, mob spawning {}, item merge {}, block entity hot paths {}, block entity removal {}, spawn range {}",
+             config.optimizedVarInt(),
+             config.networkFlushConsolidation(),
+             config.immutableCacheOptimizations(),
+@@ -78,6 +78,7 @@ public final class LeavesXConfigBootstrap {
+             config.pathfindingOptimizations(),
+             config.mobSpawningOptimizations(),
+             config.itemMergeOptimizations(),
++            config.blockEntityOptimizations(),
+             config.blockEntityTickerRemovalOptimization(),
+             config.chunkSpawnRangeOptimization()
+         );
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 0419daee592e6f6f54a51fbc2f33d3406e115f6a..075b29a0098cf833b8c221e0ea35b88c5c2db058 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -178,6 +178,11 @@ public final class LeavesXConfigLoader {
+                     "performance.item-merge-optimizations",
+                     true
+                 ),
++                readBoolean(
++                    node.node("performance", "block-entity-optimizations"),
++                    "performance.block-entity-optimizations",
++                    true
++                ),
+                 readBoolean(
+                     node.node("performance", "block-entity-ticker-removal"),
+                     "performance.block-entity-ticker-removal",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index fec6d86d9a4f14eb8efeac9a0bf07313025750ed..8b8557641d17144bf37005d3be00dad000b43f43 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -177,6 +177,12 @@ public final class LeavesXConfigWriter {
+             config.itemMergeOptimizations(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "block-entity-optimizations"),
++            "performance.block-entity-optimizations",
++            config.blockEntityOptimizations(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "block-entity-ticker-removal"),
+             "performance.block-entity-ticker-removal",
+@@ -250,7 +256,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：5。");
++        comments.put("config-version", "配置版本，请勿修改。默认：6。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -267,6 +273,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.animal-idle-goals.enabled", "降低动物空闲游走和环顾频率，会改变空闲行为。默认：false。");
+         comments.put("performance.animal-idle-goals.interval-multiplier", "动物空闲行为间隔倍数，仅在上一项开启时生效。默认：2。");
+         comments.put("performance.item-merge-optimizations", "物品堆满后停止无用合并扫描。默认：true。");
++        comments.put("performance.block-entity-optimizations", "减少漏斗等方块实体每刻创建的临时对象。默认：true。");
+         comments.put("performance.block-entity-ticker-removal", "加快区块卸载时清理方块实体更新项。默认：true。");
+         comments.put("performance.chunk-spawn-range-optimization", "减少刷怪范围判断的重复计算。默认：true。");
+         comments.put("performance.chunk-unloading.enabled", "有 tick 余量时加快处理积压的区块卸载。默认：true。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 35d2451c978a7c0325d4ed0d77a02b074de83fb7..630d4d8b912fdabfd9ab1d00a8895cc8f02e6b44 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -32,6 +32,7 @@ public final class LeavesXRuntime {
+     private static boolean parallelAiTargetSearch = true;
+     private static int aiTargetSearchMinimumCandidates = AI_TARGET_SEARCH_PROFITABLE_FLOOR;
+     private static boolean itemMergeOptimizations = true;
++    private static boolean blockEntityOptimizations = true;
+     private static boolean blockEntityTickerRemovalOptimization = true;
+     private static boolean chunkSpawnRangeOptimization = true;
+     private static boolean parallelMobSpawnCounting = true;
+@@ -82,6 +83,7 @@ public final class LeavesXRuntime {
+             AI_TARGET_SEARCH_PROFITABLE_FLOOR
+         );
+         itemMergeOptimizations = validated.itemMergeOptimizations();
++        blockEntityOptimizations = validated.blockEntityOptimizations();
+         blockEntityTickerRemovalOptimization = validated.blockEntityTickerRemovalOptimization();
+         chunkSpawnRangeOptimization = validated.chunkSpawnRangeOptimization();
+         parallelMobSpawnCounting = validated.parallelMobSpawnCounting();
+@@ -194,6 +196,11 @@ public final class LeavesXRuntime {
+         return itemMergeOptimizations;
+     }
+ 
++    /** Returns whether behavior-equivalent block-entity hot paths may retain private scratch state. */
++    public static boolean blockEntityOptimizations() {
++        return blockEntityOptimizations;
++    }
++
+     /** Returns whether removed block-entity tickers are compacted by their stable list indices. */
+     public static boolean blockEntityTickerRemovalOptimization() {
+         return blockEntityTickerRemovalOptimization;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index ca5685ba1d25f8a1c5345919eebb11ed1b8a89e3..447049ce0ba5c58646db63b21182b9e1af090eb3 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -78,12 +78,14 @@ class LeavesXConfigLoaderTest {
+         assertEquals(120, config.diagnosticsRollingWindowSeconds());
+         assertEquals(5, config.diagnosticsSlowPluginTaskMillis());
+         assertTrue(config.itemMergeOptimizations());
++        assertTrue(config.blockEntityOptimizations());
+         assertTrue(config.blockEntityTickerRemovalOptimization());
+         assertTrue(config.chunkSpawnRangeOptimization());
+         assertTrue(config.mobSpawningOptimizations());
+         assertTrue(config.entityStateOptimizations());
+         assertFalse(reloaded.node("performance", "optimized-varint").getBoolean());
+         assertTrue(reloaded.node("performance", "item-merge-optimizations").getBoolean());
++        assertTrue(reloaded.node("performance", "block-entity-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "block-entity-ticker-removal").getBoolean());
+         assertTrue(reloaded.node("performance", "chunk-spawn-range-optimization").getBoolean());
+         assertTrue(reloaded.node("performance", "mob-spawning-optimizations").getBoolean());
+@@ -91,6 +93,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(reloaded.node("custom-extension", "retained").getBoolean());
+         assertTrue(upgraded.contains("# User-managed LeavesX settings."), upgraded);
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.item-merge-optimizations")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.block-entity-optimizations")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.block-entity-ticker-removal")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.chunk-spawn-range-optimization")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.mob-spawning-optimizations")));
+@@ -154,6 +157,7 @@ class LeavesXConfigLoaderTest {
+                 enabled: true
+                 interval-multiplier: 3
+               item-merge-optimizations: false
++              block-entity-optimizations: false
+               block-entity-ticker-removal: false
+               chunk-spawn-range-optimization: false
+               chunk-unloading:
+@@ -188,6 +192,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.parallelAiTargetSearch());
+         assertEquals(256, config.aiTargetSearchMinimumCandidates());
+         assertFalse(config.itemMergeOptimizations());
++        assertFalse(config.blockEntityOptimizations());
+         assertFalse(config.blockEntityTickerRemovalOptimization());
+         assertFalse(config.chunkSpawnRangeOptimization());
+         assertFalse(config.adaptiveChunkUnloading());
+@@ -231,7 +236,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(assertThrows(LeavesXConfigException.class, () -> LeavesXConfigLoader.load(older))
+             .getMessage().contains("config-version must be at least 1"));
+ 
+-        final Path newer = write("config-version: 6\n");
++        final Path newer = write("config-version: " + (LeavesXConfig.CURRENT_CONFIG_VERSION + 1) + '\n');
+         assertTrue(assertThrows(LeavesXConfigException.class, () -> LeavesXConfigLoader.load(newer))
+             .getMessage().contains("newer than supported"));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/HopperEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/HopperEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..de1d9d9edc45cb32b4a90512b8988fd105e0846f
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/HopperEntityQueryHotPathTest.java
+@@ -0,0 +1,172 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.Field;
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Method;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.core.BlockPos;
++import net.minecraft.core.Direction;
++import net.minecraft.world.level.Level;
++import net.minecraft.world.level.block.Blocks;
++import net.minecraft.world.level.block.HopperBlock;
++import net.minecraft.world.level.block.entity.HopperBlockEntity;
++import net.minecraft.world.level.block.state.BlockState;
++import net.minecraft.world.phys.AABB;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++import org.objectweb.asm.tree.TypeInsnNode;
++
++/** Locks down the allocation-free hopper entity-container lookup used by fixed block hoppers. */
++@Normal
++class HopperEntityQueryHotPathTest {
++
++    @Test
++    void blockHopperRetainsFixedQueryCoordinatesAndScratchStorage() throws IOException {
++        final ClassNode hopper = classNode(HopperBlockEntity.class);
++        final String cacheName = hopper.name + "$LeavesXEntityContainerQueryCache";
++
++        assertField(hopper, "leavesXEntityContainerQueryCache", 'L' + cacheName + ';');
++
++        final ClassNode cache = classNode(cacheName.replace('/', '.'));
++        assertField(cache, "sourceContainerPos", "Lnet/minecraft/core/BlockPos;");
++        assertField(cache, "attachedContainerPos", "Lnet/minecraft/core/BlockPos;");
++        assertField(cache, "sourceContainerSearchBox", "Lnet/minecraft/world/phys/AABB;");
++        assertField(cache, "attachedContainerSearchBox", "Lnet/minecraft/world/phys/AABB;");
++        assertField(cache, "queryResults", "Ljava/util/List;");
++
++        assertTrue(
++            invocations(method(hopper, "setBlockState")).stream()
++                .anyMatch(call -> call.owner.equals(hopper.name) && call.name.equals("leavesXUpdateAttachedContainerCache")),
++            "Changing hopper facing must refresh the destination lookup coordinates"
++        );
++    }
++
++    @Test
++    void retainedGeometryMatchesTheLegacyCenterBasedSearchBoxes()
++        throws NoSuchMethodException, InvocationTargetException, IllegalAccessException, NoSuchFieldException {
++        final BlockPos hopperPos = new BlockPos(10, 64, -3);
++        final BlockState downState = Blocks.HOPPER.defaultBlockState().setValue(HopperBlock.FACING, Direction.DOWN);
++        final HopperBlockEntity hopper = new HopperBlockEntity(hopperPos, downState);
++        final Method getCache = HopperBlockEntity.class.getDeclaredMethod("leavesXGetEntityContainerQueryCache");
++        getCache.setAccessible(true);
++        final Object cache = getCache.invoke(hopper);
++
++        assertEquals(hopperPos.above(), field(cache, "sourceContainerPos"));
++        assertEquals(hopperPos.below(), field(cache, "attachedContainerPos"));
++        assertEquals(new AABB(hopperPos.above()), field(cache, "sourceContainerSearchBox"));
++        assertEquals(new AABB(hopperPos.below()), field(cache, "attachedContainerSearchBox"));
++
++        final BlockState eastState = downState.setValue(HopperBlock.FACING, Direction.EAST);
++        hopper.setBlockState(eastState);
++        assertSame(cache, getCache.invoke(hopper), "Changing facing should update, not replace, the retained buffer");
++        assertEquals(hopperPos.east(), field(cache, "attachedContainerPos"));
++        assertEquals(new AABB(hopperPos.east()), field(cache, "attachedContainerSearchBox"));
++        assertTrue(((List<?>)field(cache, "queryResults")).isEmpty());
++    }
++
++    @Test
++    void fixedHopperQueryFillsTheRetainedListWithoutAllocatingAnotherListOrBox() throws IOException {
++        final ClassNode hopper = classNode(HopperBlockEntity.class);
++        final MethodNode query = method(
++            hopper,
++            "getEntityContainer",
++            "(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/phys/AABB;Ljava/util/List;)Lnet/minecraft/world/Container;"
++        );
++
++        assertTrue(
++            invocations(query).stream().anyMatch(call ->
++                call.owner.equals("net/minecraft/world/level/Level") && call.name.equals("leavesX$getEntitiesOfClass")
++            ),
++            "The retained query buffer must be filled by the world's class-indexed entity lookup"
++        );
++        assertEquals(0L, allocations(query, "java/util/ArrayList"));
++        assertEquals(0L, allocations(query, "net/minecraft/world/phys/AABB"));
++        assertTrue(
++            invocations(method(hopper, "suckInItems")).stream().anyMatch(call ->
++                call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime")
++                    && call.name.equals("blockEntityOptimizations")
++            ),
++            "The fixed-coordinate fast path must remain configurable"
++        );
++    }
++
++    @Test
++    void levelFillOverloadDoesNotAllocateItsOwnResultList() throws IOException {
++        final MethodNode fill = method(
++            classNode(Level.class),
++            "leavesX$getEntitiesOfClass",
++            "(Ljava/lang/Class;Lnet/minecraft/world/phys/AABB;Ljava/util/function/Predicate;Ljava/util/List;)V"
++        );
++
++        assertEquals(0L, allocations(fill, "java/util/ArrayList"));
++        assertFalse(
++            invocations(fill).stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")),
++            "The fill overload should enter Moonrise directly instead of allocating through the list-returning API"
++        );
++    }
++
++    private static void assertField(final ClassNode owner, final String name, final String descriptor) {
++        final List<FieldNode> matches = owner.fields.stream()
++            .filter(field -> field.name.equals(name) && field.desc.equals(descriptor))
++            .toList();
++        assertEquals(1, matches.size(), "Missing retained hopper field " + name);
++    }
++
++    private static Object field(final Object owner, final String name) throws NoSuchFieldException, IllegalAccessException {
++        final Field field = owner.getClass().getDeclaredField(name);
++        field.setAccessible(true);
++        return field.get(owner);
++    }
++
++    private static long allocations(final MethodNode method, final String internalName) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(TypeInsnNode.class::isInstance)
++            .map(TypeInsnNode.class::cast)
++            .filter(instruction -> instruction.getOpcode() == Opcodes.NEW && instruction.desc.equals(internalName))
++            .count();
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        return classNode(owner.getName());
++    }
++
++    private static ClassNode classNode(final String className) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(className).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName, final String descriptor) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName) && method.desc.equals(descriptor))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName + descriptor));
++    }
++}

@@ -1,0 +1,199 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 03:30:08 +0800
+Subject: [PATCH] Add entity tick diagnostic controls for bate91
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 954f4f76abdfaa06bf6c361ce41f56281541e571..511d8d22e7327551412a54b176800bb1eca5800c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -44,7 +44,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMask
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 22;
++    public static final int CURRENT_CONFIG_VERSION = 23;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 92d6c7368f7597c4eb6f9002bade2cb5e6647a8c..9dbcceeaf310ab414a5aff621ffa3894a463ade3 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：22。");
++        comments.put("config-version", "配置版本，请勿修改。默认：23。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 682b922bf370e46505935baf3a5d454478027aba..e08064f078d6d23d85b15c14aad87a958f285c25 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -171,6 +171,10 @@ enum LeavesXOptimization {
+     ENTITY_LOAD_OPTIONAL_CHAINS(
+         "performance.entity-loading.optional-chains",
+         "减少实体加载时的 Optional 和临时函数，关闭后使用原版流程。默认：true。"
++    ),
++    ENTITY_TICK_DIAGNOSTIC_STATE(
++        "performance.entity-update.tick-diagnostic-state",
++        "减少实体 Tick 诊断状态的原子读取，关闭后使用 Paper 流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 4873c89fc3cccb8e9dfef83e75bc8b100e0ab72f..925804670e9fa37d3dec28141335e6f3b9f7eb63 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -486,6 +486,11 @@ public final class LeavesXRuntime {
+         return enabled(LeavesXOptimization.ENTITY_LOAD_OPTIONAL_CHAINS);
+     }
+ 
++    /** Returns whether entity ticking may clear diagnostic ownership without a second atomic read. */
++    public static boolean entityTickDiagnosticStateOptimization() {
++        return enabled(LeavesXOptimization.ENTITY_TICK_DIAGNOSTIC_STATE);
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(fineGrainedOptimizationMask);
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 5bacbc8829127c46826056eb65442c62a3431567..4ef91b5bf7724397a93fc6b4f3540bf9c2a0c962 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -300,6 +300,8 @@ class LeavesXConfigLoaderTest {
+                 unload-serialization: false
+               entity-loading:
+                 optional-chains: false
++              entity-update:
++                tick-diagnostic-state: false
+               entity-queries:
+                 pressure-plate-scans: false
+                 fox-item-search: false
+@@ -317,10 +319,11 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_SERIALIZATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.TICKET_QUEUE_ALLOCATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_LOAD_OPTIONAL_CHAINS));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_TICK_DIAGNOSTIC_STATE));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 14,
++            LeavesXConfig.fineGrainedOptimizationCount() - 15,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -338,6 +341,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.chunkUnloadSerializationOptimization());
+             assertFalse(LeavesXRuntime.ticketQueueAllocationOptimization());
+             assertFalse(LeavesXRuntime.entityLoadOptionalChainsOptimization());
++            assertFalse(LeavesXRuntime.entityTickDiagnosticStateOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.foxItemSearchOptimization());
+             assertTrue(LeavesXRuntime.wardenTargetSensorOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityTickDiagnosticStateHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityTickDiagnosticStateHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..5f36037cfd300dbb2f5de92b2aba5059c3b7bd1a
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityTickDiagnosticStateHotPathTest.java
+@@ -0,0 +1,96 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++
++import java.io.IOException;
++import java.lang.reflect.Field;
++import java.lang.reflect.Method;
++import java.util.Arrays;
++import java.util.List;
++import java.util.concurrent.atomic.AtomicReference;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.entity.Entity;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies entity tick diagnostics keep nested ownership while avoiding the optimized release read. */
++@Normal
++class EntityTickDiagnosticStateHotPathTest {
++
++    @Test
++    void diagnosticOwnershipRemainsWithTheOuterEntity() throws ReflectiveOperationException {
++        final AtomicReference<Entity> current = currentEntityReference();
++        final Method claim = privateMethod("claimTickingEntityDiagnostic", Entity.class);
++        final Method release = privateMethod("releaseTickingEntityDiagnostic", boolean.class);
++        final Entity outer = mock(Entity.class);
++        final Entity nested = mock(Entity.class);
++
++        current.set(null);
++        try {
++            final boolean outerClaimed = (boolean)claim.invoke(null, outer);
++            final boolean nestedClaimed = (boolean)claim.invoke(null, nested);
++
++            assertTrue(outerClaimed);
++            assertFalse(nestedClaimed);
++            assertSame(outer, current.get());
++
++            release.invoke(null, nestedClaimed);
++            assertSame(outer, current.get());
++            release.invoke(null, outerClaimed);
++            assertNull(current.get());
++        } finally {
++            current.set(null);
++        }
++    }
++
++    @Test
++    void tickMethodKeepsOptimizedAndPaperDiagnosticPaths() throws IOException {
++        final List<MethodInsnNode> calls = invocations(methodNode("tickNonPassenger"));
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityTickDiagnosticStateOptimization")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("claimTickingEntityDiagnostic")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("releaseTickingEntityDiagnostic")));
++        assertTrue(calls.stream().anyMatch(call -> call.owner.equals("java/util/concurrent/atomic/AtomicReference")
++            && call.name.equals("get")));
++        assertTrue(calls.stream().anyMatch(call -> call.owner.equals("java/util/concurrent/atomic/AtomicReference")
++            && call.name.equals("lazySet")));
++    }
++
++    @SuppressWarnings("unchecked")
++    private static AtomicReference<Entity> currentEntityReference() throws ReflectiveOperationException {
++        final Field field = ServerLevel.class.getDeclaredField("currentlyTickingEntity");
++        field.setAccessible(true);
++        return (AtomicReference<Entity>)field.get(null);
++    }
++
++    private static Method privateMethod(final String name, final Class<?> parameterType) throws ReflectiveOperationException {
++        final Method method = ServerLevel.class.getDeclaredMethod(name, parameterType);
++        method.setAccessible(true);
++        return method;
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static MethodNode methodNode(final String methodName) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(ServerLevel.class.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing ServerLevel#" + methodName));
++    }
++}

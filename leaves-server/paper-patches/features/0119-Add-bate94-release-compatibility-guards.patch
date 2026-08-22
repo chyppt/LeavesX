@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 04:22:52 +0800
+Subject: [PATCH] Add bate94 release compatibility guards
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..64653e3582c76e38d5ad5d986fbf5394918586ed
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
+@@ -0,0 +1,89 @@
++package org.leavesx.leavesx.config;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.net.URISyntaxException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.HashSet;
++import java.util.Set;
++import java.util.stream.Stream;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++/** Release guards for the Paper-compatible LeavesX runtime and configuration contract. */
++@Normal
++class LeavesXReleaseCompatibilityTest {
++
++    private static final byte[] FORBIDDEN_FOLIA_API = "io/papermc/paper/threadedregions".getBytes(StandardCharsets.US_ASCII);
++
++    @Test
++    void fineGrainedSwitchesRemainUniqueAndFitThePrimitiveMask() {
++        final LeavesXOptimization[] optimizations = LeavesXOptimization.cachedValues();
++        final Set<String> paths = new HashSet<>(optimizations.length);
++        final Set<Long> masks = new HashSet<>(optimizations.length);
++        long combinedMask = 0L;
++
++        assertTrue(optimizations.length < Long.SIZE, "Extend the mask representation before adding a 64th switch");
++        for (final LeavesXOptimization optimization : optimizations) {
++            assertTrue(paths.add(optimization.path()), "Duplicate LeavesX path: " + optimization.path());
++            assertTrue(masks.add(optimization.mask()), "Duplicate LeavesX mask: " + optimization.path());
++            assertEquals(1L << optimization.ordinal(), optimization.mask(), optimization.path());
++            assertNotNull(LeavesXConfigWriter.comments().get(optimization.path()), optimization.path());
++            combinedMask |= optimization.mask();
++        }
++
++        assertEquals(LeavesXOptimization.allEnabledMask(), combinedMask);
++        assertEquals(optimizations.length, LeavesXConfig.fineGrainedOptimizationCount());
++    }
++
++    @Test
++    void safeDefaultsKeepBehaviorChangingOptionsDisabled() {
++        final LeavesXConfig defaults = LeavesXConfig.safeDefaults();
++
++        assertFalse(defaults.animalIdleGoalThrottling());
++        assertEquals(LeavesXConfig.fineGrainedOptimizationCount(), defaults.enabledFineGrainedOptimizationCount());
++        assertTrue(defaults.entityStateOptimizations());
++        assertTrue(defaults.entityQueryOptimizations());
++        assertTrue(defaults.aiOptimizations());
++        assertTrue(defaults.pathfindingOptimizations());
++        assertTrue(defaults.mobSpawningOptimizations());
++    }
++
++    @Test
++    void generatedCommentsStaySingleLineAndOperatorReadable() {
++        for (final var entry : LeavesXConfigWriter.comments().entrySet()) {
++            final String comment = entry.getValue();
++            assertFalse(comment.contains("\n") || comment.contains("\r"), entry.getKey());
++            assertFalse(comment.contains("nn"), entry.getKey());
++            assertTrue(comment.length() <= 80, entry.getKey() + " comment is too long");
++        }
++    }
++
++    @Test
++    void leavesXRuntimeDoesNotLinkAgainstFoliaApi() throws IOException, URISyntaxException {
++        final Path classesRoot = Path.of(LeavesXRuntime.class.getProtectionDomain().getCodeSource().getLocation().toURI());
++        final Path leavesXClasses = classesRoot.resolve("org").resolve("leavesx").resolve("leavesx");
++        assertTrue(Files.isDirectory(leavesXClasses), leavesXClasses.toString());
++
++        try (Stream<Path> files = Files.walk(leavesXClasses)) {
++            files.filter(path -> path.getFileName().toString().endsWith(".class"))
++                .forEach(LeavesXReleaseCompatibilityTest::assertNoFoliaApiReference);
++        }
++    }
++
++    private static void assertNoFoliaApiReference(final Path classFile) {
++        try {
++            final String bytecode = new String(Files.readAllBytes(classFile), StandardCharsets.ISO_8859_1);
++            final String forbidden = new String(FORBIDDEN_FOLIA_API, StandardCharsets.US_ASCII);
++            assertFalse(bytecode.contains(forbidden), classFile.toString());
++        } catch (final IOException ex) {
++            throw new AssertionError("Unable to inspect " + classFile, ex);
++        }
++    }
++}

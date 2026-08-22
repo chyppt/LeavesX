@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 05:22:13 +0800
+Subject: [PATCH] Optimize Brain tick traversal for bate96
+
+
+diff --git a/net/minecraft/world/entity/ai/Brain.java b/net/minecraft/world/entity/ai/Brain.java
+index 8fdad6b165a958142711ba1b0f09a78716334b5f..7326468da70cc751b88f8c38d1c44b4c0d171beb 100644
+--- a/net/minecraft/world/entity/ai/Brain.java
++++ b/net/minecraft/world/entity/ai/Brain.java
+@@ -39,6 +39,9 @@ public class Brain<E extends LivingEntity> {
+     private static final int SCHEDULE_UPDATE_DELAY = 20;
+     private final Map<MemoryModuleType<?>, MemorySlot<?>> memories = Maps.newHashMap();
+     private final Map<SensorType<? extends Sensor<? super E>>, Sensor<? super E>> sensors = Maps.newLinkedHashMap();
++    // LeavesX - contiguous tick-order views; the maps above remain the authoritative state.
++    private final ObjectArrayList<MemorySlot<?>> leavesXMemoryTraversal = new ObjectArrayList<>();
++    private final ObjectArrayList<Sensor<? super E>> leavesXSensorTraversal = new ObjectArrayList<>();
+     private final Map<Integer, Map<Activity, Set<BehaviorControl<? super E>>>> availableBehaviorsByPriority = Maps.newTreeMap();
+     private @Nullable EnvironmentAttribute<Activity> schedule;
+     private final Map<Activity, Set<Pair<MemoryModuleType<?>, MemoryStatus>>> activityRequirements = Maps.newHashMap();
+@@ -97,6 +100,8 @@ public class Brain<E extends LivingEntity> {
+                 this.registerMemory(type);
+             }
+         }
++        // Build after the map is complete so duplicate sensor types keep LinkedHashMap replacement semantics.
++        this.leavesXSensorTraversal.addAll(this.sensors.values());
+ 
+         for (ActivityData<E> activity : activities) {
+             this.addActivity(activity.activityType(), activity.behaviorPriorityPairs(), activity.conditions(), activity.memoriesToEraseWhenStopped());
+@@ -111,7 +116,10 @@ public class Brain<E extends LivingEntity> {
+     }
+ 
+     private void registerMemory(final MemoryModuleType<?> memoryType) {
+-        this.memories.putIfAbsent(memoryType, MemorySlot.create());
++        final MemorySlot<?> newSlot = MemorySlot.create();
++        if (this.memories.putIfAbsent(memoryType, newSlot) == null) {
++            this.leavesXMemoryTraversal.add(newSlot);
++        }
+     }
+ 
+     public Brain() {
+@@ -405,12 +413,24 @@ public class Brain<E extends LivingEntity> {
+     }
+ 
+     private void tickSensors(final ServerLevel level, final E body) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.brainTickTraversalOptimization()) {
++            for (int index = 0, size = this.leavesXSensorTraversal.size(); index < size; ++index) {
++                this.leavesXSensorTraversal.get(index).tick(level, body);
++            }
++            return;
++        }
+         for (Sensor<? super E> sensor : this.sensors.values()) {
+             sensor.tick(level, body);
+         }
+     }
+ 
+     private void forgetOutdatedMemories() {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.brainTickTraversalOptimization()) {
++            for (int index = 0, size = this.leavesXMemoryTraversal.size(); index < size; ++index) {
++                this.leavesXMemoryTraversal.get(index).tick();
++            }
++            return;
++        }
+         this.memories.values().forEach(MemorySlot::tick);
+     }
+ 

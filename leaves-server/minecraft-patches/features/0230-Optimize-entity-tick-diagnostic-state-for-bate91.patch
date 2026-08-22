@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 03:30:08 +0800
+Subject: [PATCH] Optimize entity tick diagnostic state for bate91
+
+
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index 7c01649594603f01942380e0f2764cd5e8cc1fab..63cda129ff1faa2a4a30ee2b29d8f67ebdbff742 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -1409,13 +1409,31 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+ 
+         return ret;
+     }
++
++    private static boolean claimTickingEntityDiagnostic(final Entity entity) {
++        if (currentlyTickingEntity.get() != null) {
++            return false;
++        }
++        currentlyTickingEntity.lazySet(entity);
++        return true;
++    }
++
++    private static void releaseTickingEntityDiagnostic(final boolean claimed) {
++        if (claimed) {
++            currentlyTickingEntity.lazySet(null);
++        }
++    }
+     // Paper end - log detailed entity tick information
+ 
+     public void tickNonPassenger(final Entity entity) {
+         // Paper start - log detailed entity tick information
+         ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread("Cannot tick an entity off-main");
++        final boolean optimizeTickDiagnostic = org.leavesx.leavesx.config.LeavesXRuntime.entityTickDiagnosticStateOptimization();
++        boolean claimedTickDiagnostic = false;
+         try {
+-            if (currentlyTickingEntity.get() == null) {
++            if (optimizeTickDiagnostic) {
++                claimedTickDiagnostic = claimTickingEntityDiagnostic(entity);
++            } else if (currentlyTickingEntity.get() == null) {
+                 currentlyTickingEntity.lazySet(entity);
+             }
+             // Paper end - log detailed entity tick information
+@@ -1437,7 +1455,9 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         }
+         // Paper start - log detailed entity tick information
+         } finally {
+-            if (currentlyTickingEntity.get() == entity) {
++            if (optimizeTickDiagnostic) {
++                releaseTickingEntityDiagnostic(claimedTickDiagnostic);
++            } else if (currentlyTickingEntity.get() == entity) {
+                 currentlyTickingEntity.lazySet(null);
+             }
+         }

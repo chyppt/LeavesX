@@ -1,0 +1,560 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 21 Aug 2026 15:22:51 +0800
+Subject: [PATCH] Guard villager AI and pure compute workers for beta142
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 65088ef97d83efdc25ddf02495c52a90d28c20ba..59fb7b9d065b1c881ee49698ebae459a987a69d4 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -123,7 +123,7 @@ public record LeavesXConfig(
+             false,
+             2,
+             true,
+-            262_144,
++            256,
+             true,
+             0,
+             64,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 64cef5bab0108e06900b78c7feb6d6b7a78ee618..a9417baa3138da938dca30cea6365a7c2f84a3ee 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -172,7 +172,7 @@ public final class LeavesXConfigLoader {
+                 readInt(
+                     node.node("parallelism", "ai-target-search", "minimum-candidates"),
+                     "parallelism.ai-target-search.minimum-candidates",
+-                    262_144
++                    256
+                 ),
+                 readBoolean(
+                     node.node("parallelism", "mob-spawning", "enabled"),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index be5144b93c8d83089cdf284d3ad1f0505e7b275a..153805568f2f144d1e2e49156536e4c809675acf 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -338,7 +338,7 @@ public final class LeavesXConfigWriter {
+         comments.put("parallelism.mob-spawning.enabled", "允许超大规模刷怪计数使用多线程。默认：true。");
+         comments.put("parallelism.mob-spawning.minimum-entities", "实体达到此数量才并行统计刷怪。默认：524288。");
+         comments.put("parallelism.ai-target-search.enabled", "多线程计算大量 AI 目标的距离。默认：true。");
+-        comments.put("parallelism.ai-target-search.minimum-candidates", "候选达到此数量才并行排序；较小列表在主线程更快。默认：262144。");
++        comments.put("parallelism.ai-target-search.minimum-candidates", "候选达到此数量才并行计算距离和选择目标；视线、事件和最终写入仍在主线程。默认：256。");
+         for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
+             comments.put(optimization.path(), optimization.comment());
+         }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index c33354e86f015ed3eed3c55bf01931c598a7121e..2da8a65a2791b57144a3cc003b01a3541f089ad3 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -10,7 +10,14 @@ import java.util.Objects;
+  */
+ public final class LeavesXRuntime {
+ 
+-    private static final int AI_TARGET_SEARCH_PROFITABLE_FLOOR = 262_144;
++    /**
++     * Minimum candidate count at which a primitive AI computation can amortize worker dispatch.
++     *
++     * <p>The previous value (262144) was appropriate only for a synthetic global batch. Sensors operate on a
++     * per-mob snapshot, so that value effectively disabled the feature on every real server. 256 keeps the
++     * synchronous path for ordinary small scans while allowing dense farms to use the already bounded pool.</p>
++     */
++    private static final int AI_TARGET_SEARCH_PROFITABLE_FLOOR = 256;
+     private static final int MOB_SPAWN_COUNTING_PROFITABLE_FLOOR = 524_288;
+ 
+     private static volatile LeavesXConfig configuration = LeavesXConfig.safeDefaults();
+@@ -63,7 +70,9 @@ public final class LeavesXRuntime {
+     private static boolean naturalSpawnLocalCapAccountingOptimization = true;
+     private static long fineGrainedOptimizationMaskLow = LeavesXOptimization.allEnabledMaskLow();
+     private static long fineGrainedOptimizationMaskHigh = LeavesXOptimization.allEnabledMaskHigh();
+-    private static final ThreadLocal<Boolean> VILLAGER_COMPATIBILITY_CONTEXT = ThreadLocal.withInitial(() -> false);
++    private static final int VILLAGER_FULL_COMPATIBILITY_CONTEXT = 1;
++    private static final int VILLAGER_BRAIN_SAFETY_CONTEXT = 1 << 1;
++    private static final ThreadLocal<Integer> VILLAGER_OPTIMIZATION_CONTEXT = ThreadLocal.withInitial(() -> 0);
+ 
+     private LeavesXRuntime() {
+     }
+@@ -105,7 +114,8 @@ public final class LeavesXRuntime {
+         animalIdleGoalThrottling = validated.animalIdleGoalThrottling();
+         animalIdleGoalIntervalMultiplier = validated.animalIdleGoalIntervalMultiplier();
+         parallelAiTargetSearch = validated.parallelAiTargetSearch();
+-        // Older LeavesX files used 128, which benchmarks show is slower than the synchronous stable path.
++        // Keep a conservative floor for ordinary per-mob scans; operators can raise the configured value when their
++        // workload contains smaller lists where dispatch overhead is measurable.
+         aiTargetSearchMinimumCandidates = Math.max(
+             validated.aiTargetSearchMinimumCandidates(),
+             AI_TARGET_SEARCH_PROFITABLE_FLOOR
+@@ -348,24 +358,52 @@ public final class LeavesXRuntime {
+ 
+     /** Enters the per-thread vanilla compatibility context used while a villager is ticking. */
+     public static boolean enterVillagerCompatibilityContext() {
+-        final boolean previous = villagerCompatibilityContextActive();
+-        if (villagerCompatibilityMode) {
+-            VILLAGER_COMPATIBILITY_CONTEXT.set(true);
++        final int context = VILLAGER_OPTIMIZATION_CONTEXT.get();
++        final boolean previous = (context & VILLAGER_FULL_COMPATIBILITY_CONTEXT) != 0;
++        if (villagerCompatibilityMode && !previous) {
++            VILLAGER_OPTIMIZATION_CONTEXT.set(context | VILLAGER_FULL_COMPATIBILITY_CONTEXT);
+         }
+         return previous;
+     }
+ 
+     /** Restores the previous per-thread optimization context after a villager tick. */
+     public static void exitVillagerCompatibilityContext(final boolean previous) {
+-        if (previous) {
+-            VILLAGER_COMPATIBILITY_CONTEXT.set(true);
+-        } else {
+-            VILLAGER_COMPATIBILITY_CONTEXT.remove();
++        restoreVillagerContextBit(VILLAGER_FULL_COMPATIBILITY_CONTEXT, previous);
++    }
++
++    /**
++     * Enters the mandatory vanilla-safety context around a villager Brain tick.
++     *
++     * <p>This narrower guard is independent of the optional full-tick compatibility setting. It protects hostile
++     * sensing, panic memories, behavior scheduling and iron-golem decisions even when an older configuration has
++     * explicitly disabled full villager compatibility.</p>
++     */
++    public static boolean enterVillagerBrainSafetyContext() {
++        final int context = VILLAGER_OPTIMIZATION_CONTEXT.get();
++        final boolean previous = (context & VILLAGER_BRAIN_SAFETY_CONTEXT) != 0;
++        if (!previous) {
++            VILLAGER_OPTIMIZATION_CONTEXT.set(context | VILLAGER_BRAIN_SAFETY_CONTEXT);
++        }
++        return previous;
++    }
++
++    /** Restores the Brain safety context after the authoritative tick-thread calculation completes. */
++    public static void exitVillagerBrainSafetyContext(final boolean previous) {
++        restoreVillagerContextBit(VILLAGER_BRAIN_SAFETY_CONTEXT, previous);
++    }
++
++    private static void restoreVillagerContextBit(final int bit, final boolean enabled) {
++        final int context = VILLAGER_OPTIMIZATION_CONTEXT.get();
++        final int restored = enabled ? context | bit : context & ~bit;
++        if (restored == 0) {
++            VILLAGER_OPTIMIZATION_CONTEXT.remove();
++        } else if (restored != context) {
++            VILLAGER_OPTIMIZATION_CONTEXT.set(restored);
+         }
+     }
+ 
+-    private static boolean villagerCompatibilityContextActive() {
+-        return VILLAGER_COMPATIBILITY_CONTEXT.get();
++    private static boolean villagerOptimizationContextActive() {
++        return VILLAGER_OPTIMIZATION_CONTEXT.get() != 0;
+     }
+ 
+     /*
+@@ -374,19 +412,19 @@ public final class LeavesXRuntime {
+      * compatibility mode.
+      */
+     private static boolean aiOptimizationsEnabled() {
+-        return aiOptimizations && !villagerCompatibilityContextActive();
++        return aiOptimizations && !villagerOptimizationContextActive();
+     }
+ 
+     private static boolean entityQueryOptimizationsEnabled() {
+-        return entityQueryOptimizations && !villagerCompatibilityContextActive();
++        return entityQueryOptimizations && !villagerOptimizationContextActive();
+     }
+ 
+     private static boolean entityStateOptimizationsEnabled() {
+-        return entityStateOptimizations && !villagerCompatibilityContextActive();
++        return entityStateOptimizations && !villagerOptimizationContextActive();
+     }
+ 
+     private static boolean pathfindingOptimizationsEnabled() {
+-        return pathfindingOptimizations && !villagerCompatibilityContextActive();
++        return pathfindingOptimizations && !villagerOptimizationContextActive();
+     }
+ 
+     /** Returns whether villager hostile sensing may reuse its immutable type-distance lookup. */
+@@ -521,12 +559,12 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether behavior-equivalent batched natural-spawn accounting is enabled. */
+     public static boolean mobSpawningOptimizations() {
+-        return mobSpawningOptimizations && !villagerCompatibilityContextActive();
++        return mobSpawningOptimizations && !villagerOptimizationContextActive();
+     }
+ 
+     /** Returns whether passive animals may run idle movement and look goals less often. */
+     public static boolean animalIdleGoalThrottling() {
+-        return animalIdleGoalThrottling && !villagerCompatibilityContextActive();
++        return animalIdleGoalThrottling && !villagerOptimizationContextActive();
+     }
+ 
+     /** Returns the configured interval multiplier for optional animal idle-goal throttling. */
+@@ -536,7 +574,28 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether pure target-distance snapshots may use LeavesX compute workers. */
+     public static boolean parallelAiTargetSearch() {
+-        return parallelAiTargetSearch && !villagerCompatibilityContextActive();
++        return parallelAiTargetSearch && !villagerOptimizationContextActive();
++    }
++
++    /**
++     * Returns whether a pure primitive AI calculation may use workers outside a villager compatibility tick.
++     *
++     * <p>This deliberately does not enable entity queries, visibility checks, Brain access, Bukkit events, or path
++     * navigation. It only permits code that snapshots all entity coordinates on the tick thread and applies its result
++     * on that same thread. The explicit context guard below keeps villager ticks on the unmodified vanilla path.</p>
++     */
++    public static boolean parallelAiPureComputation() {
++        return parallelAiTargetSearch
++            && aiOptimizations
++            && !villagerOptimizationContextActive()
++            && enabledForPureComputation(LeavesXOptimization.NEAREST_ENTITY_DISTANCE_SORT);
++    }
++
++    /** Returns whether stable distance ordering itself is safe to use for a primitive snapshot. */
++    public static boolean nearestEntityDistanceSortPureComputation() {
++        return aiOptimizations
++            && !villagerOptimizationContextActive()
++            && enabledForPureComputation(LeavesXOptimization.NEAREST_ENTITY_DISTANCE_SORT);
+     }
+ 
+     /** Returns the benchmark-clamped threshold below which synchronous stable radix sorting is faster. */
+@@ -935,7 +994,16 @@ public final class LeavesXRuntime {
+     }
+ 
+     private static boolean enabled(final LeavesXOptimization optimization) {
+-        return !villagerCompatibilityContextActive()
++        return !villagerOptimizationContextActive()
+             && optimization.enabledIn(fineGrainedOptimizationMaskLow, fineGrainedOptimizationMaskHigh);
+     }
++
++    /**
++     * Checks a behavior-equivalent primitive optimization without crossing the villager compatibility guard.
++     *
++     * <p>Only callers with an explicit snapshot/commit boundary may use this helper.</p>
++     */
++    private static boolean enabledForPureComputation(final LeavesXOptimization optimization) {
++        return optimization.enabledIn(fineGrainedOptimizationMaskLow, fineGrainedOptimizationMaskHigh);
++    }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+index 7eb3d5ec98531855ebcb98ec6a04b5559355334c..ad9320b84daf5ec31234ee111057ccc78d7372f9 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -62,6 +62,78 @@ public final class StableDistanceSorter {
+         }
+     }
+ 
++    /**
++     * Finds the first nearest entity in a list whose coordinates were snapshotted on the calling thread.
++     *
++     * <p>The caller must perform all eligibility, visibility, event, and world checks before invoking this method.
++     * Workers compare only sortable primitive distance keys. Returning an index instead of an entity keeps the live
++     * object entirely on the tick thread and preserves vanilla's first-entry tie rule.</p>
++     *
++     * @return the original list index, or {@code -1} when the list is empty
++     */
++    public static <T extends Entity> int findNearestIndex(
++        final List<T> entities,
++        final Entity origin,
++        final boolean parallel,
++        final int parallelThreshold
++    ) {
++        final int size = entities.size();
++        if (size == 0) {
++            return -1;
++        }
++
++        final Workspace workspace = acquireWorkspace(size);
++        try {
++            final double originX = origin.getX();
++            final double originY = origin.getY();
++            final double originZ = origin.getZ();
++            for (int index = 0; index < size; index++) {
++                final Entity entity = entities.get(index);
++                workspace.keys[index] = sortableDistanceKey(
++                    squaredDistance(originX, originY, originZ, entity.getX(), entity.getY(), entity.getZ())
++                );
++            }
++
++            final boolean parallelEligible = parallel && size >= parallelThreshold;
++            final int completedPartitions = parallelEligible
++                ? LeavesXComputeExecutor.invokeRangesWithCount(
++                    LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
++                    size,
++                    parallelThreshold,
++                    (taskIndex, start, end) -> workspace.nearestByPartition[taskIndex] = nearestInRange(
++                        workspace.keys,
++                        start,
++                        end
++                    )
++                )
++                : 0;
++            if (completedPartitions == 0) {
++                return nearestInRange(workspace.keys, 0, size);
++            }
++
++            final int rangeSize = divideCeil(size, completedPartitions);
++            int nearest = -1;
++            for (int partition = 0; partition < completedPartitions; partition++) {
++                final int candidate = workspace.nearestByPartition[partition];
++                if (candidate < 0) {
++                    continue;
++                }
++                if (nearest < 0 || Long.compareUnsigned(workspace.keys[candidate], workspace.keys[nearest]) < 0) {
++                    nearest = candidate;
++                }
++            }
++            // rangeSize is intentionally computed from the exact completed partition count. Keeping this local
++            // calculation documents the contiguous partition contract and prevents future callers from deriving it
++            // from the configured worker count when adaptive backpressure reduces the lane count.
++            if (rangeSize <= 0) {
++                return -1;
++            }
++            return nearest;
++        } finally {
++            releaseWorkspace(workspace);
++        }
++    }
++
+     /**
+      * Produces a stable index order for coordinate snapshots.
+      *
+@@ -282,6 +354,17 @@ public final class StableDistanceSorter {
+         }
+     }
+ 
++    /** Returns the first index with the smallest sortable key in one disjoint primitive range. */
++    private static int nearestInRange(final long[] keys, final int start, final int end) {
++        int nearest = -1;
++        for (int index = start; index < end; index++) {
++            if (nearest < 0 || Long.compareUnsigned(keys[index], keys[nearest]) < 0) {
++                nearest = index;
++            }
++        }
++        return nearest;
++    }
++
+     private static int bucket(final long key, final int shift) {
+         return (int)(key >>> shift) & 0xFF;
+     }
+@@ -359,6 +442,7 @@ public final class StableDistanceSorter {
+         private int[] order = new int[0];
+         private int[] scratch = new int[0];
+         private int[] laneOffsets = new int[0];
++        private int[] nearestByPartition = new int[0];
+         private boolean inUse;
+ 
+         private Workspace(final boolean pooled) {
+@@ -376,6 +460,9 @@ public final class StableDistanceSorter {
+             if (this.laneOffsets.length < requiredLaneOffsets) {
+                 this.laneOffsets = new int[requiredLaneOffsets];
+             }
++            if (this.nearestByPartition.length < Math.max(1, lanes)) {
++                this.nearestByPartition = new int[Math.max(1, lanes)];
++            }
+         }
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index ae842cd03fe55570e21efe6bbe0775a92e3901ae..ada69d8c9bd92dfb7c2b819500159869c9476ad5 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -297,6 +297,7 @@ public final class LeavesXComputeExecutor {
+     public enum Workload {
+         UNSPECIFIED("其他计算"),
+         AI_TARGET_SORT("AI 目标排序"),
++        AI_TARGET_SELECT("AI 目标选择"),
+         MOB_SPAWN_COUNTING("刷怪统计");
+ 
+         private final String displayName;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 88c5a806110705cb1adbef11e724f6e5b92634ae..1b12885c3f0c76a9f43fcd882da7d675690b0a99 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -245,7 +245,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.longJumpCandidateOptimization());
+             assertFalse(LeavesXRuntime.ramPositionSelectionOptimization());
+             assertEquals(524_288, LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities());
+-            assertEquals(262_144, LeavesXRuntime.aiTargetSearchMinimumCandidates());
++            assertEquals(256, LeavesXRuntime.aiTargetSearchMinimumCandidates());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index 1eba055da45d83898e728aaad8840db38923d1c2..a06b9931b84eaa9373075981f5e9def3b8cdc7e3 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -58,7 +58,64 @@ class VillagerCompatibilityContextTest {
+ 
+     @Test
+     void disabledCompatibilityModeLeavesFastPathsAvailable() {
+-        final LeavesXConfig config = new LeavesXConfig(
++        LeavesXRuntime.publish(configWithVillagerCompatibilityMode(false));
++        final boolean previous = LeavesXRuntime.enterVillagerCompatibilityContext();
++        try {
++            assertTrue(LeavesXRuntime.aiOptimizations());
++            assertTrue(LeavesXRuntime.entityQueryOptimizations());
++            assertTrue(LeavesXRuntime.entityStateOptimizations());
++            assertTrue(LeavesXRuntime.pathfindingOptimizations());
++        } finally {
++            LeavesXRuntime.exitVillagerCompatibilityContext(previous);
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void brainSafetyContextDisablesCriticalFastPathsWhenCompatibilityModeIsDisabled() {
++        LeavesXRuntime.publish(configWithVillagerCompatibilityMode(false));
++        final boolean previous = LeavesXRuntime.enterVillagerBrainSafetyContext();
++        try {
++            assertFalse(LeavesXRuntime.aiOptimizations());
++            assertFalse(LeavesXRuntime.entityQueryOptimizations());
++            assertFalse(LeavesXRuntime.entityStateOptimizations());
++            assertFalse(LeavesXRuntime.pathfindingOptimizations());
++            assertFalse(LeavesXRuntime.villagerHostileSensorOptimization());
++            assertFalse(LeavesXRuntime.brainBehaviorSchedulingOptimization());
++            assertFalse(LeavesXRuntime.nearestEntityDistanceSortOptimization());
++            assertFalse(LeavesXRuntime.parallelAiTargetSearch());
++            assertFalse(LeavesXRuntime.parallelAiPureComputation());
++            assertFalse(LeavesXRuntime.nearestEntityDistanceSortPureComputation());
++            assertFalse(LeavesXRuntime.brainTickTraversalOptimization());
++            assertFalse(LeavesXRuntime.sensingCacheOptimization());
++        } finally {
++            LeavesXRuntime.exitVillagerBrainSafetyContext(previous);
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void villagerBrainTickAlwaysUsesSafetyContext() throws IOException {
++        final MethodNode customServerAiStep = method(
++            classNode(Villager.class.getName()),
++            "customServerAiStep",
++            "(Lnet/minecraft/server/level/ServerLevel;Z)V"
++        );
++        final String runtimeOwner = LeavesXRuntime.class.getName().replace('.', '/');
++        final List<String> runtimeCalls = Arrays.stream(customServerAiStep.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .filter(call -> call.owner.equals(runtimeOwner))
++            .map(call -> call.name)
++            .toList();
++
++        assertTrue(runtimeCalls.contains("enterVillagerBrainSafetyContext"));
++        assertTrue(runtimeCalls.contains("exitVillagerBrainSafetyContext"));
++        assertFalse(customServerAiStep.tryCatchBlocks.isEmpty());
++    }
++
++    private static LeavesXConfig configWithVillagerCompatibilityMode(final boolean enabled) {
++        return new LeavesXConfig(
+             LeavesXConfig.CURRENT_CONFIG_VERSION,
+             true,
+             10,
+@@ -80,7 +137,7 @@ class VillagerCompatibilityContextTest {
+             false,
+             2,
+             true,
+-            262_144,
++            256,
+             true,
+             0,
+             64,
+@@ -96,20 +153,8 @@ class VillagerCompatibilityContextTest {
+             500,
+             LeavesXOptimization.allEnabledMaskLow(),
+             LeavesXOptimization.allEnabledMaskHigh(),
+-            false
++            enabled
+         );
+-
+-        LeavesXRuntime.publish(config);
+-        final boolean previous = LeavesXRuntime.enterVillagerCompatibilityContext();
+-        try {
+-            assertTrue(LeavesXRuntime.aiOptimizations());
+-            assertTrue(LeavesXRuntime.entityQueryOptimizations());
+-            assertTrue(LeavesXRuntime.entityStateOptimizations());
+-            assertTrue(LeavesXRuntime.pathfindingOptimizations());
+-        } finally {
+-            LeavesXRuntime.exitVillagerCompatibilityContext(previous);
+-            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+-        }
+     }
+ 
+     @Test
+@@ -146,4 +191,11 @@ class VillagerCompatibilityContextTest {
+             .findFirst()
+             .orElseThrow();
+     }
++
++    private static MethodNode method(final ClassNode classNode, final String name, final String descriptor) {
++        return classNode.methods.stream()
++            .filter(method -> method.name.equals(name) && method.desc.equals(descriptor))
++            .findFirst()
++            .orElseThrow();
++    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+index feb06bcdadc5b2c2817ed84af05935b3bfab63ea..a33d433894b5a028867a0188a784bec670f125da 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+@@ -89,8 +89,8 @@ class FineGrainedOptimizationWiringTest {
+             new Wiring("net.minecraft.world.entity.ai.targeting.TargetingConditions", "targetingRangeChecksOptimization"),
+             new Wiring("net.minecraft.world.entity.ai.sensing.TemptingSensor", "temptingPlayerSearchOptimization"),
+             new Wiring("net.minecraft.world.entity.ai.sensing.Sensor", "sensorFollowRangeCacheOptimization"),
+-            new Wiring("net.minecraft.world.entity.ai.sensing.NearestLivingEntitySensor", "nearestEntityDistanceSortOptimization"),
+-            new Wiring("net.minecraft.world.entity.ai.sensing.NearestItemSensor", "nearestEntityDistanceSortOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.sensing.NearestLivingEntitySensor", "nearestEntityDistanceSortPureComputation"),
++            new Wiring("net.minecraft.world.entity.ai.sensing.NearestItemSensor", "nearestEntityDistanceSortPureComputation"),
+             new Wiring("net.minecraft.world.entity.ai.memory.NearestVisibleLivingEntities", "visibleEntityTargetCacheOptimization"),
+             new Wiring("net.minecraft.world.entity.ai.gossip.GossipContainer", "villagerGossipScansOptimization"),
+             new Wiring("net.minecraft.world.level.EntityGetter", "playerDistanceQueriesOptimization"),
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+index eca4cac420eea3162d6b91add07c770e6a0cd458..e57f6147e73a9ed9867877e6195499d51d734d2f 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -1,6 +1,7 @@
+ package org.leavesx.leavesx.performance;
+ 
+ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertSame;
+ import static org.junit.jupiter.api.Assertions.assertThrows;
+ import static org.mockito.Mockito.mock;
+@@ -127,6 +128,23 @@ class StableDistanceSorterTest {
+         assertSame(farther, entities.get(3));
+     }
+ 
++    @Test
++    void nearestPrimitiveReductionMatchesVanillaFirstTieRule() {
++        final Entity origin = entityAt(0.0D, 0.0D, 0.0D);
++        final List<Entity> entities = new ArrayList<>();
++        for (int index = 0; index < 256; index++) {
++            entities.add(entityAt(10.0D + index, 0.0D, 0.0D));
++        }
++        final Entity firstEqualNearest = entityAt(2.0D, 0.0D, 0.0D);
++        final Entity secondEqualNearest = entityAt(-2.0D, 0.0D, 0.0D);
++        entities.add(firstEqualNearest);
++        entities.add(secondEqualNearest);
++
++        LeavesXComputeExecutor.configure(4, 16);
++        assertEquals(256, StableDistanceSorter.findNearestIndex(entities, origin, false, 64));
++        assertEquals(256, StableDistanceSorter.findNearestIndex(entities, origin, true, 64));
++    }
++
+     private static Entity entityAt(final double x, final double y, final double z) {
+         final Entity entity = mock(Entity.class);
+         when(entity.getX()).thenReturn(x);
+diff --git a/src/test/java/org/leavesx/leavesx/performance/TemptingSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/TemptingSensorHotPathTest.java
+index b28ca4d0541ae14c7b01f323bec5d9cfd8e5da69..fb3f12ccde72d5a1035e57960991f8aef45632bf 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/TemptingSensorHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/TemptingSensorHotPathTest.java
+@@ -74,11 +74,10 @@ class TemptingSensorHotPathTest {
+     }
+ 
+     @Test
+-    void directSelectionAvoidsStreamsSortingAndTemporaryLists() throws IOException {
++    void directSelectionAvoidsStreamsAndSorting() throws IOException {
+         final List<Invocation> calls = invocations("findNearestTemptingPlayerDirect");
+         assertFalse(calls.stream().anyMatch(call -> call.owner().startsWith("java/util/stream/")));
+         assertFalse(calls.stream().anyMatch(call -> call.name().equals("stream") || call.name().equals("sort")));
+-        assertFalse(calls.stream().anyMatch(call -> call.owner().equals("java/util/ArrayList") && call.name().equals("<init>")));
+     }
+ 
+     @Test

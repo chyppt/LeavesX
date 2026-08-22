@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 11:52:51 +0800
+Subject: [PATCH] Optimize block entity ticker removal checks
+
+
+diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
+index 0af2972f8f2364ce0aa1b83f938489cc4c58f50b..892a3d92e784e7b0d58977282a44d57c7a899e50 100644
+--- a/net/minecraft/world/level/chunk/LevelChunk.java
++++ b/net/minecraft/world/level/chunk/LevelChunk.java
+@@ -1031,13 +1031,26 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+ 
+     public static class RebindableTickingBlockEntityWrapper implements TickingBlockEntity { // Leaves - default -> public
+         public TickingBlockEntity ticker; // Leaves - private -> public
++        // LeavesX start - keep the concrete block entity beside the wrapper for the hot removal check
++        private @Nullable BlockEntity blockEntityReference;
++        // LeavesX end - keep the concrete block entity beside the wrapper for the hot removal check
+ 
+         private RebindableTickingBlockEntityWrapper(final TickingBlockEntity ticker) {
+             this.ticker = ticker;
++            // BoundTickingBlockEntity exposes the same state as the wrapper without another virtual call.
++            if (ticker instanceof BoundTickingBlockEntity<?> boundTicker) {
++                this.blockEntityReference = boundTicker.blockEntity;
++            }
+         }
+ 
+         public void rebind(TickingBlockEntity ticker) { // Leaves - default -> public
+             this.ticker = ticker;
++            // A null ticker is used when a block entity is removed; clear the cached reference before falling back.
++            if (ticker instanceof BoundTickingBlockEntity<?> boundTicker) {
++                this.blockEntityReference = boundTicker.blockEntity;
++            } else {
++                this.blockEntityReference = null;
++            }
+         }
+ 
+         @Override
+@@ -1047,6 +1060,9 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+ 
+         @Override
+         public boolean isRemoved() {
++            if (this.blockEntityReference != null) {
++                return this.blockEntityReference.isRemoved();
++            }
+             return this.ticker.isRemoved();
+         }
+ 

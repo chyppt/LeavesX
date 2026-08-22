@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 03:17:22 +0800
+Subject: [PATCH] Optimize recursive entity loading for bate90
+
+
+diff --git a/net/minecraft/world/entity/EntityType.java b/net/minecraft/world/entity/EntityType.java
+index 1ee78f52205cbb0b254a28999f3707ccccbe998e..fc285e2b9090912bb42cb916d19b2c72578b5f3c 100644
+--- a/net/minecraft/world/entity/EntityType.java
++++ b/net/minecraft/world/entity/EntityType.java
+@@ -1612,6 +1612,16 @@ public class EntityType<T extends Entity> implements EntityTypeTest<Entity, T>,
+     public static @Nullable Entity loadEntityRecursive(
+         final ValueInput input, final Level level, final EntitySpawnReason reason, final EntityProcessor postLoad
+     ) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityLoadOptionalChainsOptimization()) {
++            final Entity entity = loadStaticEntity(input, level, reason).orElse(null);
++            if (entity == null) {
++                return null;
++            }
++
++            final Entity processedEntity = postLoad.process(entity);
++            return processedEntity == null ? null : loadPassengersRecursive(processedEntity, input, level, reason, postLoad);
++        }
++
+         return loadStaticEntity(input, level, reason)
+             .map(postLoad::process)
+             .map(entity -> loadPassengersRecursive(entity, input, level, reason, postLoad))
+@@ -1621,6 +1631,16 @@ public class EntityType<T extends Entity> implements EntityTypeTest<Entity, T>,
+     public static @Nullable Entity loadEntityRecursive(
+         final EntityType<?> type, final ValueInput input, final Level level, final EntitySpawnReason reason, final EntityProcessor postLoad
+     ) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityLoadOptionalChainsOptimization()) {
++            final Entity entity = loadStaticEntity(type, input, level, reason).orElse(null);
++            if (entity == null) {
++                return null;
++            }
++
++            final Entity processedEntity = postLoad.process(entity);
++            return processedEntity == null ? null : loadPassengersRecursive(processedEntity, input, level, reason, postLoad);
++        }
++
+         return loadStaticEntity(type, input, level, reason)
+             .map(postLoad::process)
+             .map(entity -> loadPassengersRecursive(entity, input, level, reason, postLoad))

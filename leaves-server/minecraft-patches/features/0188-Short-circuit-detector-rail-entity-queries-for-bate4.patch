@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 19:09:44 +0800
+Subject: [PATCH] Short-circuit detector rail entity queries for bate49
+
+
+diff --git a/net/minecraft/world/level/block/DetectorRailBlock.java b/net/minecraft/world/level/block/DetectorRailBlock.java
+index 5f09b65c6986579047662436d3ec4251338f55b3..b52c374b1f3c644b75e26645fde0233bc6a10f5d 100644
+--- a/net/minecraft/world/level/block/DetectorRailBlock.java
++++ b/net/minecraft/world/level/block/DetectorRailBlock.java
+@@ -26,12 +26,14 @@ import net.minecraft.world.level.block.state.properties.Property;
+ import net.minecraft.world.level.block.state.properties.RailShape;
+ import net.minecraft.world.level.redstone.Redstone;
+ import net.minecraft.world.phys.AABB;
++import org.jspecify.annotations.Nullable;
+ 
+ public class DetectorRailBlock extends BaseRailBlock {
+     public static final MapCodec<DetectorRailBlock> CODEC = simpleCodec(DetectorRailBlock::new);
+     public static final EnumProperty<RailShape> SHAPE = BlockStateProperties.RAIL_SHAPE_STRAIGHT;
+     public static final BooleanProperty POWERED = BlockStateProperties.POWERED;
+     private static final int PRESSED_CHECK_PERIOD = 20;
++    private static final Predicate<Entity> LEAVESX_ANY_MINECART = entity -> true;
+ 
+     @Override
+     public MapCodec<DetectorRailBlock> codec() {
+@@ -90,11 +92,10 @@ public class DetectorRailBlock extends BaseRailBlock {
+         if (this.canSurvive(state, level, pos)) {
+             if (!state.is(this)) { return; } // Paper - Fix some rails connecting improperly
+             boolean wasPressed = state.getValue(POWERED);
+-            boolean shouldBePressed = false;
+-            List<AbstractMinecart> entities = this.getInteractingMinecartOfType(level, pos, AbstractMinecart.class, e -> true);
+-            if (!entities.isEmpty()) {
+-                shouldBePressed = true;
+-            }
++            final AABB searchBox = this.getSearchBB(pos);
++            boolean shouldBePressed = this.getFirstInteractingMinecartOfType(
++                level, searchBox, AbstractMinecart.class, LEAVESX_ANY_MINECART
++            ) != null;
+ 
+             // Paper start - Call BlockRedstoneEvent
+             if (wasPressed != shouldBePressed) {
+@@ -160,24 +161,33 @@ public class DetectorRailBlock extends BaseRailBlock {
+     @Override
+     protected int getAnalogOutputSignal(final BlockState state, final Level level, final BlockPos pos, final Direction direction) {
+         if (state.getValue(POWERED)) {
+-            List<MinecartCommandBlock> commandBlocks = this.getInteractingMinecartOfType(level, pos, MinecartCommandBlock.class, e -> true);
+-            if (!commandBlocks.isEmpty()) {
+-                return commandBlocks.get(0).getCommandBlock().getSuccessCount();
++            final AABB searchBox = this.getSearchBB(pos);
++            final MinecartCommandBlock commandBlock = this.getFirstInteractingMinecartOfType(
++                level, searchBox, MinecartCommandBlock.class, LEAVESX_ANY_MINECART
++            );
++            if (commandBlock != null) {
++                return commandBlock.getCommandBlock().getSuccessCount();
+             }
+ 
+-            List<AbstractMinecart> entities = this.getInteractingMinecartOfType(level, pos, AbstractMinecart.class, EntitySelector.CONTAINER_ENTITY_SELECTOR);
+-            if (!entities.isEmpty()) {
+-                return AbstractContainerMenu.getRedstoneSignalFromContainer((Container)entities.get(0));
++            final AbstractMinecart container = this.getFirstInteractingMinecartOfType(
++                level, searchBox, AbstractMinecart.class, EntitySelector.CONTAINER_ENTITY_SELECTOR
++            );
++            if (container != null) {
++                return AbstractContainerMenu.getRedstoneSignalFromContainer((Container)container);
+             }
+         }
+ 
+         return 0;
+     }
+ 
+-    private <T extends AbstractMinecart> List<T> getInteractingMinecartOfType(
+-        final Level level, final BlockPos pos, final Class<T> type, final Predicate<Entity> containerEntitySelector
++    private <T extends AbstractMinecart> @Nullable T getFirstInteractingMinecartOfType(
++        final Level level, final AABB searchBox, final Class<T> type, final Predicate<Entity> containerEntitySelector
+     ) {
+-        return level.getEntitiesOfClass(type, this.getSearchBB(pos), containerEntitySelector);
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++            return level.leavesX$getFirstEntityOfClass(type, searchBox, containerEntitySelector);
++        }
++        final List<T> entities = level.getEntitiesOfClass(type, searchBox, containerEntitySelector);
++        return entities.isEmpty() ? null : entities.getFirst();
+     }
+ 
+     private AABB getSearchBB(final BlockPos pos) {

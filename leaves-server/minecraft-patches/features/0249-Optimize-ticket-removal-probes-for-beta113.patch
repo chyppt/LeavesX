@@ -1,0 +1,158 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 13:01:04 +0800
+Subject: [PATCH] Optimize ticket removal probes for beta113
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+index 3b782eab5a834227fdc26bcfb0c00dc2c31b424b..ef066062813caacc6434b6ea0d4fdf0296060fbd 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+@@ -700,8 +700,16 @@ public final class ChunkHolderManager {
+ 
+         final int chunkX = CoordinateUtils.getChunkX(chunk);
+         final int chunkZ = CoordinateUtils.getChunkZ(chunk);
+-        final Ticket probe = new Ticket(type, level, 0L);
+-        ((ChunkSystemTicket<T>)(Object)probe).moonrise$setIdentifier(identifier);
++        final boolean optimizeRemovalProbe = org.leavesx.leavesx.config.LeavesXRuntime.ticketRemovalProbeOptimization();
++        final Ticket probe;
++        if (optimizeRemovalProbe) {
++            // Preserve the fallback constructor's identifier validation before touching the ticket table.
++            Ticket.leavesX$validateIdentifier(type, identifier);
++            probe = null;
++        } else {
++            probe = new Ticket(type, level, 0L);
++            ((ChunkSystemTicket<T>)(Object)probe).moonrise$setIdentifier(identifier);
++        }
+ 
+         final ReentrantAreaLock.Node ticketLock = lock ? this.ticketLockArea.lock(chunkX, chunkZ) : null;
+         try {
+@@ -711,7 +719,9 @@ public final class ChunkHolderManager {
+             }
+ 
+             final int oldLevel = getTicketLevelAt(ticketsAtChunk);
+-            final Ticket ticket = ticketsAtChunk.removeAndGet(probe);
++            final Ticket ticket = optimizeRemovalProbe
++                ? ticketsAtChunk.leavesX$removeAndGet(type, level, identifier)
++                : ticketsAtChunk.removeAndGet(probe);
+ 
+             if (ticket == null) {
+                 return false;
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/util/stream/TicketSet.java b/ca/spottedleaf/moonrise/patches/chunk_system/util/stream/TicketSet.java
+index d8db8894324276eb3ec58b4883c5635b44c57847..8649713cd3e903a6e162841024ffe98e46e47a02 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/util/stream/TicketSet.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/util/stream/TicketSet.java
+@@ -53,6 +53,33 @@ public final class TicketSet extends AbstractSet<Ticket> {
+         return ~start;
+     }
+ 
++    // Returns ~<insertion index> when not found, matching the Ticket-based lookup above.
++    private static <T> int leavesX$binarySearch(
++        final Ticket[] tickets,
++        int start,
++        int end,
++        final net.minecraft.server.level.TicketType<T> type,
++        final int ticketLevel,
++        final T identifier
++    ) {
++        Objects.checkFromToIndex(start, end, tickets.length);
++        --end;
++
++        while (start <= end) {
++            final int middle = (start + end) >>> 1;
++            final int comparison = tickets[middle].leavesX$compareToKey(type, ticketLevel, identifier);
++            if (comparison < 0) {
++                start = middle + 1;
++            } else if (comparison > 0) {
++                end = middle - 1;
++            } else {
++                return middle;
++            }
++        }
++
++        return ~start;
++    }
++
+     private void expand() {
+         int newSize = this.tickets.length + (this.tickets.length >> 1);
+         if (newSize < 0) {
+@@ -126,6 +153,22 @@ public final class TicketSet extends AbstractSet<Ticket> {
+         return ret;
+     }
+ 
++    /** Removes a ticket by its sorted key without allocating the throwaway probe used by the fallback path. */
++    public <T> Ticket leavesX$removeAndGet(
++        final net.minecraft.server.level.TicketType<T> type,
++        final int ticketLevel,
++        final T identifier
++    ) {
++        final int index = leavesX$binarySearch(this.tickets, 0, this.size, type, ticketLevel, identifier);
++        if (index < 0) {
++            return null;
++        }
++
++        final Ticket result = this.tickets[index];
++        this.removeAt(index);
++        return result;
++    }
++
+     public Ticket first() {
+         Objects.checkIndex(0, this.size);
+         return this.tickets[0];
+diff --git a/net/minecraft/server/level/Ticket.java b/net/minecraft/server/level/Ticket.java
+index b075d7f68a263422cfa1f35b1f896038d3c712dd..99a0ea38691606ab38c7b5008b51bee1800ae95a 100644
+--- a/net/minecraft/server/level/Ticket.java
++++ b/net/minecraft/server/level/Ticket.java
+@@ -44,29 +44,44 @@ public class Ticket<T> implements Comparable<Ticket>, ca.spottedleaf.moonrise.pa
+ 
+     @Override
+     public final void moonrise$setIdentifier(final T identifier) {
+-        if ((identifier == null) != (((ca.spottedleaf.moonrise.patches.chunk_system.ticket.ChunkSystemTicketType<T>)(Object)this.type).moonrise$getIdentifierComparator() == null)) {
++        leavesX$validateIdentifier(this.type, identifier);
++        this.identifier = identifier;
++    }
++
++    /** Validates an allocation-free ticket lookup key with the same contract used by ticket construction. */
++    public static <T> void leavesX$validateIdentifier(final TicketType<T> type, final T identifier) {
++        final java.util.Comparator<T> comparator =
++            ((ca.spottedleaf.moonrise.patches.chunk_system.ticket.ChunkSystemTicketType<T>)(Object)type)
++                .moonrise$getIdentifierComparator();
++        if ((identifier == null) != (comparator == null)) {
+             throw new IllegalStateException("Nullability of identifier should match nullability of comparator");
+         }
+-        this.identifier = identifier;
+     }
+ 
+-    @Override
+-    public final int compareTo(final Ticket ticket) {
+-        final int levelCompare = Integer.compare(this.ticketLevel, ticket.ticketLevel);
++    /** Compares this ticket with a lookup key without allocating a temporary Ticket instance. */
++    public final <I> int leavesX$compareToKey(final TicketType<I> type, final int ticketLevel, final I identifier) {
++        final int levelCompare = Integer.compare(this.ticketLevel, ticketLevel);
+         if (levelCompare != 0) {
+             return levelCompare;
+         }
+ 
+         final int typeCompare = Long.compare(
+             ((ca.spottedleaf.moonrise.patches.chunk_system.ticket.ChunkSystemTicketType<T>)(Object)this.type).moonrise$getId(),
+-            ((ca.spottedleaf.moonrise.patches.chunk_system.ticket.ChunkSystemTicketType<?>)(Object)ticket.type).moonrise$getId()
++            ((ca.spottedleaf.moonrise.patches.chunk_system.ticket.ChunkSystemTicketType<I>)(Object)type).moonrise$getId()
+         );
+         if (typeCompare != 0) {
+             return typeCompare;
+         }
+ 
+-        final java.util.Comparator<T> comparator = ((ca.spottedleaf.moonrise.patches.chunk_system.ticket.ChunkSystemTicketType<T>)(Object)this.type).moonrise$getIdentifierComparator();
+-        return comparator == null ? 0 : comparator.compare(this.identifier, (T)ticket.identifier);
++        final java.util.Comparator<T> comparator =
++            ((ca.spottedleaf.moonrise.patches.chunk_system.ticket.ChunkSystemTicketType<T>)(Object)this.type)
++                .moonrise$getIdentifierComparator();
++        return comparator == null ? 0 : comparator.compare(this.identifier, (T)identifier);
++    }
++
++    @Override
++    public final int compareTo(final Ticket ticket) {
++        return this.leavesX$compareToKey(ticket.type, ticket.ticketLevel, ticket.identifier);
+     }
+     // Paper end - rewrite chunk system
+ 

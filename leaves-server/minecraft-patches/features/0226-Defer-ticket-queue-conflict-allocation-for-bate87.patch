@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 02:43:45 +0800
+Subject: [PATCH] Defer ticket queue conflict allocation for bate87
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
+index 3bd1ff7605c66a3cc7e176b0de5b516617c24ef9..49c272c85cd662d7d358d38464e1b0c59e7e8caf 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
+@@ -468,7 +468,9 @@ public abstract class ThreadedTicketLevelPropagator {
+         }
+ 
+         public UpdateQueueNode acquireNextOrWait(final long maxOrder) {
+-            final List<UpdateQueueNode> blocking = new ArrayList<>();
++            final boolean deferBlockingListAllocation = org.leavesx.leavesx.config.LeavesXRuntime.ticketQueueAllocationOptimization();
++            // Most scans claim the first available node; conflict storage is only needed after contention appears.
++            List<UpdateQueueNode> blocking = deferBlockingListAllocation ? null : new ArrayList<>();
+ 
+             node_search:
+             for (UpdateQueueNode curr = this.peek(); curr != null && curr.order <= maxOrder; curr = curr.getNextVolatile()) {
+@@ -477,11 +479,14 @@ public abstract class ThreadedTicketLevelPropagator {
+                 }
+ 
+                 if (curr.getUpdatingVolatile()) {
++                    if (blocking == null) {
++                        blocking = new ArrayList<>();
++                    }
+                     blocking.add(curr);
+                     continue;
+                 }
+ 
+-                for (int i = 0, len = blocking.size(); i < len; ++i) {
++                for (int i = 0, len = blocking == null ? 0 : blocking.size(); i < len; ++i) {
+                     final UpdateQueueNode node = blocking.get(i);
+ 
+                     if (node.intersects(curr)) {
+@@ -490,6 +495,9 @@ public abstract class ThreadedTicketLevelPropagator {
+                 }
+ 
+                 if (curr.getAndSetUpdatingVolatile(true)) {
++                    if (blocking == null) {
++                        blocking = new ArrayList<>();
++                    }
+                     blocking.add(curr);
+                     continue;
+                 }
+@@ -497,7 +505,7 @@ public abstract class ThreadedTicketLevelPropagator {
+                 return curr;
+             }
+ 
+-            if (!blocking.isEmpty()) {
++            if (blocking != null && !blocking.isEmpty()) {
+                 await(blocking.get(0));
+             }
+ 

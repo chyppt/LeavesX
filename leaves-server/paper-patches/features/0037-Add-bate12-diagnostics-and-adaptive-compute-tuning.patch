@@ -1,0 +1,2402 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 16:22:02 +0800
+Subject: [PATCH] Add bate12 diagnostics and adaptive compute tuning
+
+
+diff --git a/src/main/java/io/papermc/paper/command/PaperCommands.java b/src/main/java/io/papermc/paper/command/PaperCommands.java
+index 6dfd0b1a85d518828b15158c01472ae4383b8882..cbcffe38116339dc3508494267f1d4f34734d1c1 100644
+--- a/src/main/java/io/papermc/paper/command/PaperCommands.java
++++ b/src/main/java/io/papermc/paper/command/PaperCommands.java
+@@ -24,6 +24,9 @@ public final class PaperCommands {
+     public static void registerCommands(final MinecraftServer server) {
+         COMMANDS.put("paper", new PaperCommand("paper"));
+         COMMANDS.put("mspt", new MSPTCommand("mspt"));
++        if (org.leavesx.leavesx.config.LeavesXRuntime.diagnosticsCommandEnabled()) {
++            COMMANDS.put("leavesx", new org.leavesx.leavesx.command.LeavesXCommand("leavesx"));
++        }
+ 
+         COMMANDS.forEach((s, command) -> {
+             server.server.getCommandMap().register(s, "Paper", command);
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..95aa754a531d84e3e0c23ebe5d618c1ba06f5b08
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -0,0 +1,446 @@
++package org.leavesx.leavesx.command;
++
++import io.papermc.paper.FeatureHooks;
++import it.unimi.dsi.fastutil.longs.Long2IntMap;
++import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
++import java.lang.management.BufferPoolMXBean;
++import java.lang.management.GarbageCollectorMXBean;
++import java.lang.management.ManagementFactory;
++import java.lang.management.MemoryUsage;
++import java.lang.management.ThreadMXBean;
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.NamedTextColor;
++import net.minecraft.core.SectionPos;
++import net.minecraft.network.Connection;
++import net.minecraft.resources.Identifier;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.entity.EntityType;
++import net.minecraft.world.level.ChunkPos;
++import org.bukkit.Bukkit;
++import org.bukkit.Location;
++import org.bukkit.NamespacedKey;
++import org.bukkit.World;
++import org.bukkit.command.Command;
++import org.bukkit.command.CommandSender;
++import org.bukkit.craftbukkit.CraftWorld;
++import org.bukkit.entity.Player;
++import org.bukkit.util.StringUtil;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
++
++/** Built-in, main-thread-safe performance diagnostics for LeavesX operators. */
++public final class LeavesXCommand extends Command {
++
++    private static final List<String> SUBCOMMANDS = List.of(
++        "status", "worlds", "entities", "hotspots", "memory", "network", "threads", "config", "help"
++    );
++
++    public LeavesXCommand(final String name) {
++        super(name);
++        this.description = "查看 LeavesX 服务器性能状态";
++        this.usageMessage = "/leavesx <status|worlds|entities|hotspots|memory|network|threads|config>";
++        this.setPermission("leavesx.command.performance");
++    }
++
++    @Override
++    public boolean execute(final CommandSender sender, final String commandLabel, final String[] args) {
++        if (!this.testPermission(sender)) {
++            return true;
++        }
++
++        final String subcommand = args.length == 0 ? "status" : args[0].toLowerCase(Locale.ROOT);
++        switch (subcommand) {
++            case "status" -> sendStatus(sender);
++            case "worlds" -> sendWorlds(sender);
++            case "entities" -> sendEntities(sender, args);
++            case "hotspots" -> sendHotspots(sender, args);
++            case "memory" -> sendMemory(sender);
++            case "network" -> sendNetwork(sender);
++            case "threads" -> sendThreads(sender);
++            case "config" -> sendConfig(sender);
++            case "help" -> sendHelp(sender);
++            default -> {
++                sender.sendMessage(Component.text("未知子命令：" + subcommand, NamedTextColor.RED));
++                sendHelp(sender);
++            }
++        }
++        return true;
++    }
++
++    @Override
++    public List<String> tabComplete(
++        final CommandSender sender,
++        final String alias,
++        final String[] args,
++        final Location location
++    ) {
++        if (args.length == 1) {
++            return StringUtil.copyPartialMatches(args[0], SUBCOMMANDS, new ArrayList<>());
++        }
++        if ((args[0].equalsIgnoreCase("entities") || args[0].equalsIgnoreCase("hotspots")) && args.length == 2) {
++            final List<String> worlds = new ArrayList<>();
++            for (final World world : Bukkit.getWorlds()) {
++                worlds.add(world.getKey().toString());
++            }
++            return StringUtil.copyPartialMatches(args[1], worlds, new ArrayList<>());
++        }
++        return List.of();
++    }
++
++    private static void sendStatus(final CommandSender sender) {
++        final double[] tps = Bukkit.getTPS();
++        int chunks = 0;
++        long pendingUnloads = 0L;
++        int entities = 0;
++        for (final World world : Bukkit.getWorlds()) {
++            final ServerLevel level = ((CraftWorld)world).getHandle();
++            chunks += level.getChunkSource().getFullChunksCount();
++            pendingUnloads += level.moonrise$getChunkTaskScheduler().chunkHolderManager.leavesX$getPendingUnloadCount();
++            entities += level.getEntityCount();
++        }
++
++        final Runtime runtime = Runtime.getRuntime();
++        final long usedHeap = runtime.totalMemory() - runtime.freeMemory();
++        sendHeader(sender, "LeavesX 性能概览");
++        sender.sendMessage(line("TPS", formatTps(tps), tpsColor(tps[0])));
++        sender.sendMessage(line("MSPT", oneDecimal(Bukkit.getAverageTickTime()) + " ms", msptColor(Bukkit.getAverageTickTime())));
++        sender.sendMessage(line("区块", chunks + " 已加载 / " + pendingUnloads + " 待卸载", NamedTextColor.AQUA));
++        sender.sendMessage(line("实体", Integer.toString(entities), entityColor(entities)));
++        sender.sendMessage(line("内存", formatBytes(usedHeap) + " / " + formatBytes(runtime.maxMemory()), NamedTextColor.AQUA));
++        sender.sendMessage(Component.text("详细：/leavesx worlds | entities | hotspots | memory | network | threads", NamedTextColor.GRAY));
++    }
++
++    private static void sendWorlds(final CommandSender sender) {
++        sendHeader(sender, "世界负载");
++        for (final World world : Bukkit.getWorlds()) {
++            final ServerLevel level = ((CraftWorld)world).getHandle();
++            int tickingEntities = 0;
++            for (final net.minecraft.world.entity.Entity entity : FeatureHooks.getAllEntities(level)) {
++                if (level.isPositionEntityTicking(entity.blockPosition())) {
++                    tickingEntities++;
++                }
++            }
++            final long pendingUnloads = level.moonrise$getChunkTaskScheduler()
++                .chunkHolderManager.leavesX$getPendingUnloadCount();
++            sender.sendMessage(Component.text()
++                .append(Component.text(world.getKey().toString(), NamedTextColor.GOLD))
++                .append(Component.text(" 区块 " + level.getChunkSource().getFullChunksCount(), NamedTextColor.AQUA))
++                .append(Component.text(" / 持有器 " + level.getChunkSource().getLoadedChunksCount(), NamedTextColor.GRAY))
++                .append(Component.text(" / 待卸载 " + pendingUnloads, pendingUnloads == 0 ? NamedTextColor.GREEN : NamedTextColor.YELLOW))
++                .append(Component.text(" / 实体 " + level.getEntityCount() + "(" + tickingEntities + " 活跃)", NamedTextColor.AQUA))
++                .append(Component.text(" / 方块实体 " + world.getTileEntityCount() + "(" + world.getTickableTileEntityCount() + " 更新)", NamedTextColor.GRAY))
++                .build());
++        }
++    }
++
++    private static void sendEntities(final CommandSender sender, final String[] args) {
++        final Selection selection = selectWorldsAndLimit(sender, args);
++        if (selection == null) {
++            return;
++        }
++
++        final Map<Identifier, MutableEntityCount> counts = new HashMap<>();
++        int total = 0;
++        int ticking = 0;
++        for (final World world : selection.worlds()) {
++            final ServerLevel level = ((CraftWorld)world).getHandle();
++            for (final net.minecraft.world.entity.Entity entity : FeatureHooks.getAllEntities(level)) {
++                final boolean entityTicking = level.isPositionEntityTicking(entity.blockPosition());
++                final MutableEntityCount count = counts.computeIfAbsent(EntityType.getKey(entity.getType()), ignored -> new MutableEntityCount());
++                count.total++;
++                total++;
++                if (entityTicking) {
++                    count.ticking++;
++                    ticking++;
++                }
++            }
++        }
++
++        final List<Map.Entry<Identifier, MutableEntityCount>> ordered = new ArrayList<>(counts.entrySet());
++        ordered.sort(Comparator.<Map.Entry<Identifier, MutableEntityCount>>comparingInt(entry -> entry.getValue().total)
++            .reversed().thenComparing(entry -> entry.getKey().toString()));
++        sendHeader(sender, "实体类型");
++        sender.sendMessage(Component.text("总数 " + total + "，活跃 " + ticking + "，非活跃 " + (total - ticking), NamedTextColor.GRAY));
++        for (int index = 0; index < Math.min(selection.limit(), ordered.size()); index++) {
++            final Map.Entry<Identifier, MutableEntityCount> entry = ordered.get(index);
++            final MutableEntityCount count = entry.getValue();
++            sender.sendMessage(Component.text(
++                (index + 1) + ". " + entry.getKey() + "：" + count.total + "（活跃 " + count.ticking + "）",
++                count.total >= 1_000 ? NamedTextColor.RED : count.total >= 250 ? NamedTextColor.YELLOW : NamedTextColor.AQUA
++            ));
++        }
++    }
++
++    private static void sendHotspots(final CommandSender sender, final String[] args) {
++        final Selection selection = selectWorldsAndLimit(sender, args);
++        if (selection == null) {
++            return;
++        }
++
++        final List<EntityHotspot> hotspots = new ArrayList<>();
++        for (final World world : selection.worlds()) {
++            final ServerLevel level = ((CraftWorld)world).getHandle();
++            final Long2IntOpenHashMap totals = new Long2IntOpenHashMap();
++            final Long2IntOpenHashMap ticking = new Long2IntOpenHashMap();
++            for (final net.minecraft.world.entity.Entity entity : FeatureHooks.getAllEntities(level)) {
++                final long chunkKey = ChunkPos.pack(
++                    SectionPos.blockToSectionCoord(entity.getBlockX()),
++                    SectionPos.blockToSectionCoord(entity.getBlockZ())
++                );
++                totals.addTo(chunkKey, 1);
++                if (level.isPositionEntityTicking(entity.blockPosition())) {
++                    ticking.addTo(chunkKey, 1);
++                }
++            }
++            for (final Long2IntMap.Entry entry : totals.long2IntEntrySet()) {
++                hotspots.add(new EntityHotspot(
++                    world.getKey().toString(),
++                    ChunkPos.getX(entry.getLongKey()),
++                    ChunkPos.getZ(entry.getLongKey()),
++                    entry.getIntValue(),
++                    ticking.get(entry.getLongKey())
++                ));
++            }
++        }
++
++        hotspots.sort(Comparator.comparingInt(EntityHotspot::total).reversed()
++            .thenComparing(EntityHotspot::world).thenComparingInt(EntityHotspot::chunkX).thenComparingInt(EntityHotspot::chunkZ));
++        sendHeader(sender, "实体密集区块");
++        for (int index = 0; index < Math.min(selection.limit(), hotspots.size()); index++) {
++            final EntityHotspot hotspot = hotspots.get(index);
++            sender.sendMessage(Component.text(
++                (index + 1) + ". " + hotspot.world() + " 区块[" + hotspot.chunkX() + ", " + hotspot.chunkZ()
++                    + "] 方块中心[" + ((hotspot.chunkX() << 4) + 8) + ", " + ((hotspot.chunkZ() << 4) + 8)
++                    + "]：" + hotspot.total() + "（活跃 " + hotspot.ticking() + "）",
++                hotspot.total() >= 250 ? NamedTextColor.RED : hotspot.total() >= 100 ? NamedTextColor.YELLOW : NamedTextColor.AQUA
++            ));
++        }
++        if (hotspots.isEmpty()) {
++            sender.sendMessage(Component.text("没有找到实体。", NamedTextColor.GRAY));
++        }
++    }
++
++    private static void sendMemory(final CommandSender sender) {
++        final MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
++        final MemoryUsage nonHeap = ManagementFactory.getMemoryMXBean().getNonHeapMemoryUsage();
++        long directUsed = 0L;
++        long directCapacity = 0L;
++        long mappedUsed = 0L;
++        for (final BufferPoolMXBean pool : ManagementFactory.getPlatformMXBeans(BufferPoolMXBean.class)) {
++            if (pool.getName().equals("direct")) {
++                directUsed = pool.getMemoryUsed();
++                directCapacity = pool.getTotalCapacity();
++            } else if (pool.getName().equals("mapped")) {
++                mappedUsed = pool.getMemoryUsed();
++            }
++        }
++        long collections = 0L;
++        long collectionTime = 0L;
++        for (final GarbageCollectorMXBean collector : ManagementFactory.getGarbageCollectorMXBeans()) {
++            collections += Math.max(0L, collector.getCollectionCount());
++            collectionTime += Math.max(0L, collector.getCollectionTime());
++        }
++
++        sendHeader(sender, "内存状态");
++        sender.sendMessage(line("堆内存", formatUsage(heap), NamedTextColor.AQUA));
++        sender.sendMessage(line("非堆内存", formatUsage(nonHeap), NamedTextColor.AQUA));
++        sender.sendMessage(line("直接缓冲区", formatBytes(directUsed) + " / " + formatBytes(directCapacity), NamedTextColor.AQUA));
++        sender.sendMessage(line("映射文件", formatBytes(mappedUsed), NamedTextColor.AQUA));
++        sender.sendMessage(line("GC", collections + " 次 / " + collectionTime + " ms", NamedTextColor.GRAY));
++    }
++
++    private static void sendNetwork(final CommandSender sender) {
++        final MinecraftServer server = MinecraftServer.getServer();
++        final List<Connection> connections = server.getConnection().getConnections();
++        double inboundPackets = 0.0D;
++        double outboundPackets = 0.0D;
++        int pendingActions = 0;
++        int nonWritable = 0;
++        int connectionCount;
++        synchronized (connections) {
++            connectionCount = connections.size();
++            for (final Connection connection : connections) {
++                inboundPackets += connection.getAverageReceivedPackets();
++                outboundPackets += connection.getAverageSentPackets();
++                pendingActions += connection.leavesX$getPendingActionCount();
++                if (connection.channel != null && !connection.channel.isWritable()) {
++                    nonWritable++;
++                }
++            }
++        }
++
++        int totalPing = 0;
++        int maximumPing = 0;
++        for (final Player player : Bukkit.getOnlinePlayers()) {
++            final int ping = Math.max(0, player.getPing());
++            totalPing += ping;
++            maximumPing = Math.max(maximumPing, ping);
++        }
++        final int playerCount = Bukkit.getOnlinePlayers().size();
++        final int averagePing = playerCount == 0 ? 0 : totalPing / playerCount;
++        sendHeader(sender, "网络状态");
++        sender.sendMessage(line("连接", connectionCount + "（玩家 " + playerCount + "）", NamedTextColor.AQUA));
++        sender.sendMessage(line("数据包/秒", "接收 " + oneDecimal(inboundPackets) + " / 发送 " + oneDecimal(outboundPackets), NamedTextColor.AQUA));
++        sender.sendMessage(line("延迟", "平均 " + averagePing + " ms / 最大 " + maximumPing + " ms", maximumPing >= 200 ? NamedTextColor.RED : NamedTextColor.GREEN));
++        sender.sendMessage(line("发送队列", pendingActions + " 待处理 / " + nonWritable + " 不可写连接", nonWritable == 0 ? NamedTextColor.GREEN : NamedTextColor.YELLOW));
++    }
++
++    private static void sendThreads(final CommandSender sender) {
++        final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
++        final ThreadMXBean threads = ManagementFactory.getThreadMXBean();
++        sendHeader(sender, "线程状态");
++        sender.sendMessage(line(
++            "LeavesX 计算线程",
++            metrics.activeWorkers() + " 活跃 / " + metrics.workers() + " 总数 / " + metrics.queuedTasks() + " 排队",
++            metrics.queuedTasks() == 0 ? NamedTextColor.GREEN : NamedTextColor.YELLOW
++        ));
++        sender.sendMessage(line(
++            "并行调用",
++            metrics.parallelInvocations() + " 成功 / " + metrics.synchronousFallbacks() + " 主线程回退 / "
++                + metrics.failedInvocations() + " 失败",
++            metrics.failedInvocations() == 0 ? NamedTextColor.AQUA : NamedTextColor.RED
++        ));
++        sender.sendMessage(line(
++            "JVM 线程",
++            threads.getThreadCount() + " 当前 / " + threads.getPeakThreadCount() + " 峰值 / " + threads.getDaemonThreadCount() + " 守护",
++            NamedTextColor.GRAY
++        ));
++    }
++
++    private static void sendConfig(final CommandSender sender) {
++        final LeavesXConfig config = LeavesXRuntime.configuration();
++        sendHeader(sender, "LeavesX 配置状态");
++        sender.sendMessage(line("AI/寻路", onOff(config.aiOptimizations()) + " / " + onOff(config.pathfindingOptimizations()), NamedTextColor.AQUA));
++        sender.sendMessage(line("动物空闲降频", onOff(config.animalIdleGoalThrottling()) + "，倍数 " + config.animalIdleGoalIntervalMultiplier(), config.animalIdleGoalThrottling() ? NamedTextColor.YELLOW : NamedTextColor.GREEN));
++        sender.sendMessage(line("刷怪并行", onOff(config.parallelMobSpawnCounting()) + "，阈值 " + config.mobSpawnCountingMinimumEntities(), NamedTextColor.AQUA));
++        sender.sendMessage(line("目标距离并行", onOff(config.parallelAiTargetSearch()) + "，阈值 " + config.aiTargetSearchMinimumCandidates(), NamedTextColor.AQUA));
++        sender.sendMessage(line("区块卸载", onOff(config.adaptiveChunkUnloading()) + "，预算 " + config.chunkUnloadMinimumPerTick() + '-' + config.chunkUnloadMaximumPerTick(), NamedTextColor.AQUA));
++        sender.sendMessage(line("网络 flush 合并", onOff(config.networkFlushConsolidation()), NamedTextColor.AQUA));
++    }
++
++    private static void sendHelp(final CommandSender sender) {
++        sendHeader(sender, "命令帮助");
++        sender.sendMessage(Component.text("/leavesx status - TPS、MSPT、区块、实体和内存总览", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx worlds - 各世界区块、卸载队列、实体和方块实体", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx entities [世界] [数量] - 实体类型排行", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx hotspots [世界] [数量] - 实体密集区块坐标", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx memory|network|threads|config - 对应详细状态", NamedTextColor.GRAY));
++    }
++
++    private static Selection selectWorldsAndLimit(final CommandSender sender, final String[] args) {
++        final List<World> worlds;
++        if (args.length >= 2 && !isInteger(args[1]) && !args[1].equalsIgnoreCase("all")) {
++            final World world = findWorld(args[1]);
++            if (world == null) {
++                sender.sendMessage(Component.text("找不到世界：" + args[1], NamedTextColor.RED));
++                return null;
++            }
++            worlds = List.of(world);
++        } else {
++            worlds = Bukkit.getWorlds();
++        }
++
++        int limit = LeavesXRuntime.diagnosticsDefaultResultLimit();
++        final String limitArgument = args.length >= 3 ? args[2] : args.length >= 2 && isInteger(args[1]) ? args[1] : null;
++        if (limitArgument != null) {
++            try {
++                limit = Math.clamp(Integer.parseInt(limitArgument), 1, 50);
++            } catch (final NumberFormatException ignored) {
++                sender.sendMessage(Component.text("数量必须是 1 到 50 的整数。", NamedTextColor.RED));
++                return null;
++            }
++        }
++        return new Selection(worlds, limit);
++    }
++
++    private static World findWorld(final String input) {
++        final NamespacedKey key = NamespacedKey.fromString(input);
++        final World byKey = key == null ? null : Bukkit.getWorld(key);
++        return byKey == null ? Bukkit.getWorld(input) : byKey;
++    }
++
++    private static boolean isInteger(final String value) {
++        if (value.isEmpty()) {
++            return false;
++        }
++        int index = value.charAt(0) == '-' ? 1 : 0;
++        if (index == value.length()) {
++            return false;
++        }
++        for (; index < value.length(); index++) {
++            if (!Character.isDigit(value.charAt(index))) {
++                return false;
++            }
++        }
++        return true;
++    }
++
++    private static void sendHeader(final CommandSender sender, final String title) {
++        sender.sendMessage(Component.text("----- " + title + " -----", NamedTextColor.GOLD));
++    }
++
++    private static Component line(final String label, final String value, final NamedTextColor valueColor) {
++        return Component.text().append(Component.text(label + "：", NamedTextColor.GRAY))
++            .append(Component.text(value, valueColor)).build();
++    }
++
++    private static String formatTps(final double[] tps) {
++        return oneDecimal(Math.min(20.0D, tps[0])) + " / " + oneDecimal(Math.min(20.0D, tps[1])) + " / "
++            + oneDecimal(Math.min(20.0D, tps[2]));
++    }
++
++    private static String formatUsage(final MemoryUsage usage) {
++        return formatBytes(usage.getUsed()) + " / " + formatBytes(usage.getCommitted()) + " / " + formatBytes(usage.getMax());
++    }
++
++    private static String formatBytes(final long bytes) {
++        if (bytes < 0L) {
++            return "未知";
++        }
++        final double gibibytes = bytes / 1_073_741_824.0D;
++        if (gibibytes >= 1.0D) {
++            return oneDecimal(gibibytes) + " GiB";
++        }
++        return oneDecimal(bytes / 1_048_576.0D) + " MiB";
++    }
++
++    private static String oneDecimal(final double value) {
++        return String.format(Locale.ROOT, "%.1f", value);
++    }
++
++    private static String onOff(final boolean enabled) {
++        return enabled ? "开启" : "关闭";
++    }
++
++    private static NamedTextColor tpsColor(final double tps) {
++        return tps >= 18.0D ? NamedTextColor.GREEN : tps >= 15.0D ? NamedTextColor.YELLOW : NamedTextColor.RED;
++    }
++
++    private static NamedTextColor msptColor(final double mspt) {
++        return mspt < 40.0D ? NamedTextColor.GREEN : mspt < 50.0D ? NamedTextColor.YELLOW : NamedTextColor.RED;
++    }
++
++    private static NamedTextColor entityColor(final int entities) {
++        return entities < 2_000 ? NamedTextColor.GREEN : entities < 5_000 ? NamedTextColor.YELLOW : NamedTextColor.RED;
++    }
++
++    private static final class MutableEntityCount {
++
++        private int total;
++        private int ticking;
++    }
++
++    private record Selection(List<World> worlds, int limit) {
++    }
++
++    private record EntityHotspot(String world, int chunkX, int chunkZ, int total, int ticking) {
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 86b281a1782d04ffda9d415cd7e39b0f8f56a8be..58c892d3f0d0590ee02f708550baa04133293419 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -3,20 +3,27 @@ package org.leavesx.leavesx.config;
+ /**
+  * Immutable LeavesX runtime configuration.
+  *
+- * <p>Only behavior-equivalent optimizations belong in this snapshot. Leaves and Paper remain responsible for gameplay,
+- * plugin scheduling, and API semantics.</p>
++ * <p>Behavior-equivalent optimizations are enabled by default. Options that intentionally change idle animal behavior
++ * remain disabled unless an operator explicitly opts in.</p>
+  */
+ public record LeavesXConfig(
+     int configVersion,
++    boolean diagnosticsCommandEnabled,
++    int diagnosticsDefaultResultLimit,
+     boolean optimizedVarInt,
++    boolean networkFlushConsolidation,
+     boolean immutableCacheOptimizations,
+     boolean resourceIdentifierCache,
+     boolean skipEmptyEvents,
+     boolean aiOptimizations,
++    boolean pathfindingOptimizations,
++    boolean animalIdleGoalThrottling,
++    int animalIdleGoalIntervalMultiplier,
+     boolean parallelAiTargetSearch,
+     int aiTargetSearchMinimumCandidates,
+     boolean parallelMobSpawnCounting,
+-    int mobSpawnCountingWorkers,
++    int computeWorkers,
++    int minimumItemsPerWorker,
+     int mobSpawnCountingMinimumEntities,
+     boolean itemMergeOptimizations,
+     boolean blockEntityTickerRemovalOptimization,
+@@ -27,15 +34,24 @@ public record LeavesXConfig(
+     int chunkUnloadMaximumPerTick
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 1;
++    public static final int CURRENT_CONFIG_VERSION = 2;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+                 "LeavesX config-version must be " + CURRENT_CONFIG_VERSION + ", but was " + configVersion
+             );
+         }
+-        if (mobSpawnCountingWorkers < 0 || mobSpawnCountingWorkers > 16) {
+-            throw new IllegalArgumentException("parallelism.mob-spawning.workers must be between 0 and 16");
++        if (diagnosticsDefaultResultLimit < 5 || diagnosticsDefaultResultLimit > 50) {
++            throw new IllegalArgumentException("diagnostics.default-result-limit must be between 5 and 50");
++        }
++        if (animalIdleGoalIntervalMultiplier < 1 || animalIdleGoalIntervalMultiplier > 20) {
++            throw new IllegalArgumentException("performance.animal-idle-goals.interval-multiplier must be between 1 and 20");
++        }
++        if (computeWorkers < 0 || computeWorkers > 16) {
++            throw new IllegalArgumentException("parallelism.workers must be between 0 and 16");
++        }
++        if (minimumItemsPerWorker < 16 || minimumItemsPerWorker > 4_096) {
++            throw new IllegalArgumentException("parallelism.minimum-items-per-worker must be between 16 and 4096");
+         }
+         if (mobSpawnCountingMinimumEntities < 128) {
+             throw new IllegalArgumentException("parallelism.mob-spawning.minimum-entities must be at least 128");
+@@ -65,14 +81,21 @@ public record LeavesXConfig(
+         return new LeavesXConfig(
+             CURRENT_CONFIG_VERSION,
+             true,
++            10,
++            true,
++            true,
++            true,
+             true,
+             true,
+             true,
+             true,
++            false,
++            2,
+             true,
+             128,
+             true,
+             0,
++            64,
+             512,
+             true,
+             true,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 398de2f1208f3e0493951d08e128b959177dc209..66da19511b1edaf8e892ee835cfb367d1d6c1e6c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -23,23 +23,29 @@ public final class LeavesXConfigBootstrap {
+         final Path path = ((File) options.valueOf("leavesx-settings")).toPath();
+         final LeavesXConfig config = LeavesXConfigLoader.load(path);
+         LeavesXRuntime.publish(config);
+-        org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(config.mobSpawnCountingWorkers());
++        org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(
++            config.computeWorkers(),
++            config.minimumItemsPerWorker()
++        );
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+-            "LeavesX behavior-equivalent optimizations: optimized VarInt {}, immutable cache hashes {}, resource identifier cache {}, skip empty events {}, AI hot paths {}, item merge scan {}, block-entity ticker compaction {}, chunk spawn-range math {}",
++            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, AI {}, pathfinding {}, item merge {}, block entities {}, spawn range {}",
+             config.optimizedVarInt(),
++            config.networkFlushConsolidation(),
+             config.immutableCacheOptimizations(),
+             config.resourceIdentifierCache(),
+             config.skipEmptyEvents(),
+             config.aiOptimizations(),
++            config.pathfindingOptimizations(),
+             config.itemMergeOptimizations(),
+             config.blockEntityTickerRemovalOptimization(),
+             config.chunkSpawnRangeOptimization()
+         );
+         LOGGER.info(
+-            "LeavesX natural-spawn counting: {}, {} worker threads, parallel from {} entities",
+-            config.parallelMobSpawnCounting() ? "enabled" : "disabled",
++            "LeavesX compute pool: {} workers, minimum {} items per worker; natural-spawn counting {} from {} entities",
+             org.leavesx.leavesx.runtime.LeavesXComputeExecutor.workerCount(),
++            config.minimumItemsPerWorker(),
++            config.parallelMobSpawnCounting() ? "enabled" : "disabled",
+             config.mobSpawnCountingMinimumEntities()
+         );
+         LOGGER.info(
+@@ -47,6 +53,11 @@ public final class LeavesXConfigBootstrap {
+             config.parallelAiTargetSearch() ? "enabled" : "disabled",
+             config.aiTargetSearchMinimumCandidates()
+         );
++        LOGGER.info(
++            "LeavesX animal idle-goal throttling: {}, interval multiplier {} (disabled by default because it changes idle behavior)",
++            config.animalIdleGoalThrottling() ? "enabled" : "disabled",
++            config.animalIdleGoalIntervalMultiplier()
++        );
+         LOGGER.info(
+             "LeavesX adaptive chunk unloading: {}, backlog threshold {}, budget {}-{} chunks/tick",
+             config.adaptiveChunkUnloading() ? "enabled" : "disabled",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index b778736f49183cd7f587afd1967898bafa6b7897..345676e729252b0853462216fa146265dc2418cc 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -18,7 +18,7 @@ import org.spongepowered.configurate.loader.HeaderMode;
+ public final class LeavesXConfigLoader {
+ 
+     private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXConfigLoader.class);
+-    private static final String HEADER = "LeavesX performance configuration. Defaults preserve Leaves, Paper, Bukkit, and vanilla behavior.";
++    private static final String HEADER = "LeavesX 性能配置。默认设置保持 Paper、Bukkit 和原版行为。";
+ 
+     private LeavesXConfigLoader() {
+     }
+@@ -48,9 +48,16 @@ public final class LeavesXConfigLoader {
+                 .build()
+                 .load();
+             final LeavesXConfig config = fromNode(node, normalized);
+-            if (LeavesXConfigWriter.writeMissing(node, config)) {
++            boolean changed = false;
++            if (node.node("config-version").getInt(LeavesXConfig.CURRENT_CONFIG_VERSION) < LeavesXConfig.CURRENT_CONFIG_VERSION) {
++                node.node("config-version").raw(LeavesXConfig.CURRENT_CONFIG_VERSION);
++                LeavesXConfigWriter.refreshKnownComments(node);
++                changed = true;
++            }
++            changed |= LeavesXConfigWriter.writeMissing(node, config);
++            if (changed) {
+                 save(normalized, node, readOriginalFormatting(normalized));
+-                LOGGER.info("Added newly supported LeavesX settings to {} without replacing existing values", normalized);
++                LOGGER.info("Upgraded LeavesX settings in {} without creating backup or report files", normalized);
+             }
+             return config;
+         } catch (final LeavesXConfigException ex) {
+@@ -74,10 +81,24 @@ public final class LeavesXConfigLoader {
+                         + LeavesXConfig.CURRENT_CONFIG_VERSION
+                 );
+             }
++            if (version < 1) {
++                throw new IllegalArgumentException("config-version must be at least 1");
++            }
++
++            final ConfigurationNode computeWorkersNode = node.node("parallelism", "workers").virtual()
++                ? node.node("parallelism", "mob-spawning", "workers")
++                : node.node("parallelism", "workers");
+ 
+             return new LeavesXConfig(
+-                version,
++                LeavesXConfig.CURRENT_CONFIG_VERSION,
++                readBoolean(node.node("diagnostics", "command-enabled"), "diagnostics.command-enabled", true),
++                readInt(node.node("diagnostics", "default-result-limit"), "diagnostics.default-result-limit", 10),
+                 readBoolean(node.node("performance", "optimized-varint"), "performance.optimized-varint", true),
++                readBoolean(
++                    node.node("performance", "network", "flush-consolidation"),
++                    "performance.network.flush-consolidation",
++                    true
++                ),
+                 readBoolean(
+                     node.node("performance", "immutable-cache-optimizations"),
+                     "performance.immutable-cache-optimizations",
+@@ -90,6 +111,21 @@ public final class LeavesXConfigLoader {
+                 ),
+                 readBoolean(node.node("performance", "skip-empty-events"), "performance.skip-empty-events", true),
+                 readBoolean(node.node("performance", "ai-optimizations"), "performance.ai-optimizations", true),
++                readBoolean(
++                    node.node("performance", "pathfinding-optimizations"),
++                    "performance.pathfinding-optimizations",
++                    true
++                ),
++                readBoolean(
++                    node.node("performance", "animal-idle-goals", "enabled"),
++                    "performance.animal-idle-goals.enabled",
++                    false
++                ),
++                readInt(
++                    node.node("performance", "animal-idle-goals", "interval-multiplier"),
++                    "performance.animal-idle-goals.interval-multiplier",
++                    2
++                ),
+                 readBoolean(
+                     node.node("parallelism", "ai-target-search", "enabled"),
+                     "parallelism.ai-target-search.enabled",
+@@ -106,10 +142,15 @@ public final class LeavesXConfigLoader {
+                     true
+                 ),
+                 readInt(
+-                    node.node("parallelism", "mob-spawning", "workers"),
+-                    "parallelism.mob-spawning.workers",
++                    computeWorkersNode,
++                    "parallelism.workers",
+                     0
+                 ),
++                readInt(
++                    node.node("parallelism", "minimum-items-per-worker"),
++                    "parallelism.minimum-items-per-worker",
++                    64
++                ),
+                 readInt(
+                     node.node("parallelism", "mob-spawning", "minimum-entities"),
+                     "parallelism.mob-spawning.minimum-entities",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 74be0a4d00318d1ae5baf310c67efbcdc72fa445..5ede2d4b790b460b814a52aca6d43bcfcfd5d085 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -42,6 +42,16 @@ public final class LeavesXConfigWriter {
+         return COMMENTS;
+     }
+ 
++    /** Replaces comments on known keys during an in-place schema upgrade without touching values or unknown keys. */
++    public static void refreshKnownComments(final CommentedConfigurationNode node) {
++        for (final Map.Entry<String, String> entry : COMMENTS.entrySet()) {
++            final CommentedConfigurationNode setting = node.node((Object[])entry.getKey().split("\\."));
++            if (!setting.virtual()) {
++                setting.comment(entry.getValue());
++            }
++        }
++    }
++
+     /** Serializes a fully documented LeavesX configuration without relying on Configurate node-comment output. */
+     public static String render(final LeavesXConfig config, final String header) throws ConfigurateException {
+         final CommentedConfigurationNode node = CommentedConfigurationNode.root();
+@@ -59,12 +69,30 @@ public final class LeavesXConfigWriter {
+     ) {
+         boolean changed = false;
+         changed |= writeValue(node.node("config-version"), "config-version", config.configVersion(), missingOnly);
++        changed |= writeValue(
++            node.node("diagnostics", "command-enabled"),
++            "diagnostics.command-enabled",
++            config.diagnosticsCommandEnabled(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("diagnostics", "default-result-limit"),
++            "diagnostics.default-result-limit",
++            config.diagnosticsDefaultResultLimit(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "optimized-varint"),
+             "performance.optimized-varint",
+             config.optimizedVarInt(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "network", "flush-consolidation"),
++            "performance.network.flush-consolidation",
++            config.networkFlushConsolidation(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "immutable-cache-optimizations"),
+             "performance.immutable-cache-optimizations",
+@@ -89,6 +117,24 @@ public final class LeavesXConfigWriter {
+             config.aiOptimizations(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "pathfinding-optimizations"),
++            "performance.pathfinding-optimizations",
++            config.pathfindingOptimizations(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "animal-idle-goals", "enabled"),
++            "performance.animal-idle-goals.enabled",
++            config.animalIdleGoalThrottling(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "animal-idle-goals", "interval-multiplier"),
++            "performance.animal-idle-goals.interval-multiplier",
++            config.animalIdleGoalIntervalMultiplier(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("parallelism", "ai-target-search", "enabled"),
+             "parallelism.ai-target-search.enabled",
+@@ -125,10 +171,11 @@ public final class LeavesXConfigWriter {
+             config.parallelMobSpawnCounting(),
+             missingOnly
+         );
++        changed |= writeValue(node.node("parallelism", "workers"), "parallelism.workers", config.computeWorkers(), missingOnly);
+         changed |= writeValue(
+-            node.node("parallelism", "mob-spawning", "workers"),
+-            "parallelism.mob-spawning.workers",
+-            config.mobSpawnCountingWorkers(),
++            node.node("parallelism", "minimum-items-per-worker"),
++            "parallelism.minimum-items-per-worker",
++            config.minimumItemsPerWorker(),
+             missingOnly
+         );
+         changed |= writeValue(
+@@ -179,24 +226,31 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "LeavesX 配置文件版本，请不要手动修改。默认：1。");
+-        comments.put("performance.optimized-varint", "减少网络数据编码开销。不会改变发给客户端的数据；遇到问题可设为 false。默认：true。");
+-        comments.put("performance.immutable-cache-optimizations", "缓存不会变化的碰撞计算结果，减少重复计算。不会改变碰撞结果；遇到问题可设为 false。默认：true。");
+-        comments.put("performance.resource-identifier-cache", "缓存物品、方块和标签等资源名称，减少重复创建字符串。不会改变资源名称；遇到问题可设为 false。默认：true。");
+-        comments.put("performance.skip-empty-events", "没有插件监听对应事件时，不创建无用的事件对象。有插件监听时仍会正常调用；遇到问题可设为 false。默认：true。");
+-        comments.put("performance.item-merge-optimizations", "物品堆达到上限后停止无用的邻居扫描，不改变合并规则和事件。遇到问题可设为 false。默认：true。");
+-        comments.put("performance.block-entity-ticker-removal", "区块卸载时更快清理已经失效的方块实体更新项，减少内存和主线程开销。不会改变方块实体的更新顺序和行为；遇到问题可设为 false。默认：true。");
+-        comments.put("performance.chunk-spawn-range-optimization", "判断区块是否靠近玩家时复用区块中心坐标，减少刷怪判断开销。不会改变刷怪范围、事件或随机数；遇到问题可设为 false。默认：true。");
+-        comments.put("parallelism.mob-spawning.enabled", "使用多个线程计算自然刷怪数量。刷怪位置、随机数、事件和实体创建仍在主线程执行；遇到问题可设为 false。默认：true。");
+-        comments.put("parallelism.mob-spawning.workers", "自然刷怪统计使用的线程数。0 表示自动选择，普通服务器建议保持 0。默认：0。");
+-        comments.put("parallelism.mob-spawning.minimum-entities", "实体少于这个数量时直接在主线程计算，避免线程切换反而变慢。建议保持默认。默认：512。");
+-        comments.put("performance.ai-optimizations", "减少生物每刻检查 AI 行为、村民查找床和工作站时的临时对象。不会异步访问实体或世界，也不改变检查顺序和结果；遇到问题可设为 false。默认：true。");
+-        comments.put("parallelism.ai-target-search.enabled", "用工作线程计算大量目标候选的坐标距离。实体条件、视线检查和最终目标仍在主线程按原顺序确认；遇到问题可设为 false。默认：true。");
+-        comments.put("parallelism.ai-target-search.minimum-candidates", "候选生物达到这个数量才使用多线程，数量较少时直接在主线程计算更快。建议保持默认。默认：128。");
+-        comments.put("performance.chunk-unloading.enabled", "区块卸载队列积压且服务器有足够 tick 余量时，逐步增加处理量；服务器变慢时会自动降压。仍会检查区块票据、保存状态和插件事件，不会强制卸载正在使用的区块。遇到问题可设为 false。默认：true。");
+-        comments.put("performance.chunk-unloading.backlog-threshold", "待卸载区块达到这个数量后开始提高处理量。数值越小，区块回收越积极；建议保持默认。默认：1000。");
+-        comments.put("performance.chunk-unloading.minimum-per-tick", "服务器有足够 tick 余量且积压超过阈值后，卸载预算从这个数值开始增加。提高可更快回收区块，但过高可能造成卡顿。默认：100。");
+-        comments.put("performance.chunk-unloading.maximum-per-tick", "自适应卸载的每刻硬上限；服务器变慢时不会强行跑满此上限。普通服务器建议保持默认。默认：500。");
++        comments.put("config-version", "配置版本，请勿修改。默认：2。");
++        comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
++        comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
++        comments.put("performance.optimized-varint", "加快网络整数编码，不改变数据内容。默认：true。");
++        comments.put("performance.network.flush-consolidation", "合并网络 flush，减少系统调用。默认：true。");
++        comments.put("performance.immutable-cache-optimizations", "缓存不变的碰撞结果。默认：true。");
++        comments.put("performance.resource-identifier-cache", "缓存资源名称和哈希值。默认：true。");
++        comments.put("performance.skip-empty-events", "没有监听器时跳过事件对象创建。默认：true。");
++        comments.put("performance.ai-optimizations", "减少 AI 和村民 POI 搜索的重复计算。默认：true。");
++        comments.put("performance.pathfinding-optimizations", "减少寻路重建和临时对象开销。默认：true。");
++        comments.put("performance.animal-idle-goals.enabled", "降低动物空闲游走和环顾频率，会改变空闲行为。默认：false。");
++        comments.put("performance.animal-idle-goals.interval-multiplier", "动物空闲行为间隔倍数，仅在上一项开启时生效。默认：2。");
++        comments.put("performance.item-merge-optimizations", "物品堆满后停止无用合并扫描。默认：true。");
++        comments.put("performance.block-entity-ticker-removal", "加快区块卸载时清理方块实体更新项。默认：true。");
++        comments.put("performance.chunk-spawn-range-optimization", "减少刷怪范围判断的重复计算。默认：true。");
++        comments.put("performance.chunk-unloading.enabled", "有 tick 余量时加快处理积压的区块卸载。默认：true。");
++        comments.put("performance.chunk-unloading.backlog-threshold", "达到此积压数量后提高卸载速度。默认：1000。");
++        comments.put("performance.chunk-unloading.minimum-per-tick", "加速卸载时的起始处理量。默认：100。");
++        comments.put("performance.chunk-unloading.maximum-per-tick", "加速卸载时的最大处理量。默认：500。");
++        comments.put("parallelism.workers", "LeavesX 纯计算线程数，0 为自动。默认：0。");
++        comments.put("parallelism.minimum-items-per-worker", "每个计算分片至少处理的项目数。默认：64。");
++        comments.put("parallelism.mob-spawning.enabled", "多线程统计自然刷怪数量。默认：true。");
++        comments.put("parallelism.mob-spawning.minimum-entities", "实体达到此数量才并行统计刷怪。默认：512。");
++        comments.put("parallelism.ai-target-search.enabled", "多线程计算大量 AI 目标的距离。默认：true。");
++        comments.put("parallelism.ai-target-search.minimum-candidates", "候选达到此数量才并行计算距离。默认：128。");
+         return Map.copyOf(comments);
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index e85709963f8b92fbd2baca79e303d119c92fe9c9..882f10888885916515aee08b053b3ff1db51259a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -11,12 +11,18 @@ import java.util.Objects;
+ public final class LeavesXRuntime {
+ 
+     private static volatile LeavesXConfig configuration = LeavesXConfig.safeDefaults();
++    private static boolean diagnosticsCommandEnabled = true;
++    private static int diagnosticsDefaultResultLimit = 10;
+     private static volatile boolean optimizedVarInt = true;
++    private static boolean networkFlushConsolidation = true;
+     private static volatile boolean immutableCacheOptimizations = true;
+     // Published during bootstrap before networking and world ticking start; these hot-path flags are not reloadable.
+     private static boolean resourceIdentifierCache = true;
+     private static boolean skipEmptyEvents = true;
+     private static boolean aiOptimizations = true;
++    private static boolean pathfindingOptimizations = true;
++    private static boolean animalIdleGoalThrottling;
++    private static int animalIdleGoalIntervalMultiplier = 2;
+     private static boolean parallelAiTargetSearch = true;
+     private static int aiTargetSearchMinimumCandidates = 128;
+     private static boolean itemMergeOptimizations = true;
+@@ -48,11 +54,17 @@ public final class LeavesXRuntime {
+      */
+     static void publish(final LeavesXConfig next) {
+         final LeavesXConfig validated = Objects.requireNonNull(next, "next");
++        diagnosticsCommandEnabled = validated.diagnosticsCommandEnabled();
++        diagnosticsDefaultResultLimit = validated.diagnosticsDefaultResultLimit();
+         optimizedVarInt = validated.optimizedVarInt();
++        networkFlushConsolidation = validated.networkFlushConsolidation();
+         immutableCacheOptimizations = validated.immutableCacheOptimizations();
+         resourceIdentifierCache = validated.resourceIdentifierCache();
+         skipEmptyEvents = validated.skipEmptyEvents();
+         aiOptimizations = validated.aiOptimizations();
++        pathfindingOptimizations = validated.pathfindingOptimizations();
++        animalIdleGoalThrottling = validated.animalIdleGoalThrottling();
++        animalIdleGoalIntervalMultiplier = validated.animalIdleGoalIntervalMultiplier();
+         parallelAiTargetSearch = validated.parallelAiTargetSearch();
+         aiTargetSearchMinimumCandidates = validated.aiTargetSearchMinimumCandidates();
+         itemMergeOptimizations = validated.itemMergeOptimizations();
+@@ -67,6 +79,16 @@ public final class LeavesXRuntime {
+         configuration = validated;
+     }
+ 
++    /** Returns whether the built-in LeavesX diagnostic command should be registered. */
++    public static boolean diagnosticsCommandEnabled() {
++        return diagnosticsCommandEnabled;
++    }
++
++    /** Returns the default number of entity types and hotspots shown by diagnostics. */
++    public static int diagnosticsDefaultResultLimit() {
++        return diagnosticsDefaultResultLimit;
++    }
++
+     /**
+      * Returns whether protocol integer fast paths are enabled.
+      *
+@@ -79,6 +101,11 @@ public final class LeavesXRuntime {
+         return optimizedVarInt;
+     }
+ 
++    /** Returns whether Netty should consolidate flushes for remote client channels. */
++    public static boolean networkFlushConsolidation() {
++        return networkFlushConsolidation;
++    }
++
+     /**
+      * Returns whether immutable lookup keys may retain precomputed hashes.
+      *
+@@ -103,6 +130,21 @@ public final class LeavesXRuntime {
+         return aiOptimizations;
+     }
+ 
++    /** Returns whether behavior-equivalent path reconstruction optimizations are enabled. */
++    public static boolean pathfindingOptimizations() {
++        return pathfindingOptimizations;
++    }
++
++    /** Returns whether passive animals may run idle movement and look goals less often. */
++    public static boolean animalIdleGoalThrottling() {
++        return animalIdleGoalThrottling;
++    }
++
++    /** Returns the configured interval multiplier for optional animal idle-goal throttling. */
++    public static int animalIdleGoalIntervalMultiplier() {
++        return animalIdleGoalIntervalMultiplier;
++    }
++
+     /** Returns whether pure target-distance snapshots may use LeavesX compute workers. */
+     public static boolean parallelAiTargetSearch() {
+         return parallelAiTargetSearch;
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/AtomicMigrationOutput.java b/src/main/java/org/leavesx/leavesx/config/migration/AtomicMigrationOutput.java
+index 3cac559a9e621a5f9f1456f46d45078c0534a3ab..96d1661da7847e93579e05e35e76cd5d1801b792 100644
+--- a/src/main/java/org/leavesx/leavesx/config/migration/AtomicMigrationOutput.java
++++ b/src/main/java/org/leavesx/leavesx/config/migration/AtomicMigrationOutput.java
+@@ -1,17 +1,12 @@
+ package org.leavesx.leavesx.config.migration;
+ 
+-import io.papermc.paper.configuration.ConfigurationLoaders;
+ import io.papermc.paper.util.AtomicFiles;
+ import java.io.IOException;
+ import java.nio.channels.FileChannel;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+-import java.nio.file.StandardCopyOption;
+ import java.nio.file.StandardOpenOption;
+ import java.nio.charset.StandardCharsets;
+-import org.spongepowered.configurate.ConfigurationNode;
+-import org.spongepowered.configurate.loader.HeaderMode;
+-import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
+ 
+ final class AtomicMigrationOutput implements MigrationOutput {
+ 
+@@ -20,17 +15,6 @@ final class AtomicMigrationOutput implements MigrationOutput {
+     private AtomicMigrationOutput() {
+     }
+ 
+-    @Override
+-    public void copyBackup(final Path source, final Path backup) throws IOException {
+-        Files.copy(source, backup, StandardCopyOption.COPY_ATTRIBUTES);
+-        try (FileChannel channel = FileChannel.open(backup, StandardOpenOption.WRITE)) {
+-            channel.force(true);
+-        } catch (final IOException ex) {
+-            Files.deleteIfExists(backup);
+-            throw ex;
+-        }
+-    }
+-
+     @Override
+     public void saveText(final Path target, final String content) throws IOException {
+         AtomicFiles.atomicWrite(target, temporary -> {
+@@ -41,34 +25,6 @@ final class AtomicMigrationOutput implements MigrationOutput {
+         });
+     }
+ 
+-    @Override
+-    public void saveYaml(
+-        final Path target,
+-        final ConfigurationNode node,
+-        final boolean includeHeader
+-    ) throws IOException {
+-        AtomicFiles.atomicWrite(target, temporary -> {
+-            final YamlConfigurationLoader loader = ConfigurationLoaders.naturallySorted()
+-                .headerMode(includeHeader ? HeaderMode.PRESET : HeaderMode.NONE)
+-                .path(temporary)
+-                .build();
+-            loader.save(node);
+-            try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
+-                channel.force(true);
+-            }
+-        });
+-    }
+-
+-    @Override
+-    public void restoreBackup(final Path backup, final Path target) throws IOException {
+-        AtomicFiles.atomicWrite(target, temporary -> {
+-            Files.copy(backup, temporary, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+-            try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
+-                channel.force(true);
+-            }
+-        });
+-    }
+-
+     @Override
+     public void deleteIfExists(final Path path) throws IOException {
+         Files.deleteIfExists(path);
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigCommentCatalog.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigCommentCatalog.java
+index 2ae70ced47a5ed560ddc2d4305583ef84b6acdcd..459bd26baa89817bdde3aa8d65a8f873bb6293a4 100644
+--- a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigCommentCatalog.java
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigCommentCatalog.java
+@@ -82,6 +82,10 @@ final class LeavesConfigCommentCatalog {
+         Map.entry(
+             "settings.fix.stacked-container-destroyed-drop",
+             "堆叠容器物品被摧毁时，是否按照堆叠数量分别掉落每个容器中的物品。"
++        ),
++        Map.entry(
++            "settings.modify.minecraft-old.old-block-remove-behaviour",
++            "是否恢复 1.21 前的方块实体保留行为。此功能风险较高，请谨慎开启。"
+         )
+     );
+ 
+@@ -102,7 +106,7 @@ final class LeavesConfigCommentCatalog {
+ 
+     private static Map<String, String> loadComments() {
+         final HashMap<String, String> comments = new HashMap<>(loadOfficialComments());
+-        IMPLEMENTATION_COMMENTS.forEach(comments::putIfAbsent);
++        comments.putAll(IMPLEMENTATION_COMMENTS);
+         return Map.copyOf(comments);
+     }
+ 
+@@ -161,16 +165,30 @@ final class LeavesConfigCommentCatalog {
+     }
+ 
+     private static String normalizeOfficialDescription(final String description) {
+-        return description
++        final String flattened = description
+             .replaceAll("(?mi)^\\s*```[^\\n]*$", "")
+-            .replaceAll("(?mi)^\\s*:::\\s*tip\\s*$", "提示：")
+-            .replaceAll("(?mi)^\\s*:::\\s*warning\\s*$", "警告：")
+-            .replaceAll("(?mi)^\\s*:::\\s*danger\\s*$", "危险：")
++            .replaceAll("(?mi)^\\s*:::\\s*(tip|warning|danger)\\s*$", "")
+             .replaceAll("(?m)^\\s*:::\\s*$", "")
+             .replaceAll("\\[([^\\r\\n]*?)]\\([^)]+\\)", "$1")
+             .replace("**", "")
+             .replace('`', '\'')
+-            .replaceAll("\\n{3,}", "\n\n")
++            .replaceAll("(?m)^\\s*[-*]\\s+", "")
++            .replaceAll("\\s+", " ")
+             .trim();
++        if (flattened.length() <= 100) {
++            return flattened;
++        }
++
++        int sentenceCount = 0;
++        for (int index = 0; index < flattened.length(); index++) {
++            final char character = flattened.charAt(index);
++            if (character == '。' || character == '！' || character == '？') {
++                sentenceCount++;
++                if (sentenceCount == 2 || index >= 70) {
++                    return flattened.substring(0, index + 1);
++                }
++            }
++        }
++        return flattened.substring(0, 97) + "...";
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationBootstrap.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationBootstrap.java
+index 0e744053d2b940768023529aa7ec7af241182d37..5e87a605ce0b12d6453a2ca7a1fbf87308b53732 100644
+--- a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationBootstrap.java
+@@ -26,9 +26,8 @@ public final class LeavesConfigMigrationBootstrap {
+             case ALREADY_MIGRATED -> LOGGER.info("Leaves configuration migration is already current at {}", result.target());
+             case MIGRATED -> {
+                 LOGGER.info(
+-                    "Documented Leaves configuration version {} in place and created separate LeavesX configuration {} "
+-                        + "(documented keys: {}, backup: {}, report: {})",
+-                    result.sourceConfigVersion(), result.target(), result.documentedKeys(), result.backup(), result.report()
++                    "Documented Leaves configuration version {} and created {} (documented keys: {}; no backup or report files)",
++                    result.sourceConfigVersion(), result.target(), result.documentedKeys()
+                 );
+                 result.warnings().forEach(warning -> LOGGER.warn("Leaves config migration: {}", warning));
+             }
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationResult.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationResult.java
+index c936b95ea7e805bcf6795aff7234aef7a2ac00fc..7358a5f4d4dc9a46e4dfbdf7232edb1d1fb4885a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationResult.java
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrationResult.java
+@@ -2,7 +2,6 @@ package org.leavesx.leavesx.config.migration;
+ 
+ import java.nio.file.Path;
+ import java.util.List;
+-import org.jspecify.annotations.Nullable;
+ 
+ /**
+  * Immutable migration result used by startup logging and tests.
+@@ -11,8 +10,6 @@ public record LeavesConfigMigrationResult(
+     MigrationStatus status,
+     Path source,
+     Path target,
+-    @Nullable Path backup,
+-    @Nullable Path report,
+     int sourceConfigVersion,
+     int preservedTopLevelKeys,
+     int documentedKeys,
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java
+index 37a5141b59c3e716d7b7cdd2d491c046c96110cb..4b13930603a129b43f04fd156b83b38d7a641561 100644
+--- a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java
+@@ -6,16 +6,8 @@ import java.io.StringReader;
+ import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+-import java.security.MessageDigest;
+-import java.security.NoSuchAlgorithmException;
+-import java.time.Clock;
+-import java.time.Instant;
+-import java.time.ZoneOffset;
+-import java.time.format.DateTimeFormatter;
+ import java.util.ArrayList;
+-import java.util.HexFormat;
+ import java.util.List;
+-import java.util.Map;
+ import java.util.Objects;
+ import org.leavesx.leavesx.config.LeavesXConfig;
+ import org.leavesx.leavesx.config.LeavesXConfigWriter;
+@@ -25,52 +17,38 @@ import org.spongepowered.configurate.ConfigurateException;
+ import org.spongepowered.configurate.ConfigurationNode;
+ import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
+ 
+-/**
+- * Documents an existing Leaves configuration and creates a separate LeavesX runtime configuration.
+- *
+- * <p>The source tree is never copied into {@code leavesx.yml}. Existing Leaves values and unknown keys remain in
+- * {@code leaves.yml}; only verified comments are added. The original bytes are backed up before publication, and any
+- * failure restores those bytes before startup continues.</p>
+- */
++/** Documents Leaves settings and creates a separate LeavesX file without persistent migration artifacts. */
+ public final class LeavesConfigMigrator {
+ 
+     public static final int LEAVESX_CONFIG_VERSION = LeavesXConfig.CURRENT_CONFIG_VERSION;
+     public static final int LEAVES_26_1_2_CONFIG_VERSION = 6;
+     public static final String DEFAULT_SOURCE_FILE_NAME = "leaves.yml";
+     public static final String DEFAULT_TARGET_FILE_NAME = "leavesx.yml";
+-    public static final String DEFAULT_REPORT_FILE_NAME = "leavesx-migration-report.yml";
+ 
+-    private static final String MIGRATION_ID = "leaves-26.1.2-to-leavesx-26.1.2-v2-separated-configs";
+-    private static final String LEAVESX_HEADER = "LeavesX global configuration. Leaves settings remain exclusively in leaves.yml.";
+-    private static final DateTimeFormatter BACKUP_TIMESTAMP = DateTimeFormatter
+-        .ofPattern("uuuuMMdd-HHmmss-SSS")
+-        .withZone(ZoneOffset.UTC);
++    private static final String LEAVESX_HEADER = "LeavesX 性能配置。Leaves 原配置仍保存在 leaves.yml。";
+ 
+-    private final Clock clock;
+     private final MigrationOutput output;
+ 
+     public LeavesConfigMigrator() {
+-        this(Clock.systemUTC(), AtomicMigrationOutput.INSTANCE);
++        this(AtomicMigrationOutput.INSTANCE);
+     }
+ 
+-    LeavesConfigMigrator(final Clock clock, final MigrationOutput output) {
+-        this.clock = Objects.requireNonNull(clock, "clock");
++    LeavesConfigMigrator(final MigrationOutput output) {
+         this.output = Objects.requireNonNull(output, "output");
+     }
+ 
+     /**
+-     * Documents {@code source} and creates {@code target} while preserving Leaves and LeavesX ownership boundaries.
++     * Documents {@code source} and creates {@code target} without changing values or leaving backup/report files.
+      *
+-     * @throws LeavesConfigMigrationException when YAML is invalid, a target conflicts, or output cannot be rolled back
++     * @throws LeavesConfigMigrationException when YAML is invalid or an output cannot be written atomically
+      */
+     public LeavesConfigMigrationResult migrate(final Path source, final Path target) {
+         final Path absoluteSource = source.toAbsolutePath().normalize();
+         final Path absoluteTarget = target.toAbsolutePath().normalize();
+-        final Path report = absoluteTarget.resolveSibling(DEFAULT_REPORT_FILE_NAME);
+ 
+         if (Files.notExists(absoluteSource)) {
+             return new LeavesConfigMigrationResult(
+-                MigrationStatus.NO_SOURCE, absoluteSource, absoluteTarget, null, null, 0, 0, 0, List.of()
++                MigrationStatus.NO_SOURCE, absoluteSource, absoluteTarget, 0, 0, 0, List.of()
+             );
+         }
+         if (!Files.isRegularFile(absoluteSource)) {
+@@ -86,35 +64,25 @@ public final class LeavesConfigMigrator {
+             );
+             final int sourceVersion = sourceNode.node("config-version").getInt(0);
+             final int topLevelKeys = sourceNode.childrenMap().size();
++            final List<String> warnings = buildWarnings(sourceVersion);
+ 
+-            if (Files.exists(report)) {
+-                final ConfigurationNode existingReport = loadRequiredMap(report, "LeavesX migration report");
+-                if (isSameMigration(existingReport, absoluteSource, absoluteTarget)) {
+-                    return new LeavesConfigMigrationResult(
+-                        MigrationStatus.ALREADY_MIGRATED,
+-                        absoluteSource,
+-                        absoluteTarget,
+-                        existingBackup(existingReport),
+-                        report,
+-                        sourceVersion,
+-                        topLevelKeys,
+-                        existingReport.node("leaves", "documented-keys").getInt(0),
+-                        List.of()
++            if (Files.exists(absoluteTarget)) {
++                if (!Files.isRegularFile(absoluteTarget)) {
++                    throw new LeavesConfigMigrationException(
++                        "LeavesX configuration is not a regular file: " + absoluteTarget
+                     );
+                 }
+-                throw new LeavesConfigMigrationException(
+-                    "Migration report already exists for a different Leaves configuration: " + report
+-                );
+-            }
+-            if (Files.exists(absoluteTarget)) {
+-                throw new LeavesConfigMigrationException(
+-                    "LeavesX target already exists; refusing to overwrite user configuration: " + absoluteTarget
++                return new LeavesConfigMigrationResult(
++                    MigrationStatus.ALREADY_MIGRATED,
++                    absoluteSource,
++                    absoluteTarget,
++                    sourceVersion,
++                    topLevelKeys,
++                    0,
++                    warnings
+                 );
+             }
+ 
+-            final Instant migratedAt = this.clock.instant();
+-            final Path backup = nextBackupPath(absoluteSource, migratedAt);
+-            final List<String> warnings = buildWarnings(sourceVersion);
+             final String sourceText = Files.readString(absoluteSource, StandardCharsets.UTF_8);
+             final YamlCommentInjector.Result documentedLeaves = YamlCommentInjector.inject(
+                 sourceText, LeavesConfigCommentCatalog.comments()
+@@ -126,24 +94,12 @@ public final class LeavesConfigMigrator {
+             if (targetParent != null) {
+                 Files.createDirectories(targetParent);
+             }
+-            this.output.copyBackup(absoluteSource, backup);
+             try {
+-                this.output.saveText(absoluteSource, documentedLeaves.text());
++                // Publishing the new file first keeps leaves.yml untouched if target creation fails.
+                 this.output.saveText(absoluteTarget, leavesXText);
+-                final CommentedConfigurationNode reportNode = createReportNode(
+-                    absoluteSource,
+-                    absoluteTarget,
+-                    backup,
+-                    sha256(absoluteSource),
+-                    sourceVersion,
+-                    topLevelKeys,
+-                    documentedLeaves.documentedKeys(),
+-                    migratedAt,
+-                    warnings
+-                );
+-                this.output.saveYaml(report, reportNode, false);
++                this.output.saveText(absoluteSource, documentedLeaves.text());
+             } catch (final IOException ex) {
+-                rollback(absoluteSource, absoluteTarget, report, backup, ex);
++                deleteCreatedTarget(absoluteTarget, ex);
+                 throw ex;
+             }
+ 
+@@ -151,8 +107,6 @@ public final class LeavesConfigMigrator {
+                 MigrationStatus.MIGRATED,
+                 absoluteSource,
+                 absoluteTarget,
+-                backup,
+-                report,
+                 sourceVersion,
+                 topLevelKeys,
+                 documentedLeaves.documentedKeys(),
+@@ -176,23 +130,6 @@ public final class LeavesConfigMigrator {
+         return copy;
+     }
+ 
+-    private static boolean isSameMigration(
+-        final ConfigurationNode report,
+-        final Path source,
+-        final Path target
+-    ) {
+-        return report.node("migration-id").getString("").equals(MIGRATION_ID)
+-            && report.node("source", "file").getString("").equals(source.toString())
+-            && report.node("target", "file").getString("").equals(target.toString())
+-            && report.node("target", "config-version").getInt(0) == LEAVESX_CONFIG_VERSION
+-            && Files.isRegularFile(target);
+-    }
+-
+-    private static Path existingBackup(final ConfigurationNode report) {
+-        final String value = report.node("source", "backup").getString();
+-        return value == null || value.isBlank() ? null : Path.of(value);
+-    }
+-
+     private static void verifyValuesUnchanged(
+         final ConfigurationNode original,
+         final String documentedText,
+@@ -209,111 +146,21 @@ public final class LeavesConfigMigrator {
+         }
+     }
+ 
+-    private static CommentedConfigurationNode createReportNode(
+-        final Path source,
+-        final Path target,
+-        final Path backup,
+-        final String documentedSourceHash,
+-        final int sourceVersion,
+-        final int topLevelKeys,
+-        final int documentedKeys,
+-        final Instant migratedAt,
+-        final List<String> warnings
+-    ) throws IOException {
+-        final CommentedConfigurationNode report = CommentedConfigurationNode.root();
+-        report.node("report-version").raw(2);
+-        report.node("status").raw("migrated");
+-        report.node("migration-id").raw(MIGRATION_ID);
+-        report.node("migrated-at").raw(migratedAt.toString());
+-        report.node("source", "file").raw(source.toString());
+-        report.node("source", "backup").raw(backup.toString());
+-        report.node("source", "config-version").raw(sourceVersion);
+-        report.node("source", "original-sha256").raw(sha256(backup));
+-        report.node("source", "documented-sha256").raw(documentedSourceHash);
+-        report.node("target", "file").raw(target.toString());
+-        report.node("target", "config-version").raw(LEAVESX_CONFIG_VERSION);
+-        report.node("separation", "leaves-settings-file").raw(source.toString());
+-        report.node("separation", "leavesx-settings-file").raw(target.toString());
+-        report.node("separation", "leaves-tree-copied-to-leavesx").raw(false);
+-        report.node("leaves", "unknown-keys").raw("preserved");
+-        report.node("leaves", "values").raw("preserved");
+-        report.node("leaves", "top-level-keys").raw(topLevelKeys);
+-        report.node("leaves", "documented-keys").raw(documentedKeys);
+-        report.node("leaves", "documentation-source").raw(LeavesConfigCommentCatalog.DOCUMENTATION_URL);
+-        report.node("leaves", "documentation-commit").raw(LeavesConfigCommentCatalog.DOCUMENTATION_COMMIT);
+-        report.node("warnings").raw(warnings);
+-        return report;
+-    }
+-
+     private static List<String> buildWarnings(final int sourceVersion) {
+         final List<String> warnings = new ArrayList<>();
+         if (sourceVersion == 0) {
+             warnings.add("The Leaves config has no config-version; values were preserved without schema conversion.");
+         } else if (sourceVersion > LEAVES_26_1_2_CONFIG_VERSION) {
+-            warnings.add(
+-                "The Leaves config version " + sourceVersion + " is newer than tested schema version "
+-                    + LEAVES_26_1_2_CONFIG_VERSION + "; only matching official comments were added."
+-            );
++            warnings.add("The Leaves config is newer than the tested 26.1.2 schema; values were not converted.");
+         } else if (sourceVersion < LEAVES_26_1_2_CONFIG_VERSION) {
+-            warnings.add(
+-                "The Leaves config version " + sourceVersion + " is older than tested schema version "
+-                    + LEAVES_26_1_2_CONFIG_VERSION + "; no value or key was upgraded."
+-            );
++            warnings.add("The Leaves config is older than the tested 26.1.2 schema; values were not converted.");
+         }
+-        warnings.add("Leaves settings remain in leaves.yml and are not copied into leavesx.yml.");
+         return List.copyOf(warnings);
+     }
+ 
+-    private static Path nextBackupPath(final Path source, final Instant migratedAt) {
+-        final String timestamp = BACKUP_TIMESTAMP.format(migratedAt);
+-        final String baseName = source.getFileName() + ".leavesx-backup-" + timestamp;
+-        Path candidate = source.resolveSibling(baseName);
+-        int suffix = 1;
+-        while (Files.exists(candidate)) {
+-            candidate = source.resolveSibling(baseName + '-' + suffix++);
+-        }
+-        return candidate;
+-    }
+-
+-    private static String sha256(final Path source) throws IOException {
+-        final MessageDigest digest;
+-        try {
+-            digest = MessageDigest.getInstance("SHA-256");
+-        } catch (final NoSuchAlgorithmException ex) {
+-            throw new IllegalStateException("The Java runtime does not provide SHA-256", ex);
+-        }
+-
+-        try (var input = Files.newInputStream(source)) {
+-            final byte[] buffer = new byte[16 * 1024];
+-            int read;
+-            while ((read = input.read(buffer)) >= 0) {
+-                digest.update(buffer, 0, read);
+-            }
+-        }
+-        return HexFormat.of().formatHex(digest.digest());
+-    }
+-
+-    private void rollback(
+-        final Path source,
+-        final Path target,
+-        final Path report,
+-        final Path backup,
+-        final Exception parent
+-    ) {
+-        deleteCreatedOutput(report, parent);
+-        deleteCreatedOutput(target, parent);
+-        try {
+-            this.output.restoreBackup(backup, source);
+-        } catch (final IOException restoreFailure) {
+-            parent.addSuppressed(restoreFailure);
+-            return;
+-        }
+-        deleteCreatedOutput(backup, parent);
+-    }
+-
+-    private void deleteCreatedOutput(final Path path, final Exception parent) {
++    private void deleteCreatedTarget(final Path target, final Exception parent) {
+         try {
+-            this.output.deleteIfExists(path);
++            this.output.deleteIfExists(target);
+         } catch (final IOException cleanupFailure) {
+             parent.addSuppressed(cleanupFailure);
+         }
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/MigrationOutput.java b/src/main/java/org/leavesx/leavesx/config/migration/MigrationOutput.java
+index dc9ec29cd3debd3c1c891a17f4f82dc095cc76a4..2d762db20f7b70c0643e4d77a7d9b8befc4db84f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/migration/MigrationOutput.java
++++ b/src/main/java/org/leavesx/leavesx/config/migration/MigrationOutput.java
+@@ -2,20 +2,13 @@ package org.leavesx.leavesx.config.migration;
+ 
+ import java.io.IOException;
+ import java.nio.file.Path;
+-import org.spongepowered.configurate.ConfigurationNode;
+ 
+ /**
+  * Filesystem boundary for migration output. Tests replace it to verify transactional rollback.
+  */
+ interface MigrationOutput {
+ 
+-    void copyBackup(Path source, Path backup) throws IOException;
+-
+     void saveText(Path target, String content) throws IOException;
+ 
+-    void saveYaml(Path target, ConfigurationNode node, boolean includeHeader) throws IOException;
+-
+-    void restoreBackup(Path backup, Path target) throws IOException;
+-
+     void deleteIfExists(Path path) throws IOException;
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/performance/AnimalIdleGoalPolicy.java b/src/main/java/org/leavesx/leavesx/performance/AnimalIdleGoalPolicy.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..ad3674da4c3013a498c485990f5113f07fa26332
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/performance/AnimalIdleGoalPolicy.java
+@@ -0,0 +1,21 @@
++package org.leavesx.leavesx.performance;
++
++/** Calculates the optional passive-animal idle-goal delay without touching entity or world state. */
++public final class AnimalIdleGoalPolicy {
++
++    private AnimalIdleGoalPolicy() {
++    }
++
++    /** Returns a saturated interval multiplication for random stroll goals. */
++    public static int scaleInterval(final int vanillaInterval, final int multiplier) {
++        if (vanillaInterval <= 0 || multiplier <= 1) {
++            return vanillaInterval;
++        }
++        return (int)Math.min(Integer.MAX_VALUE, (long)vanillaInterval * multiplier);
++    }
++
++    /** Returns the equivalent lower activation chance for random look goals. */
++    public static float scaleChance(final float vanillaChance, final int multiplier) {
++        return multiplier <= 1 ? vanillaChance : vanillaChance / multiplier;
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/performance/PathNodeListBuilder.java b/src/main/java/org/leavesx/leavesx/performance/PathNodeListBuilder.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..e389249bcdc451518d5bfeb169e93292bde594fd
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/performance/PathNodeListBuilder.java
+@@ -0,0 +1,33 @@
++package org.leavesx.leavesx.performance;
++
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.List;
++import net.minecraft.world.level.pathfinder.Node;
++
++/** Reconstructs a path node chain in linear time while preserving the vanilla start-to-target order. */
++public final class PathNodeListBuilder {
++
++    private PathNodeListBuilder() {
++    }
++
++    /**
++     * Copies the {@link Node#cameFrom} chain into a mutable list ordered from the path start to {@code closest}.
++     *
++     * @param closest final node selected by the path finder
++     * @return mutable node list in vanilla order
++     */
++    public static List<Node> build(final Node closest) {
++        int nodeCount = 0;
++        for (Node node = closest; node != null; node = node.cameFrom) {
++            nodeCount++;
++        }
++
++        final List<Node> nodes = new ArrayList<>(nodeCount);
++        for (Node node = closest; node != null; node = node.cameFrom) {
++            nodes.add(node);
++        }
++        Collections.reverse(nodes);
++        return nodes;
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+index cd8b62d2c67d243c983e45d4012cb1415617407e..11ca1a907f41e25545b8003693cd989fea224471 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -47,18 +47,18 @@ public final class StableDistanceSorter {
+ 
+         final double[] distances = new double[size];
+         final int[] scratch = new int[size];
+-        final int laneLimit = Math.min(LeavesXComputeExecutor.computeLaneCount(), size);
+-        final int rangeSize = divideCeil(size, Math.max(1, laneLimit));
+-        final boolean completedInParallel = parallel && LeavesXComputeExecutor.invokeRanges(
+-            size,
+-            parallelThreshold,
+-            (taskIndex, start, end) -> {
+-                computeDistancesAndInitializeOrder(x, y, z, originX, originY, originZ, distances, order, start, end);
+-                stableSortRange(order, scratch, distances, start, end);
+-            }
+-        );
+-
+-        if (!completedInParallel) {
++        final int completedTaskCount = parallel
++            ? LeavesXComputeExecutor.invokeRangesWithCount(
++                size,
++                parallelThreshold,
++                (taskIndex, start, end) -> {
++                    computeDistancesAndInitializeOrder(x, y, z, originX, originY, originZ, distances, order, start, end);
++                    stableSortRange(order, scratch, distances, start, end);
++                }
++            )
++            : 0;
++
++        if (completedTaskCount == 0) {
+             computeDistancesAndInitializeOrder(x, y, z, originX, originY, originZ, distances, order, 0, size);
+             stableSortRange(order, scratch, distances, 0, size);
+             return order;
+@@ -66,6 +66,7 @@ public final class StableDistanceSorter {
+ 
+         // Each worker sorted one contiguous range. Merging on the tick thread is deterministic and keeps equal
+         // distances in their original entity-query order.
++        final int rangeSize = divideCeil(size, completedTaskCount);
+         for (int width = rangeSize; width < size; width = nextMergeWidth(width, size)) {
+             final int step = width >= size - width ? size : width << 1;
+             for (int start = 0; start < size - width; start += step) {
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index a12413ab0588b9ecfc2ed214a5866c3fc677fd9b..797ed235e8526314238a9a0d2cae9f86a866cda4 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -8,6 +8,7 @@ import java.util.concurrent.CancellationException;
+ import java.util.concurrent.Future;
+ import java.util.concurrent.ThreadPoolExecutor;
+ import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+@@ -16,18 +17,34 @@ public final class LeavesXComputeExecutor {
+ 
+     private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXComputeExecutor.class);
+     private static final int MAX_QUEUED_TASKS = 128;
++    private static final int MAX_AUTOMATIC_WORKERS = 8;
+     private static volatile ThreadPoolExecutor executor;
+     private static volatile int workerCount = 1;
++    private static volatile int minimumItemsPerWorker = 64;
++    private static final AtomicLong invocationCount = new AtomicLong();
++    private static final AtomicLong parallelInvocationCount = new AtomicLong();
++    private static final AtomicLong synchronousFallbackCount = new AtomicLong();
++    private static final AtomicLong failedInvocationCount = new AtomicLong();
+ 
+     private LeavesXComputeExecutor() {
+     }
+ 
+     /** Creates the bounded worker pool during bootstrap. A configured value of zero selects a conservative default. */
+     public static synchronized void configure(final int configuredWorkers) {
++        configure(configuredWorkers, 64);
++    }
++
++    /** Creates the bounded worker pool and configures the minimum useful work assigned to each lane. */
++    public static synchronized void configure(final int configuredWorkers, final int configuredMinimumItemsPerWorker) {
+         shutdown();
+         final int availableProcessors = Runtime.getRuntime().availableProcessors();
+-        final int automaticWorkers = Math.max(1, Math.min(4, availableProcessors - 2));
++        final int automaticWorkers = automaticWorkerCount(availableProcessors);
+         workerCount = configuredWorkers == 0 ? automaticWorkers : configuredWorkers;
++        minimumItemsPerWorker = Math.max(16, configuredMinimumItemsPerWorker);
++        invocationCount.set(0L);
++        parallelInvocationCount.set(0L);
++        synchronousFallbackCount.set(0L);
++        failedInvocationCount.set(0L);
+         executor = new ThreadPoolExecutor(
+             workerCount,
+             workerCount,
+@@ -49,6 +66,10 @@ public final class LeavesXComputeExecutor {
+         return workerCount;
+     }
+ 
++    static int automaticWorkerCount(final int availableProcessors) {
++        return Math.max(1, Math.min(MAX_AUTOMATIC_WORKERS, availableProcessors - 2));
++    }
++
+     /**
+      * Returns the maximum number of ranges that can make progress concurrently.
+      *
+@@ -65,12 +86,30 @@ public final class LeavesXComputeExecutor {
+      * @return {@code false} when submission or execution failed, allowing the caller to recompute synchronously
+      */
+     public static boolean invokeRanges(final int size, final int minimumSize, final RangeTask task) {
++        return invokeRangesWithCount(size, minimumSize, task) > 0;
++    }
++
++    /**
++     * Processes contiguous ranges and returns the exact completed partition count.
++     *
++     * <p>Callers that merge independently processed ranges must use this result instead of deriving boundaries from
++     * the configured worker count, because adaptive partitioning may deliberately use fewer lanes.</p>
++     *
++     * @return completed partition count, or {@code 0} when the caller must recompute synchronously
++     */
++    public static int invokeRangesWithCount(final int size, final int minimumSize, final RangeTask task) {
++        invocationCount.incrementAndGet();
+         final ThreadPoolExecutor current = executor;
+         if (current == null || workerCount <= 1 || size < minimumSize) {
+-            return false;
++            synchronousFallbackCount.incrementAndGet();
++            return 0;
+         }
+ 
+-        final int taskCount = Math.min(computeLaneCount(), size);
++        final int taskCount = taskCountFor(size, computeLaneCount(), minimumItemsPerWorker);
++        if (taskCount <= 1) {
++            synchronousFallbackCount.incrementAndGet();
++            return 0;
++        }
+         final int rangeSize = (size + taskCount - 1) / taskCount;
+         final int expectedTaskCount = (size + rangeSize - 1) / rangeSize;
+         final int callerTaskIndex = expectedTaskCount - 1;
+@@ -123,7 +162,38 @@ public final class LeavesXComputeExecutor {
+         if (interrupted) {
+             Thread.currentThread().interrupt();
+         }
+-        return succeeded && callerRangeCompleted && futures.size() + 1 == expectedTaskCount;
++        final boolean completed = succeeded && callerRangeCompleted && futures.size() + 1 == expectedTaskCount;
++        if (completed) {
++            parallelInvocationCount.incrementAndGet();
++        } else {
++            failedInvocationCount.incrementAndGet();
++        }
++        return completed ? expectedTaskCount : 0;
++    }
++
++    static int taskCountFor(final int size, final int availableLanes, final int minimumItems) {
++        if (size <= 0 || availableLanes <= 1) {
++            return 1;
++        }
++        final int boundedMinimumItems = Math.max(1, minimumItems);
++        final int usefulLanes = Math.max(1, size / boundedMinimumItems);
++        return Math.min(availableLanes, usefulLanes);
++    }
++
++    /** Returns a lock-free snapshot used by the diagnostic command. */
++    public static Metrics metrics() {
++        final ThreadPoolExecutor current = executor;
++        return new Metrics(
++            workerCount,
++            current == null ? 0 : current.getActiveCount(),
++            current == null ? 0 : current.getQueue().size(),
++            current == null ? 0 : current.getLargestPoolSize(),
++            current == null ? 0L : current.getCompletedTaskCount(),
++            invocationCount.get(),
++            parallelInvocationCount.get(),
++            synchronousFallbackCount.get(),
++            failedInvocationCount.get()
++        );
+     }
+ 
+     /** Stops all LeavesX computation workers during normal server shutdown. */
+@@ -139,4 +209,18 @@ public final class LeavesXComputeExecutor {
+     public interface RangeTask {
+         void run(int taskIndex, int startInclusive, int endExclusive);
+     }
++
++    /** Immutable diagnostic view of the shared pure-computation pool. */
++    public record Metrics(
++        int workers,
++        int activeWorkers,
++        int queuedTasks,
++        int largestPoolSize,
++        long completedTasks,
++        long invocations,
++        long parallelInvocations,
++        long synchronousFallbacks,
++        long failedInvocations
++    ) {
++    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index aceb0813acbb394f3e18cc96ac35e111b8173da6..c59c0b8ed2058403205f2ccf3b6ae2cde32c94e8 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -31,6 +31,8 @@ class LeavesXConfigLoaderTest {
+         final String generated = Files.readString(path);
+         assertTrue(generated.contains("performance:"));
+         assertTrue(generated.contains("mob-spawning:"));
++        assertTrue(generated.contains("diagnostics:"));
++        assertTrue(generated.contains("workers:"));
+         assertFalse(generated.contains("threading:"));
+         assertFalse(generated.contains("folia"));
+         for (final String comment : LeavesXConfigWriter.comments().values()) {
+@@ -105,10 +107,16 @@ class LeavesXConfigLoaderTest {
+             config-version: 1
+             performance:
+               optimized-varint: false
++              network:
++                flush-consolidation: false
+               immutable-cache-optimizations: false
+               resource-identifier-cache: false
+               skip-empty-events: false
+               ai-optimizations: false
++              pathfinding-optimizations: false
++              animal-idle-goals:
++                enabled: true
++                interval-multiplier: 3
+               item-merge-optimizations: false
+               block-entity-ticker-removal: false
+               chunk-spawn-range-optimization: false
+@@ -118,22 +126,27 @@ class LeavesXConfigLoaderTest {
+                 minimum-per-tick: 75
+                 maximum-per-tick: 400
+             parallelism:
++              workers: 3
++              minimum-items-per-worker: 96
+               ai-target-search:
+                 enabled: false
+                 minimum-candidates: 256
+               mob-spawning:
+                 enabled: false
+-                workers: 3
+                 minimum-entities: 768
+             """);
+ 
+         final LeavesXConfig config = LeavesXConfigLoader.load(path);
+ 
+         assertFalse(config.optimizedVarInt());
++        assertFalse(config.networkFlushConsolidation());
+         assertFalse(config.immutableCacheOptimizations());
+         assertFalse(config.resourceIdentifierCache());
+         assertFalse(config.skipEmptyEvents());
+         assertFalse(config.aiOptimizations());
++        assertFalse(config.pathfindingOptimizations());
++        assertTrue(config.animalIdleGoalThrottling());
++        assertEquals(3, config.animalIdleGoalIntervalMultiplier());
+         assertFalse(config.parallelAiTargetSearch());
+         assertEquals(256, config.aiTargetSearchMinimumCandidates());
+         assertFalse(config.itemMergeOptimizations());
+@@ -144,7 +157,8 @@ class LeavesXConfigLoaderTest {
+         assertEquals(75, config.chunkUnloadMinimumPerTick());
+         assertEquals(400, config.chunkUnloadMaximumPerTick());
+         assertFalse(config.parallelMobSpawnCounting());
+-        assertEquals(3, config.mobSpawnCountingWorkers());
++        assertEquals(3, config.computeWorkers());
++        assertEquals(96, config.minimumItemsPerWorker());
+         assertEquals(768, config.mobSpawnCountingMinimumEntities());
+     }
+ 
+@@ -169,13 +183,40 @@ class LeavesXConfigLoaderTest {
+     void rejectsUnsupportedSchemaVersions() throws IOException {
+         final Path older = write("config-version: 0\n");
+         assertTrue(assertThrows(LeavesXConfigException.class, () -> LeavesXConfigLoader.load(older))
+-            .getMessage().contains("config-version must be 1"));
++            .getMessage().contains("config-version must be at least 1"));
+ 
+-        final Path newer = write("config-version: 2\n");
++        final Path newer = write("config-version: 3\n");
+         assertTrue(assertThrows(LeavesXConfigException.class, () -> LeavesXConfigLoader.load(newer))
+             .getMessage().contains("newer than supported"));
+     }
+ 
++    @Test
++    void upgradesVersionOneAndMigratesTheLegacyWorkerKeyInPlace() throws Exception {
++        final Path path = write("""
++            # 旧版配置注释。
++            config-version: 1
++            performance:
++              # 旧版网络优化长注释。
++              optimized-varint: true
++            parallelism:
++              mob-spawning:
++                workers: 5
++            """);
++
++        final LeavesXConfig config = LeavesXConfigLoader.load(path);
++        final org.spongepowered.configurate.ConfigurationNode upgraded =
++            io.papermc.paper.configuration.ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
++
++        assertEquals(LeavesXConfig.CURRENT_CONFIG_VERSION, upgraded.node("config-version").getInt());
++        assertEquals(5, config.computeWorkers());
++        assertEquals(5, upgraded.node("parallelism", "workers").getInt());
++        assertEquals(5, upgraded.node("parallelism", "mob-spawning", "workers").getInt());
++        final String text = Files.readString(path);
++        assertTrue(text.startsWith("# 旧版配置注释。"), "用户文件头必须保留");
++        assertFalse(text.contains("旧版网络优化长注释"));
++        assertTrue(text.contains("# " + LeavesXConfigWriter.comments().get("performance.optimized-varint")));
++    }
++
+     @Test
+     void rejectsInvalidChunkUnloadBudgetRange() throws IOException {
+         final Path path = write("""
+diff --git a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigDocumenterTest.java b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigDocumenterTest.java
+index 1bd92dc98920100fec9a085fd14f4d579fb3ad16..c8b7e399f3b312eea180e7f63890661daa45b1c5 100644
+--- a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigDocumenterTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigDocumenterTest.java
+@@ -76,7 +76,7 @@ class LeavesConfigDocumenterTest {
+     }
+ 
+     @Test
+-    void keepsOfficialWarningsAndConfigurationExamplesReadable() {
++    void keepsOfficialCommentsShortAndRemovesDocumentationMarkup() {
+         final String documented = LeavesConfigDocumenter.documentText("""
+             settings:
+               modify:
+@@ -85,11 +85,10 @@ class LeavesConfigDocumenterTest {
+                   old-hopper-suck-in-behavior: false
+             """).text();
+ 
+-        assertTrue(documented.contains("# paper-global.yml："), documented);
+-        assertTrue(documented.contains("#   allow-piston-duplication: true"), documented);
+-        assertTrue(documented.contains("# 警告："), documented);
+-        assertTrue(documented.contains("# 开启后可能会降低性能。"), documented);
++        assertTrue(documented.contains("# 是否开启生电模式。"), documented);
++        assertTrue(documented.contains("# 开启后可能会降低性能。") || documented.contains("# 是否重新引入"), documented);
+         assertFalse(documented.contains("https://"), documented);
++        assertFalse(LeavesConfigCommentCatalog.comments().values().stream().anyMatch(comment -> comment.contains("\n")));
+     }
+ 
+     @Test
+diff --git a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+index f43aaf2ae5a3bd471d2d7535ea1dbbcc18962c3d..388ed3e103df1e2b0757fb9458b2ac5cd531118e 100644
+--- a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+@@ -13,23 +13,18 @@ import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.security.MessageDigest;
+-import java.time.Clock;
+-import java.time.Instant;
+-import java.time.ZoneOffset;
+ import java.util.Base64;
+ import java.util.HexFormat;
+ import java.util.Map;
+-import org.leavesx.leavesx.config.LeavesXConfigWriter;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfigWriter;
+ import org.spongepowered.configurate.ConfigurationNode;
+ 
+ @Normal
+ class LeavesConfigMigratorTest {
+ 
+-    private static final Instant MIGRATION_TIME = Instant.parse("2026-08-12T00:00:00Z");
+-
+     @TempDir
+     Path temporaryDirectory;
+ 
+@@ -42,11 +37,10 @@ class LeavesConfigMigratorTest {
+ 
+         assertEquals(MigrationStatus.NO_SOURCE, result.status());
+         assertFalse(Files.exists(target));
+-        assertFalse(Files.exists(reportPath()));
+     }
+ 
+     @Test
+-    void documentsLeavesAndCreatesStrictlySeparatedLeavesXConfiguration() throws Exception {
++    void documentsLeavesAndCreatesOnlyTheSeparatedLeavesXFile() throws Exception {
+         final Path source = writeSource("""
+             config-version: 6
+             settings:
+@@ -59,180 +53,73 @@ class LeavesConfigMigratorTest {
+               retained: true
+             """);
+         final ConfigurationNode originalValues = load(source);
+-        final byte[] originalBytes = Files.readAllBytes(source);
+         final Path target = this.temporaryDirectory.resolve("leavesx.yml");
+ 
+         final LeavesConfigMigrationResult result = migrator().migrate(source, target);
+         final ConfigurationNode documentedLeaves = load(source);
+         final ConfigurationNode leavesX = load(target);
+-        final ConfigurationNode report = load(reportPath());
+ 
+         assertEquals(MigrationStatus.MIGRATED, result.status());
+-        assertEquals(6, result.sourceConfigVersion());
++        assertEquals(originalValues.raw(), documentedLeaves.raw());
+         assertTrue(result.documentedKeys() >= 2);
+-        assertEquals(originalValues.raw(), documentedLeaves.raw(), "Leaves values and unknown keys must not change");
+-        final String documentedLeavesText = Files.readString(source);
+-        assertCommentPresent(
+-            documentedLeavesText,
+-            LeavesConfigCommentCatalog.comments().get("settings.modify.fakeplayer.enable")
+-        );
+         assertFalse(leavesX.hasChild("settings"));
+-        assertFalse(leavesX.hasChild("migration"));
+-        assertFalse(leavesX.hasChild("threading"));
+-        assertFalse(leavesX.hasChild("determinism"));
+-        assertTrue(leavesX.node("performance", "optimized-varint").getBoolean());
+-        assertTrue(leavesX.node("performance", "immutable-cache-optimizations").getBoolean());
+-        assertTrue(leavesX.node("performance", "resource-identifier-cache").getBoolean());
+-        assertTrue(leavesX.node("performance", "skip-empty-events").getBoolean());
+-        assertTrue(leavesX.node("performance", "item-merge-optimizations").getBoolean());
+-        assertTrue(leavesX.node("parallelism", "mob-spawning", "enabled").getBoolean());
+-        assertEquals(0, leavesX.node("parallelism", "mob-spawning", "workers").getInt());
+-        assertEquals(512, leavesX.node("parallelism", "mob-spawning", "minimum-entities").getInt());
+         assertEquals(LeavesConfigMigrator.LEAVESX_CONFIG_VERSION, leavesX.node("config-version").getInt());
++        assertTrue(leavesX.node("diagnostics", "command-enabled").getBoolean());
++        assertEquals(0, leavesX.node("parallelism", "workers").getInt());
++        assertFalse(leavesX.hasChild("parallelism", "mob-spawning", "workers"));
++
+         final String leavesXText = Files.readString(target);
+         for (final Map.Entry<String, String> comment : LeavesXConfigWriter.comments().entrySet()) {
+-            assertTrue(comment.getValue().contains("默认："), comment.getKey() + " must document its default");
+-            assertTrue(comment.getValue().length() <= 100, comment.getKey() + " should stay easy to read");
+-            assertCommentPresent(leavesXText, comment.getValue());
++            assertTrue(comment.getValue().contains("默认："), comment.getKey());
++            assertFalse(comment.getValue().contains("\n"), comment.getKey());
++            assertTrue(leavesXText.contains("# " + comment.getValue()), comment.getKey());
++        }
++        try (var files = Files.list(this.temporaryDirectory)) {
++            assertEquals(
++                java.util.Set.of("leaves.yml", "leavesx.yml"),
++                files.map(path -> path.getFileName().toString()).collect(java.util.stream.Collectors.toSet())
++            );
+         }
+-        assertFalse(report.node("separation", "leaves-tree-copied-to-leavesx").getBoolean(true));
+-        assertEquals("preserved", report.node("leaves", "unknown-keys").getString());
+-        assertEquals(LeavesConfigCommentCatalog.DOCUMENTATION_COMMIT,
+-            report.node("leaves", "documentation-commit").getString());
+-        assertNotNull(result.backup());
+-        assertNotNull(result.report());
+-        assertTrue(Files.exists(result.backup()));
+-        assertTrue(Files.exists(result.report()));
+-        assertEquals(new String(originalBytes, StandardCharsets.UTF_8), Files.readString(result.backup()));
+-    }
+-
+-    @Test
+-    void preservesUserHeaderAndExistingKeyComments() throws Exception {
+-        final Path source = writeSource("""
+-            # User-managed Leaves header.
+-            config-version: 6
+-            settings:
+-              modify:
+-                fakeplayer:
+-                  # Keep fake players disabled in production.
+-                  enable: false
+-            """);
+-        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
+-
+-        migrator().migrate(source, target);
+-
+-        final String documentedLeaves = Files.readString(source);
+-        assertTrue(documentedLeaves.contains("# User-managed Leaves header."));
+-        assertTrue(documentedLeaves.contains("# Keep fake players disabled in production."));
+-        assertCommentPresent(
+-            documentedLeaves,
+-            LeavesConfigCommentCatalog.comments().get("settings.modify.fakeplayer.enable")
+-        );
+     }
+ 
+     @Test
+-    void preservesUnknownKeysQuotingInlineCommentsAndCrLfLineEndings() throws Exception {
++    void preservesHeaderCommentsUnknownKeysAndCrLfFormatting() throws Exception {
+         final String original = "# User header\r\n"
+-            + "config-version: 6 # Keep inline version note\r\n"
++            + "config-version: 6 # Keep version\r\n"
+             + "settings:\r\n"
+             + "  modify:\r\n"
+             + "    fakeplayer:\r\n"
+-            + "      enable: false # Keep inline setting note\r\n"
+-            + "  unknown-extension:\r\n"
+-            + "    quoted-value: \"0012\"\r\n";
++            + "      # Keep disabled\r\n"
++            + "      enable: false # Keep inline\r\n"
++            + "  extension:\r\n"
++            + "    value: \"0012\"\r\n";
+         final Path source = writeSource(original);
+-        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
+ 
+-        migrator().migrate(source, target);
++        migrator().migrate(source, this.temporaryDirectory.resolve("leavesx.yml"));
+ 
+         final String documented = Files.readString(source);
+-        assertTrue(documented.contains("config-version: 6 # Keep inline version note\r\n"));
+-        assertTrue(documented.contains("enable: false # Keep inline setting note\r\n"));
+-        assertTrue(documented.contains("quoted-value: \"0012\"\r\n"));
+-        assertFalse(documented.replace("\r\n", "").contains("\n"), "Migration must retain CRLF line endings");
++        assertTrue(documented.startsWith("# User header\r\n"));
++        assertTrue(documented.contains("# Keep disabled\r\n"));
++        assertTrue(documented.contains("enable: false # Keep inline\r\n"));
++        assertTrue(documented.contains("value: \"0012\"\r\n"));
++        assertFalse(documented.replace("\r\n", "").contains("\n"));
+     }
+ 
+     @Test
+-    void preservesUtf8ByteOrderMarkAheadOfInsertedComments() throws Exception {
+-        final Path source = writeSource("\uFEFFconfig-version: 6\nsettings:\n  modify:\n    fakeplayer:\n      enable: false\n");
+-        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
+-
+-        migrator().migrate(source, target);
+-
+-        final byte[] documentedBytes = Files.readAllBytes(source);
+-        assertEquals((byte) 0xEF, documentedBytes[0]);
+-        assertEquals((byte) 0xBB, documentedBytes[1]);
+-        assertEquals((byte) 0xBF, documentedBytes[2]);
+-        assertTrue(Files.readString(source).startsWith("\uFEFF# "));
+-        assertEquals(6, load(source).node("config-version").getInt());
+-    }
+-
+-    @Test
+-    void bundlesPinnedOfficialDocumentationLicenseAndNotice() throws Exception {
+-        final byte[] encodedDocumentation = readResource(
+-            "/leavesx/leaves-26.1.2-configuration-zh_Hans.yml.b64"
+-        );
+-        final byte[] documentation = Base64.getMimeDecoder().decode(encodedDocumentation);
+-        assertEquals(37_262, documentation.length);
+-        assertEquals(
+-            "a07fbbaed6a6e36ae428250728d7dc016ff34a14d9bd17875ffe446a327b0c10",
+-            sha256(documentation)
+-        );
+-
+-        final byte[] license = readResource("/META-INF/licenses/leaves-documentation-MPL-2.0.txt");
+-        assertEquals(16_725, license.length);
+-        assertEquals(
+-            "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5",
+-            sha256(license)
+-        );
+-        final String licenseText = new String(license, StandardCharsets.UTF_8);
+-        assertTrue(licenseText.startsWith("Mozilla Public License Version 2.0"));
+-        assertTrue(licenseText.contains("10. Versions of the License"));
+-        assertTrue(licenseText.contains("Exhibit A - Source Code Form License Notice"));
+-        assertTrue(licenseText.contains("Exhibit B - \"Incompatible With Secondary Licenses\" Notice"));
+-
+-        final String notice = new String(
+-            readResource("/META-INF/leavesx-third-party-notices.txt"),
+-            StandardCharsets.UTF_8
+-        );
+-        assertTrue(notice.contains(LeavesConfigCommentCatalog.DOCUMENTATION_COMMIT));
+-        assertTrue(notice.contains("src/config-spec/leaves/zh_Hans.yml"));
+-        assertTrue(notice.contains("a07fbbaed6a6e36ae428250728d7dc016ff34a14d9bd17875ffe446a327b0c10"));
+-        assertTrue(notice.contains("4b89d4518bd135ab4ee154a7bce722246b57a98c3d7efc1a09409898160c2bd1"));
+-    }
+-
+-    @Test
+-    void repeatedMigrationIsIdempotent() throws Exception {
++    void repeatedMigrationDoesNotOverwriteEitherConfiguration() throws Exception {
+         final Path source = writeSource("config-version: 6\nsettings:\n  custom: true\n");
+         final Path target = this.temporaryDirectory.resolve("leavesx.yml");
+-
+         final LeavesConfigMigrationResult first = migrator().migrate(source, target);
+         final String sourceAfterFirstRun = Files.readString(source);
+         final String targetAfterFirstRun = Files.readString(target);
++
++        Files.writeString(source, sourceAfterFirstRun.replace("custom: true", "custom: false"));
+         final LeavesConfigMigrationResult second = migrator().migrate(source, target);
+ 
+         assertEquals(MigrationStatus.MIGRATED, first.status());
+         assertEquals(MigrationStatus.ALREADY_MIGRATED, second.status());
+-        assertEquals(sourceAfterFirstRun, Files.readString(source));
++        assertTrue(Files.readString(source).contains("custom: false"));
+         assertEquals(targetAfterFirstRun, Files.readString(target));
+-        assertEquals(1L, backupCount());
+-    }
+-
+-    @Test
+-    void permitsLeavesEditsAfterMigrationWithoutOverwritingEitherConfiguration() throws Exception {
+-        final Path source = writeSource("config-version: 6\nsettings:\n  custom: true\n");
+-        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
+-        migrator().migrate(source, target);
+-        final String targetAfterMigration = Files.readString(target);
+-        final String editedLeaves = Files.readString(source).replace("custom: true", "custom: false");
+-        Files.writeString(source, editedLeaves, StandardCharsets.UTF_8);
+-
+-        final LeavesConfigMigrationResult result = migrator().migrate(source, target);
+-
+-        assertEquals(MigrationStatus.ALREADY_MIGRATED, result.status());
+-        assertEquals(editedLeaves, Files.readString(source));
+-        assertEquals(targetAfterMigration, Files.readString(target));
+-        assertEquals(1L, backupCount());
+     }
+ 
+     @Test
+@@ -244,64 +131,63 @@ class LeavesConfigMigratorTest {
+ 
+         assertTrue(Files.exists(source));
+         assertFalse(Files.exists(target));
+-        assertFalse(Files.exists(reportPath()));
+-        assertEquals(0L, backupCount());
+     }
+ 
+     @Test
+-    void rejectsConflictingTargetWithoutOverwritingItOrLeaves() throws IOException {
++    void existingTargetIsKeptAsUserOwnedConfiguration() throws IOException {
+         final Path source = writeSource("config-version: 6\nsettings:\n  custom: true\n");
+         final String originalSource = Files.readString(source);
+         final Path target = this.temporaryDirectory.resolve("leavesx.yml");
+         final String existing = "config-version: 1\nperformance:\n  optimized-varint: false\n";
+         Files.writeString(target, existing, StandardCharsets.UTF_8);
+ 
+-        assertThrows(LeavesConfigMigrationException.class, () -> migrator().migrate(source, target));
++        final LeavesConfigMigrationResult result = migrator().migrate(source, target);
+ 
++        assertEquals(MigrationStatus.ALREADY_MIGRATED, result.status());
+         assertEquals(originalSource, Files.readString(source));
+         assertEquals(existing, Files.readString(target));
+-        assertEquals(0L, backupCount());
+     }
+ 
+     @Test
+-    void restoresOriginalLeavesAndRemovesOutputsWhenReportWriteFails() throws IOException {
+-        final Path source = writeSource("""
+-            config-version: 6
+-            settings:
+-              modify:
+-                fakeplayer:
+-                  enable: true
+-            """);
+-        final byte[] originalBytes = Files.readAllBytes(source);
++    void removesTheNewTargetWhenTheLeavesWriteFails() throws IOException {
++        final Path source = writeSource("config-version: 6\nsettings:\n  custom: true\n");
++        final String originalSource = Files.readString(source);
+         final Path target = this.temporaryDirectory.resolve("leavesx.yml");
+-        final MigrationOutput output = new FailingReportOutput();
+ 
+         assertThrows(
+             LeavesConfigMigrationException.class,
+-            () -> new LeavesConfigMigrator(Clock.fixed(MIGRATION_TIME, ZoneOffset.UTC), output).migrate(source, target)
++            () -> new LeavesConfigMigrator(new FailingOutput(2)).migrate(source, target)
+         );
+ 
+-        assertEquals(new String(originalBytes, StandardCharsets.UTF_8), Files.readString(source));
++        assertEquals(originalSource, Files.readString(source));
+         assertFalse(Files.exists(target));
+-        assertFalse(Files.exists(reportPath()));
+-        assertEquals(0L, backupCount());
+     }
+ 
+     @Test
+-    void warnsButDoesNotConvertNewerLeavesConfiguration() throws Exception {
+-        final Path source = writeSource("config-version: 99\nsettings:\n  future: enabled\n");
+-        final Path target = this.temporaryDirectory.resolve("leavesx.yml");
++    void simplifiesOfficialCommentsToSingleReadableLines() {
++        final Map<String, String> comments = LeavesConfigCommentCatalog.comments();
++        assertTrue(comments.values().stream().noneMatch(comment -> comment.contains("\n")));
++        assertEquals(
++            "是否恢复 1.21 前的方块实体保留行为。此功能风险较高，请谨慎开启。",
++            comments.get("settings.modify.minecraft-old.old-block-remove-behaviour")
++        );
++    }
+ 
+-        final LeavesConfigMigrationResult result = migrator().migrate(source, target);
++    @Test
++    void bundlesPinnedOfficialDocumentationLicenseAndNotice() throws Exception {
++        final byte[] encodedDocumentation = readResource("/leavesx/leaves-26.1.2-configuration-zh_Hans.yml.b64");
++        final byte[] documentation = Base64.getMimeDecoder().decode(encodedDocumentation);
++        assertEquals(37_262, documentation.length);
++        assertEquals("a07fbbaed6a6e36ae428250728d7dc016ff34a14d9bd17875ffe446a327b0c10", sha256(documentation));
+ 
+-        assertEquals(MigrationStatus.MIGRATED, result.status());
+-        assertTrue(result.warnings().stream().anyMatch(warning -> warning.contains("newer")));
+-        assertEquals("enabled", load(source).node("settings", "future").getString());
+-        assertFalse(load(target).hasChild("settings"));
++        final byte[] license = readResource("/META-INF/licenses/leaves-documentation-MPL-2.0.txt");
++        assertEquals(16_725, license.length);
++        assertEquals("1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5", sha256(license));
++        assertTrue(new String(license, StandardCharsets.UTF_8).startsWith("Mozilla Public License Version 2.0"));
+     }
+ 
+     private LeavesConfigMigrator migrator() {
+-        return new LeavesConfigMigrator(Clock.fixed(MIGRATION_TIME, ZoneOffset.UTC), AtomicMigrationOutput.INSTANCE);
++        return new LeavesConfigMigrator();
+     }
+ 
+     private Path writeSource(final String content) throws IOException {
+@@ -310,16 +196,6 @@ class LeavesConfigMigratorTest {
+         return source;
+     }
+ 
+-    private Path reportPath() {
+-        return this.temporaryDirectory.resolve(LeavesConfigMigrator.DEFAULT_REPORT_FILE_NAME);
+-    }
+-
+-    private long backupCount() throws IOException {
+-        try (var paths = Files.list(this.temporaryDirectory)) {
+-            return paths.filter(path -> path.getFileName().toString().contains(".leavesx-backup-")).count();
+-        }
+-    }
+-
+     private static ConfigurationNode load(final Path path) throws Exception {
+         return ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
+     }
+@@ -335,49 +211,21 @@ class LeavesConfigMigratorTest {
+         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content));
+     }
+ 
+-    private static void assertCommentPresent(final String yaml, final String description) {
+-        assertNotNull(description);
+-        for (final String line : description.split("\\R")) {
+-            if (!line.isBlank()) {
+-                assertTrue(yaml.contains("# " + line.strip()), "Missing YAML comment line: " + line);
+-            }
+-        }
+-    }
+-
+-    private static final class FailingReportOutput implements MigrationOutput {
++    private static final class FailingOutput implements MigrationOutput {
+ 
++        private final int failingWrite;
+         private int writes;
+ 
+-        @Override
+-        public void copyBackup(final Path source, final Path backup) throws IOException {
+-            AtomicMigrationOutput.INSTANCE.copyBackup(source, backup);
++        private FailingOutput(final int failingWrite) {
++            this.failingWrite = failingWrite;
+         }
+ 
+         @Override
+         public void saveText(final Path target, final String content) throws IOException {
+-            this.failOnReportWrite();
+-            AtomicMigrationOutput.INSTANCE.saveText(target, content);
+-        }
+-
+-        @Override
+-        public void saveYaml(
+-            final Path target,
+-            final ConfigurationNode node,
+-            final boolean includeHeader
+-        ) throws IOException {
+-            this.failOnReportWrite();
+-            AtomicMigrationOutput.INSTANCE.saveYaml(target, node, includeHeader);
+-        }
+-
+-        private void failOnReportWrite() throws IOException {
+-            if (++this.writes == 3) {
+-                throw new IOException("Injected report write failure");
++            if (++this.writes == this.failingWrite) {
++                throw new IOException("Injected migration write failure");
+             }
+-        }
+-
+-        @Override
+-        public void restoreBackup(final Path backup, final Path target) throws IOException {
+-            AtomicMigrationOutput.INSTANCE.restoreBackup(backup, target);
++            AtomicMigrationOutput.INSTANCE.saveText(target, content);
+         }
+ 
+         @Override
+diff --git a/src/test/java/org/leavesx/leavesx/performance/AnimalIdleGoalPolicyTest.java b/src/test/java/org/leavesx/leavesx/performance/AnimalIdleGoalPolicyTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..8288e8a2f7c28eab540188e591acef7c3c404d47
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/AnimalIdleGoalPolicyTest.java
+@@ -0,0 +1,23 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class AnimalIdleGoalPolicyTest {
++
++    @Test
++    void scalesIdleIntervalsWithoutOverflow() {
++        assertEquals(240, AnimalIdleGoalPolicy.scaleInterval(120, 2));
++        assertEquals(120, AnimalIdleGoalPolicy.scaleInterval(120, 1));
++        assertEquals(Integer.MAX_VALUE, AnimalIdleGoalPolicy.scaleInterval(Integer.MAX_VALUE, 20));
++    }
++
++    @Test
++    void scalesRandomLookChanceByTheSameMultiplier() {
++        assertEquals(0.01F, AnimalIdleGoalPolicy.scaleChance(0.02F, 2));
++        assertEquals(0.02F, AnimalIdleGoalPolicy.scaleChance(0.02F, 1));
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PathNodeListBuilderTest.java b/src/test/java/org/leavesx/leavesx/performance/PathNodeListBuilderTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..e51bc675fbbe8c053bb063a8344f1b4a226053f1
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/PathNodeListBuilderTest.java
+@@ -0,0 +1,33 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertSame;
++
++import java.util.List;
++import net.minecraft.world.level.pathfinder.Node;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class PathNodeListBuilderTest {
++
++    @Test
++    void preservesStartToTargetOrderForLongChains() {
++        final Node start = new Node(0, 64, 0);
++        Node closest = start;
++        for (int index = 1; index < 1_000; index++) {
++            final Node next = new Node(index, 64, index / 2);
++            next.cameFrom = closest;
++            closest = next;
++        }
++
++        final List<Node> nodes = PathNodeListBuilder.build(closest);
++
++        assertEquals(1_000, nodes.size());
++        assertSame(start, nodes.getFirst());
++        assertSame(closest, nodes.getLast());
++        for (int index = 1; index < nodes.size(); index++) {
++            assertSame(nodes.get(index - 1), nodes.get(index).cameFrom);
++        }
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+index 1ee17a6144cc9c68d29c6e459667e7f7708e538d..2275cd1705ba654c408450b72179e811895d9a7b 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -40,6 +40,25 @@ class StableDistanceSorterTest {
+         assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, 3.5, -2.25, 7.75, true, 64));
+     }
+ 
++    @Test
++    void matchesStableOrderWhenAdaptivePartitionUsesFewerLanes() {
++        final Random random = new Random(0x506172746974696fL);
++        final int size = 191;
++        final double[] x = new double[size];
++        final double[] y = new double[size];
++        final double[] z = new double[size];
++        for (int index = 0; index < size; index++) {
++            x[index] = random.nextInt(257) - 128;
++            y[index] = random.nextInt(65) - 32;
++            z[index] = random.nextInt(257) - 128;
++        }
++
++        final int[] expected = referenceOrder(x, y, z, -17.5, 4.25, 31.75);
++        LeavesXComputeExecutor.configure(8, 64);
++
++        assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, -17.5, 4.25, 31.75, true, 1));
++    }
++
+     @Test
+     void keepsSpecialDoubleOrderingEquivalentToJavaComparator() {
+         final double[] x = {Double.NaN, Double.POSITIVE_INFINITY, -0.0, 0.0, 1.0, -1.0};
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index a926dfe7caba93bb18cacd48340214b0b168dc22..c7899cec4a2aefc7166f03fcdef3ed54d2851d0b 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -53,10 +53,10 @@ class LeavesXComputeExecutorTest {
+ 
+     @Test
+     void acceptsACompleteNonEvenPartition() {
+-        LeavesXComputeExecutor.configure(6);
+-        final AtomicIntegerArray counts = new AtomicIntegerArray(10);
++        LeavesXComputeExecutor.configure(6, 16);
++        final AtomicIntegerArray counts = new AtomicIntegerArray(35);
+ 
+-        final boolean parallel = LeavesXComputeExecutor.invokeRanges(10, 1, (taskIndex, start, end) -> {
++        final boolean parallel = LeavesXComputeExecutor.invokeRanges(35, 1, (taskIndex, start, end) -> {
+             for (int index = start; index < end; index++) {
+                 counts.incrementAndGet(index);
+             }
+@@ -68,6 +68,23 @@ class LeavesXComputeExecutorTest {
+         }
+     }
+ 
++    @Test
++    void limitsLaneCountWhenEachWorkerWouldReceiveTooLittleWork() {
++        assertEquals(1, LeavesXComputeExecutor.taskCountFor(127, 8, 64));
++        assertEquals(2, LeavesXComputeExecutor.taskCountFor(128, 8, 64));
++        assertEquals(2, LeavesXComputeExecutor.taskCountFor(191, 8, 64));
++        assertEquals(3, LeavesXComputeExecutor.taskCountFor(192, 8, 64));
++        assertEquals(8, LeavesXComputeExecutor.taskCountFor(1_024, 8, 64));
++        assertEquals(1, LeavesXComputeExecutor.taskCountFor(32, 8, 64));
++    }
++
++    @Test
++    void automaticWorkerSelectionLeavesHeadroomAndUsesLargeMachines() {
++        assertEquals(1, LeavesXComputeExecutor.automaticWorkerCount(2));
++        assertEquals(6, LeavesXComputeExecutor.automaticWorkerCount(8));
++        assertEquals(8, LeavesXComputeExecutor.automaticWorkerCount(32));
++    }
++
+     @Test
+     void keepsTheCallingThreadProductiveWhileWorkersRun() {
+         LeavesXComputeExecutor.configure(4);

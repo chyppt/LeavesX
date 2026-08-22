@@ -1,0 +1,201 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 18:15:19 +0800
+Subject: [PATCH] Optimize fixed hopper entity queries for bate45
+
+
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index 9ed5d6e18ff1b6bac0dcdbf590ae4b022eeb0997..dfd9482ed1b0b422a8e3657c4f2d80dde8fc0e9f 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -232,6 +232,19 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         return ret;
+     }
+ 
++    // LeavesX start - allow fixed block-entity queries to retain their private result storage
++    public final <T extends Entity> void leavesX$getEntitiesOfClass(
++        final Class<T> entityClass,
++        final AABB boundingBox,
++        final Predicate<? super T> predicate,
++        final List<? super T> into
++    ) {
++        Profiler.get().incrementCounter("getEntities");
++        ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemLevel)this)
++            .moonrise$getEntityLookup().getEntities(entityClass, null, boundingBox, into, predicate);
++    }
++    // LeavesX end - allow fixed block-entity queries to retain their private result storage
++
+     @Override
+     public final List<Entity> moonrise$getHardCollidingEntities(final Entity entity, final AABB box, final Predicate<? super Entity> predicate) {
+         Profiler.get().incrementCounter("getEntities");
+diff --git a/net/minecraft/world/level/block/entity/HopperBlockEntity.java b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
+index 0389f2fe57d191fb08ace59872e3b677246a525e..a011dd97c293aa89ae12dfd19f5ee2d5d3bb2e5f 100644
+--- a/net/minecraft/world/level/block/entity/HopperBlockEntity.java
++++ b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
+@@ -59,6 +59,8 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
+     public int cooldownTime = -1;
+     private long tickedGameTime;
+     private Direction facing;
++    // LeavesX - allocated lazily so disabled or never-active hoppers pay no retained-memory cost.
++    private @Nullable LeavesXEntityContainerQueryCache leavesXEntityContainerQueryCache;
+ 
+     // CraftBukkit start - add fields and methods
+     public List<org.bukkit.entity.HumanEntity> transaction = new java.util.ArrayList<>();
+@@ -153,6 +155,7 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
+         if (org.leavesmc.leaves.LeavesConfig.performance.sleepingBlockEntity && this.level != null && !this.level.isClientSide() && blockState.getValue(HopperBlock.FACING) != this.getBlockState().getValue(HopperBlock.FACING)) this.invalidateCachedData(); // Leaves - Lithium Sleeping Block Entity
+         super.setBlockState(blockState);
+         this.facing = blockState.getValue(HopperBlock.FACING);
++        this.leavesXUpdateAttachedContainerCache();
+     }
+ 
+     @Override
+@@ -602,7 +605,11 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
+     }
+ 
+     public static boolean suckInItems(final Level level, final Hopper hopper) {
+-        BlockPos blockPos = BlockPos.containing(hopper.getLevelX(), hopper.getLevelY() + 1.0, hopper.getLevelZ());
++        final boolean useFixedQuery = org.leavesx.leavesx.config.LeavesXRuntime.blockEntityOptimizations()
++            && hopper instanceof HopperBlockEntity;
++        final BlockPos blockPos = useFixedQuery
++            ? ((HopperBlockEntity)hopper).leavesXGetEntityContainerQueryCache().sourceContainerPos
++            : BlockPos.containing(hopper.getLevelX(), hopper.getLevelY() + 1.0, hopper.getLevelZ());
+         BlockState blockState = level.getBlockState(blockPos);
+         Container container = org.leavesmc.leaves.LeavesConfig.performance.sleepingBlockEntity ? getExtractInventory(level, hopper, blockPos, blockState) : getSourceContainer(level, hopper, blockPos, blockState); // Leaves - Lithium Sleeping Block Entity
+         if (container != null) {
+@@ -770,8 +777,19 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
+ 
+     private static @Nullable Container getAttachedContainer(final Level level, final BlockPos blockPos, final HopperBlockEntity self) {
+         // Paper start
+-        BlockPos searchPosition = blockPos.relative(self.facing);
+-        Container inventory = getContainerAt(level, searchPosition);
++        final boolean useFixedQuery = org.leavesx.leavesx.config.LeavesXRuntime.blockEntityOptimizations();
++        final LeavesXEntityContainerQueryCache queryCache = useFixedQuery ? self.leavesXGetEntityContainerQueryCache() : null;
++        final BlockPos searchPosition = useFixedQuery ? queryCache.attachedContainerPos : blockPos.relative(self.facing);
++        final Container inventory = useFixedQuery
++            ? getContainerAt(
++                level,
++                searchPosition,
++                level.getBlockState(searchPosition),
++                queryCache.attachedContainerSearchBox,
++                true,
++                queryCache.queryResults
++            )
++            : getContainerAt(level, searchPosition);
+         if (org.bukkit.event.inventory.HopperInventorySearchEvent.getHandlerList().getRegisteredListeners().length == 0) return inventory;
+ 
+         org.bukkit.craftbukkit.block.CraftBlock hopper = org.bukkit.craftbukkit.block.CraftBlock.at(level, blockPos);
+@@ -787,12 +805,31 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
+ 
+     private static @Nullable Container getSourceContainer(final Level level, final Hopper hopper, final BlockPos pos, final BlockState state) {
+         // Paper start
+-        final Container inventory = HopperBlockEntity.getContainerAt(level, pos, state, hopper.getLevelX(), hopper.getLevelY() + 1.0, hopper.getLevelZ());
++        final boolean useFixedQuery = org.leavesx.leavesx.config.LeavesXRuntime.blockEntityOptimizations()
++            && hopper instanceof HopperBlockEntity;
++        final LeavesXEntityContainerQueryCache queryCache = useFixedQuery
++            ? ((HopperBlockEntity)hopper).leavesXGetEntityContainerQueryCache()
++            : null;
++        final Container inventory = useFixedQuery
++            ? HopperBlockEntity.getContainerAt(
++                level,
++                pos,
++                state,
++                queryCache.sourceContainerSearchBox,
++                false,
++                queryCache.queryResults
++            )
++            : HopperBlockEntity.getContainerAt(level, pos, state, hopper.getLevelX(), hopper.getLevelY() + 1.0, hopper.getLevelZ());
+         if (org.bukkit.event.inventory.HopperInventorySearchEvent.getHandlerList().getRegisteredListeners().length == 0) return inventory;
+ 
+-        final BlockPos hopperPos = BlockPos.containing(hopper.getLevelX(), hopper.getLevelY(), hopper.getLevelZ());
++        final BlockPos hopperPos = useFixedQuery
++            ? ((HopperBlockEntity)hopper).getBlockPos()
++            : BlockPos.containing(hopper.getLevelX(), hopper.getLevelY(), hopper.getLevelZ());
+         org.bukkit.craftbukkit.block.CraftBlock hopperBlock = org.bukkit.craftbukkit.block.CraftBlock.at(level, hopperPos);
+-        org.bukkit.craftbukkit.block.CraftBlock containerBlock = org.bukkit.craftbukkit.block.CraftBlock.at(level, hopperPos.above());
++        org.bukkit.craftbukkit.block.CraftBlock containerBlock = org.bukkit.craftbukkit.block.CraftBlock.at(
++            level,
++            useFixedQuery ? queryCache.sourceContainerPos : hopperPos.above()
++        );
+         return HopperBlockEntity.runHopperInventorySearchEvent(
+             inventory,
+             hopperBlock,
+@@ -830,6 +867,23 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
+         return result;
+     }
+ 
++    // LeavesX start - fixed block hoppers reuse immutable coordinates and a private result buffer
++    private static @Nullable Container getContainerAt(
++        final Level level,
++        final BlockPos pos,
++        final BlockState state,
++        final AABB entitySearchBox,
++        final boolean optimizeEntities,
++        final List<Entity> queryResults
++    ) {
++        Container result = getBlockContainer(level, pos, state);
++        if (result == null && (!optimizeEntities || !level.paperConfig().hopper.ignoreOccludingBlocks || !state.getBukkitMaterial().isOccluding())) {
++            result = getEntityContainer(level, entitySearchBox, queryResults);
++        }
++        return result;
++    }
++    // LeavesX end - fixed block hoppers reuse immutable coordinates and a private result buffer
++
+     private static @Nullable Container getBlockContainer(final Level level, final BlockPos pos, final BlockState state) {
+         if (!level.spigotConfig.hopperCanLoadChunks && !level.hasChunkAt(pos)) return null; // Spigot
+         Block block = state.getBlock();
+@@ -855,6 +909,55 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
+         return !entities.isEmpty() ? (Container)entities.get(level.getRandom().nextInt(entities.size())) : null;
+     }
+ 
++    // LeavesX start - allocation-free entity-container query for fixed block hoppers
++    private static @Nullable Container getEntityContainer(final Level level, final AABB searchBox, final List<Entity> queryResults) {
++        queryResults.clear();
++        level.leavesX$getEntitiesOfClass((Class)Container.class, searchBox, EntitySelector.CONTAINER_ENTITY_SELECTOR, queryResults);
++        final Container result = !queryResults.isEmpty()
++            ? (Container)queryResults.get(level.getRandom().nextInt(queryResults.size()))
++            : null;
++        // Do not retain minecart references between hopper ticks; only the small backing array is reused.
++        queryResults.clear();
++        return result;
++    }
++
++    private LeavesXEntityContainerQueryCache leavesXGetEntityContainerQueryCache() {
++        LeavesXEntityContainerQueryCache queryCache = this.leavesXEntityContainerQueryCache;
++        if (queryCache == null) {
++            queryCache = new LeavesXEntityContainerQueryCache(this.worldPosition, this.facing);
++            this.leavesXEntityContainerQueryCache = queryCache;
++        }
++        return queryCache;
++    }
++
++    private void leavesXUpdateAttachedContainerCache() {
++        final LeavesXEntityContainerQueryCache queryCache = this.leavesXEntityContainerQueryCache;
++        if (queryCache != null) {
++            queryCache.updateAttachedContainer(this.worldPosition, this.facing);
++        }
++    }
++
++    private static final class LeavesXEntityContainerQueryCache {
++
++        private final BlockPos sourceContainerPos;
++        private BlockPos attachedContainerPos;
++        private final AABB sourceContainerSearchBox;
++        private AABB attachedContainerSearchBox;
++        private final List<Entity> queryResults = new java.util.ArrayList<>(1);
++
++        private LeavesXEntityContainerQueryCache(final BlockPos hopperPos, final Direction facing) {
++            this.sourceContainerPos = hopperPos.above();
++            this.sourceContainerSearchBox = new AABB(this.sourceContainerPos);
++            this.updateAttachedContainer(hopperPos, facing);
++        }
++
++        private void updateAttachedContainer(final BlockPos hopperPos, final Direction facing) {
++            this.attachedContainerPos = hopperPos.relative(facing);
++            this.attachedContainerSearchBox = new AABB(this.attachedContainerPos);
++        }
++    }
++    // LeavesX end - allocation-free entity-container query for fixed block hoppers
++
+     private static boolean canMergeItems(final ItemStack a, final ItemStack b) {
+         return a.getCount() < a.getMaxStackSize() && ItemStack.isSameItemSameComponents(a, b); // Paper - Perf: Optimize Hoppers; used to return true for full itemstacks?!
+     }

@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 22:01:42 +0800
+Subject: [PATCH] Add cat relax occupancy coverage for bate66
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/CatRelaxGoalEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/CatRelaxGoalEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..b2993627fcf38048f6eacb60ff4e41711a45a0dd
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/CatRelaxGoalEntityQueryHotPathTest.java
+@@ -0,0 +1,60 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.animal.feline.Cat;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies cat owner-relax goals stop after the first occupying cat. */
++@Normal
++class CatRelaxGoalEntityQueryHotPathTest {
++
++    @Test
++    void occupancyCheckKeepsFirstMatchAndVanillaEntityQueries() throws IOException {
++        final ClassNode relaxGoal = nestedClass(Cat.class, "CatRelaxOnOwnerGoal");
++        final MethodNode occupied = method(relaxGoal, "spaceIsOccupied");
++        final List<MethodInsnNode> calls = invocations(occupied);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("isLying")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("isRelaxStateOne")));
++    }
++
++    private static ClassNode nestedClass(final Class<?> owner, final String simpleName) throws IOException {
++        return classNode(Arrays.stream(owner.getDeclaredClasses())
++            .filter(type -> type.getSimpleName().equals(simpleName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing nested class " + simpleName)));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

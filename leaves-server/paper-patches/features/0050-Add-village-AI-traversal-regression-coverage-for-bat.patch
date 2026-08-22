@@ -1,0 +1,221 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 02:06:27 +0800
+Subject: [PATCH] Add village AI traversal regression coverage for bate25
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/VillageAiTraversalTest.java b/src/test/java/org/leavesx/leavesx/performance/VillageAiTraversalTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..058bc0e51d643ecb15ecaf4312040b913fe2964d
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/VillageAiTraversalTest.java
+@@ -0,0 +1,209 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.Mockito.doReturn;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.verifyNoInteractions;
++import static org.mockito.Mockito.when;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.List;
++import java.util.Optional;
++import java.util.concurrent.atomic.AtomicInteger;
++import java.util.concurrent.atomic.AtomicReference;
++import java.util.function.Predicate;
++import java.util.function.ToIntFunction;
++import net.minecraft.core.BlockPos;
++import net.minecraft.core.GlobalPos;
++import net.minecraft.core.Holder;
++import net.minecraft.core.SectionPos;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.entity.ai.Brain;
++import net.minecraft.world.entity.ai.behavior.BehaviorUtils;
++import net.minecraft.world.entity.ai.behavior.YieldJobSite;
++import net.minecraft.world.entity.ai.memory.MemoryModuleType;
++import net.minecraft.world.entity.ai.village.poi.PoiType;
++import net.minecraft.world.entity.npc.villager.Villager;
++import net.minecraft.world.entity.npc.villager.VillagerData;
++import net.minecraft.world.entity.npc.villager.VillagerProfession;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.ClassVisitor;
++import org.objectweb.asm.MethodVisitor;
++import org.objectweb.asm.Opcodes;
++
++/** Locks down order-sensitive village traversal optimizations. */
++@Normal
++class VillageAiTraversalTest {
++
++    @Test
++    void closestVillageSectionMatchesVanillaStreamSelection() throws ReflectiveOperationException {
++        final SectionPos center = SectionPos.of(3, 4, 5);
++        final ServerLevel level = mock();
++        final AtomicReference<ToIntFunction<SectionPos>> distanceRef = new AtomicReference<>();
++        when(level.sectionsToVillage(any(SectionPos.class))).thenAnswer(invocation -> distanceRef.get().applyAsInt(invocation.getArgument(0)));
++        final Method method = BehaviorUtils.class.getDeclaredMethod(
++            "findSectionClosestToVillageDirect",
++            ServerLevel.class,
++            SectionPos.class,
++            int.class
++        );
++        method.setAccessible(true);
++
++        for (int seed = 0; seed < 64; ++seed) {
++            final int currentSeed = seed;
++            final ToIntFunction<SectionPos> distance = pos -> pos.equals(center)
++                ? 31
++                : Math.floorMod(pos.getX() * 31 + pos.getY() * 17 + pos.getZ() * 13 + currentSeed * 7, 19);
++            distanceRef.set(distance);
++            final int centerDistance = distance.applyAsInt(center);
++            final SectionPos expected = SectionPos.cube(center, 2)
++                .filter(pos -> distance.applyAsInt(pos) < centerDistance)
++                .min(Comparator.comparingInt(distance))
++                .orElse(center);
++
++            final SectionPos actual = (SectionPos)method.invoke(null, level, center, 2);
++
++            assertEquals(expected, actual, "seed " + seed);
++        }
++    }
++
++    @Test
++    void closestVillageSectionReadsEachCandidateOnce() throws ReflectiveOperationException {
++        final SectionPos center = SectionPos.of(0, 0, 0);
++        final AtomicInteger calls = new AtomicInteger();
++        final ServerLevel level = mock();
++        when(level.sectionsToVillage(any(SectionPos.class))).thenAnswer(ignored -> {
++            calls.incrementAndGet();
++            return 1;
++        });
++        final Method method = BehaviorUtils.class.getDeclaredMethod(
++            "findSectionClosestToVillageDirect",
++            ServerLevel.class,
++            SectionPos.class,
++            int.class
++        );
++        method.setAccessible(true);
++
++        assertSame(center, method.invoke(null, level, center, 2));
++        assertEquals(126, calls.get());
++    }
++
++    @Test
++    void villageTraversalHelpersDoNotCreateStreamPipelines() throws IOException {
++        assertNoStreamCalls(BehaviorUtils.class, "findSectionClosestToVillageDirect", 3);
++        assertNoStreamCalls(YieldJobSite.class, "findNearbyVillagerWantingJobsite", 4);
++    }
++
++    @Test
++    @SuppressWarnings("unchecked")
++    void jobsiteSearchPreservesFilteringOrderAndStopsAtFirstMatch() throws ReflectiveOperationException {
++        final BlockPos poiPos = new BlockPos(12, 64, -9);
++        final Holder<PoiType> poiType = mock();
++        final Villager body = mock();
++        final LivingEntity nonVillager = mock();
++        final Villager deadVillager = mock();
++        final Villager occupiedVillager = mock();
++        final Villager matchingVillager = mock();
++        final Villager afterMatch = mock();
++        when(deadVillager.isAlive()).thenReturn(false);
++        when(occupiedVillager.isAlive()).thenReturn(true);
++        when(matchingVillager.isAlive()).thenReturn(true);
++
++        final Brain<?> occupiedBrain = mock();
++        doReturn(occupiedBrain).when(occupiedVillager).getBrain();
++        when(occupiedBrain.getMemory(MemoryModuleType.POTENTIAL_JOB_SITE)).thenReturn(Optional.of(mock(GlobalPos.class)));
++
++        final Brain<?> matchingBrain = mock();
++        doReturn(matchingBrain).when(matchingVillager).getBrain();
++        when(matchingBrain.getMemory(MemoryModuleType.POTENTIAL_JOB_SITE)).thenReturn(Optional.empty());
++        final GlobalPos matchingJobSite = mock();
++        when(matchingJobSite.pos()).thenReturn(poiPos);
++        when(matchingBrain.getMemory(MemoryModuleType.JOB_SITE)).thenReturn(Optional.of(matchingJobSite));
++        final VillagerData matchingData = mock();
++        final Holder<VillagerProfession> professionHolder = mock();
++        final VillagerProfession profession = mock();
++        final Predicate<Holder<PoiType>> heldJobSite = ignored -> true;
++        when(matchingVillager.getVillagerData()).thenReturn(matchingData);
++        when(matchingData.profession()).thenReturn(professionHolder);
++        when(professionHolder.value()).thenReturn(profession);
++        when(profession.heldJobSite()).thenReturn(heldJobSite);
++
++        final Method method = YieldJobSite.class.getDeclaredMethod(
++            "findNearbyVillagerWantingJobsite",
++            List.class,
++            Villager.class,
++            Holder.class,
++            BlockPos.class
++        );
++        method.setAccessible(true);
++
++        final Villager result = (Villager)method.invoke(
++            null,
++            List.of(body, nonVillager, deadVillager, occupiedVillager, matchingVillager, afterMatch),
++            body,
++            poiType,
++            poiPos
++        );
++
++        assertSame(matchingVillager, result);
++        verify(body, never()).isAlive();
++        verify(deadVillager).isAlive();
++        verify(deadVillager, never()).getBrain();
++        verifyNoInteractions(afterMatch);
++    }
++
++    private static void assertNoStreamCalls(final Class<?> type, final String methodName, final int parameterCount) throws IOException {
++        final List<Invocation> calls = invocations(type, methodName, parameterCount);
++        assertFalse(calls.stream().anyMatch(call -> call.name().equals("stream")));
++        assertFalse(calls.stream().anyMatch(call -> call.owner().startsWith("java/util/stream/")));
++    }
++
++    private static List<Invocation> invocations(final Class<?> type, final String methodName, final int parameterCount) throws IOException {
++        final List<Invocation> calls = new ArrayList<>();
++        final ClassReader reader = new ClassReader(type.getName());
++        reader.accept(
++            new ClassVisitor(Opcodes.ASM9) {
++                @Override
++                public MethodVisitor visitMethod(
++                    final int access,
++                    final String name,
++                    final String descriptor,
++                    final String signature,
++                    final String[] exceptions
++                ) {
++                    if (!name.equals(methodName) || org.objectweb.asm.Type.getArgumentTypes(descriptor).length != parameterCount) {
++                        return null;
++                    }
++                    return new MethodVisitor(Opcodes.ASM9) {
++                        @Override
++                        public void visitMethodInsn(
++                            final int opcode,
++                            final String owner,
++                            final String name,
++                            final String descriptor,
++                            final boolean isInterface
++                        ) {
++                            calls.add(new Invocation(owner, name));
++                        }
++                    };
++                }
++            },
++            ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES
++        );
++        return calls;
++    }
++
++    private record Invocation(String owner, String name) {
++    }
++}

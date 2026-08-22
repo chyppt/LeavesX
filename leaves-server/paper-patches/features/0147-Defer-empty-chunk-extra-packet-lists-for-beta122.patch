@@ -1,0 +1,279 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 00:19:25 +0800
+Subject: [PATCH] Defer empty chunk extra-packet lists for beta122
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 657dfdeb765a9fbe890db99f4157844976f587b2..8a9d1e036cdf8ed51b47d44f480a7d9eb8f69748 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 50;
++    public static final int CURRENT_CONFIG_VERSION = 51;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 453cc7f6b7c5aaa7c1cd21ab885d3f16cf1d2a71..da6d96921fbb42dbfe350711d2183ca78faa98a5 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：50。");
++        comments.put("config-version", "配置版本，请勿修改。默认：51。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 3bd97e11d75e3dad133aa0e9c8b4325f92df1e01..c9f22efa1eb7a8c515c0edcf766dde9c5864bc41 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -419,6 +419,10 @@ enum LeavesXOptimization {
+     LIGHT_LAYER_SNAPSHOT_COPY(
+         "performance.network.light-layer-snapshot-copy",
+         "复制区块光照数据时不创建临时对象，关闭后使用原版复制。默认：true。"
++    ),
++    LAZY_CHUNK_EXTRA_PACKETS(
++        "performance.network.lazy-chunk-extra-packets",
++        "区块没有额外方块实体包时不创建空列表，关闭后始终创建。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 3c05b718b94de806d56fb4fe34817e2f8ad93695..f6e2e2f2ee494e91cdb949e631be43f07dc7d1bc 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -49,6 +49,7 @@ public final class LeavesXRuntime {
+     private static volatile boolean bulkLongArrayWritesOptimization = true;
+     private static volatile boolean lightUpdatePacketAssemblyOptimization = true;
+     private static volatile boolean lightLayerSnapshotCopyOptimization = true;
++    private static volatile boolean lazyChunkExtraPacketsOptimization = true;
+     private static boolean goalSelectorOptimization = true;
+     private static boolean brainTickTraversalOptimization = true;
+     private static boolean sensingCacheOptimization = true;
+@@ -125,6 +126,9 @@ public final class LeavesXRuntime {
+         lightLayerSnapshotCopyOptimization = validated.optimizationEnabled(
+             LeavesXOptimization.LIGHT_LAYER_SNAPSHOT_COPY
+         );
++        lazyChunkExtraPacketsOptimization = validated.optimizationEnabled(
++            LeavesXOptimization.LAZY_CHUNK_EXTRA_PACKETS
++        );
+         goalSelectorOptimization = validated.optimizationEnabled(LeavesXOptimization.GOAL_SELECTOR);
+         brainTickTraversalOptimization = validated.optimizationEnabled(LeavesXOptimization.BRAIN_TICK_TRAVERSAL);
+         sensingCacheOptimization = validated.optimizationEnabled(LeavesXOptimization.SENSING_CACHE);
+@@ -603,6 +607,11 @@ public final class LeavesXRuntime {
+         return lightLayerSnapshotCopyOptimization;
+     }
+ 
++    /** Returns whether ordinary chunk packets may share an allocation-free empty extra-packet list. */
++    public static boolean lazyChunkExtraPacketsOptimization() {
++        return lazyChunkExtraPacketsOptimization;
++    }
++
+     /** Returns whether goal selection may replace repeated flag-map lookups with reusable indexed state. */
+     public static boolean goalSelectorOptimization() {
+         return aiOptimizations && goalSelectorOptimization;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 90e57a7b436ff85317ca3758820cf130275b8520..35a272895e4610a3b0a0f903e2a0412933cf79e3 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -314,6 +314,7 @@ class LeavesXConfigLoaderTest {
+               network:
+                 bulk-long-array-writes: false
+                 chunk-packet-assembly: false
++                lazy-chunk-extra-packets: false
+                 light-layer-snapshot-copy: false
+                 light-update-packet-assembly: false
+               entity-queries:
+@@ -346,6 +347,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_TICK_DIAGNOSTIC_STATE));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.NETWORK_BULK_LONG_ARRAY_WRITES));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_PACKET_ASSEMBLY));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.LAZY_CHUNK_EXTRA_PACKETS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.LIGHT_LAYER_SNAPSHOT_COPY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.LIGHT_UPDATE_PACKET_ASSEMBLY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_LOOKUP_VISIBILITY));
+@@ -353,7 +355,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 29,
++            LeavesXConfig.fineGrainedOptimizationCount() - 30,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -382,6 +384,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.entityTickDiagnosticStateOptimization());
+             assertFalse(LeavesXRuntime.bulkLongArrayWritesOptimization());
+             assertFalse(LeavesXRuntime.chunkPacketAssemblyOptimization());
++            assertFalse(LeavesXRuntime.lazyChunkExtraPacketsOptimization());
+             assertFalse(LeavesXRuntime.lightLayerSnapshotCopyOptimization());
+             assertFalse(LeavesXRuntime.lightUpdatePacketAssemblyOptimization());
+             assertFalse(LeavesXRuntime.entityLookupVisibilityOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChunkExtraPacketListHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ChunkExtraPacketListHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c6f019b57cc63bafa54044bf794b2e95de9dd7e6
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ChunkExtraPacketListHotPathTest.java
+@@ -0,0 +1,125 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertInstanceOf;
++import static org.junit.jupiter.api.Assertions.assertNotSame;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.List;
++import net.minecraft.network.protocol.Packet;
++import net.minecraft.network.protocol.game.ClientboundLevelChunkPacketData;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++
++/** Verifies ordinary chunk packets avoid a list allocation without changing oversized-block-entity packet order. */
++@Normal
++class ChunkExtraPacketListHotPathTest {
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @Test
++    void optimizedEmptyListsReuseTheSharedEmptyListAndAllocateOnFirstAppend() throws ReflectiveOperationException {
++        final List<Packet<?>> first = createExtraPacketList(true);
++        final List<Packet<?>> second = createExtraPacketList(true);
++        final Packet<?> firstPacket = mock(Packet.class);
++        final Packet<?> secondPacket = mock(Packet.class);
++
++        final List<Packet<?>> appended = appendExtraPacket(first, firstPacket);
++        final List<Packet<?>> appendedAgain = appendExtraPacket(appended, secondPacket);
++
++        assertSame(first, second);
++        assertTrue(first.isEmpty());
++        assertInstanceOf(ArrayList.class, appended);
++        assertNotSame(first, appended);
++        assertSame(appended, appendedAgain);
++        assertEquals(List.of(firstPacket, secondPacket), appendedAgain);
++    }
++
++    @Test
++    void fallbackCreatesIndependentMutableListsAndAppendsInPlace() throws ReflectiveOperationException {
++        final List<Packet<?>> first = createExtraPacketList(false);
++        final List<Packet<?>> second = createExtraPacketList(false);
++        final Packet<?> packet = mock(Packet.class);
++
++        final List<Packet<?>> appended = appendExtraPacket(first, packet);
++
++        assertInstanceOf(ArrayList.class, first);
++        assertNotSame(first, second);
++        assertSame(first, appended);
++        assertEquals(List.of(packet), appended);
++    }
++
++    @Test
++    void version50ConfigurationGainsTheDocumentedSwitchWithoutBackupFiles() throws IOException {
++        final Path path = this.temporaryDirectory.resolve("version-50.yml");
++        Files.writeString(path, """
++            config-version: 50
++            performance:
++              network:
++                lazy-chunk-extra-packets: false
++            """, StandardCharsets.UTF_8);
++
++        final LeavesXConfig configuration = LeavesXConfigLoader.load(path);
++        try {
++            publish(configuration);
++            assertFalse(LeavesXRuntime.lazyChunkExtraPacketsOptimization());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++
++        final String upgraded = Files.readString(path);
++        assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
++        assertTrue(upgraded.contains("lazy-chunk-extra-packets: false"));
++        assertTrue(upgraded.contains("# 区块没有额外方块实体包时不创建空列表，关闭后始终创建。默认：true。"));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
++    }
++
++    @SuppressWarnings("unchecked")
++    private static List<Packet<?>> createExtraPacketList(final boolean lazy) throws ReflectiveOperationException {
++        final Method method = ClientboundLevelChunkPacketData.class.getDeclaredMethod(
++            "leavesX$createExtraPacketList",
++            boolean.class
++        );
++        method.setAccessible(true);
++        return (List<Packet<?>>)method.invoke(null, lazy);
++    }
++
++    @SuppressWarnings("unchecked")
++    private static List<Packet<?>> appendExtraPacket(
++        final List<Packet<?>> packets,
++        final Packet<?> packet
++    ) throws ReflectiveOperationException {
++        final Method method = ClientboundLevelChunkPacketData.class.getDeclaredMethod(
++            "leavesX$appendExtraPacket",
++            List.class,
++            Packet.class
++        );
++        method.setAccessible(true);
++        return (List<Packet<?>>)method.invoke(null, packets, packet);
++    }
++
++    private static void publish(final LeavesXConfig config) {
++        try {
++            final Method method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++            method.setAccessible(true);
++            method.invoke(null, config);
++        } catch (final ReflectiveOperationException exception) {
++            throw new AssertionError("Unable to publish LeavesX test configuration", exception);
++        }
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChunkPacketAssemblyHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ChunkPacketAssemblyHotPathTest.java
+index ac54552bae40117f0887a7c112f0218c59adfe3e..ed1f0b9c60bd8bbc41174da2b778dc71cadfcd20 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ChunkPacketAssemblyHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ChunkPacketAssemblyHotPathTest.java
+@@ -57,7 +57,10 @@ class ChunkPacketAssemblyHotPathTest {
+         final List<MethodInsnNode> constructorCalls = invocations(constructor);
+ 
+         assertTrue(hasCall(constructorCalls, "org/leavesx/leavesx/config/LeavesXRuntime", "chunkPacketAssemblyOptimization"));
++        assertTrue(hasCall(constructorCalls, "org/leavesx/leavesx/config/LeavesXRuntime", "lazyChunkExtraPacketsOptimization"));
+         assertTrue(hasCall(constructorCalls, "net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData", "collectHeightmaps"));
++        assertTrue(hasCall(constructorCalls, "net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData", "leavesX$createExtraPacketList"));
++        assertTrue(hasCall(constructorCalls, "net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData", "leavesX$appendExtraPacket"));
+         assertTrue(hasCall(constructorCalls, "java/lang/Math", "min"));
+         assertTrue(constructorCalls.stream().anyMatch(call -> call.owner.equals("java/util/ArrayList")
+             && call.name.equals("<init>") && call.desc.equals("(I)V")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+index 298d68691b7f13387ad5da39300d4e5ff7a9ab48..045ae564c1d9493abb4c24656fc462fdf521574a 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+@@ -44,6 +44,10 @@ class FineGrainedOptimizationWiringTest {
+     private static List<Wiring> wirings() {
+         return List.of(
+             new Wiring("net.minecraft.network.FriendlyByteBuf", "bulkLongArrayWritesOptimization"),
++            new Wiring(
++                "net.minecraft.network.protocol.game.ClientboundLevelChunkPacketData",
++                "lazyChunkExtraPacketsOptimization"
++            ),
+             new Wiring(
+                 "net.minecraft.network.protocol.game.ClientboundLightUpdatePacketData",
+                 "lightUpdatePacketAssemblyOptimization"

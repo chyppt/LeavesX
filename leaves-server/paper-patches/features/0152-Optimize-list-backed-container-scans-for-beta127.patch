@@ -1,0 +1,184 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 10:39:53 +0800
+Subject: [PATCH] Optimize list-backed container scans for beta127
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 6eb53b5253c7677fcab1427e711e9d871535530e..2d1947e60c7a4401b3692f098ededee43628290b 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 55;
++    public static final int CURRENT_CONFIG_VERSION = 56;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 2e3930c821c7f0b61f1f7f3382814bbafb339c16..1552cb99307acad1fb130734f4ef88da3665f80a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：55。");
++        comments.put("config-version", "配置版本，请勿修改。默认：56。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 6dca07fec5f2c4f41a46a3db2cb29dc39de2747f..1a7bb57e0442644e07d5f250e49adde51f010fc1 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -439,6 +439,10 @@ enum LeavesXOptimization {
+     WARDEN_TOP_SUSPECT_LOOKUP(
+         "performance.ai.warden-top-suspect-lookup",
+         "监守者仇恨目标直接遍历，关闭后使用原版流。默认：true。"
++    ),
++    LIST_BACKED_CONTAINER_SCANS(
++        "performance.block-entity.list-backed-container-scans",
++        "方块容器直接扫描物品槽位，关闭后使用原版流。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 40c37912fc7fe8c174634f6f8257b4159e48da38..23fdf109610af77bb785f54ea49bbd9886ad97e7 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -276,6 +276,11 @@ public final class LeavesXRuntime {
+         return blockEntityOptimizations && enabled(LeavesXOptimization.CONTAINER_OPENER_RECOUNT);
+     }
+ 
++    /** Returns whether list-backed block containers may scan their slots without a stream pipeline. */
++    public static boolean listBackedContainerScansOptimization() {
++        return blockEntityOptimizations && enabled(LeavesXOptimization.LIST_BACKED_CONTAINER_SCANS);
++    }
++
+     /** Returns whether occupied-bed villager lookups may stop after the first match. */
+     public static boolean occupiedBedVillagerQueriesOptimization() {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.OCCUPIED_BED_VILLAGER_QUERIES);
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+index bb1e7f8fdf5354d066f22439be752193c700a8fc..b05b99bdc39721d7f0d585fdfaa65a03814925e4 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+@@ -64,6 +64,10 @@ class FineGrainedOptimizationWiringTest {
+                 "net.minecraft.world.entity.monster.warden.AngerManagement",
+                 "wardenTopSuspectLookupOptimization"
+             ),
++            new Wiring(
++                "net.minecraft.world.level.block.entity.ListBackedContainer",
++                "listBackedContainerScansOptimization"
++            ),
+             new Wiring(
+                 "net.minecraft.network.protocol.game.ClientboundLightUpdatePacketData",
+                 "lightUpdatePacketAssemblyOptimization"
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ListBackedContainerScanHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ListBackedContainerScanHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..24a7cf44f82775fc346a79e8e0d6645142ad4a36
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ListBackedContainerScanHotPathTest.java
+@@ -0,0 +1,100 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import net.minecraft.core.NonNullList;
++import net.minecraft.world.item.ItemStack;
++import net.minecraft.world.level.block.entity.ListBackedContainer;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++
++/** Verifies list-backed container scans preserve occupied-slot counts, short-circuiting, and configuration fallback. */
++@Normal
++class ListBackedContainerScanHotPathTest {
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @Test
++    void directScansPreserveCountAndEmptySemantics() throws ReflectiveOperationException {
++        final ItemStack empty = mock(ItemStack.class);
++        final ItemStack occupied = mock(ItemStack.class);
++        when(empty.isEmpty()).thenReturn(true);
++        when(occupied.isEmpty()).thenReturn(false);
++
++        final NonNullList<ItemStack> items = NonNullList.create();
++        items.add(empty);
++        items.add(occupied);
++        items.add(empty);
++
++        assertEquals(1, invokeCount(items));
++        assertFalse(invokeIsEmpty(items));
++
++        final NonNullList<ItemStack> emptyItems = NonNullList.create();
++        emptyItems.add(empty);
++        emptyItems.add(empty);
++        assertEquals(0, invokeCount(emptyItems));
++        assertTrue(invokeIsEmpty(emptyItems));
++    }
++
++    @Test
++    void version55ConfigurationGainsTheDocumentedSwitchWithoutBackupFiles() throws IOException {
++        final Path path = this.temporaryDirectory.resolve("version-55.yml");
++        Files.writeString(path, """
++            config-version: 55
++            performance:
++              block-entity:
++                list-backed-container-scans: false
++            """, StandardCharsets.UTF_8);
++
++        final LeavesXConfig configuration = LeavesXConfigLoader.load(path);
++        try {
++            publish(configuration);
++            assertFalse(LeavesXRuntime.listBackedContainerScansOptimization());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++
++        final String upgraded = Files.readString(path);
++        assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
++        assertTrue(upgraded.contains("list-backed-container-scans: false"));
++        assertTrue(upgraded.contains("# 方块容器直接扫描物品槽位，关闭后使用原版流。默认：true。"));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
++    }
++
++    private static int invokeCount(final NonNullList<ItemStack> items) throws ReflectiveOperationException {
++        final Method method = ListBackedContainer.class.getDeclaredMethod("leavesX$countItems", NonNullList.class);
++        method.setAccessible(true);
++        return (int)method.invoke(null, items);
++    }
++
++    private static boolean invokeIsEmpty(final NonNullList<ItemStack> items) throws ReflectiveOperationException {
++        final Method method = ListBackedContainer.class.getDeclaredMethod("leavesX$itemsAreEmpty", NonNullList.class);
++        method.setAccessible(true);
++        return (boolean)method.invoke(null, items);
++    }
++
++    private static void publish(final LeavesXConfig config) {
++        try {
++            final Method method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++            method.setAccessible(true);
++            method.invoke(null, config);
++        } catch (final ReflectiveOperationException exception) {
++            throw new AssertionError("Unable to publish LeavesX test configuration", exception);
++        }
++    }
++}

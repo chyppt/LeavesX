@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 10:54:22 +0800
+Subject: [PATCH] Optimize block entity ticker removal
+
+
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index 17cc1fad88fdb5d199d3a12d5006ba238ee3347d..9ed5d6e18ff1b6bac0dcdbf590ae4b022eeb0997 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -2,6 +2,8 @@ package net.minecraft.world.level;
+ 
+ import com.google.common.collect.Lists;
+ import com.mojang.serialization.Codec;
++import it.unimi.dsi.fastutil.ints.IntArrayList;
++import it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet;
+ import java.io.IOException;
+ import java.util.Collection;
+ import java.util.Iterator;
+@@ -92,6 +94,8 @@ import net.minecraft.world.scores.Scoreboard;
+ import org.apache.commons.lang3.mutable.MutableBoolean;
+ import org.bukkit.craftbukkit.util.CraftNamespacedKey;
+ import org.jspecify.annotations.Nullable;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.leavesx.leavesx.performance.SortedIndexListCompactor;
+ 
+ // CraftBukkit start
+ import java.util.Map;
+@@ -119,6 +123,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         .add(new ExplosionParticleInfo(ParticleTypes.SMOKE, 1.0F, 1.0F))
+         .build();
+     public final List<TickingBlockEntity> blockEntityTickers = Lists.newArrayList();
++    private final IntArrayList removedBlockEntityTickerIndices = new IntArrayList(); // LeavesX - reuse removal storage across ticks
+     protected final net.minecraft.world.level.redstone.NeighborUpdater neighborUpdater; // Leaves - instantBlockUpdaterReintroduced
+     private final List<TickingBlockEntity> pendingBlockEntityTickers = Lists.newArrayList();
+     private boolean tickingBlockEntities;
+@@ -1518,13 +1523,27 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+ 
+         int tickedEntities = 0; // Paper - rewrite chunk system
+         // Paper start - Fix MC-117075 use removeAll
+-        final it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet<@Nullable TickingBlockEntity> toRemove = new it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet<>();
+-        toRemove.add(null);
++        // LeavesX start - compact removed tickers without allocating and probing a hash set on every world tick
++        final @Nullable ReferenceOpenHashSet<@Nullable TickingBlockEntity> toRemove;
++        if (LeavesXRuntime.blockEntityTickerRemovalOptimization()) {
++            this.removedBlockEntityTickerIndices.clear();
++            toRemove = null;
++        } else {
++            toRemove = new ReferenceOpenHashSet<>();
++            toRemove.add(null);
++        }
++        // LeavesX end - compact removed tickers without allocating and probing a hash set on every world tick
+         for (int tickerIndex = 0; tickerIndex < this.blockEntityTickers.size(); tickerIndex++) {
+             final TickingBlockEntity ticker = this.blockEntityTickers.get(tickerIndex);
+         // Paper end - Fix MC-117075 use removeAll
+             if (ticker.isRemoved()) {
+-                toRemove.add(ticker); // Paper - Fix MC-117075 use removeAll
++                // LeavesX start - indexed removals are naturally sorted by this forward scan
++                if (toRemove == null) {
++                    this.removedBlockEntityTickerIndices.add(tickerIndex);
++                } else {
++                    toRemove.add(ticker); // Paper - Fix MC-117075 use removeAll
++                }
++                // LeavesX end - indexed removals are naturally sorted by this forward scan
+             } else if (tickBlockEntities && this.shouldTickBlockPosFilterNull(ticker.getPos())) { // Leaves - Lithium Sleeping Block Entity
+                 ticker.tick();
+                 // Paper start - rewrite chunk system
+@@ -1535,7 +1554,13 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+             }
+         }
+ 
+-        this.blockEntityTickers.removeAll(toRemove); // Paper - Fix MC-117075 use removeAll
++        // LeavesX start - preserve survivor order and defer mutation until every ticker has run
++        if (toRemove == null) {
++            SortedIndexListCompactor.removeSortedIndices(this.blockEntityTickers, this.removedBlockEntityTickerIndices);
++        } else {
++            this.blockEntityTickers.removeAll(toRemove); // Paper - Fix MC-117075 use removeAll
++        }
++        // LeavesX end - preserve survivor order and defer mutation until every ticker has run
+         this.tickingBlockEntities = false;
+     }
+ 

@@ -1,0 +1,151 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 13 Aug 2026 11:05:30 +0800
+Subject: [PATCH] Add configurable item merge optimization
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index f84588c84894b119124963c70d7a5a07bfd51eca..b7f8326570bdcebef6237a88923177e7cb55de33 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -14,7 +14,8 @@ public record LeavesXConfig(
+     boolean skipEmptyEvents,
+     boolean parallelMobSpawnCounting,
+     int mobSpawnCountingWorkers,
+-    int mobSpawnCountingMinimumEntities
++    int mobSpawnCountingMinimumEntities,
++    boolean itemMergeOptimizations
+ ) {
+ 
+     public static final int CURRENT_CONFIG_VERSION = 1;
+@@ -46,7 +47,8 @@ public record LeavesXConfig(
+             true,
+             true,
+             0,
+-            512
++            512,
++            true
+         );
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index d45a3e0c1a29972a344e3e98917dcd64555a71a8..c3a24b1a81df0193937dbb634a1adc3e860a9a2e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -26,11 +26,12 @@ public final class LeavesXConfigBootstrap {
+         org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(config.mobSpawnCountingWorkers());
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+-            "LeavesX behavior-equivalent optimizations: optimized VarInt {}, immutable cache hashes {}, resource identifier cache {}, skip empty events {}",
++            "LeavesX behavior-equivalent optimizations: optimized VarInt {}, immutable cache hashes {}, resource identifier cache {}, skip empty events {}, item merge scan {}",
+             config.optimizedVarInt(),
+             config.immutableCacheOptimizations(),
+             config.resourceIdentifierCache(),
+-            config.skipEmptyEvents()
++            config.skipEmptyEvents(),
++            config.itemMergeOptimizations()
+         );
+         LOGGER.info(
+             "LeavesX natural-spawn counting: {}, {} worker threads, parallel from {} entities",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 15dee3492e7a3440c9987458b54e18ebe31ead1d..648599aeb2c4fa3a3689e90f7a2936cbf6355f58 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -91,6 +91,11 @@ public final class LeavesXConfigLoader {
+                     node.node("parallelism", "mob-spawning", "minimum-entities"),
+                     "parallelism.mob-spawning.minimum-entities",
+                     512
++                ),
++                readBoolean(
++                    node.node("performance", "item-merge-optimizations"),
++                    "performance.item-merge-optimizations",
++                    true
+                 )
+             );
+         } catch (final IllegalArgumentException ex) {
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index a674e6ce85dac40b4d394bcc36f0266be40197a0..5d446d3f32c527ab846c36e95ed30b016275df11 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -40,6 +40,9 @@ public final class LeavesXConfigWriter {
+         node.node("performance", "skip-empty-events")
+             .comment(COMMENTS.get("performance.skip-empty-events"))
+             .raw(config.skipEmptyEvents());
++        node.node("performance", "item-merge-optimizations")
++            .comment(COMMENTS.get("performance.item-merge-optimizations"))
++            .raw(config.itemMergeOptimizations());
+         node.node("parallelism", "mob-spawning", "enabled")
+             .comment(COMMENTS.get("parallelism.mob-spawning.enabled"))
+             .raw(config.parallelMobSpawnCounting());
+@@ -73,6 +76,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.immutable-cache-optimizations", "缓存不会变化的碰撞计算结果，减少重复计算。不会改变碰撞结果；遇到问题可设为 false。默认：true。");
+         comments.put("performance.resource-identifier-cache", "缓存物品、方块和标签等资源名称，减少重复创建字符串。不会改变资源名称；遇到问题可设为 false。默认：true。");
+         comments.put("performance.skip-empty-events", "没有插件监听对应事件时，不创建无用的事件对象。有插件监听时仍会正常调用；遇到问题可设为 false。默认：true。");
++        comments.put("performance.item-merge-optimizations", "物品堆达到上限后停止无用的邻居扫描，不改变合并规则和事件。遇到问题可设为 false。默认：true。");
+         comments.put("parallelism.mob-spawning.enabled", "使用多个线程计算自然刷怪数量。刷怪位置、随机数、事件和实体创建仍在主线程执行；遇到问题可设为 false。默认：true。");
+         comments.put("parallelism.mob-spawning.workers", "自然刷怪统计使用的线程数。0 表示自动选择，普通服务器建议保持 0。默认：0。");
+         comments.put("parallelism.mob-spawning.minimum-entities", "实体少于这个数量时直接在主线程计算，避免线程切换反而变慢。建议保持默认。默认：512。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index b0e716ce147f3e017ba47490be70e6875ab66ee1..2c968f28ae9d94917ab07493b73505a8fe4c73d5 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -16,6 +16,7 @@ public final class LeavesXRuntime {
+     // Published during bootstrap before networking and world ticking start; these hot-path flags are not reloadable.
+     private static boolean resourceIdentifierCache = true;
+     private static boolean skipEmptyEvents = true;
++    private static boolean itemMergeOptimizations = true;
+     private static boolean parallelMobSpawnCounting = true;
+     private static int mobSpawnCountingMinimumEntities = 512;
+ 
+@@ -42,6 +43,7 @@ public final class LeavesXRuntime {
+         immutableCacheOptimizations = validated.immutableCacheOptimizations();
+         resourceIdentifierCache = validated.resourceIdentifierCache();
+         skipEmptyEvents = validated.skipEmptyEvents();
++        itemMergeOptimizations = validated.itemMergeOptimizations();
+         parallelMobSpawnCounting = validated.parallelMobSpawnCounting();
+         mobSpawnCountingMinimumEntities = validated.mobSpawnCountingMinimumEntities();
+         configuration = validated;
+@@ -78,6 +80,11 @@ public final class LeavesXRuntime {
+         return skipEmptyEvents;
+     }
+ 
++    /** Returns whether full item stacks may stop their neighbour scan early. */
++    public static boolean itemMergeOptimizations() {
++        return itemMergeOptimizations;
++    }
++
+     /** Returns whether frozen natural-spawn counting inputs may be processed by LeavesX workers. */
+     public static boolean parallelMobSpawnCounting() {
+         return parallelMobSpawnCounting;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 45bcf15e7685d16b6d1a80ec3592f8a4ac68a6d8..4275c35c71d27e847c8eb009c06919c07fafb5a7 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -60,6 +60,7 @@ class LeavesXConfigLoaderTest {
+               immutable-cache-optimizations: false
+               resource-identifier-cache: false
+               skip-empty-events: false
++              item-merge-optimizations: false
+             parallelism:
+               mob-spawning:
+                 enabled: false
+@@ -73,6 +74,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.immutableCacheOptimizations());
+         assertFalse(config.resourceIdentifierCache());
+         assertFalse(config.skipEmptyEvents());
++        assertFalse(config.itemMergeOptimizations());
+         assertFalse(config.parallelMobSpawnCounting());
+         assertEquals(3, config.mobSpawnCountingWorkers());
+         assertEquals(768, config.mobSpawnCountingMinimumEntities());
+diff --git a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+index df2b06430bf24d1505b9f2368be2f5e5b772c3f2..f43aaf2ae5a3bd471d2d7535ea1dbbcc18962c3d 100644
+--- a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+@@ -84,6 +84,7 @@ class LeavesConfigMigratorTest {
+         assertTrue(leavesX.node("performance", "immutable-cache-optimizations").getBoolean());
+         assertTrue(leavesX.node("performance", "resource-identifier-cache").getBoolean());
+         assertTrue(leavesX.node("performance", "skip-empty-events").getBoolean());
++        assertTrue(leavesX.node("performance", "item-merge-optimizations").getBoolean());
+         assertTrue(leavesX.node("parallelism", "mob-spawning", "enabled").getBoolean());
+         assertEquals(0, leavesX.node("parallelism", "mob-spawning", "workers").getInt());
+         assertEquals(512, leavesX.node("parallelism", "mob-spawning", "minimum-entities").getInt());

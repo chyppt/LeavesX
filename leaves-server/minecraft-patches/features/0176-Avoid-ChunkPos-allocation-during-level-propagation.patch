@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 15:14:44 +0800
+Subject: [PATCH] Avoid ChunkPos allocation during level propagation
+
+
+diff --git a/net/minecraft/server/level/ChunkTracker.java b/net/minecraft/server/level/ChunkTracker.java
+index ad96b720b4897e6057286bfa4e3ea1c60bedf1c4..fedcbfd0c3a70c4cc7aa3e17ff279b0e0ddd7a3f 100644
+--- a/net/minecraft/server/level/ChunkTracker.java
++++ b/net/minecraft/server/level/ChunkTracker.java
+@@ -16,9 +16,10 @@ public abstract class ChunkTracker extends DynamicGraphMinFixedPoint {
+     @Override
+     protected void checkNeighborsAfterUpdate(final long node, final int level, final boolean onlyDecrease) {
+         if (!onlyDecrease || level < this.levelCount - 2) {
+-            ChunkPos pos = ChunkPos.unpack(node);
+-            int x = pos.x();
+-            int z = pos.z();
++            // The packed key already contains both coordinates; decoding it directly avoids allocating a
++            // short-lived ChunkPos for every propagation step.
++            int x = ChunkPos.getX(node);
++            int z = ChunkPos.getZ(node);
+ 
+             for (int offsetX = -1; offsetX <= 1; offsetX++) {
+                 for (int offsetZ = -1; offsetZ <= 1; offsetZ++) {
+@@ -34,9 +35,8 @@ public abstract class ChunkTracker extends DynamicGraphMinFixedPoint {
+     @Override
+     protected int getComputedLevel(final long node, final long knownParent, final int knownLevelFromParent) {
+         int computedLevel = knownLevelFromParent;
+-        ChunkPos pos = ChunkPos.unpack(node);
+-        int x = pos.x();
+-        int z = pos.z();
++        int x = ChunkPos.getX(node);
++        int z = ChunkPos.getZ(node);
+ 
+         for (int offsetX = -1; offsetX <= 1; offsetX++) {
+             for (int offsetZ = -1; offsetZ <= 1; offsetZ++) {

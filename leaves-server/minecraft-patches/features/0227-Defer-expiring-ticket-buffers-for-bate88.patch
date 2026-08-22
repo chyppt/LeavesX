@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 02:52:59 +0800
+Subject: [PATCH] Defer expiring ticket buffers for bate88
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+index 522ca4174b3eb5c3b57ab776720b304feae57c29..3b782eab5a834227fdc26bcfb0c00dc2c31b424b 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+@@ -829,12 +829,18 @@ public final class ChunkHolderManager {
+ 
+         final int sectionShift = ((ChunkSystemServerLevel)this.world).moonrise$getRegionChunkShift();
+ 
+-        final List<ChunkProgressionTask> scheduledTasks = new ArrayList<>();
+-        final List<NewChunkHolder> changedFullStatus = new ArrayList<>();
+-
+-        Ticket[] removedList = new Ticket[4];
++        final boolean deferExpiringTicketBuffers = org.leavesx.leavesx.config.LeavesXRuntime.expiringTicketBuffersOptimization();
++        List<ChunkProgressionTask> scheduledTasks = deferExpiringTicketBuffers ? null : new ArrayList<>();
++        List<NewChunkHolder> changedFullStatus = deferExpiringTicketBuffers ? null : new ArrayList<>();
++        Ticket[] removedList = deferExpiringTicketBuffers ? null : new Ticket[4];
+ 
+         for (final PrimitiveIterator.OfLong iterator = this.sectionToChunkToExpireCount.keyIterator(); iterator.hasNext();) {
++            // Empty worlds avoid all three allocations while ticket-bearing worlds retain one reusable buffer set.
++            if (scheduledTasks == null) {
++                scheduledTasks = new ArrayList<>();
++                changedFullStatus = new ArrayList<>();
++                removedList = new Ticket[4];
++            }
+             final long sectionKey = iterator.nextLong();
+ 
+             if (!this.sectionToChunkToExpireCount.containsKey(sectionKey)) {

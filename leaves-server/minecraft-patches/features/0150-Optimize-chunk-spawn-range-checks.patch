@@ -1,0 +1,177 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 11:32:52 +0800
+Subject: [PATCH] Optimize chunk spawn range checks
+
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index cb5a3a53bb04802acd3cba897bc0e29a404b2baf..64a9eb4c86f26e8ed86d83fbcac03eaff4f1fd23 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -726,18 +726,38 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         final int len = players.size();
+ 
+         Objects.checkFromIndexSize(0, len, raw.length);
+-        for (int i = 0; i < len; ++i) {
+-            // Paper start - PlayerNaturallySpawnCreaturesEvent
+-            com.destroystokyo.paper.event.entity.PlayerNaturallySpawnCreaturesEvent event = raw[i].playerNaturallySpawnedEvent;
+-            if (event == null || event.isCancelled()) {
+-                continue;
++        // LeavesX start - calculate the chunk center once for the hot spawning-range check
++        if (org.leavesx.leavesx.config.LeavesXRuntime.chunkSpawnRangeOptimization()) {
++            final double chunkCenterX = (chunkPos.x() << 4) + 8.0D;
++            final double chunkCenterZ = (chunkPos.z() << 4) + 8.0D;
++            for (int i = 0; i < len; ++i) {
++                // Paper start - PlayerNaturallySpawnCreaturesEvent
++                final ServerPlayer player = raw[i];
++                final com.destroystokyo.paper.event.entity.PlayerNaturallySpawnCreaturesEvent event = player.playerNaturallySpawnedEvent;
++                if (event == null || event.isCancelled()) {
++                    continue;
++                }
++                final double blockRange = (double) ((event.getSpawnRadius() << 4) * (event.getSpawnRadius() << 4));
++                if (playerIsCloseEnoughForSpawningFast(player, chunkCenterX, chunkCenterZ, blockRange)) {
++                    // Paper end - PlayerNaturallySpawnCreaturesEvent
++                    return true;
++                }
+             }
+-            double blockRange = (double) ((event.getSpawnRadius() << 4) * (event.getSpawnRadius() << 4));
+-            if (chunkMap.playerIsCloseEnoughForSpawning(raw[i], chunkPos, blockRange)) {
+-                // Paper end - PlayerNaturallySpawnCreaturesEvent
+-                return true;
++        } else {
++            for (int i = 0; i < len; ++i) {
++                // Paper start - PlayerNaturallySpawnCreaturesEvent
++                com.destroystokyo.paper.event.entity.PlayerNaturallySpawnCreaturesEvent event = raw[i].playerNaturallySpawnedEvent;
++                if (event == null || event.isCancelled()) {
++                    continue;
++                }
++                double blockRange = (double) ((event.getSpawnRadius() << 4) * (event.getSpawnRadius() << 4));
++                if (chunkMap.playerIsCloseEnoughForSpawning(raw[i], chunkPos, blockRange)) {
++                    // Paper end - PlayerNaturallySpawnCreaturesEvent
++                    return true;
++                }
+             }
+         }
++        // LeavesX end - calculate the chunk center once for the hot spawning-range check
+ 
+         return false;
+     }
+@@ -818,21 +838,43 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         final int len = players.size();
+ 
+         Objects.checkFromIndexSize(0, len, raw.length);
+-        for (int i = 0; i < len; ++i) {
+-            final ServerPlayer player = raw[i];
+-            // Paper start - PlayerNaturallySpawnCreaturesEvent
+-            com.destroystokyo.paper.event.entity.PlayerNaturallySpawnCreaturesEvent event;
+-            blockRange = 16384.0;
+-            if (reducedRange) {
+-                event = player.playerNaturallySpawnedEvent;
+-                if (event == null || event.isCancelled()) continue;
+-                blockRange = (double) ((event.getSpawnRadius() << 4) * (event.getSpawnRadius() << 4));
++        // LeavesX start - calculate the chunk center once for the hot spawning-range check
++        if (org.leavesx.leavesx.config.LeavesXRuntime.chunkSpawnRangeOptimization()) {
++            final double chunkCenterX = (pos.x() << 4) + 8.0D;
++            final double chunkCenterZ = (pos.z() << 4) + 8.0D;
++            for (int i = 0; i < len; ++i) {
++                final ServerPlayer player = raw[i];
++                // Paper start - PlayerNaturallySpawnCreaturesEvent
++                com.destroystokyo.paper.event.entity.PlayerNaturallySpawnCreaturesEvent event;
++                blockRange = 16384.0;
++                if (reducedRange) {
++                    event = player.playerNaturallySpawnedEvent;
++                    if (event == null || event.isCancelled()) continue;
++                    blockRange = (double) ((event.getSpawnRadius() << 4) * (event.getSpawnRadius() << 4));
++                }
++                if (playerIsCloseEnoughForSpawningFast(player, chunkCenterX, chunkCenterZ, blockRange)) {
++                    // Paper end - PlayerNaturallySpawnCreaturesEvent
++                    return true;
++                }
+             }
+-            if (this.playerIsCloseEnoughForSpawning(player, pos, blockRange)) {
+-                // Paper end - PlayerNaturallySpawnCreaturesEvent
+-                return true;
++        } else {
++            for (int i = 0; i < len; ++i) {
++                final ServerPlayer player = raw[i];
++                // Paper start - PlayerNaturallySpawnCreaturesEvent
++                com.destroystokyo.paper.event.entity.PlayerNaturallySpawnCreaturesEvent event;
++                blockRange = 16384.0;
++                if (reducedRange) {
++                    event = player.playerNaturallySpawnedEvent;
++                    if (event == null || event.isCancelled()) continue;
++                    blockRange = (double) ((event.getSpawnRadius() << 4) * (event.getSpawnRadius() << 4));
++                }
++                if (this.playerIsCloseEnoughForSpawning(player, pos, blockRange)) {
++                    // Paper end - PlayerNaturallySpawnCreaturesEvent
++                    return true;
++                }
+             }
+         }
++        // LeavesX end - calculate the chunk center once for the hot spawning-range check
+ 
+         return false;
+         // Paper end - chunk tick iteration optimisation
+@@ -853,17 +895,35 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         final int len = players.size();
+ 
+         Objects.checkFromIndexSize(0, len, raw.length);
+-        for (int i = 0; i < len; ++i) {
+-            final ServerPlayer player = raw[i];
+-            if (this.playerIsCloseEnoughForSpawning(player, pos, 16384.0D)) { // Spigot
+-                if (ret == null) {
+-                    ret = new ArrayList<>(len - i);
+-                    ret.add(player);
+-                } else {
+-                    ret.add(player);
++        // LeavesX start - reuse the chunk center and avoid a temporary position vector per player
++        if (org.leavesx.leavesx.config.LeavesXRuntime.chunkSpawnRangeOptimization()) {
++            final double chunkCenterX = (pos.x() << 4) + 8.0D;
++            final double chunkCenterZ = (pos.z() << 4) + 8.0D;
++            for (int i = 0; i < len; ++i) {
++                final ServerPlayer player = raw[i];
++                if (playerIsCloseEnoughForSpawningFast(player, chunkCenterX, chunkCenterZ, 16384.0D)) { // Spigot
++                    if (ret == null) {
++                        ret = new ArrayList<>(len - i);
++                        ret.add(player);
++                    } else {
++                        ret.add(player);
++                    }
++                }
++            }
++        } else {
++            for (int i = 0; i < len; ++i) {
++                final ServerPlayer player = raw[i];
++                if (this.playerIsCloseEnoughForSpawning(player, pos, 16384.0D)) { // Spigot
++                    if (ret == null) {
++                        ret = new ArrayList<>(len - i);
++                        ret.add(player);
++                    } else {
++                        ret.add(player);
++                    }
+                 }
+             }
+         }
++        // LeavesX end - reuse the chunk center and avoid a temporary position vector per player
+ 
+         return ret == null ? new ArrayList<>() : ret;
+         // Paper end - chunk tick iteration optimisation
+@@ -878,6 +938,18 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         return distanceToChunk < range; // Spigot
+     }
+ 
++    private static boolean playerIsCloseEnoughForSpawningFast(
++        final ServerPlayer player, final double chunkCenterX, final double chunkCenterZ, final double range
++    ) {
++        if (player.isSpectator()) {
++            return false;
++        }
++
++        final double deltaX = chunkCenterX - player.getX();
++        final double deltaZ = chunkCenterZ - player.getZ();
++        return deltaX * deltaX + deltaZ * deltaZ < range;
++    }
++
+     private boolean playerIsCloseEnoughTo(final ServerPlayer player, final Vec3 pos, final int maxDistance) {
+         if (player.isSpectator()) {
+             return false;

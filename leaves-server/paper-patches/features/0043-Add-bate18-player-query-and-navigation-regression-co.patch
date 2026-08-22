@@ -1,0 +1,288 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 15 Aug 2026 17:11:20 +0800
+Subject: [PATCH] Add bate18 player query and navigation regression coverage
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityGetterPlayerQueryTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityGetterPlayerQueryTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..1ba54290d50a7b710c52250cc100e18b04df8674
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityGetterPlayerQueryTest.java
+@@ -0,0 +1,168 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.ArgumentMatchers.anyDouble;
++import static org.mockito.Mockito.CALLS_REAL_METHODS;
++import static org.mockito.Mockito.doReturn;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import java.util.AbstractList;
++import java.util.ArrayList;
++import java.util.Iterator;
++import java.util.List;
++import java.util.Random;
++import java.util.function.Predicate;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.entity.player.Player;
++import net.minecraft.world.level.EntityGetter;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class EntityGetterPlayerQueryTest {
++
++    private static final int PLAYER_COUNT = 32;
++
++    @Test
++    void nearestPlayerUsesIndexedTraversalWithoutChangingSelection() {
++        final double[] distances = new double[PLAYER_COUNT];
++        final List<Player> players = createPlayers(distances);
++        final EntityGetter getter = getterWith(indexOnly(players));
++        final Random random = new Random(0x4C454156455358L);
++
++        for (int iteration = 0; iteration < 1_000; iteration++) {
++            final boolean[] accepted = new boolean[PLAYER_COUNT];
++            for (int index = 0; index < PLAYER_COUNT; index++) {
++                distances[index] = randomDistance(random);
++                accepted[index] = random.nextBoolean();
++            }
++
++            final double range = randomRange(random);
++            final Predicate<Entity> predicate = player -> accepted[players.indexOf(player)];
++            final Player expected = referenceNearest(players, distances, range, predicate);
++
++            assertSame(expected, getter.getNearestPlayer(12.5, 64.0, -7.25, range, predicate));
++        }
++    }
++
++    @Test
++    void nearestPlayerPreservesBoundaryTieAndNonFiniteSemantics() {
++        final double[] distances = {25.0, 25.0, Double.NaN, Double.POSITIVE_INFINITY};
++        final List<Player> players = createPlayers(distances);
++        final EntityGetter getter = getterWith(indexOnly(players));
++
++        assertNull(getter.getNearestPlayer(0.0, 0.0, 0.0, 5.0, null), "The range boundary is exclusive");
++        assertSame(players.getFirst(), getter.getNearestPlayer(0.0, 0.0, 0.0, 6.0, null), "Equal distances keep list order");
++        assertNull(getter.getNearestPlayer(0.0, 0.0, 0.0, Double.NaN, null));
++
++        distances[0] = Double.NaN;
++        assertSame(players.getFirst(), getter.getNearestPlayer(0.0, 0.0, 0.0, -1.0, null));
++    }
++
++    @Test
++    void nearestPlayerPreservesPredicateInvocationOrder() {
++        final double[] distances = {9.0, 4.0, 1.0};
++        final List<Player> players = createPlayers(distances);
++        final EntityGetter getter = getterWith(indexOnly(players));
++        final List<Player> visited = new ArrayList<>();
++
++        getter.getNearestPlayer(0.0, 0.0, 0.0, 16.0, entity -> {
++            visited.add((Player)entity);
++            return entity != players.get(1);
++        });
++
++        assertEquals(players, visited);
++    }
++
++    @Test
++    void nearbyAlivePlayerQueriesUseTheSameIndexedTraversal() {
++        final double[] distances = {16.0, 4.0};
++        final List<Player> players = createPlayers(distances);
++        when(players.get(0).isAlive()).thenReturn(false);
++        when(players.get(1).isAlive()).thenReturn(true);
++        players.get(1).affectsSpawning = true;
++        final EntityGetter getter = getterWith(indexOnly(players));
++
++        assertTrue(getter.hasNearbyAlivePlayer(0.0, 0.0, 0.0, 3.0));
++        assertTrue(getter.hasNearbyAlivePlayerThatAffectsSpawning(0.0, 0.0, 0.0, 3.0));
++    }
++
++    private static EntityGetter getterWith(final List<Player> players) {
++        final EntityGetter getter = mock(EntityGetter.class, CALLS_REAL_METHODS);
++        doReturn(players).when(getter).players();
++        return getter;
++    }
++
++    private static List<Player> createPlayers(final double[] distances) {
++        final List<Player> players = new ArrayList<>(distances.length);
++        for (int index = 0; index < distances.length; index++) {
++            final Player player = mock(Player.class);
++            final int distanceIndex = index;
++            when(player.distanceToSqr(anyDouble(), anyDouble(), anyDouble()))
++                .thenAnswer(invocation -> distances[distanceIndex]);
++            players.add(player);
++        }
++        return players;
++    }
++
++    private static List<Player> indexOnly(final List<Player> players) {
++        return new AbstractList<>() {
++            @Override
++            public Player get(final int index) {
++                return players.get(index);
++            }
++
++            @Override
++            public int size() {
++                return players.size();
++            }
++
++            @Override
++            public Iterator<Player> iterator() {
++                throw new AssertionError("LeavesX player queries must not allocate an iterator");
++            }
++        };
++    }
++
++    private static Player referenceNearest(
++        final List<Player> players,
++        final double[] distances,
++        final double range,
++        final Predicate<Entity> predicate
++    ) {
++        double best = -1.0;
++        Player result = null;
++        for (int index = 0; index < players.size(); index++) {
++            final Player player = players.get(index);
++            if (predicate == null || predicate.test(player)) {
++                final double distance = distances[index];
++                if ((range < 0.0 || distance < range * range) && (best == -1.0 || distance < best)) {
++                    best = distance;
++                    result = player;
++                }
++            }
++        }
++        return result;
++    }
++
++    private static double randomDistance(final Random random) {
++        return switch (random.nextInt(20)) {
++            case 0 -> Double.NaN;
++            case 1 -> Double.POSITIVE_INFINITY;
++            default -> random.nextDouble(0.0, 65_536.0);
++        };
++    }
++
++    private static double randomRange(final Random random) {
++        return switch (random.nextInt(20)) {
++            case 0 -> -1.0;
++            case 1 -> Double.NaN;
++            case 2 -> Double.POSITIVE_INFINITY;
++            default -> random.nextDouble(0.0, 256.0);
++        };
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PathNavigationHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/PathNavigationHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..014fe6eb0ae6c17dcefa969538ecae7a8d710832
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/PathNavigationHotPathTest.java
+@@ -0,0 +1,102 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.mockito.Mockito.doThrow;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import java.util.List;
++import net.minecraft.core.BlockPos;
++import net.minecraft.world.entity.Mob;
++import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
++import net.minecraft.world.level.Level;
++import net.minecraft.world.level.pathfinder.Node;
++import net.minecraft.world.level.pathfinder.Path;
++import net.minecraft.world.phys.Vec3;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class PathNavigationHotPathTest {
++
++    @Test
++    void followPathReadsTheNodeWithoutCreatingABlockPosition() {
++        final Mob mob = mock(Mob.class);
++        when(mob.getX()).thenReturn(8.5);
++        when(mob.getY()).thenReturn(64.0);
++        when(mob.getZ()).thenReturn(-3.5);
++        when(mob.getBbWidth()).thenReturn(0.6F);
++
++        final Node node = new Node(8, 64, -4);
++        final Path path = mock(Path.class);
++        when(path.getNextNode()).thenReturn(node);
++        doThrow(new AssertionError("The hot path must not allocate through getNextNodePos()"))
++            .when(path).getNextNodePos();
++
++        final TestNavigation navigation = new TestNavigation(mob, mock(Level.class));
++        navigation.follow(path);
++
++        verify(path).advance();
++        assertEquals(0.45F, navigation.getMaxDistanceToWaypoint(), 0.0001F);
++    }
++
++    @Test
++    void recomputeCheckMatchesTheOriginalMidpointCalculation() {
++        final Mob mob = mock(Mob.class);
++        when(mob.getX()).thenReturn(18.25);
++        when(mob.getY()).thenReturn(67.5);
++        when(mob.getZ()).thenReturn(-11.75);
++
++        final Node target = new Node(28, 72, -3);
++        final Path path = new Path(
++            List.of(new Node(20, 68, -10), new Node(24, 70, -7), target),
++            BlockPos.ZERO,
++            false
++        );
++        path.setNextNodeIndex(1);
++        final TestNavigation navigation = new TestNavigation(mob, mock(Level.class));
++        navigation.setPath(path);
++
++        final Vec3 middle = new Vec3(
++            (target.x + mob.getX()) / 2.0,
++            (target.y + mob.getY()) / 2.0,
++            (target.z + mob.getZ()) / 2.0
++        );
++        final double remainingNodes = path.getNodeCount() - path.getNextNodeIndex();
++        for (int x = 18; x <= 28; x++) {
++            for (int y = 66; y <= 74; y++) {
++                for (int z = -13; z <= -1; z++) {
++                    final BlockPos position = new BlockPos(x, y, z);
++                    assertEquals(position.closerToCenterThan(middle, remainingNodes), navigation.shouldRecomputePath(position));
++                }
++            }
++        }
++    }
++
++    private static final class TestNavigation extends GroundPathNavigation {
++
++        private TestNavigation(final Mob mob, final Level level) {
++            super(mob, level);
++        }
++
++        private void follow(final Path path) {
++            this.path = path;
++            this.followThePath();
++        }
++
++        private void setPath(final Path path) {
++            this.path = path;
++        }
++
++        @Override
++        protected Vec3 getTempMobPos() {
++            return new Vec3(this.mob.getX(), this.mob.getY(), this.mob.getZ());
++        }
++
++        @Override
++        protected void doStuckDetection(final Vec3 mobPos) {
++            // Stuck detection is independent from selecting and advancing the current node.
++        }
++    }
++}

@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 20:22:50 +0800
+Subject: [PATCH] Add enderman placement query coverage for bate56
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EndermanPlacementEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EndermanPlacementEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9df661a65ab3bf3e5f55a56008927467bc53405b
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EndermanPlacementEntityQueryHotPathTest.java
+@@ -0,0 +1,69 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.monster.EnderMan;
++import net.minecraft.world.level.Level;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies enderman block placement can stop after the first occupying entity. */
++@Normal
++class EndermanPlacementEntityQueryHotPathTest {
++
++    @Test
++    void placementCheckKeepsOptimizedAndVanillaPaths() throws IOException {
++        final ClassNode endermanGoal = nestedClass(EnderMan.class, "EndermanLeaveBlockGoal");
++        final MethodNode canPlaceBlock = method(endermanGoal, "canPlaceBlock");
++        final List<MethodInsnNode> calls = invocations(canPlaceBlock);
++
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++        ));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$hasEntity")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntities")));
++    }
++
++    @Test
++    void firstUntypedQueryKeepsPaperSupplementalLookup() throws IOException {
++        final MethodNode collectFirst = method(classNode(Level.class), "leavesX$collectFirstEntity");
++
++        assertTrue(invocations(collectFirst).stream().anyMatch(call -> call.name.equals("moonrise$getEntityLookup")));
++        assertTrue(invocations(collectFirst).stream().anyMatch(call -> call.name.equals("addToGetEntities")));
++    }
++
++    private static ClassNode nestedClass(final Class<?> owner, final String simpleName) throws IOException {
++        return classNode(Arrays.stream(owner.getDeclaredClasses())
++            .filter(type -> type.getSimpleName().equals(simpleName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing nested class " + simpleName)));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

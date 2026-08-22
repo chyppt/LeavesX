@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 01:42:04 +0800
+Subject: [PATCH] Optimize mob presence sensors for bate82
+
+
+diff --git a/net/minecraft/world/entity/ai/sensing/GolemSensor.java b/net/minecraft/world/entity/ai/sensing/GolemSensor.java
+index f5d1f7d01a520709e4c5b7fd98e0e76cce660025..05072c30aa1b7ce320fc5aa5651c4b587ab467d2 100644
+--- a/net/minecraft/world/entity/ai/sensing/GolemSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/GolemSensor.java
+@@ -31,24 +31,25 @@ public class GolemSensor extends Sensor<LivingEntity> {
+     }
+ 
+     public static void checkForNearbyGolem(final LivingEntity body) {
+-        Optional<List<LivingEntity>> livingEntitiesMemory = body.getBrain().getMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES);
+-        if (!livingEntitiesMemory.isEmpty()) {
+-            final boolean golemPresent;
+-            if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
+-                boolean found = false;
+-                for (final LivingEntity entity : livingEntitiesMemory.get()) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.mobPresenceSensorOptimization()) {
++            final List<LivingEntity> livingEntities = body.getBrain().leavesX$getMemoryValue(
++                MemoryModuleType.NEAREST_LIVING_ENTITIES
++            );
++            if (livingEntities != null) {
++                for (final LivingEntity entity : livingEntities) {
+                     if (entity.is(EntityType.IRON_GOLEM)) {
+-                        found = true;
++                        golemDetected(body);
+                         break;
+                     }
+                 }
+-                golemPresent = found;
+-            } else {
+-                golemPresent = livingEntitiesMemory.get().stream().anyMatch(entity -> entity.is(EntityType.IRON_GOLEM));
+-            }
+-            if (golemPresent) {
+-                golemDetected(body);
+             }
++            return;
++        }
++
++        Optional<List<LivingEntity>> livingEntitiesMemory = body.getBrain().getMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES);
++        if (!livingEntitiesMemory.isEmpty()
++            && livingEntitiesMemory.get().stream().anyMatch(entity -> entity.is(EntityType.IRON_GOLEM))) {
++            golemDetected(body);
+         }
+     }
+ 
+diff --git a/net/minecraft/world/entity/ai/sensing/MobSensor.java b/net/minecraft/world/entity/ai/sensing/MobSensor.java
+index 9213da1da0d3f19b3da92c94fc424818d7543fb0..19dea8e1af227f74e61782247514b6037ce83b0f 100644
+--- a/net/minecraft/world/entity/ai/sensing/MobSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/MobSensor.java
+@@ -44,24 +44,25 @@ public class MobSensor<T extends LivingEntity> extends Sensor<T> {
+     }
+ 
+     public void checkForMobsNearby(final T body) {
+-        Optional<List<LivingEntity>> livingEntitiesMemory = body.getBrain().getMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES);
+-        if (!livingEntitiesMemory.isEmpty()) {
+-            final boolean mobPresent;
+-            if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
+-                boolean found = false;
+-                for (final LivingEntity entity : livingEntitiesMemory.get()) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.mobPresenceSensorOptimization()) {
++            final List<LivingEntity> livingEntities = body.getBrain().leavesX$getMemoryValue(
++                MemoryModuleType.NEAREST_LIVING_ENTITIES
++            );
++            if (livingEntities != null) {
++                for (final LivingEntity entity : livingEntities) {
+                     if (this.mobTest.test(body, entity)) {
+-                        found = true;
++                        this.mobDetected(body);
+                         break;
+                     }
+                 }
+-                mobPresent = found;
+-            } else {
+-                mobPresent = livingEntitiesMemory.get().stream().anyMatch(entity -> this.mobTest.test(body, entity));
+-            }
+-            if (mobPresent) {
+-                this.mobDetected(body);
+             }
++            return;
++        }
++
++        Optional<List<LivingEntity>> livingEntitiesMemory = body.getBrain().getMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES);
++        if (!livingEntitiesMemory.isEmpty()
++            && livingEntitiesMemory.get().stream().anyMatch(entity -> this.mobTest.test(body, entity))) {
++            this.mobDetected(body);
+         }
+     }
+ 

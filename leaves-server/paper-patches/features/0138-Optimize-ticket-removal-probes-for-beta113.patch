@@ -1,0 +1,274 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 13:00:52 +0800
+Subject: [PATCH] Optimize ticket removal probes for beta113
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 452457f0eb51ec8bda3c124fb83253a1e274274e..13085b743132f01e5a6ad65389583e9f36e03857 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 43;
++    public static final int CURRENT_CONFIG_VERSION = 44;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index f2bbd940f53b12e7493449fbb0fb8d88ff7277d4..2958fff2371ce2a3e7745772f5adfaa5fbd3541a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：43。");
++        comments.put("config-version", "配置版本，请勿修改。默认：44。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index d0ccd56fbee92d0fb8ad60a960ae1048b8a2acb6..3475ec402958aa45b69fdee2ae6c249bc30aa80f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -160,6 +160,10 @@ enum LeavesXOptimization {
+         "performance.chunk.ticket-queue-allocation",
+         "无竞争票据更新时不创建临时列表，关闭后使用原版流程。默认：true。"
+     ),
++    TICKET_REMOVAL_PROBE(
++        "performance.chunk.ticket-removal-probe",
++        "移除区块票据时不创建临时票据对象，关闭后使用原版流程。默认：true。"
++    ),
+     EXPIRING_TICKET_BUFFERS(
+         "performance.chunk.expiring-ticket-buffers",
+         "没有到期票据时不创建处理缓冲，关闭后使用原版流程。默认：true。"
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 2c28d7f0bfb18a41fac3dab55c7cdf4452b06c84..dbcd1948684e6d9309545ea7e02477e8e7bfce5b 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -531,6 +531,11 @@ public final class LeavesXRuntime {
+         return enabled(LeavesXOptimization.TICKET_QUEUE_ALLOCATION);
+     }
+ 
++    /** Returns whether ticket removal may search by key without allocating a temporary Ticket probe. */
++    public static boolean ticketRemovalProbeOptimization() {
++        return enabled(LeavesXOptimization.TICKET_REMOVAL_PROBE);
++    }
++
+     /** Returns whether per-tick expiring-ticket buffers may be allocated only when the first section is visited. */
+     public static boolean expiringTicketBuffersOptimization() {
+         return enabled(LeavesXOptimization.EXPIRING_TICKET_BUFFERS);
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+index a4e61550a024f55c26ad0400acf84b5dbb22b015..d009ab6d1307bfc3e39a34221f82e3d5081e8bdb 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+@@ -87,7 +87,11 @@ class FineGrainedOptimizationWiringTest {
+             new Wiring("net.minecraft.world.item.enchantment.Enchantment", "enchantmentSlotMatchingOptimization"),
+             new Wiring("net.minecraft.world.level.NaturalSpawner", "naturalSpawnEventListenerOptimization"),
+             new Wiring("net.minecraft.world.level.gameevent.GameEventDispatcher", "gameEventListenerOptimization"),
+-            new Wiring("net.minecraft.server.level.ServerChunkCache", "naturalSpawnStateOptimization")
++            new Wiring("net.minecraft.server.level.ServerChunkCache", "naturalSpawnStateOptimization"),
++            new Wiring(
++                "ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkHolderManager",
++                "ticketRemovalProbeOptimization"
++            )
+         );
+     }
+ 
+diff --git a/src/test/java/org/leavesx/leavesx/performance/TicketRemovalProbeOptimizationTest.java b/src/test/java/org/leavesx/leavesx/performance/TicketRemovalProbeOptimizationTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..ea63d167b10cde1f0652a0a4283a2988c09280e5
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/TicketRemovalProbeOptimizationTest.java
+@@ -0,0 +1,188 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkHolderManager;
++import ca.spottedleaf.moonrise.patches.chunk_system.ticket.ChunkSystemTicket;
++import ca.spottedleaf.moonrise.patches.chunk_system.ticket.ChunkSystemTicketType;
++import ca.spottedleaf.moonrise.patches.chunk_system.util.stream.TicketSet;
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.List;
++import net.minecraft.server.level.Ticket;
++import net.minecraft.server.level.TicketType;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++import org.objectweb.asm.tree.TypeInsnNode;
++
++/** Verifies allocation-free ticket removal preserves Paper's sorted-key and fallback behavior. */
++@Normal
++class TicketRemovalProbeOptimizationTest {
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @Test
++    void directKeyRemovalMatchesTemporaryProbeRemoval() {
++        final TicketType<Object> plainType = new TicketType<>(TicketType.NO_TIMEOUT, 0);
++        final TicketType<String> namedType = new TicketType<>(TicketType.NO_TIMEOUT, 0);
++        ((ChunkSystemTicketType<String>)(Object)namedType).moonrise$setIdentifierComparator(Comparator.naturalOrder());
++
++        final TicketSet fallback = createTicketSet(plainType, namedType);
++        final TicketSet optimized = createTicketSet(plainType, namedType);
++
++        assertEquivalent(
++            fallback.removeAndGet(ticket(namedType, 30, "beta")),
++            optimized.leavesX$removeAndGet(namedType, 30, "beta")
++        );
++        assertEquals(snapshot(fallback), snapshot(optimized));
++
++        assertEquivalent(
++            fallback.removeAndGet(ticket(plainType, 31, null)),
++            optimized.leavesX$removeAndGet(plainType, 31, null)
++        );
++        assertEquals(snapshot(fallback), snapshot(optimized));
++
++        assertNull(fallback.removeAndGet(ticket(namedType, 30, "missing")));
++        assertNull(optimized.leavesX$removeAndGet(namedType, 30, "missing"));
++        assertEquals(snapshot(fallback), snapshot(optimized));
++    }
++
++    @Test
++    void directLookupKeepsIdentifierValidationContract() {
++        final TicketType<Object> plainType = new TicketType<>(TicketType.NO_TIMEOUT, 0);
++        final TicketType<String> namedType = new TicketType<>(TicketType.NO_TIMEOUT, 0);
++        ((ChunkSystemTicketType<String>)(Object)namedType).moonrise$setIdentifierComparator(Comparator.naturalOrder());
++
++        assertDoesNotThrow(() -> Ticket.leavesX$validateIdentifier(plainType, null));
++        assertDoesNotThrow(() -> Ticket.leavesX$validateIdentifier(namedType, "player"));
++        assertThrows(IllegalStateException.class, () -> Ticket.leavesX$validateIdentifier(plainType, "unexpected"));
++        assertThrows(IllegalStateException.class, () -> Ticket.leavesX$validateIdentifier(namedType, null));
++    }
++
++    @Test
++    void chunkHolderManagerRetainsConfiguredFastPathAndPaperFallback() throws IOException {
++        final ClassNode manager = classNode(ChunkHolderManager.class);
++        final MethodNode removal = manager.methods.stream()
++            .filter(method -> method.name.equals("removeTicketAtLevel"))
++            .filter(method -> method.desc.equals("(Lnet/minecraft/server/level/TicketType;JILjava/lang/Object;Z)Z"))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing internal ticket-removal method"));
++
++        assertTrue(calls(removal, "org/leavesx/leavesx/config/LeavesXRuntime", "ticketRemovalProbeOptimization"));
++        assertTrue(calls(removal, "ca/spottedleaf/moonrise/patches/chunk_system/util/stream/TicketSet", "leavesX$removeAndGet"));
++        assertTrue(calls(removal, "ca/spottedleaf/moonrise/patches/chunk_system/util/stream/TicketSet", "removeAndGet"));
++        assertTrue(allocates(removal, "net/minecraft/server/level/Ticket"), "Disabled path must retain Paper's Ticket probe");
++    }
++
++    @Test
++    void version43ConfigurationMigratesTheDocumentedSwitchInPlace() throws Exception {
++        final Path path = this.temporaryDirectory.resolve("leavesx.yml");
++        Files.writeString(path, """
++            config-version: 43
++            performance:
++              chunk:
++                ticket-removal-probe: false
++            """);
++
++        final LeavesXConfig configuration = LeavesXConfigLoader.load(path);
++        publish(configuration);
++        try {
++            assertFalse(LeavesXRuntime.ticketRemovalProbeOptimization());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++
++        final String upgraded = Files.readString(path);
++        assertTrue(upgraded.contains("config-version: 44"));
++        assertTrue(upgraded.contains("ticket-removal-probe: false"));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
++    }
++
++    private static TicketSet createTicketSet(final TicketType<Object> plainType, final TicketType<String> namedType) {
++        final TicketSet tickets = new TicketSet(4);
++        tickets.add(ticket(namedType, 30, "alpha"));
++        tickets.add(ticket(namedType, 30, "beta"));
++        tickets.add(ticket(plainType, 31, null));
++        tickets.add(ticket(namedType, 32, "gamma"));
++        return tickets;
++    }
++
++    private static <T> Ticket<T> ticket(final TicketType<T> type, final int level, final T identifier) {
++        final Ticket<T> ticket = new Ticket<>(type, level, 0L);
++        ((ChunkSystemTicket<T>)(Object)ticket).moonrise$setIdentifier(identifier);
++        return ticket;
++    }
++
++    private static void assertEquivalent(final Ticket<?> expected, final Ticket<?> actual) {
++        assertNotNull(expected);
++        assertNotNull(actual);
++        assertEquals(ticketKey(expected), ticketKey(actual));
++    }
++
++    private static List<TicketKey> snapshot(final TicketSet tickets) {
++        final List<TicketKey> snapshot = new ArrayList<>(tickets.size());
++        for (final Ticket<?> ticket : tickets) {
++            snapshot.add(ticketKey(ticket));
++        }
++        return snapshot;
++    }
++
++    private static TicketKey ticketKey(final Ticket<?> ticket) {
++        return new TicketKey(
++            ((ChunkSystemTicketType<?>)(Object)ticket.getType()).moonrise$getId(),
++            ticket.getTicketLevel(),
++            ticket.getIdentifier()
++        );
++    }
++
++    private static void publish(final LeavesXConfig configuration) throws Exception {
++        final Method publish = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++        publish.setAccessible(true);
++        publish.invoke(null, configuration);
++    }
++
++    private static boolean calls(final MethodNode method, final String owner, final String name) {
++        return method.instructions.iterator().hasNext()
++            && java.util.Arrays.stream(method.instructions.toArray())
++                .filter(MethodInsnNode.class::isInstance)
++                .map(MethodInsnNode.class::cast)
++                .anyMatch(call -> call.owner.equals(owner) && call.name.equals(name));
++    }
++
++    private static boolean allocates(final MethodNode method, final String type) {
++        return java.util.Arrays.stream(method.instructions.toArray())
++            .filter(TypeInsnNode.class::isInstance)
++            .map(TypeInsnNode.class::cast)
++            .anyMatch(instruction -> instruction.getOpcode() == Opcodes.NEW && instruction.desc.equals(type));
++    }
++
++    private static ClassNode classNode(final Class<?> type) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(type.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private record TicketKey(long typeId, int level, Object identifier) {
++    }
++}

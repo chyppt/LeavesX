@@ -1,0 +1,327 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 22:28:33 +0800
+Subject: [PATCH] Optimize mob despawn range lookups for beta117
+
+
+diff --git a/src/main/java/io/papermc/paper/configuration/WorldConfiguration.java b/src/main/java/io/papermc/paper/configuration/WorldConfiguration.java
+index 76d4b3ecec1e380207918988d32f828327ba5751..54753de252514f4eb46f458bfe7f865416344d29 100644
+--- a/src/main/java/io/papermc/paper/configuration/WorldConfiguration.java
++++ b/src/main/java/io/papermc/paper/configuration/WorldConfiguration.java
+@@ -181,6 +181,7 @@ public class WorldConfiguration extends ConfigurationPart {
+             public Reference2IntMap<MobCategory> spawnLimits = Util.make(new Reference2IntOpenHashMap<>(NaturalSpawner.SPAWNING_CATEGORIES.length), map -> Arrays.stream(NaturalSpawner.SPAWNING_CATEGORIES).forEach(mobCategory -> map.put(mobCategory, -1)));
+             @MergeMap
+             public Map<MobCategory, DespawnRangePair> despawnRanges = Arrays.stream(MobCategory.values()).collect(Collectors.toMap(Function.identity(), category -> DespawnRangePair.createDefault()));
++            private transient DespawnRangePair[] leavesX$despawnRangesByCategory = new DespawnRangePair[MobCategory.values().length];
+             public DespawnRange.Shape despawnRangeShape = DespawnRange.Shape.ELLIPSOID;
+             @MergeMap
+             public Reference2IntMap<MobCategory> ticksPerSpawn = Util.make(new Reference2IntOpenHashMap<>(NaturalSpawner.SPAWNING_CATEGORIES.length), map -> Arrays.stream(NaturalSpawner.SPAWNING_CATEGORIES).forEach(mobCategory -> map.put(mobCategory, -1)));
+@@ -202,14 +203,27 @@ public class WorldConfiguration extends ConfigurationPart {
+ 
+             @PostProcess
+             public void precomputeDespawnDistances() throws SerializationException {
++                Arrays.fill(this.leavesX$despawnRangesByCategory, null);
+                 for (final Map.Entry<MobCategory, DespawnRangePair> entry : this.despawnRanges.entrySet()) {
+                     final MobCategory category = entry.getKey();
+                     final DespawnRangePair range = entry.getValue();
++                    this.leavesX$despawnRangesByCategory[category.ordinal()] = range;
+                     range.hard().preComputed(category.getDespawnDistance(), category.getSerializedName());
+                     range.soft().preComputed(category.getNoDespawnDistance(), category.getSerializedName());
+                 }
+             }
+ 
++            /** Returns the configured range while retaining Paper's map lookup as an exact fallback. */
++            public DespawnRangePair leavesX$getDespawnRange(final MobCategory category) {
++                if (org.leavesx.leavesx.config.LeavesXRuntime.despawnRangeLookupOptimization()) {
++                    final DespawnRangePair range = this.leavesX$despawnRangesByCategory[category.ordinal()];
++                    if (range != null) {
++                        return range;
++                    }
++                }
++                return this.despawnRanges.get(category);
++            }
++
+             public WaterAnimalSpawnHeight wateranimalSpawnHeight;
+ 
+             public class WaterAnimalSpawnHeight extends ConfigurationPart {
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index e39f27a86072f26584b6e7d77ceb90c91c670eb6..1b4a5f551fc7f16c64b049ef3e48f479b1e7b5e3 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 45;
++    public static final int CURRENT_CONFIG_VERSION = 46;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 0bbfa16f0ed43b1f90e97dccf0e0e1cc2477598c..ce4f1afdffbaa42c64897bca07581956cf84dca5 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：45。");
++        comments.put("config-version", "配置版本，请勿修改。默认：46。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index f3b2cefdb2c83eec4b9fee64968cf5c8d8683b5e..d72183cc45734ee03296e8d1ab7663991142f8cc 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -372,6 +372,10 @@ enum LeavesXOptimization {
+         "performance.entity-state.enchantment-slot-matching",
+         "附魔槽位匹配使用直接遍历，关闭后使用原版流。默认：true。"
+     ),
++    DESPAWN_RANGE_LOOKUP(
++        "performance.entity-state.despawn-range-lookup",
++        "生物卸载距离按类型直接读取，关闭后使用 Paper 原版映射。默认：true。"
++    ),
+     NATURAL_SPAWN_EVENT_LISTENER(
+         "performance.events.natural-spawn-listener-check",
+         "自然刷怪没有监听器时不创建事件，关闭后始终创建。默认：true。"
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 5b81c6b1c1f05df43cdd75ec80ef61d835248daa..1c0f71088b20557b3bdfdf3f058c2a6cc4537b99 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -781,6 +781,11 @@ public final class LeavesXRuntime {
+         return entityStateOptimizations && enabled(LeavesXOptimization.ENCHANTMENT_SLOT_MATCHING);
+     }
+ 
++    /** Returns whether mob despawn checks may read their immutable category range through a direct index. */
++    public static boolean despawnRangeLookupOptimization() {
++        return entityStateOptimizations && enabled(LeavesXOptimization.DESPAWN_RANGE_LOOKUP);
++    }
++
+     /** Returns whether natural-spawn events may skip allocation when no listener is registered. */
+     public static boolean naturalSpawnEventListenerOptimization() {
+         return skipEmptyEvents && enabled(LeavesXOptimization.NATURAL_SPAWN_EVENT_LISTENER);
+diff --git a/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java b/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
+index ae94ad68c089cae94b4d458b771928c1345aa3d3..ec321a2a9a1ae1f400ed74d69f7cf59ccf7d11b3 100644
+--- a/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
++++ b/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
+@@ -160,7 +160,7 @@ public class NaturalSpawnPositionHotPathTest {
+         LeavesXConfigLoader.load(path);
+         final String upgraded = Files.readString(path);
+ 
+-        assertTrue(upgraded.contains("config-version: 45"));
++        assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
+         assertTrue(upgraded.contains("spawn-position-distance-checks: true"));
+         assertTrue(upgraded.contains("spawn-chunk-readiness-checks: true"));
+         assertTrue(upgraded.contains("local-cap-accounting: true"));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/DespawnRangeLookupHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/DespawnRangeLookupHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c446c667e055df04a1eceeb3c02d12aede045f5a
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/DespawnRangeLookupHotPathTest.java
+@@ -0,0 +1,179 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.CALLS_REAL_METHODS;
++import static org.mockito.Mockito.mock;
++
++import io.papermc.paper.configuration.WorldConfiguration;
++import io.papermc.paper.configuration.type.DespawnRange;
++import java.io.IOException;
++import java.lang.reflect.Field;
++import java.lang.reflect.Method;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.Arrays;
++import java.util.EnumMap;
++import java.util.Map;
++import net.minecraft.world.entity.Mob;
++import net.minecraft.world.entity.MobCategory;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies mob despawn range indexing preserves Paper's configured objects and fallback path. */
++@Normal
++class DespawnRangeLookupHotPathTest {
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @Test
++    void indexedLookupReturnsTheSameConfiguredRangeAndRetainsFallback() throws Exception {
++        final WorldConfiguration.Entities.Spawning spawning = mock(
++            WorldConfiguration.Entities.Spawning.class,
++            CALLS_REAL_METHODS
++        );
++        final WorldConfiguration.Entities.Spawning.DespawnRangePair monsterRange = rangePair();
++        final Map<MobCategory, WorldConfiguration.Entities.Spawning.DespawnRangePair> ranges =
++            new EnumMap<>(MobCategory.class);
++        ranges.put(MobCategory.MONSTER, monsterRange);
++        spawning.despawnRanges = ranges;
++        setIndex(spawning, new WorldConfiguration.Entities.Spawning.DespawnRangePair[MobCategory.values().length]);
++        spawning.precomputeDespawnDistances();
++
++        try {
++            publish(this.configuration(true, true, "indexed.yml"));
++            assertSame(monsterRange, spawning.leavesX$getDespawnRange(MobCategory.MONSTER));
++
++            final WorldConfiguration.Entities.Spawning.DespawnRangePair replacement = rangePair();
++            ranges.put(MobCategory.MONSTER, replacement);
++            publish(this.configuration(true, false, "fallback.yml"));
++            assertSame(replacement, spawning.leavesX$getDespawnRange(MobCategory.MONSTER));
++
++            publish(this.configuration(false, true, "master-disabled.yml"));
++            assertSame(replacement, spawning.leavesX$getDespawnRange(MobCategory.MONSTER));
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void missingIndexedEntryFallsBackToThePaperMap() throws Exception {
++        final WorldConfiguration.Entities.Spawning spawning = mock(
++            WorldConfiguration.Entities.Spawning.class,
++            CALLS_REAL_METHODS
++        );
++        final WorldConfiguration.Entities.Spawning.DespawnRangePair creatureRange = rangePair();
++        final Map<MobCategory, WorldConfiguration.Entities.Spawning.DespawnRangePair> ranges =
++            new EnumMap<>(MobCategory.class);
++        ranges.put(MobCategory.CREATURE, creatureRange);
++        spawning.despawnRanges = ranges;
++        setIndex(spawning, new WorldConfiguration.Entities.Spawning.DespawnRangePair[MobCategory.values().length]);
++
++        try {
++            publish(this.configuration(true, true, "missing-entry.yml"));
++            assertSame(creatureRange, spawning.leavesX$getDespawnRange(MobCategory.CREATURE));
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void version45ConfigurationAddsTheDocumentedSwitchWithoutBackupNoise() throws Exception {
++        final Path path = this.temporaryDirectory.resolve("leavesx.yml");
++        Files.writeString(path, """
++            config-version: 45
++            performance:
++              entity-state:
++                despawn-range-lookup: false
++            """);
++
++        final LeavesXConfig configuration = LeavesXConfigLoader.load(path);
++        try {
++            publish(configuration);
++            assertFalse(LeavesXRuntime.despawnRangeLookupOptimization());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++
++        final String upgraded = Files.readString(path);
++        assertTrue(upgraded.contains("config-version: 46"));
++        assertTrue(upgraded.contains("despawn-range-lookup: false"));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
++    }
++
++    @Test
++    void mobDespawnCheckUsesTheIndexedAccessor() throws IOException {
++        final ClassNode mob = classNode(Mob.class);
++        final MethodNode checkDespawn = method(mob, "checkDespawn");
++
++        assertTrue(Arrays.stream(checkDespawn.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals(
++                "io/papermc/paper/configuration/WorldConfiguration$Entities$Spawning"
++            ) && call.name.equals("leavesX$getDespawnRange")));
++    }
++
++    private LeavesXConfig configuration(
++        final boolean masterEnabled,
++        final boolean settingEnabled,
++        final String fileName
++    ) throws IOException {
++        final Path path = this.temporaryDirectory.resolve(fileName);
++        Files.writeString(path, """
++            config-version: 1
++            performance:
++              entity-state-optimizations: %s
++              entity-state:
++                despawn-range-lookup: %s
++            """.formatted(masterEnabled, settingEnabled));
++        return LeavesXConfigLoader.load(path);
++    }
++
++    private static WorldConfiguration.Entities.Spawning.DespawnRangePair rangePair() {
++        final DespawnRange hard = mock(DespawnRange.class);
++        final DespawnRange soft = mock(DespawnRange.class);
++        return new WorldConfiguration.Entities.Spawning.DespawnRangePair(hard, soft);
++    }
++
++    private static void setIndex(
++        final WorldConfiguration.Entities.Spawning spawning,
++        final WorldConfiguration.Entities.Spawning.DespawnRangePair[] index
++    ) throws ReflectiveOperationException {
++        final Field field = WorldConfiguration.Entities.Spawning.class
++            .getDeclaredField("leavesX$despawnRangesByCategory");
++        field.setAccessible(true);
++        field.set(spawning, index);
++    }
++
++    private static void publish(final LeavesXConfig config) throws ReflectiveOperationException {
++        final Method method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++        method.setAccessible(true);
++        method.invoke(null, config);
++    }
++
++    private static ClassNode classNode(final Class<?> type) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(type.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name) {
++        return owner.methods.stream()
++            .filter(candidate -> candidate.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + name));
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/TicketRemovalProbeOptimizationTest.java b/src/test/java/org/leavesx/leavesx/performance/TicketRemovalProbeOptimizationTest.java
+index d366bd2f11f32386eed011c4671fcc7230a46fa8..4863427ff47546b668740f54733d7f5721efc435 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/TicketRemovalProbeOptimizationTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/TicketRemovalProbeOptimizationTest.java
+@@ -113,7 +113,7 @@ class TicketRemovalProbeOptimizationTest {
+         }
+ 
+         final String upgraded = Files.readString(path);
+-        assertTrue(upgraded.contains("config-version: 45"));
++        assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
+         assertTrue(upgraded.contains("ticket-removal-probe: false"));
+         assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
+         assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/TicketUpdateBufferReuseTest.java b/src/test/java/org/leavesx/leavesx/performance/TicketUpdateBufferReuseTest.java
+index 2c9e2cc589091cf97947938c8b40f03985a6f2e0..343c6561ce01b62c2975e6ade14cd412dacd2c5d 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/TicketUpdateBufferReuseTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/TicketUpdateBufferReuseTest.java
+@@ -108,7 +108,7 @@ class TicketUpdateBufferReuseTest {
+         }
+ 
+         final String upgraded = Files.readString(path);
+-        assertTrue(upgraded.contains("config-version: 45"));
++        assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
+         assertTrue(upgraded.contains("ticket-update-buffer-reuse: false"));
+         assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
+         assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));

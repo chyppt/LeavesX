@@ -1,0 +1,274 @@
+--- /dev/null
++++ b/net/minecraft/world/level/MobSpawnCounting.java
+@@ -1,0 +_,271 @@
++package net.minecraft.world.level;
++
++import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
++import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
++import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
++import java.util.Arrays;
++import net.minecraft.core.BlockPos;
++import net.minecraft.core.QuartPos;
++import net.minecraft.server.level.ChunkMap;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.entity.Mob;
++import net.minecraft.world.entity.MobCategory;
++import net.minecraft.world.level.biome.MobSpawnSettings;
++import net.minecraft.world.level.chunk.ChunkAccess;
++import org.jspecify.annotations.Nullable;
++
++/**
++ * Computes natural-spawn counters from a tick-thread snapshot.
++ *
++ * <p>No worker receives an entity, chunk, level, player, random source, or plugin object. Workers only process arrays
++ * containing immutable positions, enum values, numeric chunk keys, and immutable biome spawn-cost records. The tick
++ * thread applies all results before natural spawning continues in the same tick.</p>
++ */
++final class MobSpawnCounting {
++
++    private static final int INITIAL_CAPACITY = 512;
++    private static final int CATEGORY_COUNT = MobCategory.values().length;
++
++    private MobSpawnCounting() {
++    }
++
++    static Result count(
++        final Iterable<Entity> entities,
++        final NaturalSpawner.ChunkGetter chunkGetter,
++        final @Nullable LocalMobCapCalculator localMobCapCalculator,
++        final boolean countMobs
++    ) {
++        final Snapshot snapshot = freezeInputs(entities, chunkGetter, countMobs);
++        final FrozenInputs inputs = snapshot.inputs();
++        final double[] charges = new double[inputs.size()];
++        final int taskCapacity = Math.max(
++            1,
++            Math.min(org.leavesx.leavesx.runtime.LeavesXComputeExecutor.computeLaneCount(), inputs.size())
++        );
++        @SuppressWarnings("unchecked") final Long2ObjectOpenHashMap<ChunkCategoryCounts>[] partialCounts =
++            new Long2ObjectOpenHashMap[taskCapacity];
++
++        final boolean completedInParallel = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRanges(
++            inputs.size(),
++            org.leavesx.leavesx.config.LeavesXRuntime.mobSpawnCountingMinimumEntities(),
++            (taskIndex, start, end) -> partialCounts[taskIndex] = computeRange(inputs, charges, start, end, countMobs)
++        );
++        if (!completedInParallel) {
++            Arrays.fill(partialCounts, null);
++            partialCounts[0] = computeRange(inputs, charges, 0, inputs.size(), countMobs);
++        }
++
++        final PotentialCalculator spawnPotential = new PotentialCalculator();
++        final Object2IntOpenHashMap<MobCategory> mobCounts = new Object2IntOpenHashMap<>();
++        for (int index = 0; index < inputs.size(); index++) {
++            // Charge insertion order affects floating-point summation, so it intentionally matches entity iteration.
++            spawnPotential.addCharge(inputs.positions()[index], charges[index]);
++            mobCounts.addTo(inputs.categories()[index], 1);
++        }
++
++        applyAggregatedCounts(
++            mergePartialCounts(partialCounts),
++            localMobCapCalculator,
++            snapshot.playerMobCounter()
++        );
++        return new Result(mobCounts, spawnPotential);
++    }
++
++    private static Snapshot freezeInputs(
++        final Iterable<Entity> entities,
++        final NaturalSpawner.ChunkGetter chunkGetter,
++        final boolean countMobs
++    ) {
++        final SnapshotBuilder builder = new SnapshotBuilder();
++        final ChunkMap[] playerMobCounter = countMobs ? new ChunkMap[1] : null;
++
++        for (final Entity entity : entities) {
++            final boolean isMob = entity instanceof Mob;
++            if (isMob && (((Mob)entity).isPersistenceRequired() || ((Mob)entity).requiresCustomPersistence())) {
++                continue;
++            }
++            final MobCategory category = entity.getType().getCategory();
++            if (category == MobCategory.MISC) {
++                continue;
++            }
++            if (!org.leavesmc.leaves.LeavesConfig.modify.mcTechnicalMode
++                && !entity.level().paperConfig().entities.spawning.countAllMobsForSpawning
++                && entity.spawnReason != org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.NATURAL
++                && entity.spawnReason != org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CHUNK_GEN) {
++                continue;
++            }
++
++            final BlockPos position = entity.blockPosition().immutable();
++            final long playerChunkKey = entity.chunkPosition().pack();
++            final net.minecraft.world.entity.EntityType<?> entityType = entity.getType();
++            chunkGetter.query(ChunkPos.pack(position), chunk -> {
++                if (playerMobCounter != null && playerMobCounter[0] == null) {
++                    playerMobCounter[0] = chunk.level.getChunkSource().chunkMap;
++                }
++                builder.add(
++                    position,
++                    category,
++                    isMob,
++                    getRoughBiome(position, chunk).getMobSettings().getMobSpawnCost(entityType),
++                    chunk.getPos().pack(),
++                    playerChunkKey
++                );
++            });
++        }
++        return new Snapshot(builder.freeze(), playerMobCounter == null ? null : playerMobCounter[0]);
++    }
++
++    private static Long2ObjectOpenHashMap<ChunkCategoryCounts> computeRange(
++        final FrozenInputs inputs,
++        final double[] charges,
++        final int start,
++        final int end,
++        final boolean countMobs
++    ) {
++        final Long2ObjectOpenHashMap<ChunkCategoryCounts> counts = new Long2ObjectOpenHashMap<>();
++        for (int index = start; index < end; index++) {
++            final MobSpawnSettings.MobSpawnCost cost = inputs.costs()[index];
++            charges[index] = cost == null ? 0.0D : cost.charge();
++            final int categoryIndex = inputs.categories()[index].ordinal();
++            if (inputs.mobs()[index]) {
++                counts.computeIfAbsent(inputs.localChunkKeys()[index], ignored -> new ChunkCategoryCounts())
++                    .localMobCounts[categoryIndex]++;
++            }
++            if (countMobs) {
++                counts.computeIfAbsent(inputs.playerChunkKeys()[index], ignored -> new ChunkCategoryCounts())
++                    .playerMobCounts[categoryIndex]++;
++            }
++        }
++        return counts;
++    }
++
++    private static Long2ObjectOpenHashMap<ChunkCategoryCounts> mergePartialCounts(
++        final Long2ObjectOpenHashMap<ChunkCategoryCounts>[] partialCounts
++    ) {
++        final Long2ObjectOpenHashMap<ChunkCategoryCounts> merged = new Long2ObjectOpenHashMap<>();
++        for (final Long2ObjectOpenHashMap<ChunkCategoryCounts> partial : partialCounts) {
++            if (partial == null) {
++                continue;
++            }
++            for (final Long2ObjectMap.Entry<ChunkCategoryCounts> entry : partial.long2ObjectEntrySet()) {
++                merged.computeIfAbsent(entry.getLongKey(), ignored -> new ChunkCategoryCounts()).add(entry.getValue());
++            }
++        }
++        return merged;
++    }
++
++    private static void applyAggregatedCounts(
++        final Long2ObjectOpenHashMap<ChunkCategoryCounts> counts,
++        final @Nullable LocalMobCapCalculator localMobCapCalculator,
++        final @Nullable ChunkMap playerMobCounter
++    ) {
++        // Both destinations only perform integer additions; grouping those additions cannot change their result.
++        for (final Long2ObjectMap.Entry<ChunkCategoryCounts> entry : counts.long2ObjectEntrySet()) {
++            final ChunkPos chunkPos = ChunkPos.unpack(entry.getLongKey());
++            final ChunkCategoryCounts chunkCounts = entry.getValue();
++            for (final MobCategory category : NaturalSpawner.SPAWNING_CATEGORIES) {
++                final int index = category.ordinal();
++                final int localCount = chunkCounts.localMobCounts[index];
++                if (localMobCapCalculator != null && localCount != 0) {
++                    localMobCapCalculator.addMobs(chunkPos, category, localCount);
++                }
++                final int playerCount = chunkCounts.playerMobCounts[index];
++                if (playerMobCounter != null && playerCount != 0) {
++                    playerMobCounter.updatePlayerMobTypeMap(chunkPos, category, playerCount);
++                }
++            }
++        }
++    }
++
++    private static net.minecraft.world.level.biome.Biome getRoughBiome(final BlockPos pos, final ChunkAccess chunk) {
++        return chunk.getNoiseBiome(
++            QuartPos.fromBlock(pos.getX()),
++            QuartPos.fromBlock(pos.getY()),
++            QuartPos.fromBlock(pos.getZ())
++        ).value();
++    }
++
++    record Result(Object2IntOpenHashMap<MobCategory> mobCounts, PotentialCalculator spawnPotential) {
++    }
++
++    private record Snapshot(FrozenInputs inputs, @Nullable ChunkMap playerMobCounter) {
++    }
++
++    private record FrozenInputs(
++        BlockPos[] positions,
++        MobCategory[] categories,
++        boolean[] mobs,
++        MobSpawnSettings.MobSpawnCost[] costs,
++        long[] localChunkKeys,
++        long[] playerChunkKeys,
++        int size
++    ) {
++    }
++
++    private static final class SnapshotBuilder {
++
++        private BlockPos[] positions = new BlockPos[INITIAL_CAPACITY];
++        private MobCategory[] categories = new MobCategory[INITIAL_CAPACITY];
++        private boolean[] mobs = new boolean[INITIAL_CAPACITY];
++        private MobSpawnSettings.MobSpawnCost[] costs = new MobSpawnSettings.MobSpawnCost[INITIAL_CAPACITY];
++        private long[] localChunkKeys = new long[INITIAL_CAPACITY];
++        private long[] playerChunkKeys = new long[INITIAL_CAPACITY];
++        private int size;
++
++        void add(
++            final BlockPos position,
++            final MobCategory category,
++            final boolean mob,
++            final MobSpawnSettings.@Nullable MobSpawnCost cost,
++            final long localChunkKey,
++            final long playerChunkKey
++        ) {
++            this.ensureCapacity(this.size + 1);
++            this.positions[this.size] = position;
++            this.categories[this.size] = category;
++            this.mobs[this.size] = mob;
++            this.costs[this.size] = cost;
++            this.localChunkKeys[this.size] = localChunkKey;
++            this.playerChunkKeys[this.size] = playerChunkKey;
++            this.size++;
++        }
++
++        FrozenInputs freeze() {
++            return new FrozenInputs(
++                this.positions,
++                this.categories,
++                this.mobs,
++                this.costs,
++                this.localChunkKeys,
++                this.playerChunkKeys,
++                this.size
++            );
++        }
++
++        private void ensureCapacity(final int required) {
++            if (required <= this.positions.length) {
++                return;
++            }
++            final int nextCapacity = Math.max(required, this.positions.length + (this.positions.length >> 1));
++            this.positions = Arrays.copyOf(this.positions, nextCapacity);
++            this.categories = Arrays.copyOf(this.categories, nextCapacity);
++            this.mobs = Arrays.copyOf(this.mobs, nextCapacity);
++            this.costs = Arrays.copyOf(this.costs, nextCapacity);
++            this.localChunkKeys = Arrays.copyOf(this.localChunkKeys, nextCapacity);
++            this.playerChunkKeys = Arrays.copyOf(this.playerChunkKeys, nextCapacity);
++        }
++    }
++
++    private static final class ChunkCategoryCounts {
++
++        private final int[] localMobCounts = new int[CATEGORY_COUNT];
++        private final int[] playerMobCounts = new int[CATEGORY_COUNT];
++
++        void add(final ChunkCategoryCounts other) {
++            for (int index = 0; index < CATEGORY_COUNT; index++) {
++                this.localMobCounts[index] += other.localMobCounts[index];
++                this.playerMobCounts[index] += other.playerMobCounts[index];
++            }
++        }
++    }
++}

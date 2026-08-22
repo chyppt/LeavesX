@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 19:42:31 +0800
+Subject: [PATCH] Add container opener recount coverage for bate52
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ContainerOpenerRecheckHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ContainerOpenerRecheckHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f3f704ed9ff0648f164a9cb1428b29c0ef4b254c
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ContainerOpenerRecheckHotPathTest.java
+@@ -0,0 +1,73 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.level.block.entity.ContainerOpenersCounter;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies periodic container opener recounts reuse entity storage without changing the public query contract. */
++@Normal
++class ContainerOpenerRecheckHotPathTest {
++
++    @Test
++    void recheckUsesTheConfigurableBufferedCounter() throws IOException {
++        final ClassNode counter = classNode(ContainerOpenersCounter.class);
++        final MethodNode recheck = method(counter, "recheckOpeners");
++
++        assertTrue(hasInvocation(recheck, "org/leavesx/leavesx/config/LeavesXRuntime", "blockEntityOptimizations"));
++        assertTrue(invocations(recheck).stream().anyMatch(call -> call.name.equals("leavesXCountOpeners")));
++        assertTrue(invocations(recheck).stream().anyMatch(call -> call.name.equals("getEntitiesWithContainerOpen")));
++    }
++
++    @Test
++    void fastCounterReusesTheSharedFullQueryBuffer() throws IOException {
++        final MethodNode fastCounter = method(classNode(ContainerOpenersCounter.class), "leavesXCountOpeners");
++
++        assertTrue(hasInvocation(fastCounter, "net/minecraft/world/level/Level", "leavesX$acquireEntityQueryBuffer"));
++        assertTrue(invocations(fastCounter).stream().anyMatch(call -> call.name.equals("query")));
++        assertTrue(invocations(fastCounter).stream().anyMatch(call -> call.name.equals("getContainerInteractionRange")));
++        assertTrue(invocations(fastCounter).stream().anyMatch(call -> call.name.equals("close")));
++        assertTrue(invocations(fastCounter).stream().noneMatch(call -> call.owner.equals("java/util/stream/Stream")));
++    }
++
++    @Test
++    void publicContainerUserQueryStillReturnsAnIndependentList() throws IOException {
++        final MethodNode publicQuery = method(classNode(ContainerOpenersCounter.class), "getEntitiesWithContainerOpen");
++
++        assertTrue(invocations(publicQuery).stream().anyMatch(call -> call.name.equals("getEntities")));
++        assertTrue(hasInvocation(publicQuery, "java/util/stream/Stream", "collect"));
++    }
++
++    private static boolean hasInvocation(final MethodNode method, final String owner, final String name) {
++        return invocations(method).stream().anyMatch(call -> call.owner.equals(owner) && call.name.equals(name));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

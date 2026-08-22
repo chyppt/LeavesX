@@ -1,0 +1,763 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 08:36:41 +0800
+Subject: [PATCH] Expand fine-grained optimization controls for bate107
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index b2ef65aa75335375664aceb8c6ed09c28e3d3a07..2d92e8bdefa945485d6a01571ba0ae702f94f98d 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 37;
++    public static final int CURRENT_CONFIG_VERSION = 38;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index e2db162c4fbfd0d5d491120710536d2b28bc6db3..1d78fb0faad029d777c1888ba79b09b390c805fa 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：37。");
++        comments.put("config-version", "配置版本，请勿修改。默认：38。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index e4251b32cc3a5cebe62ed390e08abcec2728021c..6883943edb142747b6684c16d45318b2a0856545 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -231,6 +231,146 @@ enum LeavesXOptimization {
+     MINECART_MOTION_DISTANCE(
+         "performance.entity-sync.minecart-motion-distance",
+         "矿车速度未变时跳过距离计算，关闭后每次计算。默认：true。"
++    ),
++    POI_BOUNDED_TRAVERSAL(
++        "performance.ai.poi-bounded-traversal",
++        "限制 POI 搜索只遍历需要的范围，关闭后使用原版遍历。默认：true。"
++    ),
++    VILLAGER_GOLEM_AGREEMENT(
++        "performance.ai.villager-golem-agreement",
++        "村民召唤铁傀儡时达到人数后停止计数，关闭后完整收集。默认：true。"
++    ),
++    TARGETING_RANGE_CHECKS(
++        "performance.ai.targeting-range-checks",
++        "目标超出可见距离时提前结束判断，关闭后使用原版顺序。默认：true。"
++    ),
++    TEMPTING_PLAYER_SEARCH(
++        "performance.ai.tempting-player-search",
++        "生物寻找诱惑玩家时减少临时对象，关闭后使用原版流。默认：true。"
++    ),
++    SENSOR_FOLLOW_RANGE_CACHE(
++        "performance.ai.sensor-follow-range-cache",
++        "跟随距离未变时复用传感器范围，关闭后每次更新。默认：true。"
++    ),
++    NEAREST_ENTITY_DISTANCE_SORT(
++        "performance.ai.nearest-entity-distance-sort",
++        "附近实体按距离排序时复用稳定排序缓冲，关闭后使用原版排序。默认：true。"
++    ),
++    VISIBLE_ENTITY_TARGET_CACHE(
++        "performance.ai.visible-entity-target-cache",
++        "附近可见实体复用紧凑目标缓存，关闭后使用原版映射。默认：true。"
++    ),
++    VILLAGER_GOSSIP_SCANS(
++        "performance.ai.villager-gossip-scans",
++        "村民声望统计使用直接遍历，关闭后使用原版流。默认：true。"
++    ),
++    PLAYER_DISTANCE_QUERIES(
++        "performance.ai.player-distance-queries",
++        "附近玩家查询使用直接循环，关闭后使用原版流程。默认：true。"
++    ),
++    SCHOOLING_FISH_LEADER(
++        "performance.ai.schooling-fish-leader",
++        "鱼群寻找领队时减少流和临时对象，关闭后使用原版流程。默认：true。"
++    ),
++    BRAIN_BEHAVIOR_SCHEDULING(
++        "performance.ai.brain-behavior-scheduling",
++        "大脑行为调度复用稳定遍历和快照，关闭后使用原版流。默认：true。"
++    ),
++    ACQUIRE_POI_CANDIDATES(
++        "performance.ai.acquire-poi-candidates",
++        "生物寻找 POI 时减少候选集合分配，关闭后使用原版集合。默认：true。"
++    ),
++    VILLAGE_SECTION_SEARCH(
++        "performance.ai.village-section-search",
++        "寻找最近村庄区段时直接遍历，关闭后使用原版流。默认：true。"
++    ),
++    INSIDE_BROWNIAN_WALK(
++        "performance.ai.inside-brownian-walk",
++        "室内随机移动选点减少临时对象，关闭后使用原版流程。默认：true。"
++    ),
++    DOOR_MEMORY_SCAN(
++        "performance.ai.door-memory-scan",
++        "生物通过门时直接检查附近同类，关闭后使用原版流。默认：true。"
++    ),
++    GATE_BEHAVIOR_TRAVERSAL(
++        "performance.ai.gate-behavior-traversal",
++        "门控行为按原顺序直接遍历，关闭后使用原版流。默认：true。"
++    ),
++    VILLAGER_PLAY_TAG(
++        "performance.ai.villager-play-tag",
++        "幼年村民玩耍选目标时减少临时对象，关闭后使用原版流。默认：true。"
++    ),
++    YIELD_JOB_SITE(
++        "performance.ai.yield-job-site",
++        "村民让出工作站时直接查找候选，关闭后使用原版流。默认：true。"
++    ),
++    PATH_CANDIDATE_COMPARISON(
++        "performance.pathfinding.path-candidate-comparison",
++        "寻路结果直接比较候选，关闭后每次创建比较器。默认：true。"
++    ),
++    PATH_NODE_LIST_BUILDING(
++        "performance.pathfinding.path-node-list-building",
++        "寻路节点按正向顺序构建，关闭后使用头部插入。默认：true。"
++    ),
++    NAVIGATION_NODE_POSITION(
++        "performance.pathfinding.navigation-node-position",
++        "导航检查当前节点时避免创建方块坐标，关闭后使用原版对象。默认：true。"
++    ),
++    NAVIGATION_DIRECTION_VECTOR(
++        "performance.pathfinding.navigation-direction-vector",
++        "导航方向判断使用标量计算，关闭后创建临时向量。默认：true。"
++    ),
++    NAVIGATION_TIMEOUT_NODE(
++        "performance.pathfinding.navigation-timeout-node",
++        "导航超时检测复用当前节点坐标，关闭后每次创建对象。默认：true。"
++    ),
++    NAVIGATION_RECOMPUTE_DISTANCE(
++        "performance.pathfinding.navigation-recompute-distance",
++        "路径重算距离使用标量计算，关闭后创建临时向量。默认：true。"
++    ),
++    SYNCED_DATA_PACKING(
++        "performance.entity-state.synced-data-packing",
++        "实体同步数据按已知数量预留列表容量，关闭后使用默认容量。默认：true。"
++    ),
++    ENTITY_MOTION_IDENTITY(
++        "performance.entity-state.motion-identity",
++        "普通实体速度对象未变时跳过距离计算，关闭后每次计算。默认：true。"
++    ),
++    LIVING_EFFECT_TICK(
++        "performance.entity-state.living-effect-tick",
++        "实体没有药水效果时跳过空迭代，关闭后仍创建迭代器。默认：true。"
++    ),
++    EFFECT_PARTICLE_COLLECTION(
++        "performance.entity-state.effect-particle-collection",
++        "药水粒子使用预分配列表收集，关闭后使用原版流。默认：true。"
++    ),
++    FREEZE_TICK_UPDATE(
++        "performance.entity-state.freeze-tick-update",
++        "冻结值已经为零时跳过同步写入，关闭后仍执行写入。默认：true。"
++    ),
++    GLIDER_SLOT_SELECTION(
++        "performance.entity-state.glider-slot-selection",
++        "鞘翅槽位随机选择减少临时列表，关闭后使用原版流。默认：true。"
++    ),
++    AREA_EFFECT_CLOUD_SCAN(
++        "performance.entity-state.area-effect-cloud-scan",
++        "效果云判断可用药水效果时直接遍历，关闭后使用原版流。默认：true。"
++    ),
++    ENCHANTMENT_SLOT_MATCHING(
++        "performance.entity-state.enchantment-slot-matching",
++        "附魔槽位匹配使用直接遍历，关闭后使用原版流。默认：true。"
++    ),
++    NATURAL_SPAWN_EVENT_LISTENER(
++        "performance.events.natural-spawn-listener-check",
++        "自然刷怪没有监听器时不创建事件，关闭后始终创建。默认：true。"
++    ),
++    GAME_EVENT_LISTENER(
++        "performance.events.game-event-listener-check",
++        "游戏事件没有监听器时不创建事件，关闭后始终创建。默认：true。"
++    ),
++    NATURAL_SPAWN_STATE(
++        "performance.mob-spawning.natural-spawn-state",
++        "自然刷怪统计减少重复遍历，关闭后使用 Paper 原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 300cceb1591819e672ea99686964a3777e29be81..77963d13614cae35eb7269445868635811ef8cc1 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -575,6 +575,181 @@ public final class LeavesXRuntime {
+         return entityStateOptimizations && serverFireStateOptimization;
+     }
+ 
++    /** Returns whether POI searches may stop traversing once the requested bounded range is exhausted. */
++    public static boolean poiBoundedTraversalOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.POI_BOUNDED_TRAVERSAL);
++    }
++
++    /** Returns whether villager golem agreement counting may stop at the required threshold. */
++    public static boolean villagerGolemAgreementOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.VILLAGER_GOLEM_AGREEMENT);
++    }
++
++    /** Returns whether targeting checks may reject entities beyond the strict visibility bound first. */
++    public static boolean targetingRangeChecksOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.TARGETING_RANGE_CHECKS);
++    }
++
++    /** Returns whether tempting-player selection may use the allocation-free direct search. */
++    public static boolean temptingPlayerSearchOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.TEMPTING_PLAYER_SEARCH);
++    }
++
++    /** Returns whether unchanged follow ranges may retain their existing targeting conditions. */
++    public static boolean sensorFollowRangeCacheOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.SENSOR_FOLLOW_RANGE_CACHE);
++    }
++
++    /** Returns whether nearest-entity sensors may use the stable reusable distance sorter. */
++    public static boolean nearestEntityDistanceSortOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.NEAREST_ENTITY_DISTANCE_SORT);
++    }
++
++    /** Returns whether visible-entity targeting may use the compact deterministic cache. */
++    public static boolean visibleEntityTargetCacheOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.VISIBLE_ENTITY_TARGET_CACHE);
++    }
++
++    /** Returns whether villager gossip totals may use allocation-free direct scans. */
++    public static boolean villagerGossipScansOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.VILLAGER_GOSSIP_SCANS);
++    }
++
++    /** Returns whether player proximity queries may use stable indexed loops. */
++    public static boolean playerDistanceQueriesOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.PLAYER_DISTANCE_QUERIES);
++    }
++
++    /** Returns whether schooling fish may choose leaders without stream pipelines. */
++    public static boolean schoolingFishLeaderOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.SCHOOLING_FISH_LEADER);
++    }
++
++    /** Returns whether Brain behavior scheduling may reuse deterministic traversals and snapshots. */
++    public static boolean brainBehaviorSchedulingOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.BRAIN_BEHAVIOR_SCHEDULING);
++    }
++
++    /** Returns whether POI acquisition may avoid temporary candidate collections. */
++    public static boolean acquirePoiCandidatesOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.ACQUIRE_POI_CANDIDATES);
++    }
++
++    /** Returns whether village section selection may use the direct bounded traversal. */
++    public static boolean villageSectionSearchOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.VILLAGE_SECTION_SEARCH);
++    }
++
++    /** Returns whether indoor random walking may avoid temporary position objects. */
++    public static boolean insideBrownianWalkOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.INSIDE_BROWNIAN_WALK);
++    }
++
++    /** Returns whether door memories may scan nearby mobs directly. */
++    public static boolean doorMemoryScanOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.DOOR_MEMORY_SCAN);
++    }
++
++    /** Returns whether gate behaviors may traverse their stable order directly. */
++    public static boolean gateBehaviorTraversalOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.GATE_BEHAVIOR_TRAVERSAL);
++    }
++
++    /** Returns whether villager play-tag target selection may avoid temporary streams. */
++    public static boolean villagerPlayTagOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.VILLAGER_PLAY_TAG);
++    }
++
++    /** Returns whether yielding a job site may search the stable visible-entity list directly. */
++    public static boolean yieldJobSiteOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.YIELD_JOB_SITE);
++    }
++
++    /** Returns whether path candidates may be compared without allocating a comparator. */
++    public static boolean pathCandidateComparisonOptimization() {
++        return pathfindingOptimizations && enabled(LeavesXOptimization.PATH_CANDIDATE_COMPARISON);
++    }
++
++    /** Returns whether reconstructed paths may build their node list in linear time. */
++    public static boolean pathNodeListBuildingOptimization() {
++        return pathfindingOptimizations && enabled(LeavesXOptimization.PATH_NODE_LIST_BUILDING);
++    }
++
++    /** Returns whether navigation may inspect the current node without allocating a BlockPos. */
++    public static boolean navigationNodePositionOptimization() {
++        return pathfindingOptimizations && enabled(LeavesXOptimization.NAVIGATION_NODE_POSITION);
++    }
++
++    /** Returns whether navigation direction checks may use scalar arithmetic. */
++    public static boolean navigationDirectionVectorOptimization() {
++        return pathfindingOptimizations && enabled(LeavesXOptimization.NAVIGATION_DIRECTION_VECTOR);
++    }
++
++    /** Returns whether navigation timeout tracking may reuse the current node coordinates. */
++    public static boolean navigationTimeoutNodeOptimization() {
++        return pathfindingOptimizations && enabled(LeavesXOptimization.NAVIGATION_TIMEOUT_NODE);
++    }
++
++    /** Returns whether path recomputation distance checks may avoid a temporary Vec3. */
++    public static boolean navigationRecomputeDistanceOptimization() {
++        return pathfindingOptimizations && enabled(LeavesXOptimization.NAVIGATION_RECOMPUTE_DISTANCE);
++    }
++
++    /** Returns whether dirty synchronized data may reserve its known final list capacity. */
++    public static boolean syncedDataPackingOptimization() {
++        return entityStateOptimizations && enabled(LeavesXOptimization.SYNCED_DATA_PACKING);
++    }
++
++    /** Returns whether unchanged entity motion references may skip a provably zero distance calculation. */
++    public static boolean entityMotionIdentityOptimization() {
++        return entityStateOptimizations && enabled(LeavesXOptimization.ENTITY_MOTION_IDENTITY);
++    }
++
++    /** Returns whether entities without active effects may skip the empty effect iteration. */
++    public static boolean livingEffectTickOptimization() {
++        return entityStateOptimizations && enabled(LeavesXOptimization.LIVING_EFFECT_TICK);
++    }
++
++    /** Returns whether visible effect particles may be collected into a pre-sized list. */
++    public static boolean effectParticleCollectionOptimization() {
++        return entityStateOptimizations && enabled(LeavesXOptimization.EFFECT_PARTICLE_COLLECTION);
++    }
++
++    /** Returns whether zero frozen ticks may skip a redundant synchronized-data write. */
++    public static boolean freezeTickUpdateOptimization() {
++        return entityStateOptimizations && enabled(LeavesXOptimization.FREEZE_TICK_UPDATE);
++    }
++
++    /** Returns whether glider slot selection may avoid building a temporary eligible-slot list. */
++    public static boolean gliderSlotSelectionOptimization() {
++        return entityStateOptimizations && enabled(LeavesXOptimization.GLIDER_SLOT_SELECTION);
++    }
++
++    /** Returns whether area-effect clouds may scan applicable effects directly. */
++    public static boolean areaEffectCloudScanOptimization() {
++        return entityStateOptimizations && enabled(LeavesXOptimization.AREA_EFFECT_CLOUD_SCAN);
++    }
++
++    /** Returns whether enchantment slot groups may be matched with a direct short-circuiting loop. */
++    public static boolean enchantmentSlotMatchingOptimization() {
++        return entityStateOptimizations && enabled(LeavesXOptimization.ENCHANTMENT_SLOT_MATCHING);
++    }
++
++    /** Returns whether natural-spawn events may skip allocation when no listener is registered. */
++    public static boolean naturalSpawnEventListenerOptimization() {
++        return skipEmptyEvents && enabled(LeavesXOptimization.NATURAL_SPAWN_EVENT_LISTENER);
++    }
++
++    /** Returns whether game events may skip allocation when no listener is registered. */
++    public static boolean gameEventListenerOptimization() {
++        return skipEmptyEvents && enabled(LeavesXOptimization.GAME_EVENT_LISTENER);
++    }
++
++    /** Returns whether natural-spawn state creation may use the deterministic optimized accounting path. */
++    public static boolean naturalSpawnStateOptimization() {
++        return mobSpawningOptimizations && enabled(LeavesXOptimization.NATURAL_SPAWN_STATE);
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(fineGrainedOptimizationMaskLow, fineGrainedOptimizationMaskHigh);
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index c98e1236d2d4ec779070d95a6bc298969a3b8685..fd9074b0b6d5dcac9aa5c28e9f1cfcc7164b77df 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -386,6 +386,140 @@ class LeavesXConfigLoaderTest {
+         }
+     }
+ 
++    @Test
++    void loadsExpandedAiPathfindingEntityStateAndEventSwitches() throws IOException {
++        final LeavesXConfig config = LeavesXConfigLoader.load(write("""
++            config-version: 1
++            performance:
++              ai:
++                acquire-poi-candidates: false
++                brain-behavior-scheduling: false
++                door-memory-scan: false
++                gate-behavior-traversal: false
++                inside-brownian-walk: false
++                nearest-entity-distance-sort: false
++                player-distance-queries: false
++                poi-bounded-traversal: false
++                schooling-fish-leader: false
++                sensor-follow-range-cache: false
++                targeting-range-checks: false
++                tempting-player-search: false
++                village-section-search: false
++                villager-golem-agreement: false
++                villager-gossip-scans: false
++                villager-play-tag: false
++                visible-entity-target-cache: false
++                yield-job-site: false
++              entity-state:
++                area-effect-cloud-scan: false
++                effect-particle-collection: false
++                enchantment-slot-matching: false
++                freeze-tick-update: false
++                glider-slot-selection: false
++                living-effect-tick: false
++                motion-identity: false
++                synced-data-packing: false
++              events:
++                game-event-listener-check: false
++                natural-spawn-listener-check: false
++              mob-spawning:
++                natural-spawn-state: false
++              pathfinding:
++                navigation-direction-vector: false
++                navigation-node-position: false
++                navigation-recompute-distance: false
++                navigation-timeout-node: false
++                path-candidate-comparison: false
++                path-node-list-building: false
++            """));
++
++        final LeavesXOptimization[] disabled = {
++            LeavesXOptimization.ACQUIRE_POI_CANDIDATES,
++            LeavesXOptimization.BRAIN_BEHAVIOR_SCHEDULING,
++            LeavesXOptimization.DOOR_MEMORY_SCAN,
++            LeavesXOptimization.GATE_BEHAVIOR_TRAVERSAL,
++            LeavesXOptimization.INSIDE_BROWNIAN_WALK,
++            LeavesXOptimization.NEAREST_ENTITY_DISTANCE_SORT,
++            LeavesXOptimization.PLAYER_DISTANCE_QUERIES,
++            LeavesXOptimization.POI_BOUNDED_TRAVERSAL,
++            LeavesXOptimization.SCHOOLING_FISH_LEADER,
++            LeavesXOptimization.SENSOR_FOLLOW_RANGE_CACHE,
++            LeavesXOptimization.TARGETING_RANGE_CHECKS,
++            LeavesXOptimization.TEMPTING_PLAYER_SEARCH,
++            LeavesXOptimization.VILLAGE_SECTION_SEARCH,
++            LeavesXOptimization.VILLAGER_GOLEM_AGREEMENT,
++            LeavesXOptimization.VILLAGER_GOSSIP_SCANS,
++            LeavesXOptimization.VILLAGER_PLAY_TAG,
++            LeavesXOptimization.VISIBLE_ENTITY_TARGET_CACHE,
++            LeavesXOptimization.YIELD_JOB_SITE,
++            LeavesXOptimization.AREA_EFFECT_CLOUD_SCAN,
++            LeavesXOptimization.EFFECT_PARTICLE_COLLECTION,
++            LeavesXOptimization.ENCHANTMENT_SLOT_MATCHING,
++            LeavesXOptimization.FREEZE_TICK_UPDATE,
++            LeavesXOptimization.GLIDER_SLOT_SELECTION,
++            LeavesXOptimization.LIVING_EFFECT_TICK,
++            LeavesXOptimization.ENTITY_MOTION_IDENTITY,
++            LeavesXOptimization.SYNCED_DATA_PACKING,
++            LeavesXOptimization.GAME_EVENT_LISTENER,
++            LeavesXOptimization.NATURAL_SPAWN_EVENT_LISTENER,
++            LeavesXOptimization.NATURAL_SPAWN_STATE,
++            LeavesXOptimization.NAVIGATION_DIRECTION_VECTOR,
++            LeavesXOptimization.NAVIGATION_NODE_POSITION,
++            LeavesXOptimization.NAVIGATION_RECOMPUTE_DISTANCE,
++            LeavesXOptimization.NAVIGATION_TIMEOUT_NODE,
++            LeavesXOptimization.PATH_CANDIDATE_COMPARISON,
++            LeavesXOptimization.PATH_NODE_LIST_BUILDING
++        };
++        for (final LeavesXOptimization optimization : disabled) {
++            assertFalse(config.optimizationEnabled(optimization), optimization.name());
++        }
++        assertEquals(
++            LeavesXConfig.fineGrainedOptimizationCount() - disabled.length,
++            config.enabledFineGrainedOptimizationCount()
++        );
++
++        try {
++            LeavesXRuntime.publish(config);
++            assertFalse(LeavesXRuntime.acquirePoiCandidatesOptimization());
++            assertFalse(LeavesXRuntime.brainBehaviorSchedulingOptimization());
++            assertFalse(LeavesXRuntime.doorMemoryScanOptimization());
++            assertFalse(LeavesXRuntime.gateBehaviorTraversalOptimization());
++            assertFalse(LeavesXRuntime.insideBrownianWalkOptimization());
++            assertFalse(LeavesXRuntime.nearestEntityDistanceSortOptimization());
++            assertFalse(LeavesXRuntime.playerDistanceQueriesOptimization());
++            assertFalse(LeavesXRuntime.poiBoundedTraversalOptimization());
++            assertFalse(LeavesXRuntime.schoolingFishLeaderOptimization());
++            assertFalse(LeavesXRuntime.sensorFollowRangeCacheOptimization());
++            assertFalse(LeavesXRuntime.targetingRangeChecksOptimization());
++            assertFalse(LeavesXRuntime.temptingPlayerSearchOptimization());
++            assertFalse(LeavesXRuntime.villageSectionSearchOptimization());
++            assertFalse(LeavesXRuntime.villagerGolemAgreementOptimization());
++            assertFalse(LeavesXRuntime.villagerGossipScansOptimization());
++            assertFalse(LeavesXRuntime.villagerPlayTagOptimization());
++            assertFalse(LeavesXRuntime.visibleEntityTargetCacheOptimization());
++            assertFalse(LeavesXRuntime.yieldJobSiteOptimization());
++            assertFalse(LeavesXRuntime.areaEffectCloudScanOptimization());
++            assertFalse(LeavesXRuntime.effectParticleCollectionOptimization());
++            assertFalse(LeavesXRuntime.enchantmentSlotMatchingOptimization());
++            assertFalse(LeavesXRuntime.freezeTickUpdateOptimization());
++            assertFalse(LeavesXRuntime.gliderSlotSelectionOptimization());
++            assertFalse(LeavesXRuntime.livingEffectTickOptimization());
++            assertFalse(LeavesXRuntime.entityMotionIdentityOptimization());
++            assertFalse(LeavesXRuntime.syncedDataPackingOptimization());
++            assertFalse(LeavesXRuntime.gameEventListenerOptimization());
++            assertFalse(LeavesXRuntime.naturalSpawnEventListenerOptimization());
++            assertFalse(LeavesXRuntime.naturalSpawnStateOptimization());
++            assertFalse(LeavesXRuntime.navigationDirectionVectorOptimization());
++            assertFalse(LeavesXRuntime.navigationNodePositionOptimization());
++            assertFalse(LeavesXRuntime.navigationRecomputeDistanceOptimization());
++            assertFalse(LeavesXRuntime.navigationTimeoutNodeOptimization());
++            assertFalse(LeavesXRuntime.pathCandidateComparisonOptimization());
++            assertFalse(LeavesXRuntime.pathNodeListBuildingOptimization());
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
+     @Test
+     void masterSwitchesOverrideFineGrainedSettings() throws IOException {
+         final LeavesXConfig config = LeavesXConfigLoader.load(write("""
+@@ -396,12 +530,19 @@ class LeavesXConfigLoaderTest {
+               entity-state-optimizations: false
+               entity-query-optimizations: false
+               mob-spawning-optimizations: false
++              pathfinding-optimizations: false
++              skip-empty-events: false
+               ai:
+                 breeze-attack-sensor: true
++                poi-bounded-traversal: true
+                 villager-farmland-seed-scan: true
+                 villager-food-inventory: true
+               block-entity:
+                 hopper-entity-queries: true
++              entity-state:
++                synced-data-packing: true
++              events:
++                game-event-listener-check: true
+               entity-queries:
+                 cat-spawning-density: true
+                 entity-lookup-visibility: true
+@@ -410,6 +551,10 @@ class LeavesXConfigLoaderTest {
+               entity-update:
+                 server-fire-state: true
+                 stationary-speed-vector: true
++              mob-spawning:
++                natural-spawn-state: true
++              pathfinding:
++                path-node-list-building: true
+             """));
+ 
+         try {
+@@ -417,6 +562,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.breezeAttackSensorOptimization());
+             assertFalse(LeavesXRuntime.villagerFarmlandSeedScanOptimization());
+             assertFalse(LeavesXRuntime.villagerFoodInventoryOptimization());
++            assertFalse(LeavesXRuntime.poiBoundedTraversalOptimization());
+             assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.catSpawningHomeCountOptimization());
+@@ -425,6 +571,10 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.experienceOrbMergeParametersOptimization());
+             assertFalse(LeavesXRuntime.serverFireStateOptimization());
+             assertFalse(LeavesXRuntime.stationaryEntitySpeedOptimization());
++            assertFalse(LeavesXRuntime.syncedDataPackingOptimization());
++            assertFalse(LeavesXRuntime.gameEventListenerOptimization());
++            assertFalse(LeavesXRuntime.naturalSpawnStateOptimization());
++            assertFalse(LeavesXRuntime.pathNodeListBuildingOptimization());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityTickAndSyncHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityTickAndSyncHotPathTest.java
+index 0596e6f34cd3593033c64cdcb6308751f2977259..725790b7c983fbbbfdbdc3916f477e89eb424a37 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/EntityTickAndSyncHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityTickAndSyncHotPathTest.java
+@@ -72,7 +72,7 @@ class EntityTickAndSyncHotPathTest {
+         final List<MethodInsnNode> calls = methodCalls(SynchedEntityData.class, "packDirty");
+ 
+         assertTrue(calls.stream().anyMatch(call -> call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime")
+-            && call.name.equals("entityStateOptimizations")));
++            && call.name.equals("syncedDataPackingOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.owner.equals("java/util/ArrayList")
+             && call.name.equals("<init>") && call.desc.equals("(I)V")));
+         assertTrue(calls.stream().anyMatch(call -> call.owner.equals("java/util/ArrayList")
+@@ -85,7 +85,7 @@ class EntityTickAndSyncHotPathTest {
+         final int runtimeCheck = invocationIndex(
+             instructions,
+             "org/leavesx/leavesx/config/LeavesXRuntime",
+-            "entityStateOptimizations"
++            "livingEffectTickOptimization"
+         );
+         final int emptyCheck = invocationIndex(instructions, "java/util/Map", "isEmpty");
+         final int iteratorCreation = invocationIndex(instructions, "java/util/Map", "keySet");
+@@ -117,9 +117,9 @@ class EntityTickAndSyncHotPathTest {
+                 movementRead,
+                 distanceCalculation,
+                 "org/leavesx/leavesx/config/LeavesXRuntime",
+-                "entityStateOptimizations"
++                "entityMotionIdentityOptimization"
+             ),
+-            "The identity fast path must remain controlled by entity-state-optimizations"
++            "The identity fast path must remain controlled by performance.entity-state.motion-identity"
+         );
+         assertTrue(
+             hasReferenceComparisonBetween(instructions, movementRead, distanceCalculation),
+@@ -143,9 +143,9 @@ class EntityTickAndSyncHotPathTest {
+                 frozenTicksRead,
+                 frozenTicksWrite,
+                 "org/leavesx/leavesx/config/LeavesXRuntime",
+-                "entityStateOptimizations"
++                "freezeTickUpdateOptimization"
+             ),
+-            "The frozen-tick fast path must remain controlled by entity-state-optimizations"
++            "The frozen-tick fast path must remain controlled by performance.entity-state.freeze-tick-update"
+         );
+         assertTrue(
+             hasConditionalJumpBetween(instructions, frozenTicksRead, frozenTicksWrite),
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..a4e61550a024f55c26ad0400acf84b5dbb22b015
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+@@ -0,0 +1,117 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Set;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies coarse compatibility masters are paired with independently configurable hot-path switches. */
++@Normal
++class FineGrainedOptimizationWiringTest {
++
++    private static final String RUNTIME_OWNER = "org/leavesx/leavesx/config/LeavesXRuntime";
++    private static final Set<String> COARSE_RUNTIME_CALLS = Set.of(
++        "aiOptimizations",
++        "entityStateOptimizations",
++        "mobSpawningOptimizations",
++        "pathfindingOptimizations",
++        "skipEmptyEvents"
++    );
++
++    @Test
++    void optimizedMinecraftClassesUseDedicatedRuntimeSwitches() throws IOException, ClassNotFoundException {
++        for (final Wiring wiring : wirings()) {
++            final Set<String> runtimeCalls = runtimeCalls(wiring.className());
++            for (final String expected : wiring.expectedRuntimeCalls()) {
++                assertTrue(runtimeCalls.contains(expected), wiring.className() + " must call " + expected);
++            }
++            for (final String coarse : COARSE_RUNTIME_CALLS) {
++                assertFalse(runtimeCalls.contains(coarse), wiring.className() + " must not call coarse switch " + coarse);
++            }
++        }
++    }
++
++    private static List<Wiring> wirings() {
++        return List.of(
++            new Wiring("ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess", "poiBoundedTraversalOptimization"),
++            new Wiring("net.minecraft.world.entity.npc.villager.Villager", "villagerGolemAgreementOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.targeting.TargetingConditions", "targetingRangeChecksOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.sensing.TemptingSensor", "temptingPlayerSearchOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.sensing.Sensor", "sensorFollowRangeCacheOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.sensing.NearestLivingEntitySensor", "nearestEntityDistanceSortOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.sensing.NearestItemSensor", "nearestEntityDistanceSortOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.memory.NearestVisibleLivingEntities", "visibleEntityTargetCacheOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.gossip.GossipContainer", "villagerGossipScansOptimization"),
++            new Wiring("net.minecraft.world.level.EntityGetter", "playerDistanceQueriesOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.goal.FollowFlockLeaderGoal", "schoolingFishLeaderOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.Brain", "brainBehaviorSchedulingOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.behavior.AcquirePoi", "acquirePoiCandidatesOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.behavior.BehaviorUtils", "villageSectionSearchOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.behavior.InsideBrownianWalk", "insideBrownianWalkOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.behavior.InteractWithDoor", "doorMemoryScanOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.behavior.GateBehavior", "gateBehaviorTraversalOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.behavior.PlayTagWithOtherKids", "villagerPlayTagOptimization"),
++            new Wiring("net.minecraft.world.entity.ai.behavior.YieldJobSite", "yieldJobSiteOptimization"),
++            new Wiring(
++                "net.minecraft.world.level.pathfinder.PathFinder",
++                "pathCandidateComparisonOptimization",
++                "pathNodeListBuildingOptimization"
++            ),
++            new Wiring(
++                "net.minecraft.world.entity.ai.navigation.PathNavigation",
++                "navigationNodePositionOptimization",
++                "navigationDirectionVectorOptimization",
++                "navigationTimeoutNodeOptimization",
++                "navigationRecomputeDistanceOptimization"
++            ),
++            new Wiring("net.minecraft.network.syncher.SynchedEntityData", "syncedDataPackingOptimization"),
++            new Wiring("net.minecraft.server.level.ServerEntity", "entityMotionIdentityOptimization"),
++            new Wiring(
++                "net.minecraft.world.entity.LivingEntity",
++                "livingEffectTickOptimization",
++                "effectParticleCollectionOptimization",
++                "freezeTickUpdateOptimization",
++                "gliderSlotSelectionOptimization"
++            ),
++            new Wiring("net.minecraft.world.entity.AreaEffectCloud", "areaEffectCloudScanOptimization"),
++            new Wiring("net.minecraft.world.item.enchantment.Enchantment", "enchantmentSlotMatchingOptimization"),
++            new Wiring("net.minecraft.world.level.NaturalSpawner", "naturalSpawnEventListenerOptimization"),
++            new Wiring("net.minecraft.world.level.gameevent.GameEventDispatcher", "gameEventListenerOptimization"),
++            new Wiring("net.minecraft.server.level.ServerChunkCache", "naturalSpawnStateOptimization")
++        );
++    }
++
++    private static Set<String> runtimeCalls(final String className) throws IOException, ClassNotFoundException {
++        final Set<String> calls = new HashSet<>();
++        collectRuntimeCalls(Class.forName(className, false, FineGrainedOptimizationWiringTest.class.getClassLoader()), calls);
++        return calls;
++    }
++
++    private static void collectRuntimeCalls(final Class<?> type, final Set<String> calls) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(type.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        for (final MethodNode method : classNode.methods) {
++            for (final org.objectweb.asm.tree.AbstractInsnNode instruction : method.instructions) {
++                if (instruction instanceof MethodInsnNode call && call.owner.equals(RUNTIME_OWNER)) {
++                    calls.add(call.name);
++                }
++            }
++        }
++        for (final Class<?> nested : type.getDeclaredClasses()) {
++            collectRuntimeCalls(nested, calls);
++        }
++    }
++
++    private record Wiring(String className, String... expectedRuntimeCalls) {
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java
+index ad9877dcea3564e9bb7d6e883e11d98a068b7305..6e1f60dbdf239901a557332830c4d1dca0ab0013 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java
+@@ -30,7 +30,11 @@ class SensorMemoryLookupHotPathTest {
+             && (field.access & Opcodes.ACC_STATIC) != 0));
+ 
+         final MethodNode updateRanges = method(sensor, "updateTargetingConditionRanges");
+-        assertTrue(hasInvocation(updateRanges, "org/leavesx/leavesx/config/LeavesXRuntime", "aiOptimizations"));
++        assertTrue(hasInvocation(
++            updateRanges,
++            "org/leavesx/leavesx/config/LeavesXRuntime",
++            "sensorFollowRangeCacheOptimization"
++        ));
+         assertTrue(hasInvocation(updateRanges, "java/lang/Double", "doubleToRawLongBits"));
+     }
+ 
+@@ -44,7 +48,11 @@ class SensorMemoryLookupHotPathTest {
+         );
+ 
+         assertEquals(1L, invocationCount(constructor, "net/minecraft/world/entity/LivingEntity", "getBrain"));
+-        assertTrue(hasInvocation(constructor, "org/leavesx/leavesx/config/LeavesXRuntime", "aiOptimizations"));
++        assertTrue(hasInvocation(
++            constructor,
++            "org/leavesx/leavesx/config/LeavesXRuntime",
++            "visibleEntityTargetCacheOptimization"
++        ));
+ 
+         final Class<?> cacheClass = Arrays.stream(NearestVisibleLivingEntities.class.getDeclaredClasses())
+             .filter(type -> type.getSimpleName().equals("LeavesXLineOfSightCache"))

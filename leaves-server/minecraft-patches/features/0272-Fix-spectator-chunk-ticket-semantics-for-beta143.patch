@@ -1,0 +1,492 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 21 Aug 2026 15:23:03 +0800
+Subject: [PATCH] Fix spectator chunk ticket semantics for beta143
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+index 0743659c9f1122088adad4992b93649efc9ba873..6849e7db1d724b167aee6e2cab7960333ce8a3e8 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+@@ -18,6 +18,7 @@ import ca.spottedleaf.moonrise.patches.chunk_system.ticket.ChunkSystemTicketType
+ import ca.spottedleaf.moonrise.patches.chunk_system.util.ParallelSearchRadiusIteration;
+ import com.google.gson.JsonObject;
+ import it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap;
++import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+ import it.unimi.dsi.fastutil.longs.LongArrayList;
+ import it.unimi.dsi.fastutil.longs.LongComparator;
+ import it.unimi.dsi.fastutil.longs.LongHeapPriorityQueue;
+@@ -184,29 +185,93 @@ public final class RegionizedPlayerChunkLoader {
+         this.world = world;
+     }
+ 
++    private static boolean canPlayerLoadChunks(final ServerLevel world, final ServerPlayer player) {
++        return canPlayerLoadChunks(
++            player.isSpectator(),
++            world.getGameRules().get(GameRules.SPECTATORS_GENERATE_CHUNKS),
++            org.leavesmc.leaves.LeavesConfig.modify.elytraAeronautics.enableNoChunkLoad && player.elytraAeronauticsNoChunk
++        );
++    }
++
++    static boolean canPlayerLoadChunks(
++        final boolean spectator,
++        final boolean spectatorsGenerateChunks,
++        final boolean explicitlySuppressChunkLoading
++    ) {
++        return (!spectator || spectatorsGenerateChunks) && !explicitlySuppressChunkLoading;
++    }
++
++    /**
++     * Returns whether a player needs a read-only loader that can watch chunks loaded by another ticket source.
++     *
++     * <p>This mode is deliberately limited to the vanilla spectator gamerule. Leaves' explicit elytra suppression
++     * keeps its existing stronger meaning and therefore does not create any player chunk-loader state.</p>
++     */
++    static boolean shouldObserveLoadedChunks(
++        final boolean spectator,
++        final boolean spectatorsGenerateChunks,
++        final boolean explicitlySuppressChunkLoading
++    ) {
++        return spectator && !spectatorsGenerateChunks && !explicitlySuppressChunkLoading;
++    }
++
++    private static boolean shouldObserveLoadedChunks(final ServerLevel world, final ServerPlayer player) {
++        return shouldObserveLoadedChunks(
++            player.isSpectator(),
++            world.getGameRules().get(GameRules.SPECTATORS_GENERATE_CHUNKS),
++            org.leavesmc.leaves.LeavesConfig.modify.elytraAeronautics.enableNoChunkLoad && player.elytraAeronauticsNoChunk
++        );
++    }
++
+     public void addPlayer(final ServerPlayer player) {
+         TickThread.ensureTickThread(player, "Cannot add player to player chunk loader async");
+         if (!((ChunkSystemServerPlayer)player).moonrise$isRealPlayer()) {
+             return;
+         }
+ 
++        // A gamerule-disabled spectator still needs a read-only view of chunks loaded by other sources. It must never
++        // own PLAYER_TICKET entries, otherwise already-generated chunks are pulled back from disk and kept ticking.
++        final boolean observerOnly = shouldObserveLoadedChunks(this.world, player);
++        if (!canPlayerLoadChunks(this.world, player) && !observerOnly) {
++            return;
++        }
++
+         if (((ChunkSystemServerPlayer)player).moonrise$getChunkLoader() != null) {
+             throw new IllegalStateException("Player is already added to player chunk loader");
+         }
+ 
+-        final PlayerChunkLoaderData loader = new PlayerChunkLoaderData(this.world, player);
++        final PlayerChunkLoaderData loader = new PlayerChunkLoaderData(this.world, player, observerOnly);
+ 
+         ((ChunkSystemServerPlayer)player).moonrise$setChunkLoader(loader);
+         loader.add();
+     }
+ 
+     public void updatePlayer(final ServerPlayer player) {
+-        final PlayerChunkLoaderData loader = ((ChunkSystemServerPlayer)player).moonrise$getChunkLoader();
+-        if (loader != null) {
+-            loader.update();
+-            // update view distances for nearby players
+-            ((ChunkSystemServerLevel)loader.world).moonrise$getNearbyPlayers().tickPlayer(player);
++        PlayerChunkLoaderData loader = ((ChunkSystemServerPlayer)player).moonrise$getChunkLoader();
++        final boolean canLoadChunks = canPlayerLoadChunks(this.world, player);
++        final boolean observerOnly = shouldObserveLoadedChunks(this.world, player);
++        if (!canLoadChunks && !observerOnly) {
++            if (loader != null) {
++                this.removePlayer(player);
++            }
++            return;
+         }
++        if (loader != null && loader.observerOnly != observerOnly) {
++            // Game-mode and gamerule changes must atomically exchange loading and read-only loaders. Reusing the old
++            // instance could leave PLAYER_TICKET state behind or accidentally grant tickets to an observer.
++            this.removePlayer(player);
++            loader = null;
++        }
++        if (loader == null) {
++            this.addPlayer(player);
++            loader = ((ChunkSystemServerPlayer)player).moonrise$getChunkLoader();
++            if (loader == null) {
++                return;
++            }
++        }
++        loader.update();
++        // update view distances for nearby players
++        ((ChunkSystemServerLevel)loader.world).moonrise$getNearbyPlayers().tickPlayer(player);
+     }
+ 
+     public void removePlayer(final ServerPlayer player) {
+@@ -307,7 +372,23 @@ public final class RegionizedPlayerChunkLoader {
+         TickThread.ensureTickThread("Cannot tick player chunk loader async");
+         long currTime = System.nanoTime();
+         for (final ServerPlayer player : new java.util.ArrayList<>(this.world.players())) {
+-            final PlayerChunkLoaderData loader = ((ChunkSystemServerPlayer)player).moonrise$getChunkLoader();
++            PlayerChunkLoaderData loader = ((ChunkSystemServerPlayer)player).moonrise$getChunkLoader();
++            final boolean canLoadChunks = canPlayerLoadChunks(this.world, player);
++            final boolean observerOnly = shouldObserveLoadedChunks(this.world, player);
++            if (!canLoadChunks && !observerOnly) {
++                if (loader != null) {
++                    this.removePlayer(player);
++                }
++                continue;
++            }
++            if (loader != null && loader.observerOnly != observerOnly) {
++                this.removePlayer(player);
++                loader = null;
++            }
++            if (loader == null) {
++                this.addPlayer(player);
++                loader = ((ChunkSystemServerPlayer)player).moonrise$getChunkLoader();
++            }
+             if (loader == null || loader.removed || loader.world != this.world) {
+                 // not our problem anymore
+                 continue;
+@@ -324,9 +405,12 @@ public final class RegionizedPlayerChunkLoader {
+         private final Long idBoxed = Long.valueOf(this.id);
+ 
+         private static final long MAX_RATE = 10_000L;
++        private static final int OBSERVER_SCAN_TARGET_TICKS = 20;
++        private static final int OBSERVER_MIN_SCAN_BUDGET = 64;
+ 
+         private final ServerPlayer player;
+         private final ServerLevel world;
++        private final boolean observerOnly;
+ 
+         private int lastChunkX = Integer.MIN_VALUE;
+         private int lastChunkZ = Integer.MIN_VALUE;
+@@ -345,6 +429,10 @@ public final class RegionizedPlayerChunkLoader {
+ 
+         private final ArrayDeque<ChunkHolderManager.TicketOperation<?, ?>> delayedTicketOps = new ArrayDeque<>();
+         private final LongOpenHashSet sentChunks = new LongOpenHashSet();
++        // Allocated only for read-only spectators. Normal players retain the original zero-overhead ticket path.
++        private final LongOpenHashSet observerPendingChunks;
++        private final Long2ObjectOpenHashMap<LevelChunk> observerSentChunkReferences;
++        private int observerScanCursor;
+ 
+         private static final byte CHUNK_TICKET_STAGE_NONE           = 0;
+         private static final byte CHUNK_TICKET_STAGE_LOADING        = 1;
+@@ -415,8 +503,15 @@ public final class RegionizedPlayerChunkLoader {
+         private volatile boolean removed;
+ 
+         public PlayerChunkLoaderData(final ServerLevel world, final ServerPlayer player) {
++            this(world, player, false);
++        }
++
++        public PlayerChunkLoaderData(final ServerLevel world, final ServerPlayer player, final boolean observerOnly) {
+             this.world = world;
+             this.player = player;
++            this.observerOnly = observerOnly;
++            this.observerPendingChunks = observerOnly ? new LongOpenHashSet() : null;
++            this.observerSentChunkReferences = observerOnly ? new Long2ObjectOpenHashMap<>() : null;
+         }
+ 
+         private void flushDelayedTicketOps() {
+@@ -445,13 +540,97 @@ public final class RegionizedPlayerChunkLoader {
+             throw new IllegalStateException();
+         }
+ 
++        /**
++         * Returns a chunk that is already fully loaded and safe to send without scheduling work or adding a ticket.
++         */
++        private LevelChunk getObserverChunkToSend(final int chunkX, final int chunkZ) {
++            final ca.spottedleaf.moonrise.patches.chunk_system.scheduling.NewChunkHolder holder =
++                ((ChunkSystemServerLevel)this.world).moonrise$getChunkTaskScheduler().chunkHolderManager.getChunkHolder(chunkX, chunkZ);
++            if (holder == null) {
++                return null;
++            }
++
++            final LevelChunk chunk = holder.vanillaChunkHolder.getChunkToSend();
++            return chunk != null && ((ChunkSystemLevelChunk)chunk).moonrise$isPostProcessingDone() ? chunk : null;
++        }
++
++        private void queueObserverChunkIfReady(final int chunkX, final int chunkZ) {
++            if (!this.wantChunkSent(chunkX, chunkZ)) {
++                return;
++            }
++
++            final long chunkKey = CoordinateUtils.getChunkKey(chunkX, chunkZ);
++            if (this.sentChunks.contains(chunkKey) || this.observerPendingChunks.contains(chunkKey)) {
++                return;
++            }
++            if (this.getObserverChunkToSend(chunkX, chunkZ) != null && this.observerPendingChunks.add(chunkKey)) {
++                this.sendQueue.enqueue(chunkKey);
++            }
++        }
++
++        private boolean trySendObserverChunk(final int chunkX, final int chunkZ) {
++            if (!this.wantChunkSent(chunkX, chunkZ)) {
++                return false;
++            }
++
++            final LevelChunk chunk = this.getObserverChunkToSend(chunkX, chunkZ);
++            if (chunk == null) {
++                return false;
++            }
++
++            final long chunkKey = CoordinateUtils.getChunkKey(chunkX, chunkZ);
++            if (!this.sentChunks.add(chunkKey)) {
++                return true;
++            }
++
++            final ChunkSystemChunkHolder holder = (ChunkSystemChunkHolder)((ChunkSystemLevelChunk)chunk)
++                .moonrise$getChunkHolder().vanillaChunkHolder;
++            holder.moonrise$addReceivedChunk(this.player);
++            this.observerSentChunkReferences.put(chunkKey, chunk);
++
++            PlatformHooks.get().onChunkWatch(this.world, chunk, this.player);
++            PlayerChunkSender.sendChunk(this.player.connection, this.world, chunk);
++            return true;
++        }
++
+         private void sendUnloadChunk(final int chunkX, final int chunkZ) {
+-            if (!this.sentChunks.remove(CoordinateUtils.getChunkKey(chunkX, chunkZ))) {
++            final long chunkKey = CoordinateUtils.getChunkKey(chunkX, chunkZ);
++            if (this.observerOnly) {
++                this.observerPendingChunks.remove(chunkKey);
++            }
++            if (!this.sentChunks.remove(chunkKey)) {
++                return;
++            }
++            if (this.observerOnly) {
++                this.sendObserverUnloadChunkRaw(chunkX, chunkZ, this.observerSentChunkReferences.remove(chunkKey));
+                 return;
+             }
+             this.sendUnloadChunkRaw(chunkX, chunkZ);
+         }
+ 
++        private void sendObserverUnloadChunkRaw(final int chunkX, final int chunkZ, final LevelChunk chunkReference) {
++            PlatformHooks.get().onChunkUnWatch(this.world, new ChunkPos(chunkX, chunkZ), this.player);
++
++            // The holder may already have left the world's holder map. A short-lived LevelChunk reference lets us
++            // detach the receiver from the exact old holder without loading the chunk back from disk.
++            if (chunkReference != null) {
++                final ChunkSystemChunkHolder holder = (ChunkSystemChunkHolder)((ChunkSystemLevelChunk)chunkReference)
++                    .moonrise$getChunkHolder().vanillaChunkHolder;
++                if (holder.moonrise$hasChunkBeenSent(this.player)) {
++                    holder.moonrise$removeReceivedChunk(this.player);
++                }
++            }
++
++            this.player.connection.send(new ClientboundForgetLevelChunkPacket(new ChunkPos(chunkX, chunkZ)));
++            // Never call CraftWorld#getChunkAt here: it would reload the exact chunk the gamerule is meant to release.
++            if (chunkReference != null
++                && io.papermc.paper.event.packet.PlayerChunkUnloadEvent.getHandlerList().getRegisteredListeners().length > 0) {
++                new io.papermc.paper.event.packet.PlayerChunkUnloadEvent(
++                    new org.bukkit.craftbukkit.CraftChunk(chunkReference), this.player.getBukkitEntity()
++                ).callEvent();
++            }
++        }
++
+         private void sendUnloadChunkRaw(final int chunkX, final int chunkZ) {
+             PlatformHooks.get().onChunkUnWatch(this.world, new ChunkPos(chunkX, chunkZ), this.player);
+             // Note: Check PlayerChunkSender#dropChunk for other logic
+@@ -469,7 +648,9 @@ public final class RegionizedPlayerChunkLoader {
+         private final SingleUserAreaMap<PlayerChunkLoaderData> broadcastMap = new SingleUserAreaMap<>(this) {
+             @Override
+             protected void addCallback(final PlayerChunkLoaderData parameter, final int chunkX, final int chunkZ) {
+-                // do nothing, we only care about remove
++                if (parameter.observerOnly) {
++                    parameter.queueObserverChunkIfReady(chunkX, chunkZ);
++                }
+             }
+ 
+             @Override
+@@ -664,6 +845,10 @@ public final class RegionizedPlayerChunkLoader {
+             if (this.removed) {
+                 throw new IllegalStateException("Ticking removed player chunk loader");
+             }
++            if (this.observerOnly) {
++                this.updateObserverQueues(time);
++                return;
++            }
+             // update rate limits
+             final double loadRate = this.getMaxChunkLoadRate();
+             final double genRate = this.getMaxChunkGenRate();
+@@ -869,11 +1054,61 @@ public final class RegionizedPlayerChunkLoader {
+             this.flushDelayedTicketOps();
+         }
+ 
++        private void updateObserverQueues(final long time) {
++            // Cover the complete view once per second. This discovers chunks loaded or released by other ticket
++            // sources without an O(view-area) scan on every tick.
++            final long[] scanOrder = ParallelSearchRadiusIteration.getEuclideanIteration(this.lastSendDistance + 1);
++            final int scanBudget = Math.min(
++                scanOrder.length,
++                Math.max(
++                    OBSERVER_MIN_SCAN_BUDGET,
++                    (scanOrder.length + OBSERVER_SCAN_TARGET_TICKS - 1) / OBSERVER_SCAN_TARGET_TICKS
++                )
++            );
++            for (int scanned = 0; scanned < scanBudget; ++scanned) {
++                if (this.observerScanCursor >= scanOrder.length) {
++                    this.observerScanCursor = 0;
++                }
++                final long delta = scanOrder[this.observerScanCursor++];
++                final int chunkX = this.lastChunkX + CoordinateUtils.getChunkX(delta);
++                final int chunkZ = this.lastChunkZ + CoordinateUtils.getChunkZ(delta);
++                if (!this.wantChunkSent(chunkX, chunkZ)) {
++                    continue;
++                }
++
++                final long chunkKey = CoordinateUtils.getChunkKey(chunkX, chunkZ);
++                if (this.getObserverChunkToSend(chunkX, chunkZ) == null) {
++                    this.sendUnloadChunk(chunkX, chunkZ);
++                    if (this.removed) {
++                        return;
++                    }
++                } else if (!this.sentChunks.contains(chunkKey) && this.observerPendingChunks.add(chunkKey)) {
++                    this.sendQueue.enqueue(chunkKey);
++                }
++            }
++
++            this.chunkSendLimiter.tick(time, this.getMaxChunkSendRate(), INITIAL_ALLOCATION_FACTOR);
++            final long maxSends = Math.max(0L, Math.min(MAX_RATE, this.sendQueue.size()));
++            final long maxSendsThisTick = this.chunkSendLimiter.takeAllocation(maxSends);
++            for (long sent = 0; sent < maxSendsThisTick && !this.sendQueue.isEmpty(); ++sent) {
++                final long chunkKey = this.sendQueue.dequeueLong();
++                this.observerPendingChunks.remove(chunkKey);
++                this.trySendObserverChunk(CoordinateUtils.getChunkX(chunkKey), CoordinateUtils.getChunkZ(chunkKey));
++                if (this.removed) {
++                    return;
++                }
++            }
++        }
++
+         void add() {
+             TickThread.ensureTickThread(this.player, "Cannot add player asynchronously");
+             if (this.removed) {
+                 throw new IllegalStateException("Adding removed player chunk loader");
+             }
++            if (this.observerOnly) {
++                this.addObserver();
++                return;
++            }
+             final ViewDistances playerDistances = ((ChunkSystemServerPlayer)this.player).moonrise$getViewDistanceHolder().getViewDistances();
+             final ViewDistances worldDistances = ((ChunkSystemServerLevel)this.world).moonrise$getViewDistanceHolder().getViewDistances();
+             final int chunkX = this.player.chunkPosition().x();
+@@ -905,6 +1140,39 @@ public final class RegionizedPlayerChunkLoader {
+             this.update();
+         }
+ 
++        private void addObserver() {
++            final ViewDistances playerDistances = ((ChunkSystemServerPlayer)this.player).moonrise$getViewDistanceHolder().getViewDistances();
++            final ViewDistances worldDistances = ((ChunkSystemServerLevel)this.world).moonrise$getViewDistanceHolder().getViewDistances();
++            final int tickViewDistance = getTickDistance(
++                playerDistances.tickViewDistance, worldDistances.tickViewDistance,
++                playerDistances.loadViewDistance, worldDistances.loadViewDistance
++            );
++            final int loadViewDistance = getLoadViewDistance(
++                tickViewDistance, playerDistances.loadViewDistance, worldDistances.loadViewDistance
++            );
++            final int sendViewDistance = getSendViewDistance(
++                loadViewDistance, getClientViewDistance(this.player),
++                playerDistances.sendViewDistance, worldDistances.sendViewDistance
++            );
++            final ChunkPos playerPos = this.player.chunkPosition();
++            final int chunkX = playerPos.x();
++            final int chunkZ = playerPos.z();
++
++            // Set the state before adding the broadcast map: its callbacks use the final view shape to enqueue only
++            // already-loaded chunks. No loading or simulation area map is registered for this loader.
++            this.lastChunkX = chunkX;
++            this.lastChunkZ = chunkZ;
++            this.lastSendDistance = sendViewDistance;
++            this.lastLoadDistance = loadViewDistance;
++            this.lastTickDistance = tickViewDistance;
++            this.canGenerateChunks = false;
++
++            this.player.connection.send(this.updateClientChunkRadius(sendViewDistance));
++            this.player.connection.send(this.updateClientSimulationDistance(tickViewDistance));
++            this.broadcastMap.add(chunkX, chunkZ, sendViewDistance + 1);
++            this.player.connection.send(this.updateClientChunkCenter(chunkX, chunkZ));
++        }
++
+         private boolean isLoadedChunkGeneratable(final int chunkX, final int chunkZ) {
+             return this.isLoadedChunkGeneratable(((ChunkSystemLevel)this.world).moonrise$getAnyChunkIfLoaded(chunkX, chunkZ));
+         }
+@@ -923,6 +1191,10 @@ public final class RegionizedPlayerChunkLoader {
+             if (this.removed) {
+                 throw new IllegalStateException("Updating removed player chunk loader");
+             }
++            if (this.observerOnly) {
++                this.updateObserver();
++                return;
++            }
+             final ViewDistances playerDistances = ((ChunkSystemServerPlayer)this.player).moonrise$getViewDistanceHolder().getViewDistances();
+             final ViewDistances worldDistances = ((ChunkSystemServerLevel)this.world).moonrise$getViewDistanceHolder().getViewDistances();
+ 
+@@ -1070,6 +1342,54 @@ public final class RegionizedPlayerChunkLoader {
+             this.flushDelayedTicketOps();
+         }
+ 
++        private void updateObserver() {
++            final ViewDistances playerDistances = ((ChunkSystemServerPlayer)this.player).moonrise$getViewDistanceHolder().getViewDistances();
++            final ViewDistances worldDistances = ((ChunkSystemServerLevel)this.world).moonrise$getViewDistanceHolder().getViewDistances();
++            final int tickViewDistance = getTickDistance(
++                playerDistances.tickViewDistance, worldDistances.tickViewDistance,
++                playerDistances.loadViewDistance, worldDistances.loadViewDistance
++            );
++            final int loadViewDistance = getLoadViewDistance(
++                tickViewDistance, playerDistances.loadViewDistance, worldDistances.loadViewDistance
++            );
++            final int sendViewDistance = getSendViewDistance(
++                loadViewDistance, getClientViewDistance(this.player),
++                playerDistances.sendViewDistance, worldDistances.sendViewDistance
++            );
++            final ChunkPos playerPos = this.player.chunkPosition();
++            final int currentChunkX = playerPos.x();
++            final int currentChunkZ = playerPos.z();
++
++            if (sendViewDistance == this.lastSendDistance
++                && loadViewDistance == this.lastLoadDistance
++                && tickViewDistance == this.lastTickDistance
++                && currentChunkX == this.lastChunkX
++                && currentChunkZ == this.lastChunkZ) {
++                return;
++            }
++
++            // Priority queues compare against the current center, so stale entries must be cleared before changing it.
++            this.sendQueue.clear();
++            this.observerPendingChunks.clear();
++            this.observerScanCursor = 0;
++            this.lastChunkX = currentChunkX;
++            this.lastChunkZ = currentChunkZ;
++            this.lastSendDistance = sendViewDistance;
++            this.lastLoadDistance = loadViewDistance;
++            this.lastTickDistance = tickViewDistance;
++
++            this.broadcastMap.update(currentChunkX, currentChunkZ, sendViewDistance + 1);
++            if (this.lastSentChunkRadius != sendViewDistance) {
++                this.player.connection.send(this.updateClientChunkRadius(sendViewDistance));
++            }
++            if (this.lastSentSimulationDistance != tickViewDistance) {
++                this.player.connection.send(this.updateClientSimulationDistance(tickViewDistance));
++            }
++            if (this.lastSentChunkCenterX != currentChunkX || this.lastSentChunkCenterZ != currentChunkZ) {
++                this.player.connection.send(this.updateClientChunkCenter(currentChunkX, currentChunkZ));
++            }
++        }
++
+         void remove() {
+             TickThread.ensureTickThread(this.player, "Cannot add player asynchronously");
+             if (this.removed) {
+@@ -1078,6 +1398,19 @@ public final class RegionizedPlayerChunkLoader {
+             this.removed = true;
+             // sends the chunk unload packets
+             this.broadcastMap.remove();
++            if (this.observerOnly) {
++                // The area map normally drains every sent coordinate. Keep a defensive fallback for plugin re-entry or
++                // future view-shape changes, then release all short-lived chunk references.
++                if (!this.sentChunks.isEmpty()) {
++                    for (final long chunkKey : this.sentChunks.toLongArray()) {
++                        this.sendUnloadChunk(CoordinateUtils.getChunkX(chunkKey), CoordinateUtils.getChunkZ(chunkKey));
++                    }
++                }
++                this.sendQueue.clear();
++                this.observerPendingChunks.clear();
++                this.observerSentChunkReferences.clear();
++                return;
++            }
+             // cleans up loading/generating tickets
+             this.loadTicketCleanup.remove();
+             // cleans up ticking tickets

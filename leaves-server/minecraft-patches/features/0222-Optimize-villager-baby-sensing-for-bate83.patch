@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 01:53:51 +0800
+Subject: [PATCH] Optimize villager baby sensing for bate83
+
+
+diff --git a/net/minecraft/world/entity/ai/sensing/VillagerBabiesSensor.java b/net/minecraft/world/entity/ai/sensing/VillagerBabiesSensor.java
+index aff8e5e8169127ab3e549482f8d169f0b52f382f..f696fdc4534599568b9aeaea3da7de55e3850dc5 100644
+--- a/net/minecraft/world/entity/ai/sensing/VillagerBabiesSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/VillagerBabiesSensor.java
+@@ -1,5 +1,6 @@
+ package net.minecraft.world.entity.ai.sensing;
+ 
++import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.ImmutableSet;
+ import java.util.List;
+ import java.util.Set;
+@@ -24,8 +25,18 @@ public class VillagerBabiesSensor extends Sensor<LivingEntity> {
+     }
+ 
+     private List<LivingEntity> getNearestVillagerBabies(final LivingEntity myBody) {
+-        // LeavesX - retain vanilla order and visibility checks without Guava's filtered-iterable wrapper.
+-        return this.getVisibleEntities(myBody).findAllToList(IS_VILLAGER_BABY);
++        if (org.leavesx.leavesx.config.LeavesXRuntime.villagerBabiesSensorOptimization()) {
++            final NearestVisibleLivingEntities visibleEntities = myBody.getBrain().leavesX$getMemoryValue(
++                MemoryModuleType.NEAREST_VISIBLE_LIVING_ENTITIES
++            );
++            return visibleEntities == null ? List.of() : visibleEntities.findAllToList(IS_VILLAGER_BABY);
++        }
++
++        return ImmutableList.copyOf(this.getVisibleEntities(myBody).findAll(this::isVillagerBaby));
++    }
++
++    private boolean isVillagerBaby(final LivingEntity entity) {
++        return entity.is(EntityType.VILLAGER) && entity.isBaby();
+     }
+ 
+     private NearestVisibleLivingEntities getVisibleEntities(final LivingEntity myBody) {

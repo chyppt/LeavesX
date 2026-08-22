@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 00:33:27 +0800
+Subject: [PATCH] Optimize ram position selection for bate77
+
+
+diff --git a/net/minecraft/world/entity/ai/behavior/PrepareRamNearestTarget.java b/net/minecraft/world/entity/ai/behavior/PrepareRamNearestTarget.java
+index 818d7882a4d7001a9d8f90516b7368e89a5689a0..98c4af188483ec8be457fabcb87e89661bf688f2 100644
+--- a/net/minecraft/world/entity/ai/behavior/PrepareRamNearestTarget.java
++++ b/net/minecraft/world/entity/ai/behavior/PrepareRamNearestTarget.java
+@@ -161,12 +161,39 @@ public class PrepareRamNearestTarget<E extends PathfinderMob> extends Behavior<E
+         }
+ 
+         PathNavigation navigation = body.getNavigation();
++        if (org.leavesx.leavesx.config.LeavesXRuntime.ramPositionSelectionOptimization()) {
++            sortRamPositionsByDistance(possibleRamPositions, body.blockPosition());
++            for (final BlockPos pos : possibleRamPositions) {
++                final Path path = navigation.createPath(pos, 0);
++                if (path != null && path.canReach()) {
++                    return Optional.of(pos);
++                }
++            }
++            return Optional.empty();
++        }
++
+         return possibleRamPositions.stream().sorted(Comparator.comparingDouble(body.blockPosition()::distSqr)).filter(pos -> {
+             Path path = navigation.createPath(pos, 0);
+             return path != null && path.canReach();
+         }).findFirst();
+     }
+ 
++    // LeavesX start - stable insertion sort is cheaper than a stream sort for the at-most-four ram positions
++    private static void sortRamPositionsByDistance(final List<BlockPos> positions, final BlockPos origin) {
++        for (int index = 1; index < positions.size(); index++) {
++            final BlockPos position = positions.get(index);
++            final double distance = origin.distSqr(position);
++            int insertionIndex = index;
++            while (insertionIndex > 0
++                && Double.compare(origin.distSqr(positions.get(insertionIndex - 1)), distance) > 0) {
++                positions.set(insertionIndex, positions.get(insertionIndex - 1));
++                insertionIndex--;
++            }
++            positions.set(insertionIndex, position);
++        }
++    }
++    // LeavesX end - stable insertion sort is cheaper than a stream sort for the at-most-four ram positions
++
+     private boolean isWalkableBlock(final PathfinderMob body, final BlockPos targetPos) {
+         return body.getNavigation().isStableDestination(targetPos) && body.getPathfindingMalus(WalkNodeEvaluator.getPathTypeStatic(body, targetPos)) == 0.0F;
+     }

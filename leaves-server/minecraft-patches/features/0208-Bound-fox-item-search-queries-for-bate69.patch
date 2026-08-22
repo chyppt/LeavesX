@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 22:32:59 +0800
+Subject: [PATCH] Bound fox item search queries for bate69
+
+
+diff --git a/net/minecraft/world/entity/animal/fox/Fox.java b/net/minecraft/world/entity/animal/fox/Fox.java
+index c14068e9f0acc4f91d54b61c60f6f1b52cb84d68..e5287c37f3de2d9a57dfbfc9f94bc865fd31ce6d 100644
+--- a/net/minecraft/world/entity/animal/fox/Fox.java
++++ b/net/minecraft/world/entity/animal/fox/Fox.java
+@@ -1289,26 +1289,39 @@ public class Fox extends Animal {
+                 return false;
+             }
+ 
+-            List<ItemEntity> items = Fox.this.level().getEntitiesOfClass(ItemEntity.class, Fox.this.getBoundingBox().inflate(8.0, 8.0, 8.0), Fox.ALLOWED_ITEMS);
+-            return !items.isEmpty() && Fox.this.getItemBySlot(EquipmentSlot.MAINHAND).isEmpty();
++            return this.findNearbyItem() != null && Fox.this.getItemBySlot(EquipmentSlot.MAINHAND).isEmpty();
+         }
+ 
+         @Override
+         public void tick() {
+-            List<ItemEntity> items = Fox.this.level().getEntitiesOfClass(ItemEntity.class, Fox.this.getBoundingBox().inflate(8.0, 8.0, 8.0), Fox.ALLOWED_ITEMS);
++            final ItemEntity item = this.findNearbyItem();
+             ItemStack itemStack = Fox.this.getItemBySlot(EquipmentSlot.MAINHAND);
+-            if (itemStack.isEmpty() && !items.isEmpty()) {
+-                Fox.this.getNavigation().moveTo(items.get(0), 1.2F);
++            if (itemStack.isEmpty() && item != null) {
++                Fox.this.getNavigation().moveTo(item, 1.2F);
+             }
+         }
+ 
+         @Override
+         public void start() {
+-            List<ItemEntity> items = Fox.this.level().getEntitiesOfClass(ItemEntity.class, Fox.this.getBoundingBox().inflate(8.0, 8.0, 8.0), Fox.ALLOWED_ITEMS);
+-            if (!items.isEmpty()) {
+-                Fox.this.getNavigation().moveTo(items.get(0), 1.2F);
++            final ItemEntity item = this.findNearbyItem();
++            if (item != null) {
++                Fox.this.getNavigation().moveTo(item, 1.2F);
+             }
+         }
++
++        private @Nullable ItemEntity findNearbyItem() {
++            if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++                return Fox.this.level().leavesX$getFirstEntityOfClass(
++                    ItemEntity.class,
++                    Fox.this.getBoundingBox().inflate(8.0, 8.0, 8.0),
++                    Fox.ALLOWED_ITEMS
++                );
++            }
++
++            final List<ItemEntity> items = Fox.this.level()
++                .getEntitiesOfClass(ItemEntity.class, Fox.this.getBoundingBox().inflate(8.0, 8.0, 8.0), Fox.ALLOWED_ITEMS);
++            return items.isEmpty() ? null : items.getFirst();
++        }
+     }
+ 
+     private class FoxStrollThroughVillageGoal extends StrollThroughVillageGoal {

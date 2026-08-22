@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 15:04:08 +0800
+Subject: [PATCH] Add bate35 ticket propagation regression coverage
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/TicketLevelPropagatorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/TicketLevelPropagatorHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..2f7b7a15653987a7fa0ab17d9f9961e2522ded47
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/TicketLevelPropagatorHotPathTest.java
+@@ -0,0 +1,48 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++@Normal
++class TicketLevelPropagatorHotPathTest {
++
++    private static final String PROPAGATOR_CLASS =
++        "ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ThreadedTicketLevelPropagator$Propagator";
++
++    @Test
++    void increasePropagationAvoidsGenericLevelAccessors() throws IOException, ClassNotFoundException {
++        final MethodNode performIncrease = methodNode(Class.forName(PROPAGATOR_CLASS), "performIncrease");
++        final MethodInsnNode[] calls = Arrays.stream(performIncrease.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++
++        assertFalse(
++            Arrays.stream(calls).anyMatch(call -> call.name.equals("getLevel") || call.name.equals("setLevel")),
++            "The propagation loop should use its already-located section instead of repeating generic level lookups"
++        );
++        assertTrue(
++            Arrays.stream(calls).anyMatch(call -> call.name.equals("put")),
++            "Direct level writes must still be published through updatedPositions"
++        );
++    }
++
++    private static MethodNode methodNode(final Class<?> owner, final String methodName) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.getName() + '#' + methodName));
++    }
++}

@@ -1,0 +1,230 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 06:16:07 +0800
+Subject: [PATCH] Cache experience orb merge parameters for bate99
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 48da17eb1eb861727de7dcd74e1d4d0cfd2bb47d..cd5edf4a22cc4158c8309f52c61431c0ac53b874 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 29;
++    public static final int CURRENT_CONFIG_VERSION = 30;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 3494984f453cd66467a3f069755fa548792e3f32..dc5363672a98288fa90084b9c7500bb1025aaa5c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：29。");
++        comments.put("config-version", "配置版本，请勿修改。默认：30。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 034347f392d014f6a45e7fad3989d70ea2a6e6e8..6491242cd251d0b8112d9d8aebc386d4d03d8796 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -199,6 +199,10 @@ enum LeavesXOptimization {
+     STATIONARY_ENTITY_SPEED(
+         "performance.entity-update.stationary-speed-vector",
+         "静止实体复用零速度向量，关闭后每 Tick 重新计算。默认：true。"
++    ),
++    EXPERIENCE_ORB_MERGE_PARAMETERS(
++        "performance.entity-queries.experience-orb-merge-parameters",
++        "缓存经验球合并参数，关闭后每次候选判断重新读取。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 2681291de4717f3e0f7ccfa667909f91590bf856..dfb4e45add9c8bf2bab9fc4ec005df659e88ea3e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -363,6 +363,11 @@ public final class LeavesXRuntime {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.EXPERIENCE_ORB_MERGE);
+     }
+ 
++    /** Returns whether experience-orb merge queries may snapshot invariant parameters once. */
++    public static boolean experienceOrbMergeParametersOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.EXPERIENCE_ORB_MERGE_PARAMETERS);
++    }
++
+     /** Returns whether chicken-jockey mount searches may stop after the first available chicken. */
+     public static boolean chickenJockeyMountOptimization() {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.CHICKEN_JOCKEY_MOUNT);
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 68dc80bec5a2451530a9a486db8564092181b224..9f2a91e38c4bbdf96b928b8171aecd67b4b1fa74 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -311,6 +311,7 @@ class LeavesXConfigLoaderTest {
+               network:
+                 chunk-packet-assembly: false
+               entity-queries:
++                experience-orb-merge-parameters: false
+                 pressure-plate-scans: false
+                 fox-item-search: false
+             """));
+@@ -334,10 +335,11 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.STATIONARY_ENTITY_SPEED));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_TICK_DIAGNOSTIC_STATE));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_PACKET_ASSEMBLY));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.EXPERIENCE_ORB_MERGE_PARAMETERS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 21,
++            LeavesXConfig.fineGrainedOptimizationCount() - 22,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -362,6 +364,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.stationaryEntitySpeedOptimization());
+             assertFalse(LeavesXRuntime.entityTickDiagnosticStateOptimization());
+             assertFalse(LeavesXRuntime.chunkPacketAssemblyOptimization());
++            assertFalse(LeavesXRuntime.experienceOrbMergeParametersOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.foxItemSearchOptimization());
+             assertTrue(LeavesXRuntime.wardenTargetSensorOptimization());
+@@ -387,6 +390,7 @@ class LeavesXConfigLoaderTest {
+                 hopper-entity-queries: true
+               entity-queries:
+                 cat-spawning-density: true
++                experience-orb-merge-parameters: true
+                 pressure-plate-scans: true
+               entity-update:
+                 stationary-speed-vector: true
+@@ -399,6 +403,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.catSpawningHomeCountOptimization());
+             assertFalse(LeavesXRuntime.catSpawningEntityDensityOptimization());
++            assertFalse(LeavesXRuntime.experienceOrbMergeParametersOptimization());
+             assertFalse(LeavesXRuntime.stationaryEntitySpeedOptimization());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ExperienceOrbMergeParameterHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ExperienceOrbMergeParameterHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f4dc0d565a0390c1df071b3acee0a1c04f6174df
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ExperienceOrbMergeParameterHotPathTest.java
+@@ -0,0 +1,112 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ExperienceOrb;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies experience-orb merge parameter caching preserves the matching predicate. */
++@Normal
++class ExperienceOrbMergeParameterHotPathTest {
++
++    private static final String CACHED_MATCH_DESCRIPTOR = "(Lnet/minecraft/world/entity/ExperienceOrb;III)Z";
++    private static final String FALLBACK_MATCH_DESCRIPTOR = "(Lnet/minecraft/world/entity/ExperienceOrb;II)Z";
++
++    @Test
++    void cachedPredicatePreservesGroupValueAndRemovalChecks() throws ReflectiveOperationException {
++        assertTrue(matches(140, 7, false, 100, 7, 40));
++        assertTrue(matches(60, 7, false, 100, 7, 40));
++        assertFalse(matches(141, 7, false, 100, 7, 40));
++        assertFalse(matches(140, 8, false, 100, 7, 40));
++        assertFalse(matches(140, 7, true, 100, 7, 40));
++        assertTrue(matches(101, 7, false, 100, 7, 1));
++    }
++
++    @Test
++    void cachedCandidatePredicateDoesNotReadGlobalConfiguration() throws IOException {
++        final MethodNode cached = method(classNode(), "canMerge", CACHED_MATCH_DESCRIPTOR);
++        final MethodNode fallback = method(classNode(), "canMerge", FALLBACK_MATCH_DESCRIPTOR);
++
++        assertFalse(invocations(cached).stream().anyMatch(call -> call.owner.equals(
++            "io/papermc/paper/configuration/GlobalConfiguration"
++        )));
++        assertTrue(invocations(fallback).stream().anyMatch(call -> call.owner.equals(
++            "io/papermc/paper/configuration/GlobalConfiguration"
++        )));
++    }
++
++    @Test
++    void bothMergeEntryPointsKeepTheIndependentRuntimeSwitch() throws IOException {
++        final ClassNode owner = classNode();
++        assertTrue(callsRuntimeSwitch(method(owner, "scanForMerges")));
++        assertTrue(callsRuntimeSwitch(method(owner, "tryMergeToExisting")));
++    }
++
++    private static boolean matches(
++        final int orbId,
++        final int orbValue,
++        final boolean removed,
++        final int referenceId,
++        final int referenceValue,
++        final int groupsPerArea
++    ) throws ReflectiveOperationException {
++        final ExperienceOrb orb = mock(ExperienceOrb.class);
++        when(orb.getId()).thenReturn(orbId);
++        when(orb.getValue()).thenReturn(orbValue);
++        when(orb.isRemoved()).thenReturn(removed);
++        final Method method = ExperienceOrb.class.getDeclaredMethod(
++            "canMerge",
++            ExperienceOrb.class,
++            int.class,
++            int.class,
++            int.class
++        );
++        method.setAccessible(true);
++        return (boolean)method.invoke(null, orb, referenceId, referenceValue, groupsPerArea);
++    }
++
++    private static boolean callsRuntimeSwitch(final MethodNode method) {
++        return invocations(method).stream().anyMatch(call -> call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime")
++            && call.name.equals("experienceOrbMergeParametersOptimization"));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode() throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(ExperienceOrb.class.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + name));
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name, final String descriptor) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(name) && method.desc.equals(descriptor))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + name + descriptor));
++    }
++}

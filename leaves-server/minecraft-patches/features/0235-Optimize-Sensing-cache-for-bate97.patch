@@ -1,0 +1,118 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 05:40:58 +0800
+Subject: [PATCH] Optimize Sensing cache for bate97
+
+
+diff --git a/net/minecraft/world/entity/ai/sensing/Sensing.java b/net/minecraft/world/entity/ai/sensing/Sensing.java
+index 0da4d7d500e4297457081b4c83862296c9b92e72..c5680187232b65e2b896fa187a4fa78eea77ef8d 100644
+--- a/net/minecraft/world/entity/ai/sensing/Sensing.java
++++ b/net/minecraft/world/entity/ai/sensing/Sensing.java
+@@ -1,41 +1,64 @@
+ package net.minecraft.world.entity.ai.sensing;
+ 
++import it.unimi.dsi.fastutil.ints.Int2ByteOpenHashMap;
+ import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
+ import it.unimi.dsi.fastutil.ints.IntSet;
+ import net.minecraft.util.profiling.Profiler;
+ import net.minecraft.util.profiling.ProfilerFiller;
+ import net.minecraft.world.entity.Entity;
+ import net.minecraft.world.entity.Mob;
++import org.jspecify.annotations.Nullable;
+ 
+ public class Sensing {
++    private static final byte VISIBLE = 1;
++    private static final byte HIDDEN = 2;
+     private final Mob mob;
+-    private final IntSet seen = new IntOpenHashSet();
+-    private final IntSet unseen = new IntOpenHashSet();
++    private @Nullable IntSet seen;
++    private @Nullable IntSet unseen;
++    private @Nullable Int2ByteOpenHashMap leavesXVisibilityCache;
++    private boolean leavesXUsingCompactCache;
+ 
+     public Sensing(final Mob mob) {
+         this.mob = mob;
++        this.leavesX$selectCache(org.leavesx.leavesx.config.LeavesXRuntime.sensingCacheOptimization());
+     }
+ 
+     public void tick() {
+-        this.seen.clear();
+-        this.unseen.clear();
++        final boolean useCompactCache = org.leavesx.leavesx.config.LeavesXRuntime.sensingCacheOptimization();
++        this.leavesX$selectCache(useCompactCache);
++        if (useCompactCache) {
++            this.leavesXVisibilityCache.clear();
++        } else {
++            this.seen.clear();
++            this.unseen.clear();
++        }
+     }
+ 
+     public boolean hasLineOfSight(final Entity target) {
+-        int targetId = target.getId();
+-        if (this.seen.contains(targetId)) {
+-            return true;
+-        }
+-
+-        if (this.unseen.contains(targetId)) {
+-            return false;
++        final boolean useCompactCache = org.leavesx.leavesx.config.LeavesXRuntime.sensingCacheOptimization();
++        this.leavesX$selectCache(useCompactCache);
++        final int targetId = target.getId();
++        if (useCompactCache) {
++            final byte cachedVisibility = this.leavesXVisibilityCache.get(targetId);
++            if (cachedVisibility != 0) {
++                return cachedVisibility == VISIBLE;
++            }
++        } else {
++            if (this.seen.contains(targetId)) {
++                return true;
++            }
++            if (this.unseen.contains(targetId)) {
++                return false;
++            }
+         }
+ 
+         ProfilerFiller profiler = Profiler.get();
+         profiler.push("hasLineOfSight");
+         boolean hasLineOfSight = this.mob.hasLineOfSight(target);
+         profiler.pop();
+-        if (hasLineOfSight) {
++        if (useCompactCache) {
++            this.leavesXVisibilityCache.put(targetId, hasLineOfSight ? VISIBLE : HIDDEN);
++        } else if (hasLineOfSight) {
+             this.seen.add(targetId);
+         } else {
+             this.unseen.add(targetId);
+@@ -43,4 +66,30 @@ public class Sensing {
+ 
+         return hasLineOfSight;
+     }
++
++    // LeavesX - discard per-tick entries when a reload switches cache representations.
++    private void leavesX$selectCache(final boolean useCompactCache) {
++        if (this.leavesXUsingCompactCache == useCompactCache
++            && (useCompactCache ? this.leavesXVisibilityCache != null : this.seen != null)) {
++            return;
++        }
++
++        if (this.leavesXVisibilityCache != null) {
++            this.leavesXVisibilityCache.clear();
++        }
++        if (this.seen != null) {
++            this.seen.clear();
++            this.unseen.clear();
++        }
++
++        if (useCompactCache) {
++            if (this.leavesXVisibilityCache == null) {
++                this.leavesXVisibilityCache = new Int2ByteOpenHashMap(2);
++            }
++        } else if (this.seen == null) {
++            this.seen = new IntOpenHashSet();
++            this.unseen = new IntOpenHashSet();
++        }
++        this.leavesXUsingCompactCache = useCompactCache;
++    }
+ }

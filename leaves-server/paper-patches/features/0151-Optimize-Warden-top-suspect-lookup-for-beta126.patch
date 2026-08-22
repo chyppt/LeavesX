@@ -1,0 +1,169 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 10:20:37 +0800
+Subject: [PATCH] Optimize Warden top suspect lookup for beta126
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 71e6584ab091571b2cb87345358caa0aa8e5df82..6eb53b5253c7677fcab1427e711e9d871535530e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 54;
++    public static final int CURRENT_CONFIG_VERSION = 55;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index af9e9ce69f1853578685981f4b5fa6960be10170..2e3930c821c7f0b61f1f7f3382814bbafb339c16 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：54。");
++        comments.put("config-version", "配置版本，请勿修改。默认：55。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 413d956b0274b33c6366c88822cef05266be77f3..6dca07fec5f2c4f41a46a3db2cb29dc39de2747f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -435,6 +435,10 @@ enum LeavesXOptimization {
+     FROG_TONGUE_TARGET_LOOKUP(
+         "performance.ai.frog-tongue-target-lookup",
+         "青蛙舌头目标直接读取实体，关闭后使用原版流。默认：true。"
++    ),
++    WARDEN_TOP_SUSPECT_LOOKUP(
++        "performance.ai.warden-top-suspect-lookup",
++        "监守者仇恨目标直接遍历，关闭后使用原版流。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 2b83fb2a92882e3ed7a1ac7317452eaab93a7b78..40c37912fc7fe8c174634f6f8257b4159e48da38 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -771,6 +771,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && enabled(LeavesXOptimization.FROG_TONGUE_TARGET_LOOKUP);
+     }
+ 
++    /** Returns whether wardens may find their first valid suspect without a stream pipeline. */
++    public static boolean wardenTopSuspectLookupOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.WARDEN_TOP_SUSPECT_LOOKUP);
++    }
++
+     /** Returns whether path candidates may be compared without allocating a comparator. */
+     public static boolean pathCandidateComparisonOptimization() {
+         return pathfindingOptimizations && enabled(LeavesXOptimization.PATH_CANDIDATE_COMPARISON);
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+index 834cb6a90374bae7200138415566dce7abfdd3d5..bb1e7f8fdf5354d066f22439be752193c700a8fc 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+@@ -60,6 +60,10 @@ class FineGrainedOptimizationWiringTest {
+                 "net.minecraft.world.entity.animal.frog.Frog",
+                 "frogTongueTargetLookupOptimization"
+             ),
++            new Wiring(
++                "net.minecraft.world.entity.monster.warden.AngerManagement",
++                "wardenTopSuspectLookupOptimization"
++            ),
+             new Wiring(
+                 "net.minecraft.network.protocol.game.ClientboundLightUpdatePacketData",
+                 "lightUpdatePacketAssemblyOptimization"
+diff --git a/src/test/java/org/leavesx/leavesx/performance/WardenTopSuspectLookupHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/WardenTopSuspectLookupHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..d67bb928ed7e2380331c140aa9de5eedad06412f
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/WardenTopSuspectLookupHotPathTest.java
+@@ -0,0 +1,85 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.List;
++import java.util.function.Predicate;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.entity.monster.warden.AngerManagement;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++
++/** Verifies direct Warden suspect lookup preserves filtering order and configuration fallback behavior. */
++@Normal
++class WardenTopSuspectLookupHotPathTest {
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @Test
++    void directLookupReturnsTheFirstAcceptedSuspectInStableOrder() throws ReflectiveOperationException {
++        final Entity rejected = mock(Entity.class);
++        final Entity accepted = mock(Entity.class);
++        final Entity later = mock(Entity.class);
++        final Predicate<Entity> filter = candidate -> candidate == accepted || candidate == later;
++
++        assertSame(accepted, invokeTopSuspect(List.of(rejected, accepted, later), filter));
++        assertNull(invokeTopSuspect(List.of(rejected), filter));
++    }
++
++    @Test
++    void version54ConfigurationGainsTheDocumentedSwitchWithoutBackupFiles() throws IOException {
++        final Path path = this.temporaryDirectory.resolve("version-54.yml");
++        Files.writeString(path, """
++            config-version: 54
++            performance:
++              ai:
++                warden-top-suspect-lookup: false
++            """, StandardCharsets.UTF_8);
++
++        final LeavesXConfig configuration = LeavesXConfigLoader.load(path);
++        try {
++            publish(configuration);
++            assertFalse(LeavesXRuntime.wardenTopSuspectLookupOptimization());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++
++        final String upgraded = Files.readString(path);
++        assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
++        assertTrue(upgraded.contains("warden-top-suspect-lookup: false"));
++        assertTrue(upgraded.contains("# 监守者仇恨目标直接遍历，关闭后使用原版流。默认：true。"));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
++    }
++
++    private static Entity invokeTopSuspect(final List<Entity> suspects, final Predicate<Entity> filter)
++        throws ReflectiveOperationException {
++        final Method method = AngerManagement.class.getDeclaredMethod("leavesX$getTopSuspect", List.class, Predicate.class);
++        method.setAccessible(true);
++        return (Entity)method.invoke(null, suspects, filter);
++    }
++
++    private static void publish(final LeavesXConfig config) {
++        try {
++            final Method method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++            method.setAccessible(true);
++            method.invoke(null, config);
++        } catch (final ReflectiveOperationException exception) {
++            throw new AssertionError("Unable to publish LeavesX test configuration", exception);
++        }
++    }
++}

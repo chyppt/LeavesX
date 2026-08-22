@@ -1,0 +1,197 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 15 Aug 2026 22:09:37 +0800
+Subject: [PATCH] Add bate20 rolling workload instrumentation
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+index a89cc17a817ba796234865421c0e19decb89a40e..522ca4174b3eb5c3b57ab776720b304feae57c29 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+@@ -82,6 +82,7 @@ public final class ChunkHolderManager {
+     private final ConcurrentChainedLong2ReferenceHashTable<NewChunkHolder> chunkHolders = ConcurrentChainedLong2ReferenceHashTable.createWithCapacity(16384, 0.25f);
+     private final ServerLevel world;
+     private final ChunkTaskScheduler taskScheduler;
++    private final org.leavesx.leavesx.diagnostics.LeavesXChunkDiagnostics.WorldMetrics leavesXDiagnostics;
+     private long currentTick;
+ 
+     private final ArrayDeque<NewChunkHolder> pendingFullLoadUpdate = new ArrayDeque<>();
+@@ -115,6 +116,9 @@ public final class ChunkHolderManager {
+         this.taskScheduler = taskScheduler;
+         this.ticketLockArea = new ReentrantAreaLock(taskScheduler.getChunkSystemLockShift());
+         this.unloadQueue = new ChunkUnloadQueue(((ChunkSystemServerLevel)world).moonrise$getRegionChunkShift());
++        this.leavesXDiagnostics = new org.leavesx.leavesx.diagnostics.LeavesXChunkDiagnostics.WorldMetrics(
++            world.dimension().identifier().toString()
++        );
+     }
+ 
+     /** Returns the exact pending unload count for the main-thread LeavesX diagnostic command. */
+@@ -122,6 +126,11 @@ public final class ChunkHolderManager {
+         return this.unloadQueue.pendingChunkCount();
+     }
+ 
++    /** Returns the bounded, read-only lifecycle counters owned by this world. */
++    public org.leavesx.leavesx.diagnostics.LeavesXChunkDiagnostics.WorldMetrics leavesX$getDiagnostics() {
++        return this.leavesXDiagnostics;
++    }
++
+     public boolean processTicketUpdates(final int chunkX, final int chunkZ) {
+         final int ticketShift = ThreadedTicketLevelPropagator.SECTION_SHIFT;
+         final int ticketMask = (1 << ticketShift) - 1;
+@@ -639,6 +648,7 @@ public final class ChunkHolderManager {
+                     this.addExpireCount(chunkX, chunkZ);
+                 }
+                 this.addTicketCounter(type, chunk);
++                this.leavesXDiagnostics.recordTicketAdded(type);
+             }
+ 
+             if (levelBefore != levelAfter) {
+@@ -725,6 +735,7 @@ public final class ChunkHolderManager {
+             }
+ 
+             this.removeTicketCounter(type, chunk);
++            this.leavesXDiagnostics.recordTicketRemoved(type);
+ 
+             return true;
+         } finally {
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+index 445e73a96461568e2dee49eaa8bf5039744ef07a..322a8e00668de4ab4541d95243f14cc66ce1171e 100644
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -1661,6 +1661,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+ 
+         this.ticksUntilAutosave--;
+         // Paper start - Incremental chunk and player saving
++        final long leavesXSaveStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
+         int playerSaveInterval = io.papermc.paper.configuration.GlobalConfiguration.get().playerAutoSave.rate;
+         if (playerSaveInterval < 0) {
+             playerSaveInterval = this.autosavePeriod;
+@@ -1685,6 +1686,10 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+             this.isSaving = false;
+         }
+         Profiler.get().pop();
++        org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.endPhase(
++            org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.AUTOSAVE,
++            leavesXSaveStarted
++        );
+         // Paper end - Incremental chunk and player saving
+ 
+         ProfilerFiller profiler = Profiler.get();
+@@ -1713,7 +1718,12 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         profiler.push("tick");
+         this.tickFrame.start();
+         // Paper - improve tick loop - moved into runAllTasksAtTickStart
++        final long leavesXTickStartTasks = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
+         this.runAllTasksAtTickStart(); // Paper - improve tick loop
++        org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.endPhase(
++            org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.TICK_START_TASKS,
++            leavesXTickStartTasks
++        );
+         this.tickServer(sprinting ? () -> false : this::haveTime);
+         // Paper start - rewrite chunk system
+         final Throwable crash = this.chunkSystemCrash;
+@@ -1803,6 +1813,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+     protected void tickChildren(final BooleanSupplier haveTime) {
+         ProfilerFiller profiler = Profiler.get();
+         this.getPlayerList().getPlayers().forEach(playerx -> playerx.connection.suspendFlushing());
++        long leavesXPhaseStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
+         this.server.getScheduler().mainThreadHeartbeat(); // CraftBukkit
+         // Paper start - optimise Folia entity scheduler
+         ((io.papermc.paper.threadedregions.scheduler.FoliaGlobalRegionScheduler)org.bukkit.Bukkit.getGlobalRegionScheduler()).tick();
+@@ -1815,6 +1826,11 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         }
+         // Paper end - optimise Folia entity scheduler
+         // Paper end - Folia scheduler API
++        org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.endPhase(
++            org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.BUKKIT_SCHEDULER,
++            leavesXPhaseStarted
++        );
++        leavesXPhaseStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
+         io.papermc.paper.adventure.providers.ClickCallbackProviderImpl.ADVENTURE_CLICK_MANAGER.handleQueue(this.tickCount); // Paper
+         io.papermc.paper.adventure.providers.ClickCallbackProviderImpl.DIALOG_CLICK_MANAGER.handleQueue(this.tickCount); // Paper
+         profiler.push("commandFunctions");
+@@ -1848,8 +1864,13 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+ 
+         profiler.push("levels");
+         this.updateEffectiveRespawnData();
++        org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.endPhase(
++            org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.SERVER_TASKS,
++            leavesXPhaseStarted
++        );
+ 
+         this.isIteratingOverLevels = true; // Paper - Throw exception on world create while being ticked
++        leavesXPhaseStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
+         for (ServerLevel level : this.getAllLevels()) {
+             level.hasPhysicsEvent = org.bukkit.event.block.BlockPhysicsEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - BlockPhysicsEvent
+             level.hasEntityMoveEvent = io.papermc.paper.event.entity.EntityMoveEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - Add EntityMoveEvent
+@@ -1880,12 +1901,27 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+             level.explosionDensityCache.clear(); // Paper - Optimize explosions
+         }
+         this.isIteratingOverLevels = false; // Paper - Throw exception on world create while being ticked
++        org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.endPhase(
++            org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.WORLDS,
++            leavesXPhaseStarted
++        );
+ 
+         profiler.popPush("connection");
++        leavesXPhaseStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
+         this.tickConnection();
++        org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.endPhase(
++            org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.NETWORK,
++            leavesXPhaseStarted
++        );
+         profiler.popPush("players");
++        leavesXPhaseStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
+         this.playerList.tick();
++        org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.endPhase(
++            org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.PLAYERS,
++            leavesXPhaseStarted
++        );
+         profiler.popPush("debugSubscribers");
++        leavesXPhaseStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
+         this.debugSubscribers.tick();
+         if (this.tickRateManager.runsNormally()) {
+             profiler.popPush("gameTests");
+@@ -1901,13 +1937,22 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         for (Runnable tickable : this.tickables) {
+             tickable.run();
+         }
++        org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.endPhase(
++            org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.MISCELLANEOUS,
++            leavesXPhaseStarted
++        );
+ 
+         profiler.popPush("send chunks");
+ 
++        leavesXPhaseStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
+         for (ServerPlayer player : this.playerList.getPlayers()) {
+             player.connection.chunkSender.sendNextChunks(player);
+             player.connection.resumeFlushing();
+         }
++        org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.endPhase(
++            org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.CHUNK_SEND,
++            leavesXPhaseStarted
++        );
+ 
+         profiler.pop();
+         this.serverActivityMonitor.tick();
+diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
+index e7d69147e72c735844ccc5cef601f40217e181f5..83a4cad650cf8fb08970843f15661c38a6971253 100644
+--- a/net/minecraft/world/level/chunk/LevelChunk.java
++++ b/net/minecraft/world/level/chunk/LevelChunk.java
+@@ -641,6 +641,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+         // Paper start
+         this.loadedTicketLevel = true;
+         // Paper end
++        this.level.moonrise$getChunkTaskScheduler().chunkHolderManager.leavesX$getDiagnostics().recordChunkLoad();
+         org.bukkit.Server server = this.level.getCraftServer();
+         // Paper - rewrite chunk system
+         if (server != null) {
+@@ -690,6 +691,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+         // Paper start
+         this.loadedTicketLevel = false;
+         // Paper end
++        this.level.moonrise$getChunkTaskScheduler().chunkHolderManager.leavesX$getDiagnostics().recordChunkUnload();
+     }
+ 
+     @Override

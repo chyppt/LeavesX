@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 03:11:54 +0800
+Subject: [PATCH] Optimize schooling fish AI for bate28
+
+
+diff --git a/net/minecraft/world/entity/ai/goal/FollowFlockLeaderGoal.java b/net/minecraft/world/entity/ai/goal/FollowFlockLeaderGoal.java
+index 8553db5f82eb62b0cb2aacc9b7071436aaf96c39..dcc44ceadd4fd64f266fe11f2f2a366603cf1675 100644
+--- a/net/minecraft/world/entity/ai/goal/FollowFlockLeaderGoal.java
++++ b/net/minecraft/world/entity/ai/goal/FollowFlockLeaderGoal.java
+@@ -35,14 +35,58 @@ public class FollowFlockLeaderGoal extends Goal {
+             List<? extends AbstractSchoolingFish> leadersWithSpaceOrNotFollowers = this.mob
+                 .level()
+                 .getEntitiesOfClass((Class<? extends AbstractSchoolingFish>)this.mob.getClass(), this.mob.getBoundingBox().inflate(8.0, 8.0, 8.0), predicate);
+-            AbstractSchoolingFish leader = DataFixUtils.orElse(
+-                leadersWithSpaceOrNotFollowers.stream().filter(AbstractSchoolingFish::canBeFollowed).findAny(), this.mob
+-            );
+-            leader.addFollowers(leadersWithSpaceOrNotFollowers.stream().filter(fish -> !fish.isFollower()));
++            if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++                final AbstractSchoolingFish leader = findFirstFollowableFishDirect(leadersWithSpaceOrNotFollowers, this.mob);
++                addFollowersDirect(leader, leadersWithSpaceOrNotFollowers);
++            } else {
++                AbstractSchoolingFish leader = DataFixUtils.orElse(
++                    leadersWithSpaceOrNotFollowers.stream().filter(AbstractSchoolingFish::canBeFollowed).findAny(), this.mob
++                );
++                leader.addFollowers(leadersWithSpaceOrNotFollowers.stream().filter(fish -> !fish.isFollower()));
++            }
+             return this.mob.isFollower();
+         }
+     }
+ 
++    // LeavesX start - order-preserving, allocation-free schooling-fish scans
++    private static AbstractSchoolingFish findFirstFollowableFishDirect(
++        final List<? extends AbstractSchoolingFish> candidates,
++        final AbstractSchoolingFish fallback
++    ) {
++        for (final AbstractSchoolingFish candidate : candidates) {
++            if (candidate.canBeFollowed()) {
++                return candidate;
++            }
++        }
++        return fallback;
++    }
++
++    private static void addFollowersDirect(
++        final AbstractSchoolingFish leader,
++        final List<? extends AbstractSchoolingFish> candidates
++    ) {
++        final int followerLimit = leader.getMaxSchoolSize() - leader.schoolSize;
++        if (followerLimit < 0) {
++            throw new IllegalArgumentException(Integer.toString(followerLimit));
++        }
++        if (followerLimit == 0) {
++            return;
++        }
++        int acceptedCandidates = 0;
++        for (final AbstractSchoolingFish candidate : candidates) {
++            if (!candidate.isFollower()) {
++                ++acceptedCandidates;
++                if (candidate != leader) {
++                    candidate.startFollowing(leader);
++                }
++                if (acceptedCandidates >= followerLimit) {
++                    break;
++                }
++            }
++        }
++    }
++    // LeavesX end - order-preserving, allocation-free schooling-fish scans
++
+     @Override
+     public boolean canContinueToUse() {
+         return this.mob.isFollower() && this.mob.inRangeOfLeader();

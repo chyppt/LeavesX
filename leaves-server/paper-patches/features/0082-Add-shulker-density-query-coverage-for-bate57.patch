@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 20:31:49 +0800
+Subject: [PATCH] Add shulker density query coverage for bate57
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ShulkerDuplicationEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ShulkerDuplicationEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..fd92ed4f1e9e54e28f3903cfdb4fc4c6dd44c22f
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ShulkerDuplicationEntityQueryHotPathTest.java
+@@ -0,0 +1,53 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.monster.Shulker;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies shulker duplication density checks stop at the mathematically saturated count. */
++@Normal
++class ShulkerDuplicationEntityQueryHotPathTest {
++
++    @Test
++    void duplicationKeepsBoundedAndVanillaCountPaths() throws IOException {
++        final MethodNode duplication = method(classNode(Shulker.class), "hitByShulkerBullet");
++        final List<MethodInsnNode> calls = invocations(duplication);
++
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++        ));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("countUpTo")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntities")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("nextFloat")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

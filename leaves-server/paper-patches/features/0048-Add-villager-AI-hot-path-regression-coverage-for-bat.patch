@@ -1,0 +1,244 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 01:08:54 +0800
+Subject: [PATCH] Add villager AI hot-path regression coverage for bate23
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/VillagerAiHotPathBytecodeTest.java b/src/test/java/org/leavesx/leavesx/performance/VillagerAiHotPathBytecodeTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3f7c7f13a757b9cfe05e208de06db64f0a540c1d
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/VillagerAiHotPathBytecodeTest.java
+@@ -0,0 +1,232 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.clearInvocations;
++import static org.mockito.Mockito.doReturn;
++import static org.mockito.Mockito.inOrder;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import com.google.common.collect.ImmutableSet;
++import java.io.IOException;
++import java.lang.reflect.Constructor;
++import java.lang.reflect.Field;
++import java.lang.reflect.Method;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Optional;
++import java.util.Set;
++import java.util.function.Predicate;
++import net.minecraft.core.GlobalPos;
++import net.minecraft.core.Holder;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.entity.EntityType;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.entity.PathfinderMob;
++import net.minecraft.world.entity.ai.Brain;
++import net.minecraft.world.entity.ai.behavior.BehaviorControl;
++import net.minecraft.world.entity.ai.behavior.AcquirePoi;
++import net.minecraft.world.entity.ai.behavior.TradeWithVillager;
++import net.minecraft.world.entity.ai.memory.MemoryModuleType;
++import net.minecraft.world.entity.ai.memory.MemoryStatus;
++import net.minecraft.world.entity.ai.memory.NearestVisibleLivingEntities;
++import net.minecraft.world.entity.ai.sensing.SecondaryPoiSensor;
++import net.minecraft.world.entity.ai.sensing.VillagerBabiesSensor;
++import net.minecraft.world.entity.ai.village.poi.PoiType;
++import net.minecraft.world.entity.npc.villager.Villager;
++import net.minecraft.world.entity.npc.villager.VillagerData;
++import net.minecraft.world.entity.npc.villager.VillagerProfession;
++import net.minecraft.world.item.Item;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.mockito.InOrder;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.ClassVisitor;
++import org.objectweb.asm.MethodVisitor;
++import org.objectweb.asm.Opcodes;
++
++/** Locks down allocation-sensitive villager AI call sites without requiring a live registry. */
++@Normal
++class VillagerAiHotPathBytecodeTest {
++
++    @Test
++    void acquirePoiDoesNotBuildMemoryAccessorsForEveryStoppedBehaviorTick() throws IOException {
++        final List<Invocation> calls = invocations(AcquirePoi.class, "create");
++
++        assertFalse(calls.stream().anyMatch(call -> call.owner().contains("/behavior/declarative/BehaviorBuilder")));
++        assertFalse(calls.stream().anyMatch(call -> call.owner().endsWith("/behavior/declarative/MemoryAccessor")));
++    }
++
++    @Test
++    void secondaryPoiReadsVillagerProfessionOncePerScan() throws IOException {
++        final long villagerDataReads = invocations(SecondaryPoiSensor.class, "doTick").stream()
++            .filter(call -> call.owner().equals("net/minecraft/world/entity/npc/villager/Villager"))
++            .filter(call -> call.name().equals("getVillagerData"))
++            .count();
++
++        assertEquals(1L, villagerDataReads);
++    }
++
++    @Test
++    void villagerTradeDifferenceDoesNotCreateAStreamPipeline() throws IOException {
++        final List<Invocation> calls = invocations(TradeWithVillager.class, "figureOutWhatIAmWillingToTrade");
++
++        assertFalse(calls.stream().anyMatch(call -> call.name().equals("stream")));
++        assertFalse(calls.stream().anyMatch(call -> call.owner().startsWith("java/util/stream/")));
++    }
++
++    @Test
++    void babyVillagerSensorDoesNotCreateFilteredIterableWrappers() throws IOException {
++        final List<Invocation> calls = invocations(VillagerBabiesSensor.class, "getNearestVillagerBabies");
++
++        assertFalse(calls.stream().anyMatch(call -> call.owner().equals("com/google/common/collect/ImmutableList") && call.name().equals("copyOf")));
++        assertFalse(calls.stream().anyMatch(call -> call.owner().endsWith("/NearestVisibleLivingEntities") && call.name().equals("findAll")));
++    }
++
++    @Test
++    @SuppressWarnings("unchecked")
++    void acquirePoiChecksValidationMemoryBeforeAcquisitionMemory() {
++        final MemoryModuleType<GlobalPos> validationMemory = mock();
++        final MemoryModuleType<GlobalPos> acquisitionMemory = mock();
++        final BehaviorControl<PathfinderMob> behavior = AcquirePoi.create(
++            ignored -> true,
++            validationMemory,
++            acquisitionMemory,
++            false,
++            Optional.empty(),
++            (level, pos) -> true
++        );
++        final PathfinderMob body = mock();
++        final Brain<?> brain = mock();
++        doReturn(brain).when(body).getBrain();
++        when(brain.checkMemory(validationMemory, MemoryStatus.VALUE_ABSENT)).thenReturn(false);
++
++        assertFalse(behavior.tryStart(mock(ServerLevel.class), body, 100L));
++        verify(brain).checkMemory(validationMemory, MemoryStatus.VALUE_ABSENT);
++        verify(brain, never()).checkMemory(acquisitionMemory, MemoryStatus.VALUE_ABSENT);
++
++        when(brain.checkMemory(validationMemory, MemoryStatus.VALUE_ABSENT)).thenReturn(true);
++        when(brain.checkMemory(acquisitionMemory, MemoryStatus.VALUE_ABSENT)).thenReturn(false);
++        clearInvocations(brain);
++        assertFalse(behavior.tryStart(mock(ServerLevel.class), body, 101L));
++        final InOrder order = inOrder(brain);
++        order.verify(brain).checkMemory(validationMemory, MemoryStatus.VALUE_ABSENT);
++        order.verify(brain).checkMemory(acquisitionMemory, MemoryStatus.VALUE_ABSENT);
++        assertEquals(Set.of(validationMemory), behavior.getRequiredMemories());
++    }
++
++    @Test
++    @SuppressWarnings("unchecked")
++    void villagerTradeDifferenceKeepsOnlyItemsRequestedByTheTarget() throws ReflectiveOperationException {
++        final Item targetOnly = mock();
++        final Item shared = mock();
++        final Villager target = villagerRequesting(ImmutableSet.of(targetOnly, shared));
++        final Villager self = villagerRequesting(ImmutableSet.of(shared));
++        final Method method = TradeWithVillager.class.getDeclaredMethod("figureOutWhatIAmWillingToTrade", Villager.class, Villager.class);
++        method.setAccessible(true);
++
++        final Set<Item> willingItems = (Set<Item>)method.invoke(null, self, target);
++
++        assertEquals(Set.of(targetOnly), willingItems);
++    }
++
++    @Test
++    @SuppressWarnings("unchecked")
++    void babyVillagerPredicateChecksTheTargetEntityType() throws ReflectiveOperationException {
++        final Field field = VillagerBabiesSensor.class.getDeclaredField("IS_VILLAGER_BABY");
++        field.setAccessible(true);
++        final Predicate<LivingEntity> predicate = (Predicate<LivingEntity>)field.get(null);
++        final LivingEntity villagerBaby = mock();
++        when(villagerBaby.is(EntityType.VILLAGER)).thenReturn(true);
++        when(villagerBaby.isBaby()).thenReturn(true);
++        final LivingEntity nonVillagerBaby = mock();
++        when(nonVillagerBaby.is(EntityType.VILLAGER)).thenReturn(false);
++        when(nonVillagerBaby.isBaby()).thenReturn(true);
++
++        assertTrue(predicate.test(villagerBaby));
++        assertFalse(predicate.test(nonVillagerBaby));
++    }
++
++    @Test
++    @SuppressWarnings("unchecked")
++    void visibleEntityListPreservesOrderAndRequiresLineOfSight() throws ReflectiveOperationException {
++        final LivingEntity first = mock();
++        final LivingEntity hidden = mock();
++        final LivingEntity filtered = mock();
++        final LivingEntity last = mock();
++        final Constructor<NearestVisibleLivingEntities> constructor = NearestVisibleLivingEntities.class.getDeclaredConstructor();
++        constructor.setAccessible(true);
++        final NearestVisibleLivingEntities visible = constructor.newInstance();
++        setField(visible, "nearbyEntities", List.of(first, hidden, filtered, last));
++        setField(visible, "lineOfSightTest", (Predicate<LivingEntity>)entity -> entity != hidden);
++
++        final List<LivingEntity> matches = visible.findAllToList(entity -> entity != filtered);
++
++        assertEquals(2, matches.size());
++        assertSame(first, matches.get(0));
++        assertSame(last, matches.get(1));
++        assertThrows(UnsupportedOperationException.class, matches::clear);
++    }
++
++    private static Villager villagerRequesting(final ImmutableSet<Item> requestedItems) {
++        final Villager villager = mock();
++        final VillagerData data = mock();
++        final Holder<VillagerProfession> professionHolder = mock();
++        final VillagerProfession profession = mock();
++        when(villager.getVillagerData()).thenReturn(data);
++        when(data.profession()).thenReturn(professionHolder);
++        when(professionHolder.value()).thenReturn(profession);
++        when(profession.requestedItems()).thenReturn(requestedItems);
++        return villager;
++    }
++
++    private static void setField(final Object target, final String fieldName, final Object value) throws ReflectiveOperationException {
++        final Field field = target.getClass().getDeclaredField(fieldName);
++        field.setAccessible(true);
++        field.set(target, value);
++    }
++
++    private static List<Invocation> invocations(final Class<?> type, final String methodName) throws IOException {
++        final List<Invocation> calls = new ArrayList<>();
++        final ClassReader reader = new ClassReader(type.getName());
++        reader.accept(
++            new ClassVisitor(Opcodes.ASM9) {
++                @Override
++                public MethodVisitor visitMethod(
++                    final int access,
++                    final String name,
++                    final String descriptor,
++                    final String signature,
++                    final String[] exceptions
++                ) {
++                    if (!name.equals(methodName)) {
++                        return null;
++                    }
++                    return new MethodVisitor(Opcodes.ASM9) {
++                        @Override
++                        public void visitMethodInsn(
++                            final int opcode,
++                            final String owner,
++                            final String name,
++                            final String descriptor,
++                            final boolean isInterface
++                        ) {
++                            calls.add(new Invocation(owner, name));
++                        }
++                    };
++                }
++            },
++            ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES
++        );
++        return calls;
++    }
++
++    private record Invocation(String owner, String name) {
++    }
++}

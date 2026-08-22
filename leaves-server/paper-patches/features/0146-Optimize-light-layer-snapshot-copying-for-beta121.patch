@@ -1,0 +1,255 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 00:05:32 +0800
+Subject: [PATCH] Optimize light layer snapshot copying for beta121
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 1a4d6278cb26b0ef6a9ba5ded6b835ec3e25154a..657dfdeb765a9fbe890db99f4157844976f587b2 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 49;
++    public static final int CURRENT_CONFIG_VERSION = 50;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 192ef57ff61e04d7ea9b78e373beb7fa6b6cfa81..453cc7f6b7c5aaa7c1cd21ab885d3f16cf1d2a71 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：49。");
++        comments.put("config-version", "配置版本，请勿修改。默认：50。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 0706aaa6afd725051191b028b287945d5a880e85..3bd97e11d75e3dad133aa0e9c8b4325f92df1e01 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -415,6 +415,10 @@ enum LeavesXOptimization {
+     LIGHT_UPDATE_PACKET_ASSEMBLY(
+         "performance.network.light-update-packet-assembly",
+         "减少区块光照包的临时对象，关闭后使用原版组装。默认：true。"
++    ),
++    LIGHT_LAYER_SNAPSHOT_COPY(
++        "performance.network.light-layer-snapshot-copy",
++        "复制区块光照数据时不创建临时对象，关闭后使用原版复制。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index ed0a83e47ea08d050a75b5968ccfe66a0e103837..3c05b718b94de806d56fb4fe34817e2f8ad93695 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -48,6 +48,7 @@ public final class LeavesXRuntime {
+     private static volatile boolean chunkPacketAssemblyOptimization = true;
+     private static volatile boolean bulkLongArrayWritesOptimization = true;
+     private static volatile boolean lightUpdatePacketAssemblyOptimization = true;
++    private static volatile boolean lightLayerSnapshotCopyOptimization = true;
+     private static boolean goalSelectorOptimization = true;
+     private static boolean brainTickTraversalOptimization = true;
+     private static boolean sensingCacheOptimization = true;
+@@ -121,6 +122,9 @@ public final class LeavesXRuntime {
+         lightUpdatePacketAssemblyOptimization = validated.optimizationEnabled(
+             LeavesXOptimization.LIGHT_UPDATE_PACKET_ASSEMBLY
+         );
++        lightLayerSnapshotCopyOptimization = validated.optimizationEnabled(
++            LeavesXOptimization.LIGHT_LAYER_SNAPSHOT_COPY
++        );
+         goalSelectorOptimization = validated.optimizationEnabled(LeavesXOptimization.GOAL_SELECTOR);
+         brainTickTraversalOptimization = validated.optimizationEnabled(LeavesXOptimization.BRAIN_TICK_TRAVERSAL);
+         sensingCacheOptimization = validated.optimizationEnabled(LeavesXOptimization.SENSING_CACHE);
+@@ -594,6 +598,11 @@ public final class LeavesXRuntime {
+         return lightUpdatePacketAssemblyOptimization;
+     }
+ 
++    /** Returns whether light packets may copy packed layer data without a temporary DataLayer. */
++    public static boolean lightLayerSnapshotCopyOptimization() {
++        return lightLayerSnapshotCopyOptimization;
++    }
++
+     /** Returns whether goal selection may replace repeated flag-map lookups with reusable indexed state. */
+     public static boolean goalSelectorOptimization() {
+         return aiOptimizations && goalSelectorOptimization;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index ced3f5dfa6bef4989c69af7163f5fc382e8d0ea7..90e57a7b436ff85317ca3758820cf130275b8520 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -314,6 +314,7 @@ class LeavesXConfigLoaderTest {
+               network:
+                 bulk-long-array-writes: false
+                 chunk-packet-assembly: false
++                light-layer-snapshot-copy: false
+                 light-update-packet-assembly: false
+               entity-queries:
+                 entity-lookup-visibility: false
+@@ -345,13 +346,14 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_TICK_DIAGNOSTIC_STATE));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.NETWORK_BULK_LONG_ARRAY_WRITES));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_PACKET_ASSEMBLY));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.LIGHT_LAYER_SNAPSHOT_COPY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.LIGHT_UPDATE_PACKET_ASSEMBLY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_LOOKUP_VISIBILITY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.EXPERIENCE_ORB_MERGE_PARAMETERS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 28,
++            LeavesXConfig.fineGrainedOptimizationCount() - 29,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -380,6 +382,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.entityTickDiagnosticStateOptimization());
+             assertFalse(LeavesXRuntime.bulkLongArrayWritesOptimization());
+             assertFalse(LeavesXRuntime.chunkPacketAssemblyOptimization());
++            assertFalse(LeavesXRuntime.lightLayerSnapshotCopyOptimization());
+             assertFalse(LeavesXRuntime.lightUpdatePacketAssemblyOptimization());
+             assertFalse(LeavesXRuntime.entityLookupVisibilityOptimization());
+             assertFalse(LeavesXRuntime.experienceOrbMergeParametersOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+index fc1cb9dc944fb755eff0f73b2fbff10896bff35b..298d68691b7f13387ad5da39300d4e5ff7a9ab48 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+@@ -48,6 +48,10 @@ class FineGrainedOptimizationWiringTest {
+                 "net.minecraft.network.protocol.game.ClientboundLightUpdatePacketData",
+                 "lightUpdatePacketAssemblyOptimization"
+             ),
++            new Wiring(
++                "net.minecraft.network.protocol.game.ClientboundLightUpdatePacketData",
++                "lightLayerSnapshotCopyOptimization"
++            ),
+             new Wiring(
+                 "ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess",
+                 "poiBoundedTraversalOptimization",
+diff --git a/src/test/java/org/leavesx/leavesx/performance/LightLayerSnapshotCopyHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/LightLayerSnapshotCopyHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9b9f068a280aeca996e1080a7c870d1bb2bc9156
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/LightLayerSnapshotCopyHotPathTest.java
+@@ -0,0 +1,91 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.Arrays;
++import net.minecraft.world.level.chunk.DataLayer;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++
++/** Verifies light-layer snapshots remain detached and preserve the compact source representation. */
++@Normal
++class LightLayerSnapshotCopyHotPathTest {
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @Test
++    void copiesMaterializedLayerIntoAnIndependentArray() {
++        final byte[] source = new byte[DataLayer.SIZE];
++        Arrays.fill(source, (byte)0x5A);
++        final DataLayer layer = new DataLayer(source);
++
++        final byte[] snapshot = layer.leavesX$copyData();
++
++        assertArrayEquals(source, snapshot);
++        assertNotSame(source, snapshot);
++        snapshot[0] = 0;
++        assertEquals((byte)0x5A, source[0]);
++    }
++
++    @Test
++    void copiesHomogeneousLayerWithoutMaterializingTheSource() {
++        final DataLayer layer = new DataLayer(9);
++
++        final byte[] snapshot = layer.leavesX$copyData();
++        final byte[] expected = new byte[DataLayer.SIZE];
++        Arrays.fill(expected, (byte)0x99);
++
++        assertTrue(layer.isDefinitelyHomogenous());
++        assertArrayEquals(expected, snapshot);
++    }
++
++    @Test
++    void version49ConfigurationGainsTheDocumentedSwitchWithoutBackupFiles() throws IOException {
++        final Path path = this.temporaryDirectory.resolve("version-49.yml");
++        Files.writeString(path, """
++            config-version: 49
++            performance:
++              network:
++                light-layer-snapshot-copy: false
++            """, StandardCharsets.UTF_8);
++
++        final LeavesXConfig configuration = LeavesXConfigLoader.load(path);
++        try {
++            publish(configuration);
++            assertFalse(LeavesXRuntime.lightLayerSnapshotCopyOptimization());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++
++        final String upgraded = Files.readString(path);
++        assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
++        assertTrue(upgraded.contains("light-layer-snapshot-copy: false"));
++        assertTrue(upgraded.contains("# 复制区块光照数据时不创建临时对象，关闭后使用原版复制。默认：true。"));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
++    }
++
++    private static void publish(final LeavesXConfig config) {
++        try {
++            final Method method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++            method.setAccessible(true);
++            method.invoke(null, config);
++        } catch (final ReflectiveOperationException exception) {
++            throw new AssertionError("Unable to publish LeavesX test configuration", exception);
++        }
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/LightUpdatePacketAssemblyHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/LightUpdatePacketAssemblyHotPathTest.java
+index d4a6ac1ae0a0b0fb1ded83c9f6ea06eec06ac5ab..f161de19cf60b963c469ed0e3d73508c5c2d90a4 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/LightUpdatePacketAssemblyHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/LightUpdatePacketAssemblyHotPathTest.java
+@@ -149,8 +149,9 @@ class LightUpdatePacketAssemblyHotPathTest {
+             config-version: 1
+             performance:
+               network:
++                light-layer-snapshot-copy: %s
+                 light-update-packet-assembly: %s
+-            """.formatted(enabled), StandardCharsets.UTF_8);
++            """.formatted(enabled, enabled), StandardCharsets.UTF_8);
+         return LeavesXConfigLoader.load(path);
+     }
+ 
+@@ -210,6 +211,10 @@ class LightUpdatePacketAssemblyHotPathTest {
+     ) {
+         assertNotSame(fixture.skyLayers().get(0).getData(), packet.getSkyUpdates().get(0));
+         assertNotSame(fixture.blockLayers().get(-2).getData(), packet.getBlockUpdates().get(0));
++        assertTrue(
++            fixture.blockLayers().get(2).isDefinitelyHomogenous(),
++            "packet snapshots must not materialize homogeneous source layers"
++        );
+     }
+ 
+     private static byte[] encode(final ClientboundLightUpdatePacketData packet) {

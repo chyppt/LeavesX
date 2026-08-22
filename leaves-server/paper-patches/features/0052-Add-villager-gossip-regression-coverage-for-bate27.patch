@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 02:43:34 +0800
+Subject: [PATCH] Add villager gossip regression coverage for bate27
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/GossipHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/GossipHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..82d19fe2d402d962e2ae39d993eddbdec6a8e69b
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/GossipHotPathTest.java
+@@ -0,0 +1,148 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.UUID;
++import java.util.concurrent.atomic.AtomicInteger;
++import java.util.function.DoublePredicate;
++import net.minecraft.world.entity.ai.gossip.GossipContainer;
++import net.minecraft.world.entity.ai.gossip.GossipType;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.leavesmc.leaves.LeavesConfig;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.ClassVisitor;
++import org.objectweb.asm.MethodVisitor;
++import org.objectweb.asm.Opcodes;
++
++/** Verifies allocation-free villager gossip scans without changing reputation semantics. */
++@Normal
++class GossipHotPathTest {
++
++    @Test
++    void majorPositiveSumUsesStoredValuesAndVanillaWeight() throws ReflectiveOperationException {
++        final GossipContainer container = new GossipContainer();
++        container.add(new UUID(0L, 1L), GossipType.MAJOR_POSITIVE, 3);
++        container.add(new UUID(0L, 2L), GossipType.MAJOR_POSITIVE, 7);
++        container.add(new UUID(0L, 3L), GossipType.MINOR_POSITIVE, 20);
++        final Method method = GossipContainer.class.getDeclaredMethod("sumMajorPositiveReputationDirect");
++        method.setAccessible(true);
++
++        final int reputation = (int)method.invoke(container);
++
++        assertEquals(50, reputation);
++    }
++
++    @Test
++    void sharedDiscountKeepsVanillaCapAndPredicateCalls() {
++        final boolean previous = LeavesConfig.modify.sharedVillagerDiscounts;
++        LeavesConfig.modify.sharedVillagerDiscounts = true;
++        try {
++            final GossipContainer container = new GossipContainer();
++            final UUID target = new UUID(0L, 4L);
++            container.add(target, GossipType.MAJOR_POSITIVE, GossipType.MAJOR_POSITIVE.max);
++            container.add(target, GossipType.MINOR_POSITIVE, 5);
++            container.add(new UUID(0L, 5L), GossipType.MAJOR_POSITIVE, GossipType.MAJOR_POSITIVE.max);
++            final AtomicInteger predicateCalls = new AtomicInteger();
++
++            final int reputation = container.getReputation(target, type -> {
++                predicateCalls.incrementAndGet();
++                return type == GossipType.MAJOR_POSITIVE || type == GossipType.MINOR_POSITIVE;
++            });
++
++            assertEquals(105, reputation);
++            assertEquals(3, predicateCalls.get());
++        } finally {
++            LeavesConfig.modify.sharedVillagerDiscounts = previous;
++        }
++    }
++
++    @Test
++    void typeCounterChecksEveryVillagerOnceIncludingMissingEntries() throws ReflectiveOperationException {
++        final GossipContainer container = new GossipContainer();
++        container.add(new UUID(0L, 6L), GossipType.MAJOR_POSITIVE, 2);
++        container.add(new UUID(0L, 7L), GossipType.MAJOR_POSITIVE, 3);
++        container.add(new UUID(0L, 8L), GossipType.MINOR_POSITIVE, 4);
++        final List<Double> testedValues = new ArrayList<>();
++        final DoublePredicate predicate = value -> {
++            testedValues.add(value);
++            return value >= 10.0D;
++        };
++        final Method method = GossipContainer.class.getDeclaredMethod(
++            "countForTypeDirect",
++            GossipType.class,
++            DoublePredicate.class
++        );
++        method.setAccessible(true);
++
++        final long count = (long)method.invoke(container, GossipType.MAJOR_POSITIVE, predicate);
++
++        testedValues.sort(Double::compareTo);
++        assertEquals(2L, count);
++        assertEquals(List.of(0.0D, 10.0D, 15.0D), testedValues);
++    }
++
++    @Test
++    void directGossipHelpersDoNotCreateStreams() throws IOException {
++        assertNoStreamCalls("sumMajorPositiveReputationDirect");
++        assertNoStreamCalls("countForTypeDirect");
++    }
++
++    @Test
++    void publicGossipMethodsDelegateToDirectHelpers() throws IOException {
++        assertTrue(invocations("getReputation").stream().anyMatch(call -> call.name().equals("sumMajorPositiveReputationDirect")));
++        assertTrue(invocations("getCountForType").stream().anyMatch(call -> call.name().equals("countForTypeDirect")));
++    }
++
++    private static void assertNoStreamCalls(final String methodName) throws IOException {
++        final List<Invocation> calls = invocations(methodName);
++        assertFalse(calls.stream().anyMatch(call -> call.name().equals("stream")));
++        assertFalse(calls.stream().anyMatch(call -> call.owner().startsWith("java/util/stream/")));
++    }
++
++    private static List<Invocation> invocations(final String methodName) throws IOException {
++        final List<Invocation> calls = new ArrayList<>();
++        final boolean[] found = {false};
++        new ClassReader(GossipContainer.class.getName()).accept(
++            new ClassVisitor(Opcodes.ASM9) {
++                @Override
++                public MethodVisitor visitMethod(
++                    final int access,
++                    final String name,
++                    final String descriptor,
++                    final String signature,
++                    final String[] exceptions
++                ) {
++                    if (!name.equals(methodName)) {
++                        return null;
++                    }
++                    found[0] = true;
++                    return new MethodVisitor(Opcodes.ASM9) {
++                        @Override
++                        public void visitMethodInsn(
++                            final int opcode,
++                            final String owner,
++                            final String name,
++                            final String descriptor,
++                            final boolean isInterface
++                        ) {
++                            calls.add(new Invocation(owner, name));
++                        }
++                    };
++                }
++            },
++            ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES
++        );
++        assertTrue(found[0], () -> "Missing GossipContainer#" + methodName);
++        return calls;
++    }
++
++    private record Invocation(String owner, String name) {
++    }
++}

@@ -1,0 +1,181 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 20 Aug 2026 22:38:04 +0800
+Subject: [PATCH] Cache block entity ticker metadata for beta140
+
+
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index c6eb9e97fa53e0fc02fb8f72e7c93b52a7b0a599..46cb1fb7f086c26c98be16776a31d26eaadb687c 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -1734,7 +1734,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+                     toRemove.add(ticker); // Paper - Fix MC-117075 use removeAll
+                 }
+                 // LeavesX end - indexed removals are naturally sorted by this forward scan
+-            } else if (tickBlockEntities && this.shouldTickBlockPosFilterNull(ticker.getPos())) { // Leaves - Lithium Sleeping Block Entity
++            } else if (tickBlockEntities && this.shouldTickBlockEntityFilterNull(ticker)) { // Leaves - Lithium Sleeping Block Entity
+                 ticker.tick();
+                 // Paper start - rewrite chunk system
+                 if ((++tickedEntities & 7) == 0) {
+@@ -1809,11 +1809,15 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         return null;
+     }
+ 
+-    private boolean shouldTickBlockPosFilterNull(BlockPos pos) {
++    private boolean shouldTickBlockEntityFilterNull(final TickingBlockEntity ticker) {
++        final BlockPos pos = ticker.getPos();
+         if (pos == null) {
+             return false;
+         }
+-        return shouldTickBlocksAt(pos);
++        if (LeavesXRuntime.blockEntityOptimizations()) {
++            return this.shouldTickBlocksAt(ticker.leavesX$getChunkKey());
++        }
++        return this.shouldTickBlocksAt(pos);
+     }
+     // Leaves end - Lithium Sleeping Block Entity
+ 
+diff --git a/net/minecraft/world/level/block/entity/TickingBlockEntity.java b/net/minecraft/world/level/block/entity/TickingBlockEntity.java
+index 28e3b73507b988f7234cbf29c4024c88180d0aef..da6225a2566b52a3fd3c4273ea0b28cb67e5c2cc 100644
+--- a/net/minecraft/world/level/block/entity/TickingBlockEntity.java
++++ b/net/minecraft/world/level/block/entity/TickingBlockEntity.java
+@@ -1,6 +1,7 @@
+ package net.minecraft.world.level.block.entity;
+ 
+ import net.minecraft.core.BlockPos;
++import net.minecraft.world.level.ChunkPos;
+ 
+ public interface TickingBlockEntity {
+     void tick();
+@@ -9,5 +10,15 @@ public interface TickingBlockEntity {
+ 
+     BlockPos getPos();
+ 
++    /**
++     * Returns the packed chunk key used by the block-entity tick gate.
++     *
++     * <p>The default keeps third-party and sleeping ticker implementations behaviorally identical. LeavesX's
++     * rebindable wrapper overrides it with immutable cached state.</p>
++     */
++    default long leavesX$getChunkKey() {
++        return ChunkPos.pack(this.getPos());
++    }
++
+     String getType();
+ }
+diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
+index c5a799a2c63eb16677684a6bc8030adb04f29d14..54f8b64262398b684a6826570688ffbd0933f1f1 100644
+--- a/net/minecraft/world/level/chunk/LevelChunk.java
++++ b/net/minecraft/world/level/chunk/LevelChunk.java
+@@ -522,10 +522,15 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+     }
+ 
+     private boolean isTicking(final BlockPos pos) {
++        return this.isTicking(pos, ChunkPos.pack(pos));
++    }
++
++    /** Uses a caller-owned immutable chunk key without changing the original block-position gate. */
++    private boolean isTicking(final BlockPos pos, final long chunkKey) {
+         return this.level.getWorldBorder().isWithinBounds(pos)
+             && (
+                 !(this.level instanceof ServerLevel serverLevel)
+-                    || this.getFullStatus().isOrAfter(FullChunkStatus.BLOCK_TICKING) && serverLevel.areEntitiesLoaded(ChunkPos.pack(pos))
++                    || this.getFullStatus().isOrAfter(FullChunkStatus.BLOCK_TICKING) && serverLevel.areEntitiesLoaded(chunkKey)
+             );
+     }
+ 
+@@ -950,25 +955,39 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+         private final T blockEntity;
+         private final BlockEntityTicker<T> ticker;
+         private final BlockPos cachedPos;
++        private final long cachedChunkKey;
++        private final BlockEntityType<?> cachedType;
++        private final String cachedTypeName;
+         private boolean loggedInvalidBlockState;
+ 
+         private BoundTickingBlockEntity(final T blockEntity, final BlockEntityTicker<T> ticker) {
+             this.blockEntity = blockEntity;
+             this.ticker = ticker;
+-            // BlockEntity stores an immutable final position, so resolving it once is behavior-equivalent.
++            // BlockEntity position and type are immutable; resolve their derived values once for every future tick.
+             this.cachedPos = blockEntity.getBlockPos();
++            this.cachedChunkKey = ChunkPos.pack(this.cachedPos);
++            this.cachedType = blockEntity.getType();
++            this.cachedTypeName = blockEntity.typeHolder().getRegisteredName();
+         }
+ 
+         @Override
+         public void tick() {
+             if (!this.blockEntity.isRemoved() && this.blockEntity.hasLevel()) {
+-                BlockPos pos = this.cachedPos;
+-                if (LevelChunk.this.isTicking(pos)) {
++                final BlockPos pos = this.cachedPos;
++                final boolean optimizedMetadata = org.leavesx.leavesx.config.LeavesXRuntime.blockEntityOptimizations();
++                if (optimizedMetadata
++                    ? LevelChunk.this.isTicking(pos, this.cachedChunkKey)
++                    : LevelChunk.this.isTicking(pos)) {
+                     try {
+-                        ProfilerFiller profiler = Profiler.get();
+-                        profiler.push(this::getType);
+-                        BlockState blockState = LevelChunk.this.getBlockState(pos);
+-                        if (this.blockEntity.getType().isValid(blockState)) {
++                        final ProfilerFiller profiler = Profiler.get();
++                        if (optimizedMetadata) {
++                            profiler.push(this.cachedTypeName);
++                        } else {
++                            profiler.push(this::getType);
++                        }
++                        final BlockState blockState = LevelChunk.this.getBlockState(pos);
++                        final BlockEntityType<?> blockEntityType = optimizedMetadata ? this.cachedType : this.blockEntity.getType();
++                        if (blockEntityType.isValid(blockState)) {
+                             this.ticker.tick(LevelChunk.this.level, pos, blockState, this.blockEntity);
+                             this.loggedInvalidBlockState = false;
+                             // Paper start - Remove the Block Entity if it's invalid
+@@ -1012,8 +1031,16 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+             return this.cachedPos;
+         }
+ 
++        @Override
++        public long leavesX$getChunkKey() {
++            return this.cachedChunkKey;
++        }
++
+         @Override
+         public String getType() {
++            if (org.leavesx.leavesx.config.LeavesXRuntime.blockEntityOptimizations()) {
++                return this.cachedTypeName;
++            }
+             return this.blockEntity.typeHolder().getRegisteredName();
+         }
+ 
+@@ -1039,6 +1066,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+         // LeavesX start - cache immutable ticker state used by every block-entity tick
+         private @Nullable BlockEntity blockEntityReference;
+         private BlockPos cachedPos;
++        private long cachedChunkKey;
+         // LeavesX end - cache immutable ticker state used by every block-entity tick
+ 
+         private RebindableTickingBlockEntityWrapper(final TickingBlockEntity ticker) {
+@@ -1053,6 +1081,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+             // Refresh every derived value together so sleeping and removed ticker rebinds cannot leave stale state.
+             this.ticker = ticker;
+             this.cachedPos = ticker.getPos();
++            this.cachedChunkKey = this.cachedPos == null ? 0L : ChunkPos.pack(this.cachedPos);
+             if (ticker instanceof BoundTickingBlockEntity<?> boundTicker) {
+                 this.blockEntityReference = boundTicker.blockEntity;
+             } else {
+@@ -1082,6 +1111,14 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+             return this.ticker.getPos();
+         }
+ 
++        @Override
++        public long leavesX$getChunkKey() {
++            if (org.leavesx.leavesx.config.LeavesXRuntime.blockEntityOptimizations()) {
++                return this.cachedChunkKey;
++            }
++            return this.ticker.leavesX$getChunkKey();
++        }
++
+         @Override
+         public String getType() {
+             return this.ticker.getType();

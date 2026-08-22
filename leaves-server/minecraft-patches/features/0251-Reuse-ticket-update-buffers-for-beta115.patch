@@ -1,0 +1,163 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 15:00:33 +0800
+Subject: [PATCH] Reuse ticket update buffers for beta115
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+index ef066062813caacc6434b6ea0d4fdf0296060fbd..ff437bedbba4ec0a22b37665d013873331b145cb 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+@@ -73,6 +73,8 @@ public final class ChunkHolderManager {
+     public static final TicketType UNLOAD_COOLDOWN = ChunkSystemTicketType.create("chunk_system:unload_cooldown", null, 5L * 20L);
+ 
+     private static final long NO_TIMEOUT_MARKER = Long.MIN_VALUE;
++    private static final ThreadLocal<LeavesXTicketUpdateBuffers> LEAVESX_TICKET_UPDATE_BUFFERS =
++        ThreadLocal.withInitial(LeavesXTicketUpdateBuffers::new);
+     public final ReentrantAreaLock ticketLockArea;
+ 
+     private final ConcurrentChainedLong2ReferenceHashTable<TicketSet> tickets = new ConcurrentChainedLong2ReferenceHashTable<>();
+@@ -131,31 +133,77 @@ public final class ChunkHolderManager {
+         return this.leavesXDiagnostics;
+     }
+ 
++    private static LeavesXTicketUpdateBuffers leavesX$acquireTicketUpdateBuffers() {
++        if (!org.leavesx.leavesx.config.LeavesXRuntime.ticketUpdateBufferReuseOptimization()) {
++            return null;
++        }
++
++        final LeavesXTicketUpdateBuffers buffers = LEAVESX_TICKET_UPDATE_BUFFERS.get();
++        return buffers.tryAcquire() ? buffers : null;
++    }
++
++    /**
++     * Owns the temporary output lists used while propagating ticket levels.
++     *
++     * <p>A same-thread reentrant update receives fresh Paper lists instead of sharing an active buffer. Keeping the
++     * buffer borrowed through task scheduling also prevents callbacks from observing or overwriting pending work.</p>
++     */
++    private static final class LeavesXTicketUpdateBuffers {
++        private final List<ChunkProgressionTask> scheduledTasks = new ArrayList<>();
++        private final List<NewChunkHolder> changedFullStatus = new ArrayList<>();
++        private boolean inUse;
++
++        private boolean tryAcquire() {
++            if (this.inUse) {
++                return false;
++            }
++            this.inUse = true;
++            return true;
++        }
++
++        private void release() {
++            this.scheduledTasks.clear();
++            this.changedFullStatus.clear();
++            this.inUse = false;
++        }
++    }
++
+     public boolean processTicketUpdates(final int chunkX, final int chunkZ) {
+         final int ticketShift = ThreadedTicketLevelPropagator.SECTION_SHIFT;
+         final int ticketMask = (1 << ticketShift) - 1;
+-        final List<ChunkProgressionTask> scheduledTasks = new ArrayList<>();
+-        final List<NewChunkHolder> changedFullStatus = new ArrayList<>();
+-        final boolean ret;
+-        final ReentrantAreaLock.Node ticketLock = this.ticketLockArea.lock(
+-                            ((chunkX >> ticketShift) - 1) << ticketShift,
+-                            ((chunkZ >> ticketShift) - 1) << ticketShift,
+-                            (((chunkX >> ticketShift) + 1) << ticketShift) | ticketMask,
+-                            (((chunkZ >> ticketShift) + 1) << ticketShift) | ticketMask
+-        );
++        final LeavesXTicketUpdateBuffers reusableBuffers = leavesX$acquireTicketUpdateBuffers();
++        final List<ChunkProgressionTask> scheduledTasks = reusableBuffers == null
++            ? new ArrayList<>()
++            : reusableBuffers.scheduledTasks;
++        final List<NewChunkHolder> changedFullStatus = reusableBuffers == null
++            ? new ArrayList<>()
++            : reusableBuffers.changedFullStatus;
+         try {
+-            ret = this.processTicketUpdatesNoLock(chunkX >> ticketShift, chunkZ >> ticketShift, scheduledTasks, changedFullStatus);
+-        } finally {
+-            this.ticketLockArea.unlock(ticketLock);
+-        }
++            final boolean ret;
++            final ReentrantAreaLock.Node ticketLock = this.ticketLockArea.lock(
++                                ((chunkX >> ticketShift) - 1) << ticketShift,
++                                ((chunkZ >> ticketShift) - 1) << ticketShift,
++                                (((chunkX >> ticketShift) + 1) << ticketShift) | ticketMask,
++                                (((chunkZ >> ticketShift) + 1) << ticketShift) | ticketMask
++            );
++            try {
++                ret = this.processTicketUpdatesNoLock(chunkX >> ticketShift, chunkZ >> ticketShift, scheduledTasks, changedFullStatus);
++            } finally {
++                this.ticketLockArea.unlock(ticketLock);
++            }
+ 
+-        this.addChangedStatuses(changedFullStatus);
++            this.addChangedStatuses(changedFullStatus);
+ 
+-        for (int i = 0, len = scheduledTasks.size(); i < len; ++i) {
+-            scheduledTasks.get(i).schedule();
+-        }
++            for (int i = 0, len = scheduledTasks.size(); i < len; ++i) {
++                scheduledTasks.get(i).schedule();
++            }
+ 
+-        return ret;
++            return ret;
++        } finally {
++            if (reusableBuffers != null) {
++                reusableBuffers.release();
++            }
++        }
+     }
+ 
+     private boolean processTicketUpdatesNoLock(final int sectionX, final int sectionZ, final List<ChunkProgressionTask> scheduledTasks,
+@@ -1473,23 +1521,33 @@ public final class ChunkHolderManager {
+         boolean ret = false;
+ 
+         if (this.ticketLevelPropagator.hasPendingUpdates()) {
+-            final List<ChunkProgressionTask> scheduledTasks = new ArrayList<>();
+-            final List<NewChunkHolder> changedFullStatus = new ArrayList<>();
+-
+-            this.blockTicketUpdates();
++            final LeavesXTicketUpdateBuffers reusableBuffers = leavesX$acquireTicketUpdateBuffers();
++            final List<ChunkProgressionTask> scheduledTasks = reusableBuffers == null
++                ? new ArrayList<>()
++                : reusableBuffers.scheduledTasks;
++            final List<NewChunkHolder> changedFullStatus = reusableBuffers == null
++                ? new ArrayList<>()
++                : reusableBuffers.changedFullStatus;
+             try {
+-                ret |= this.ticketLevelPropagator.performUpdates(
+-                    this.ticketLockArea, this.taskScheduler.schedulingLockArea,
+-                    scheduledTasks, changedFullStatus
+-                );
+-            } finally {
+-                this.unblockTicketUpdates(Boolean.FALSE);
+-            }
++                this.blockTicketUpdates();
++                try {
++                    ret |= this.ticketLevelPropagator.performUpdates(
++                        this.ticketLockArea, this.taskScheduler.schedulingLockArea,
++                        scheduledTasks, changedFullStatus
++                    );
++                } finally {
++                    this.unblockTicketUpdates(Boolean.FALSE);
++                }
+ 
+-            this.addChangedStatuses(changedFullStatus);
++                this.addChangedStatuses(changedFullStatus);
+ 
+-            for (int i = 0, len = scheduledTasks.size(); i < len; ++i) {
+-                scheduledTasks.get(i).schedule();
++                for (int i = 0, len = scheduledTasks.size(); i < len; ++i) {
++                    scheduledTasks.get(i).schedule();
++                }
++            } finally {
++                if (reusableBuffers != null) {
++                    reusableBuffers.release();
++                }
+             }
+         }
+ 

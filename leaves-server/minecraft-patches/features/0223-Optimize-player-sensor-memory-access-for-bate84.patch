@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 02:02:37 +0800
+Subject: [PATCH] Optimize player sensor memory access for bate84
+
+
+diff --git a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
+index e1440c54b5c17ff342fc8e299a6441e42b93abbd..1b9ad07d96a8a6cd63e3cbcd7878561f8372f584 100644
+--- a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
+@@ -28,16 +28,17 @@ public class PlayerSensor extends Sensor<LivingEntity> {
+ 
+     @Override
+     protected void doTick(final ServerLevel level, final LivingEntity body) {
+-        final boolean optimizeAllocations = org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations();
++        final boolean optimizeAllocations = org.leavesx.leavesx.config.LeavesXRuntime.playerSensorOptimization();
+         final Brain<?> brain = body.getBrain();
+         final List<Player> players;
+         if (optimizeAllocations) {
+             // LeavesX start - preserve the stream predicate order while avoiding its per-sensor pipeline allocations
+             final List<? extends Player> levelPlayers = level.players();
+             final List<Player> nearbyPlayers = new ArrayList<>(levelPlayers.size());
++            final double followDistance = this.getFollowDistance(body);
+             for (final Player player : levelPlayers) {
+                 if (EntitySelector.NO_SPECTATORS.test(player)
+-                    && body.closerThan(player, this.getFollowDistance(body))) {
++                    && body.closerThan(player, followDistance)) {
+                     nearbyPlayers.add(player);
+                 }
+             }
+@@ -53,7 +54,9 @@ public class PlayerSensor extends Sensor<LivingEntity> {
+                 .collect(Collectors.toList());
+         }
+         brain.setMemory(MemoryModuleType.NEAREST_PLAYERS, players);
+-        final LivingEntity attackTarget = optimizeAllocations ? brain.getMemory(MemoryModuleType.ATTACK_TARGET).orElse(null) : null;
++        final LivingEntity attackTarget = optimizeAllocations
++            ? brain.leavesX$getMemoryValue(MemoryModuleType.ATTACK_TARGET)
++            : null;
+         final List<Player> visiblePlayers;
+         if (optimizeAllocations) {
+             final List<Player> targetablePlayers = new ArrayList<>(players.size());

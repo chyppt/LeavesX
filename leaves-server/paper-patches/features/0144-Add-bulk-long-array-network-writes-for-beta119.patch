@@ -1,0 +1,361 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 23:29:43 +0800
+Subject: [PATCH] Add bulk long-array network writes for beta119
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index e4511029614f9a5877d40377c69b7dfb699fd925..784f3ad97f9bf357d7c98b309dba3b52fc7369c8 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 47;
++    public static final int CURRENT_CONFIG_VERSION = 48;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 44dd7bcf96d5e67b75a3c7d4d09226db697dd7d5..2d03ecfa84f8a6b9c56f8f4b506ea36636446131 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：47。");
++        comments.put("config-version", "配置版本，请勿修改。默认：48。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 4edb68791c3293d487571f49d3de7f77f3056505..aa271f01852277a99ed747be1f531b159efc87a5 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -407,6 +407,10 @@ enum LeavesXOptimization {
+     BLOCK_ENTITY_TYPE_VALIDATION(
+         "performance.block-entity.type-validation",
+         "缓存方块实体类型校验，重复映射自动使用原版查询。默认：true。"
++    ),
++    NETWORK_BULK_LONG_ARRAY_WRITES(
++        "performance.network.bulk-long-array-writes",
++        "批量写入网络 long 数组，关闭后逐个写入。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 96c58a0dfa3fe1498c4249df1f24635c92e8f685..48cb09842b7771436079f12bc9356ec6365f9079 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -46,6 +46,7 @@ public final class LeavesXRuntime {
+     private static int chunkUnloadMinimumPerTick = 100;
+     private static int chunkUnloadMaximumPerTick = 500;
+     private static volatile boolean chunkPacketAssemblyOptimization = true;
++    private static volatile boolean bulkLongArrayWritesOptimization = true;
+     private static boolean goalSelectorOptimization = true;
+     private static boolean brainTickTraversalOptimization = true;
+     private static boolean sensingCacheOptimization = true;
+@@ -113,6 +114,9 @@ public final class LeavesXRuntime {
+         chunkUnloadMinimumPerTick = validated.chunkUnloadMinimumPerTick();
+         chunkUnloadMaximumPerTick = validated.chunkUnloadMaximumPerTick();
+         chunkPacketAssemblyOptimization = validated.optimizationEnabled(LeavesXOptimization.CHUNK_PACKET_ASSEMBLY);
++        bulkLongArrayWritesOptimization = validated.optimizationEnabled(
++            LeavesXOptimization.NETWORK_BULK_LONG_ARRAY_WRITES
++        );
+         goalSelectorOptimization = validated.optimizationEnabled(LeavesXOptimization.GOAL_SELECTOR);
+         brainTickTraversalOptimization = validated.optimizationEnabled(LeavesXOptimization.BRAIN_TICK_TRAVERSAL);
+         sensingCacheOptimization = validated.optimizationEnabled(LeavesXOptimization.SENSING_CACHE);
+@@ -576,6 +580,11 @@ public final class LeavesXRuntime {
+         return chunkPacketAssemblyOptimization;
+     }
+ 
++    /** Returns whether FriendlyByteBuf may use allocation-free bulk writes for long arrays. */
++    public static boolean bulkLongArrayWritesOptimization() {
++        return bulkLongArrayWritesOptimization;
++    }
++
+     /** Returns whether goal selection may replace repeated flag-map lookups with reusable indexed state. */
+     public static boolean goalSelectorOptimization() {
+         return aiOptimizations && goalSelectorOptimization;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 99c1332f4bbfe44826cc2afbdb2a352e06710c9b..f8246a0974c9bd2a29abc33054496c608ffe976d 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -312,6 +312,7 @@ class LeavesXConfigLoaderTest {
+                 stationary-speed-vector: false
+                 tick-diagnostic-state: false
+               network:
++                bulk-long-array-writes: false
+                 chunk-packet-assembly: false
+               entity-queries:
+                 entity-lookup-visibility: false
+@@ -341,13 +342,14 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.SERVER_FIRE_STATE));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.STATIONARY_ENTITY_SPEED));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_TICK_DIAGNOSTIC_STATE));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.NETWORK_BULK_LONG_ARRAY_WRITES));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_PACKET_ASSEMBLY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.ENTITY_LOOKUP_VISIBILITY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.EXPERIENCE_ORB_MERGE_PARAMETERS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 26,
++            LeavesXConfig.fineGrainedOptimizationCount() - 27,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -374,6 +376,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.serverFireStateOptimization());
+             assertFalse(LeavesXRuntime.stationaryEntitySpeedOptimization());
+             assertFalse(LeavesXRuntime.entityTickDiagnosticStateOptimization());
++            assertFalse(LeavesXRuntime.bulkLongArrayWritesOptimization());
+             assertFalse(LeavesXRuntime.chunkPacketAssemblyOptimization());
+             assertFalse(LeavesXRuntime.entityLookupVisibilityOptimization());
+             assertFalse(LeavesXRuntime.experienceOrbMergeParametersOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BulkLongArrayWriteHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BulkLongArrayWriteHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f43ddbff8c06f40b66bd97d09e3eb69a5677253a
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/BulkLongArrayWriteHotPathTest.java
+@@ -0,0 +1,226 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.ArgumentMatchers.anyLong;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.spy;
++import static org.mockito.Mockito.times;
++import static org.mockito.Mockito.verify;
++
++import io.netty.buffer.ByteBuf;
++import io.netty.buffer.PooledByteBufAllocator;
++import io.netty.buffer.Unpooled;
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.ByteOrder;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.List;
++import java.util.function.IntFunction;
++import net.minecraft.network.FriendlyByteBuf;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++
++/** Verifies bulk long-array writes preserve protocol bytes and all public fallback paths. */
++@Normal
++class BulkLongArrayWriteHotPathTest {
++
++    private static final long[] VALUES = createValues(37);
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @Test
++    void optimizedInstanceWritesMatchStaticProtocolEncoding() {
++        publish(LeavesXConfig.safeDefaults());
++        for (final BufferCase bufferCase : bufferCases()) {
++            assertArrayEquals(
++                encodeStatic(bufferCase.factory(), true),
++                encodeInstance(bufferCase.factory(), true),
++                bufferCase.name() + " length-prefixed bytes"
++            );
++            assertArrayEquals(
++                encodeStatic(bufferCase.factory(), false),
++                encodeInstance(bufferCase.factory(), false),
++                bufferCase.name() + " fixed-size bytes"
++            );
++        }
++    }
++
++    @Test
++    void runtimeSwitchAndStaticApiRetainElementWrites() throws IOException {
++        final Path path = this.temporaryDirectory.resolve("leavesx.yml");
++        Files.writeString(path, """
++            config-version: 1
++            performance:
++              network:
++                bulk-long-array-writes: false
++            """, StandardCharsets.UTF_8);
++
++        try {
++            final LeavesXConfig configuration = LeavesXConfigLoader.load(path);
++            publish(configuration);
++            assertFalse(LeavesXRuntime.bulkLongArrayWritesOptimization());
++            final String upgraded = Files.readString(path);
++            assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
++            assertTrue(upgraded.contains("bulk-long-array-writes: false"));
++            assertTrue(upgraded.contains("# 批量写入网络 long 数组，关闭后逐个写入。默认：true。"));
++            assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
++            assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
++            verifyElementWrites(true, VALUES.length);
++
++            publish(LeavesXConfig.safeDefaults());
++            verifyElementWrites(false, 0);
++            verifyStaticElementWrites();
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void insufficientMaximumCapacityPreservesPartialWriteState() {
++        publish(LeavesXConfig.safeDefaults());
++        assertPartialWriteMatches(false, 16);
++        assertPartialWriteMatches(true, 17);
++    }
++
++    private static byte[] encodeInstance(final IntFunction<ByteBuf> factory, final boolean lengthPrefixed) {
++        final FriendlyByteBuf output = new FriendlyByteBuf(factory.apply(VALUES.length * Long.BYTES + 8));
++        try {
++            output.writeByte(0x12);
++            if (lengthPrefixed) {
++                output.writeLongArray(VALUES);
++            } else {
++                output.writeFixedSizeLongArray(VALUES);
++            }
++            return bytes(output);
++        } finally {
++            output.release();
++        }
++    }
++
++    private static byte[] encodeStatic(final IntFunction<ByteBuf> factory, final boolean lengthPrefixed) {
++        final ByteBuf output = factory.apply(VALUES.length * Long.BYTES + 8);
++        try {
++            output.writeByte(0x12);
++            if (lengthPrefixed) {
++                FriendlyByteBuf.writeLongArray(output, VALUES);
++            } else {
++                FriendlyByteBuf.writeFixedSizeLongArray(output, VALUES);
++            }
++            return bytes(output);
++        } finally {
++            output.release();
++        }
++    }
++
++    private static void verifyElementWrites(final boolean expectWrites, final int expectedCount) {
++        final ByteBuf delegate = Unpooled.buffer(VALUES.length * Long.BYTES);
++        final ByteBuf source = spy(delegate);
++        final FriendlyByteBuf output = new FriendlyByteBuf(source);
++        try {
++            output.writeFixedSizeLongArray(VALUES);
++            if (expectWrites) {
++                verify(source, times(expectedCount)).writeLong(anyLong());
++            } else {
++                verify(source, never()).writeLong(anyLong());
++            }
++        } finally {
++            output.release();
++        }
++    }
++
++    private static void verifyStaticElementWrites() {
++        final ByteBuf source = spy(Unpooled.buffer(VALUES.length * Long.BYTES));
++        try {
++            FriendlyByteBuf.writeFixedSizeLongArray(source, VALUES);
++            verify(source, times(VALUES.length)).writeLong(anyLong());
++        } finally {
++            source.release();
++        }
++    }
++
++    private static void assertPartialWriteMatches(final boolean lengthPrefixed, final int capacity) {
++        final ByteBuf expected = Unpooled.buffer(capacity, capacity);
++        final FriendlyByteBuf optimized = new FriendlyByteBuf(Unpooled.buffer(capacity, capacity));
++        try {
++            assertThrows(IndexOutOfBoundsException.class, () -> write(expected, lengthPrefixed));
++            assertThrows(IndexOutOfBoundsException.class, () -> write(optimized, lengthPrefixed));
++            assertEquals(expected.writerIndex(), optimized.writerIndex());
++            assertArrayEquals(bytes(expected), bytes(optimized));
++        } finally {
++            expected.release();
++            optimized.release();
++        }
++    }
++
++    private static void write(final ByteBuf output, final boolean lengthPrefixed) {
++        if (lengthPrefixed) {
++            FriendlyByteBuf.writeLongArray(output, new long[] {1L, 2L, 3L});
++        } else {
++            FriendlyByteBuf.writeFixedSizeLongArray(output, new long[] {1L, 2L, 3L});
++        }
++    }
++
++    private static void write(final FriendlyByteBuf output, final boolean lengthPrefixed) {
++        if (lengthPrefixed) {
++            output.writeLongArray(new long[] {1L, 2L, 3L});
++        } else {
++            output.writeFixedSizeLongArray(new long[] {1L, 2L, 3L});
++        }
++    }
++
++    private static byte[] bytes(final ByteBuf output) {
++        final byte[] bytes = new byte[output.writerIndex()];
++        output.getBytes(0, bytes);
++        return bytes;
++    }
++
++    private static long[] createValues(final int length) {
++        final long[] values = new long[length];
++        long state = 0x9E3779B97F4A7C15L;
++        for (int index = 0; index < length; index++) {
++            state ^= state << 13;
++            state ^= state >>> 7;
++            state ^= state << 17;
++            values[index] = state;
++        }
++        return values;
++    }
++
++    private static void publish(final LeavesXConfig config) {
++        try {
++            final Method method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++            method.setAccessible(true);
++            method.invoke(null, config);
++        } catch (final ReflectiveOperationException exception) {
++            throw new AssertionError("Unable to publish LeavesX test configuration", exception);
++        }
++    }
++
++    @SuppressWarnings("deprecation")
++    private static List<BufferCase> bufferCases() {
++        return List.of(
++            new BufferCase("heap", maximum -> Unpooled.buffer(1, maximum)),
++            new BufferCase("direct", maximum -> Unpooled.directBuffer(1, maximum)),
++            new BufferCase("pooled heap", maximum -> PooledByteBufAllocator.DEFAULT.heapBuffer(1, maximum)),
++            new BufferCase("pooled direct", maximum -> PooledByteBufAllocator.DEFAULT.directBuffer(1, maximum)),
++            new BufferCase(
++                "little-endian heap",
++                maximum -> Unpooled.buffer(1, maximum).order(ByteOrder.LITTLE_ENDIAN)
++            )
++        );
++    }
++
++    private record BufferCase(String name, IntFunction<ByteBuf> factory) {
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+index dbbbc0ae3f14f8ff7609b34ff152d6f75faa45cc..01b70a3b88110659462f248aa4d9a2964eb85479 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+@@ -43,6 +43,7 @@ class FineGrainedOptimizationWiringTest {
+ 
+     private static List<Wiring> wirings() {
+         return List.of(
++            new Wiring("net.minecraft.network.FriendlyByteBuf", "bulkLongArrayWritesOptimization"),
+             new Wiring(
+                 "ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess",
+                 "poiBoundedTraversalOptimization",

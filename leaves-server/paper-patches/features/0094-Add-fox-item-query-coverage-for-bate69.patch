@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 22:33:07 +0800
+Subject: [PATCH] Add fox item query coverage for bate69
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FoxItemEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/FoxItemEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..dc761cbea572290c85453f8e6751504571ef7fd7
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/FoxItemEntityQueryHotPathTest.java
+@@ -0,0 +1,66 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.animal.fox.Fox;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies fox item-search AI reuses a bounded first-item query. */
++@Normal
++class FoxItemEntityQueryHotPathTest {
++
++    @Test
++    void helperKeepsFirstItemAndVanillaQueries() throws IOException {
++        final ClassNode searchGoal = nestedClass(Fox.class, "FoxSearchForItemsGoal");
++        final List<MethodInsnNode> calls = invocations(method(searchGoal, "findNearbyItem"));
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
++    }
++
++    @Test
++    void goalPhasesUseSharedFirstItemQuery() throws IOException {
++        final ClassNode searchGoal = nestedClass(Fox.class, "FoxSearchForItemsGoal");
++
++        for (final String methodName : List.of("canUse", "start", "tick")) {
++            assertTrue(invocations(method(searchGoal, methodName)).stream().anyMatch(call -> call.name.equals("findNearbyItem")));
++        }
++    }
++
++    private static ClassNode nestedClass(final Class<?> owner, final String simpleName) throws IOException {
++        return classNode(Arrays.stream(owner.getDeclaredClasses())
++            .filter(type -> type.getSimpleName().equals(simpleName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing nested class " + simpleName)));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

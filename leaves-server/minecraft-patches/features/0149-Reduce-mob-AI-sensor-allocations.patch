@@ -1,0 +1,241 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 11:10:23 +0800
+Subject: [PATCH] Reduce mob AI sensor allocations
+
+
+diff --git a/net/minecraft/world/entity/ai/behavior/GateBehavior.java b/net/minecraft/world/entity/ai/behavior/GateBehavior.java
+index 3adfb334068d3722329f91011c41d5e59b1956c9..8104fffc4368429dac7817f09f3ce0568b25e955 100644
+--- a/net/minecraft/world/entity/ai/behavior/GateBehavior.java
++++ b/net/minecraft/world/entity/ai/behavior/GateBehavior.java
+@@ -85,9 +85,24 @@ public class GateBehavior<E extends LivingEntity> implements BehaviorControl<E>
+             }
+         }
+         // Paper end - Perf: Remove streams from hot code
+-        if (this.behaviors.stream().noneMatch(behavior -> behavior.getStatus() == Behavior.Status.RUNNING)) {
++        // LeavesX start - avoid a stream pipeline in the per-entity behavior gate
++        final boolean hasRunningBehavior;
++        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++            boolean found = false;
++            for (final BehaviorControl<? super E> behavior : this.behaviors) {
++                if (behavior.getStatus() == Behavior.Status.RUNNING) {
++                    found = true;
++                    break;
++                }
++            }
++            hasRunningBehavior = found;
++        } else {
++            hasRunningBehavior = this.behaviors.stream().anyMatch(behavior -> behavior.getStatus() == Behavior.Status.RUNNING);
++        }
++        if (!hasRunningBehavior) {
+             this.doStop(level, body, timestamp);
+         }
++        // LeavesX end - avoid a stream pipeline in the per-entity behavior gate
+     }
+ 
+     @Override
+diff --git a/net/minecraft/world/entity/ai/sensing/GolemSensor.java b/net/minecraft/world/entity/ai/sensing/GolemSensor.java
+index 730b372e46d75e43a553b49dad41cc2d2f7510ee..f5d1f7d01a520709e4c5b7fd98e0e76cce660025 100644
+--- a/net/minecraft/world/entity/ai/sensing/GolemSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/GolemSensor.java
+@@ -33,7 +33,19 @@ public class GolemSensor extends Sensor<LivingEntity> {
+     public static void checkForNearbyGolem(final LivingEntity body) {
+         Optional<List<LivingEntity>> livingEntitiesMemory = body.getBrain().getMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES);
+         if (!livingEntitiesMemory.isEmpty()) {
+-            boolean golemPresent = livingEntitiesMemory.get().stream().anyMatch(entity -> entity.is(EntityType.IRON_GOLEM));
++            final boolean golemPresent;
++            if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++                boolean found = false;
++                for (final LivingEntity entity : livingEntitiesMemory.get()) {
++                    if (entity.is(EntityType.IRON_GOLEM)) {
++                        found = true;
++                        break;
++                    }
++                }
++                golemPresent = found;
++            } else {
++                golemPresent = livingEntitiesMemory.get().stream().anyMatch(entity -> entity.is(EntityType.IRON_GOLEM));
++            }
+             if (golemPresent) {
+                 golemDetected(body);
+             }
+diff --git a/net/minecraft/world/entity/ai/sensing/MobSensor.java b/net/minecraft/world/entity/ai/sensing/MobSensor.java
+index ac9c50d680814b5752f7c712633555d587633598..9213da1da0d3f19b3da92c94fc424818d7543fb0 100644
+--- a/net/minecraft/world/entity/ai/sensing/MobSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/MobSensor.java
+@@ -46,7 +46,19 @@ public class MobSensor<T extends LivingEntity> extends Sensor<T> {
+     public void checkForMobsNearby(final T body) {
+         Optional<List<LivingEntity>> livingEntitiesMemory = body.getBrain().getMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES);
+         if (!livingEntitiesMemory.isEmpty()) {
+-            boolean mobPresent = livingEntitiesMemory.get().stream().anyMatch(entity -> this.mobTest.test(body, entity));
++            final boolean mobPresent;
++            if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++                boolean found = false;
++                for (final LivingEntity entity : livingEntitiesMemory.get()) {
++                    if (this.mobTest.test(body, entity)) {
++                        found = true;
++                        break;
++                    }
++                }
++                mobPresent = found;
++            } else {
++                mobPresent = livingEntitiesMemory.get().stream().anyMatch(entity -> this.mobTest.test(body, entity));
++            }
+             if (mobPresent) {
+                 this.mobDetected(body);
+             }
+diff --git a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
+index 22f58ba0bce5db69c7bcea76d40bac6079f5581a..0d8a670580528a8dda89f935869d88ac05f024ec 100644
+--- a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
+@@ -1,6 +1,8 @@
+ package net.minecraft.world.entity.ai.sensing;
+ 
+ import com.google.common.collect.ImmutableSet;
++import java.util.ArrayList;
++import java.util.Collections;
+ import java.util.Comparator;
+ import java.util.List;
+ import java.util.Set;
+@@ -26,17 +28,57 @@ public class PlayerSensor extends Sensor<LivingEntity> {
+ 
+     @Override
+     protected void doTick(final ServerLevel level, final LivingEntity body) {
+-        List<Player> players = level.players()
+-            .stream()
+-            .filter(EntitySelector.NO_SPECTATORS)
+-            .filter(player -> body.closerThan(player, this.getFollowDistance(body)))
+-            .sorted(Comparator.comparingDouble(body::distanceToSqr))
+-            .collect(Collectors.toList());
++        final boolean optimizeAllocations = org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations();
++        final List<Player> players;
++        if (optimizeAllocations) {
++            // LeavesX start - preserve the stream predicate order while avoiding its per-sensor pipeline allocations
++            final List<? extends Player> levelPlayers = level.players();
++            final List<Player> nearbyPlayers = new ArrayList<>(levelPlayers.size());
++            for (final Player player : levelPlayers) {
++                if (EntitySelector.NO_SPECTATORS.test(player)
++                    && body.closerThan(player, this.getFollowDistance(body))) {
++                    nearbyPlayers.add(player);
++                }
++            }
++            nearbyPlayers.sort(Comparator.comparingDouble(body::distanceToSqr));
++            players = nearbyPlayers;
++            // LeavesX end - preserve the stream predicate order while avoiding its per-sensor pipeline allocations
++        } else {
++            players = level.players()
++                .stream()
++                .filter(EntitySelector.NO_SPECTATORS)
++                .filter(player -> body.closerThan(player, this.getFollowDistance(body)))
++                .sorted(Comparator.comparingDouble(body::distanceToSqr))
++                .collect(Collectors.toList());
++        }
+         Brain<?> brain = body.getBrain();
+         brain.setMemory(MemoryModuleType.NEAREST_PLAYERS, players);
+-        List<Player> visiblePlayers = players.stream().filter(livingEntity -> isEntityTargetable(level, body, livingEntity)).collect(Collectors.toList());
++        final List<Player> visiblePlayers;
++        if (optimizeAllocations) {
++            final List<Player> targetablePlayers = new ArrayList<>(players.size());
++            for (final Player player : players) {
++                if (isEntityTargetable(level, body, player)) {
++                    targetablePlayers.add(player);
++                }
++            }
++            visiblePlayers = targetablePlayers;
++        } else {
++            visiblePlayers = players.stream().filter(livingEntity -> isEntityTargetable(level, body, livingEntity)).collect(Collectors.toList());
++        }
+         brain.setMemory(MemoryModuleType.NEAREST_VISIBLE_PLAYER, visiblePlayers.isEmpty() ? null : visiblePlayers.get(0));
+-        List<Player> visibleAttackablePlayers = visiblePlayers.stream().filter(livingEntity -> isEntityAttackable(level, body, livingEntity)).toList();
++        final List<Player> visibleAttackablePlayers;
++        if (optimizeAllocations) {
++            final List<Player> attackablePlayers = new ArrayList<>(visiblePlayers.size());
++            for (final Player player : visiblePlayers) {
++                if (isEntityAttackable(level, body, player)) {
++                    attackablePlayers.add(player);
++                }
++            }
++            // Stream.toList() is unmodifiable; keep that observable contract without copying the elements again.
++            visibleAttackablePlayers = Collections.unmodifiableList(attackablePlayers);
++        } else {
++            visibleAttackablePlayers = visiblePlayers.stream().filter(livingEntity -> isEntityAttackable(level, body, livingEntity)).toList();
++        }
+         brain.setMemory(MemoryModuleType.NEAREST_VISIBLE_ATTACKABLE_PLAYERS, visibleAttackablePlayers);
+         brain.setMemory(MemoryModuleType.NEAREST_VISIBLE_ATTACKABLE_PLAYER, visibleAttackablePlayers.isEmpty() ? null : visibleAttackablePlayers.get(0));
+     }
+diff --git a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
+index f0dc4231b79e4f02416917dacce978121ec6d7e2..c5834f7d58b45148122f8c9267186bd8bddeed87 100644
+--- a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
+@@ -1,6 +1,7 @@
+ package net.minecraft.world.entity.ai.sensing;
+ 
+ import com.google.common.collect.ImmutableSet;
++import java.util.ArrayList;
+ import java.util.Comparator;
+ import java.util.List;
+ import java.util.Set;
+@@ -38,14 +39,32 @@ public class TemptingSensor extends Sensor<PathfinderMob> {
+     protected void doTick(final ServerLevel level, final PathfinderMob body) {
+         Brain<?> brain = body.getBrain();
+         TargetingConditions targeting = TEMPT_TARGETING.copy().range((float)body.getAttributeValue(Attributes.TEMPT_RANGE));
+-        List<Player> players = level.players()
+-            .stream()
+-            .filter(EntitySelector.NO_SPECTATORS)
+-            .filter(playerx -> targeting.test(level, body, playerx))
+-            .filter(p -> this.playerHoldingTemptation(body, p))
+-            .filter(playerx -> !body.hasPassenger(playerx))
+-            .sorted(Comparator.comparingDouble(body::distanceToSqr))
+-            .collect(Collectors.toList());
++        final List<Player> players;
++        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++            // LeavesX start - retain vanilla filtering and stable distance order without a stream pipeline
++            final List<? extends Player> levelPlayers = level.players();
++            final List<Player> temptingPlayers = new ArrayList<>(levelPlayers.size());
++            for (final Player player : levelPlayers) {
++                if (EntitySelector.NO_SPECTATORS.test(player)
++                    && targeting.test(level, body, player)
++                    && this.playerHoldingTemptation(body, player)
++                    && !body.hasPassenger(player)) {
++                    temptingPlayers.add(player);
++                }
++            }
++            temptingPlayers.sort(Comparator.comparingDouble(body::distanceToSqr));
++            players = temptingPlayers;
++            // LeavesX end - retain vanilla filtering and stable distance order without a stream pipeline
++        } else {
++            players = level.players()
++                .stream()
++                .filter(EntitySelector.NO_SPECTATORS)
++                .filter(playerx -> targeting.test(level, body, playerx))
++                .filter(p -> this.playerHoldingTemptation(body, p))
++                .filter(playerx -> !body.hasPassenger(playerx))
++                .sorted(Comparator.comparingDouble(body::distanceToSqr))
++                .collect(Collectors.toList());
++        }
+         if (!players.isEmpty()) {
+             Player player = players.get(0);
+             // CraftBukkit start
+diff --git a/net/minecraft/world/entity/npc/villager/Villager.java b/net/minecraft/world/entity/npc/villager/Villager.java
+index ffce96f260b7677500125dd771b354add9d2db43..5931a187dcffdbf8c3001ddaae3b7123bd2fac78 100644
+--- a/net/minecraft/world/entity/npc/villager/Villager.java
++++ b/net/minecraft/world/entity/npc/villager/Villager.java
+@@ -849,7 +849,17 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+ 
+     private int countFoodPointsInInventory() {
+         SimpleContainer inventory = this.getInventory();
+-        return FOOD_POINTS.entrySet().stream().mapToInt(entry -> inventory.countItem(entry.getKey()) * entry.getValue()).sum();
++        if (!org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++            return FOOD_POINTS.entrySet().stream().mapToInt(entry -> inventory.countItem(entry.getKey()) * entry.getValue()).sum();
++        }
++
++        // LeavesX start - avoid a stream pipeline in a frequently queried villager inventory path
++        int foodPoints = 0;
++        for (final Map.Entry<Item, Integer> entry : FOOD_POINTS.entrySet()) {
++            foodPoints += inventory.countItem(entry.getKey()) * entry.getValue();
++        }
++        return foodPoints;
++        // LeavesX end - avoid a stream pipeline in a frequently queried villager inventory path
+     }
+ 
+     public boolean hasFarmSeeds() {

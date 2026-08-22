@@ -1,0 +1,259 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 22:07:07 +0800
+Subject: [PATCH] Prestart LeavesX compute workers for beta129
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index d34b7eef7ff5d3d3e056b859ea5d8234e2955555..65088ef97d83efdc25ddf02495c52a90d28c20ba 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -32,6 +32,7 @@ public record LeavesXConfig(
+     boolean parallelMobSpawnCounting,
+     int computeWorkers,
+     int minimumItemsPerWorker,
++    boolean prestartWorkers,
+     int mobSpawnCountingMinimumEntities,
+     boolean itemMergeOptimizations,
+     boolean blockEntityOptimizations,
+@@ -46,7 +47,7 @@ public record LeavesXConfig(
+     boolean villagerCompatibilityMode
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 57;
++    public static final int CURRENT_CONFIG_VERSION = 58;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -126,6 +127,7 @@ public record LeavesXConfig(
+             true,
+             0,
+             64,
++            true,
+             524_288,
+             true,
+             true,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index b8f5012be941642dcbcae96cfc8fd90c0e0cc90e..1e3ea380775af1b40187ed7c3c3bf417daa7e35a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -25,7 +25,8 @@ public final class LeavesXConfigBootstrap {
+         final LeavesXConfig config = LeavesXConfigLoader.load(path);
+         org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(
+             config.computeWorkers(),
+-            config.minimumItemsPerWorker()
++            config.minimumItemsPerWorker(),
++            config.prestartWorkers()
+         );
+         LeavesXRuntime.publish(config);
+         org.leavesx.leavesx.diagnostics.LeavesXGcDiagnostics.initialize();
+@@ -53,10 +54,12 @@ public final class LeavesXConfigBootstrap {
+         final LeavesXConfig previous = LeavesXRuntime.configuration();
+         final LeavesXConfig next = LeavesXConfigLoader.load(path);
+         if (previous.computeWorkers() != next.computeWorkers()
+-            || previous.minimumItemsPerWorker() != next.minimumItemsPerWorker()) {
++            || previous.minimumItemsPerWorker() != next.minimumItemsPerWorker()
++            || previous.prestartWorkers() != next.prestartWorkers()) {
+             org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(
+                 next.computeWorkers(),
+-                next.minimumItemsPerWorker()
++                next.minimumItemsPerWorker(),
++                next.prestartWorkers()
+             );
+         }
+         LeavesXRuntime.publish(next);
+@@ -88,8 +91,9 @@ public final class LeavesXConfigBootstrap {
+             config.chunkSpawnRangeOptimization()
+         );
+         LOGGER.info(
+-            "LeavesX compute pool: {} workers, minimum {} items per worker; natural-spawn counting {} from {} entities (configured {})",
++            "LeavesX compute pool: {} workers, prestart {}, minimum {} items per worker; natural-spawn counting {} from {} entities (configured {})",
+             org.leavesx.leavesx.runtime.LeavesXComputeExecutor.workerCount(),
++            config.prestartWorkers(),
+             config.minimumItemsPerWorker(),
+             config.parallelMobSpawnCounting() ? "enabled" : "disabled",
+             LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities(),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 7a97d0980255490f07c06384c8088c9e42fa6f36..64cef5bab0108e06900b78c7feb6d6b7a78ee618 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -189,6 +189,11 @@ public final class LeavesXConfigLoader {
+                     "parallelism.minimum-items-per-worker",
+                     64
+                 ),
++                readBoolean(
++                    node.node("parallelism", "prestart-workers"),
++                    "parallelism.prestart-workers",
++                    true
++                ),
+                 readInt(
+                     node.node("parallelism", "mob-spawning", "minimum-entities"),
+                     "parallelism.mob-spawning.minimum-entities",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 20a0a95ad8ee4780d5c0e0c626577f0bcd3bfbca..be5144b93c8d83089cdf284d3ad1f0505e7b275a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -238,6 +238,12 @@ public final class LeavesXConfigWriter {
+             config.minimumItemsPerWorker(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("parallelism", "prestart-workers"),
++            "parallelism.prestart-workers",
++            config.prestartWorkers(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("parallelism", "mob-spawning", "minimum-entities"),
+             "parallelism.mob-spawning.minimum-entities",
+@@ -294,7 +300,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：57。");
++        comments.put("config-version", "配置版本，请勿修改。默认：58。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -328,6 +334,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.chunk-unloading.maximum-per-tick", "加速卸载时的最大处理量。默认：500。");
+         comments.put("parallelism.workers", "LeavesX 纯计算线程数，0 为自动。默认：0。");
+         comments.put("parallelism.minimum-items-per-worker", "每个计算分片至少处理的项目数。默认：64。");
++        comments.put("parallelism.prestart-workers", "启动时预热计算线程，减少重启后第一次并行任务的延迟。默认：true。");
+         comments.put("parallelism.mob-spawning.enabled", "允许超大规模刷怪计数使用多线程。默认：true。");
+         comments.put("parallelism.mob-spawning.minimum-entities", "实体达到此数量才并行统计刷怪。默认：524288。");
+         comments.put("parallelism.ai-target-search.enabled", "多线程计算大量 AI 目标的距离。默认：true。");
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 68196179197b83185fd141b0b9cedb0b4d7e8359..fee792b718ab95eb3aa7dbda99f0840474f92440 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -22,6 +22,7 @@ public final class LeavesXComputeExecutor {
+     private static volatile ThreadPoolExecutor executor;
+     private static volatile int workerCount = 1;
+     private static volatile int minimumItemsPerWorker = 64;
++    private static volatile boolean prestartWorkers = true;
+     private static final AtomicLong invocationCount = new AtomicLong();
+     private static final AtomicLong parallelInvocationCount = new AtomicLong();
+     private static final AtomicLong belowFeatureThresholdFallbackCount = new AtomicLong();
+@@ -36,16 +37,31 @@ public final class LeavesXComputeExecutor {
+ 
+     /** Creates the bounded worker pool during bootstrap. A configured value of zero selects a conservative default. */
+     public static synchronized void configure(final int configuredWorkers) {
+-        configure(configuredWorkers, 64);
++        configure(configuredWorkers, 64, true);
+     }
+ 
+     /** Creates the bounded worker pool and configures the minimum useful work assigned to each lane. */
+     public static synchronized void configure(final int configuredWorkers, final int configuredMinimumItemsPerWorker) {
++        configure(configuredWorkers, configuredMinimumItemsPerWorker, true);
++    }
++
++    /**
++     * Creates the bounded worker pool with explicit startup behavior.
++     *
++     * <p>Prestarting the core workers removes the first-use thread creation pause after a server restart. The pool
++     * remains bounded and daemon-backed; disabling this option restores lazy worker creation for very small hosts.</p>
++     */
++    public static synchronized void configure(
++        final int configuredWorkers,
++        final int configuredMinimumItemsPerWorker,
++        final boolean configuredPrestartWorkers
++    ) {
+         shutdown();
+         final int availableProcessors = Runtime.getRuntime().availableProcessors();
+         final int automaticWorkers = automaticWorkerCount(availableProcessors);
+         workerCount = configuredWorkers == 0 ? automaticWorkers : configuredWorkers;
+         minimumItemsPerWorker = Math.max(16, configuredMinimumItemsPerWorker);
++        prestartWorkers = configuredPrestartWorkers;
+         invocationCount.set(0L);
+         parallelInvocationCount.set(0L);
+         belowFeatureThresholdFallbackCount.set(0L);
+@@ -70,8 +86,11 @@ public final class LeavesXComputeExecutor {
+                 .build(),
+             new ThreadPoolExecutor.AbortPolicy()
+         );
+-        // Workers remain lazy, but a started pool stays warm between sparse large jobs to avoid repeat start latency.
++        // Keep started workers alive between sparse jobs; this avoids repeatedly paying thread startup latency.
+         executor.allowCoreThreadTimeOut(false);
++        if (prestartWorkers) {
++            executor.prestartAllCoreThreads();
++        }
+     }
+ 
+     public static int workerCount() {
+@@ -83,6 +102,10 @@ public final class LeavesXComputeExecutor {
+         return current != null && current.allowsCoreThreadTimeOut();
+     }
+ 
++    static boolean prestartWorkers() {
++        return prestartWorkers;
++    }
++
+     static int automaticWorkerCount(final int availableProcessors) {
+         return Math.max(1, Math.min(MAX_AUTOMATIC_WORKERS, availableProcessors - 2));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 35a272895e4610a3b0a0f903e2a0412933cf79e3..88c5a806110705cb1adbef11e724f6e5b92634ae 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -197,6 +197,7 @@ class LeavesXConfigLoaderTest {
+             parallelism:
+               workers: 3
+               minimum-items-per-worker: 96
++              prestart-workers: false
+               ai-target-search:
+                 enabled: false
+                 minimum-candidates: 256
+@@ -235,6 +236,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.parallelMobSpawnCounting());
+         assertEquals(3, config.computeWorkers());
+         assertEquals(96, config.minimumItemsPerWorker());
++        assertFalse(config.prestartWorkers());
+         assertEquals(768, config.mobSpawnCountingMinimumEntities());
+         try {
+             LeavesXRuntime.publish(config);
+@@ -646,6 +648,7 @@ class LeavesXConfigLoaderTest {
+         assertEquals(5, config.computeWorkers());
+         assertEquals(5, upgraded.node("parallelism", "workers").getInt());
+         assertEquals(5, upgraded.node("parallelism", "mob-spawning", "workers").getInt());
++        assertTrue(upgraded.node("parallelism", "prestart-workers").getBoolean());
+         final String text = Files.readString(path);
+         assertTrue(text.startsWith("# 旧版配置注释。"), "用户文件头必须保留");
+         assertFalse(text.contains("旧版网络优化长注释"));
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index 0bdd630770e9ddded09e7c4dddd5c445c8be7e70..ecf1faf14e2bd758f04b033891e2cc5b2b53c10e 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -60,6 +60,7 @@ class VillagerCompatibilityContextTest {
+             true,
+             0,
+             64,
++            true,
+             524_288,
+             true,
+             true,
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index 85910345c0619e4b60326293f933346429d68add..4f1cb63ce8b9403fbb22af4e6e9aff28e4691dc0 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -128,9 +128,18 @@ class LeavesXComputeExecutorTest {
+     }
+ 
+     @Test
+-    void keepsStartedWorkersWarmBetweenSparseLargeJobs() {
+-        LeavesXComputeExecutor.configure(2);
++    void prestartsConfiguredWorkersAndKeepsThemWarmBetweenSparseLargeJobs() throws ReflectiveOperationException {
++        LeavesXComputeExecutor.configure(2, 64, true);
+         assertFalse(LeavesXComputeExecutor.allowsCoreThreadTimeout());
++        assertTrue(LeavesXComputeExecutor.prestartWorkers());
++        assertEquals(2, executor().getPoolSize());
++    }
++
++    @Test
++    void canDisableWorkerPrestartForSmallHosts() throws ReflectiveOperationException {
++        LeavesXComputeExecutor.configure(2, 64, false);
++        assertFalse(LeavesXComputeExecutor.prestartWorkers());
++        assertEquals(0, executor().getPoolSize());
+     }
+ 
+     @Test

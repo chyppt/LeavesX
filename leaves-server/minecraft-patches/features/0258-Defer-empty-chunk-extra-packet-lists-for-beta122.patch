@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 00:19:25 +0800
+Subject: [PATCH] Defer empty chunk extra-packet lists for beta122
+
+
+diff --git a/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java b/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
+index 3a18aa0a018d8a0a0abc37bd3e01c6118a49a283..a3c4107a1f978786b3a9022ebabce08e74064ad4 100644
+--- a/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
++++ b/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
+@@ -19,6 +19,7 @@ import net.minecraft.network.FriendlyByteBuf;
+ import net.minecraft.network.RegistryFriendlyByteBuf;
+ import net.minecraft.network.codec.ByteBufCodecs;
+ import net.minecraft.network.codec.StreamCodec;
++import net.minecraft.network.protocol.Packet;
+ import net.minecraft.world.level.block.entity.BlockEntity;
+ import net.minecraft.world.level.block.entity.BlockEntityType;
+ import net.minecraft.world.level.chunk.LevelChunk;
+@@ -35,10 +36,11 @@ public class ClientboundLevelChunkPacketData {
+     private final byte[] buffer;
+     private final List<ClientboundLevelChunkPacketData.BlockEntityInfo> blockEntitiesData;
+     // Paper start - Handle oversized block entities in chunks
+-    private final java.util.List<net.minecraft.network.protocol.Packet<?>> extraPackets = new java.util.ArrayList<>();
+     private static final int BLOCK_ENTITY_LIMIT = Integer.getInteger("Paper.excessiveTELimit", 750);
++    private static final List<Packet<?>> EMPTY_EXTRA_PACKETS = List.of();
++    private final List<Packet<?>> extraPackets;
+ 
+-    public List<net.minecraft.network.protocol.Packet<?>> getExtraPackets() {
++    public List<Packet<?>> getExtraPackets() {
+         return this.extraPackets;
+     }
+     // Paper end - Handle oversized block entities in chunks
+@@ -51,6 +53,8 @@ public class ClientboundLevelChunkPacketData {
+     public ClientboundLevelChunkPacketData(final LevelChunk levelChunk, final io.papermc.paper.antixray.ChunkPacketInfo<net.minecraft.world.level.block.state.BlockState> chunkPacketInfo) {
+         // Paper end - Anti-Xray - Add chunk packet info
+         final boolean optimizeAssembly = org.leavesx.leavesx.config.LeavesXRuntime.chunkPacketAssemblyOptimization();
++        final boolean lazyExtraPackets = org.leavesx.leavesx.config.LeavesXRuntime.lazyChunkExtraPacketsOptimization();
++        List<Packet<?>> extraPackets = leavesX$createExtraPacketList(lazyExtraPackets);
+         this.heightmaps = collectHeightmaps(levelChunk.getHeightmaps(), optimizeAssembly);
+         this.buffer = new byte[calculateChunkSize(levelChunk)];
+         // Paper start - Anti-Xray - Add chunk packet info
+@@ -67,15 +71,16 @@ public class ClientboundLevelChunkPacketData {
+         for (Entry<BlockPos, BlockEntity> entry : blockEntities.entrySet()) {
+             // Paper start - Handle oversized block entities in chunks
+             if (++totalTileEntities > BLOCK_ENTITY_LIMIT) {
+-                net.minecraft.network.protocol.Packet<ClientGamePacketListener> packet = entry.getValue().getUpdatePacket();
++                Packet<ClientGamePacketListener> packet = entry.getValue().getUpdatePacket();
+                 if (packet != null) {
+-                    this.extraPackets.add(packet);
++                    extraPackets = leavesX$appendExtraPacket(extraPackets, packet);
+                     continue;
+                 }
+             }
+             // Paper end - Handle oversized block entities in chunks
+             this.blockEntitiesData.add(ClientboundLevelChunkPacketData.BlockEntityInfo.create(entry.getValue()));
+         }
++        this.extraPackets = extraPackets;
+     }
+ 
+     private static Map<Heightmap.Types, long[]> collectHeightmaps(
+@@ -100,6 +105,9 @@ public class ClientboundLevelChunkPacketData {
+     }
+ 
+     public ClientboundLevelChunkPacketData(final RegistryFriendlyByteBuf input, final int x, final int z) {
++        this.extraPackets = leavesX$createExtraPacketList(
++            org.leavesx.leavesx.config.LeavesXRuntime.lazyChunkExtraPacketsOptimization()
++        );
+         this.heightmaps = HEIGHTMAPS_STREAM_CODEC.decode(input);
+         int size = input.readVarInt();
+         if (size > TWO_MEGABYTES) {
+@@ -111,6 +119,21 @@ public class ClientboundLevelChunkPacketData {
+         this.blockEntitiesData = ClientboundLevelChunkPacketData.BlockEntityInfo.LIST_STREAM_CODEC.decode(input);
+     }
+ 
++    private static List<Packet<?>> leavesX$createExtraPacketList(final boolean lazy) {
++        return lazy ? EMPTY_EXTRA_PACKETS : new java.util.ArrayList<>();
++    }
++
++    private static List<Packet<?>> leavesX$appendExtraPacket(
++        final List<Packet<?>> extraPackets,
++        final Packet<?> packet
++    ) {
++        final List<Packet<?>> destination = extraPackets == EMPTY_EXTRA_PACKETS
++            ? new java.util.ArrayList<>()
++            : extraPackets;
++        destination.add(packet);
++        return destination;
++    }
++
+     public void write(final RegistryFriendlyByteBuf output) {
+         HEIGHTMAPS_STREAM_CODEC.encode(output, this.heightmaps);
+         output.writeVarInt(this.buffer.length);

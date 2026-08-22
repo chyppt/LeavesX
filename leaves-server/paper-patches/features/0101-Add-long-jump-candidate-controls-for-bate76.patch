@@ -1,0 +1,346 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 00:24:13 +0800
+Subject: [PATCH] Add long-jump candidate controls for bate76
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 9913d4f2507d5de4a4d3caf630a2b9615f600c62..1bff9ddbf570b3a29e2bae1ecc669b64a83b2ddf 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -925,6 +925,7 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(line("实体查询优化", onOff(config.entityQueryOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("AI/寻路", onOff(config.aiOptimizations()) + " / " + onOff(config.pathfindingOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("村民职业查找", onOff(LeavesXRuntime.villagerProfessionAssignmentOptimization()), NamedTextColor.AQUA));
++        sender.sendMessage(line("长跳候选构建", onOff(LeavesXRuntime.longJumpCandidateOptimization()), NamedTextColor.AQUA));
+         sender.sendMessage(line("动物空闲降频", onOff(config.animalIdleGoalThrottling()) + "，倍数 " + config.animalIdleGoalIntervalMultiplier(), config.animalIdleGoalThrottling() ? NamedTextColor.YELLOW : NamedTextColor.GREEN));
+         sender.sendMessage(line("刷怪优化", onOff(config.mobSpawningOptimizations()) + "，并行 " + onOff(config.parallelMobSpawnCounting()), NamedTextColor.AQUA));
+         sender.sendMessage(line("刷怪并行阈值", LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities() + " 实体", NamedTextColor.AQUA));
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 9dd45099e71eaf12a4bb369f49b83594a782ba4f..41d9c3a9fa42d080deaa4a8849cb7169f7fb0545 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -21,6 +21,7 @@ public record LeavesXConfig(
+     boolean entityQueryOptimizations,
+     boolean aiOptimizations,
+     boolean villagerProfessionAssignmentOptimization,
++    boolean longJumpCandidateOptimization,
+     boolean pathfindingOptimizations,
+     boolean mobSpawningOptimizations,
+     boolean animalIdleGoalThrottling,
+@@ -41,7 +42,7 @@ public record LeavesXConfig(
+     int chunkUnloadMaximumPerTick
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 8;
++    public static final int CURRENT_CONFIG_VERSION = 9;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -108,6 +109,7 @@ public record LeavesXConfig(
+             true,
+             true,
+             true,
++            true,
+             false,
+             2,
+             true,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 63e74fdd876c6feeffa5fe16d7d820f14e32b78d..9a6bbfc386ff9071ddb79d640ab76849bbce6399 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -67,7 +67,7 @@ public final class LeavesXConfigBootstrap {
+     private static void logConfiguration(final LeavesXConfig config) {
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+-            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, entity state {}, entity queries {}, AI {}, villager profession {}, pathfinding {}, mob spawning {}, item merge {}, block entity hot paths {}, block entity removal {}, spawn range {}",
++            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, entity state {}, entity queries {}, AI {}, villager profession {}, long jump {}, pathfinding {}, mob spawning {}, item merge {}, block entity hot paths {}, block entity removal {}, spawn range {}",
+             config.optimizedVarInt(),
+             config.networkFlushConsolidation(),
+             config.immutableCacheOptimizations(),
+@@ -77,6 +77,7 @@ public final class LeavesXConfigBootstrap {
+             config.entityQueryOptimizations(),
+             config.aiOptimizations(),
+             LeavesXRuntime.villagerProfessionAssignmentOptimization(),
++            LeavesXRuntime.longJumpCandidateOptimization(),
+             config.pathfindingOptimizations(),
+             config.mobSpawningOptimizations(),
+             config.itemMergeOptimizations(),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 0863f580c8b8eb8319b83f08815a713f8f321ce6..90b30868982c04851649c759e9fdd4faca567cc2 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -133,6 +133,11 @@ public final class LeavesXConfigLoader {
+                     "performance.ai.villager-profession-assignment",
+                     true
+                 ),
++                readBoolean(
++                    node.node("performance", "ai", "long-jump-candidates"),
++                    "performance.ai.long-jump-candidates",
++                    true
++                ),
+                 readBoolean(
+                     node.node("performance", "pathfinding-optimizations"),
+                     "performance.pathfinding-optimizations",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 630b1a71f188d9ba52822e4b502ce0fedeecb11a..679fa559e754bc391cd119b8d2f468ba80c34556 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -147,6 +147,12 @@ public final class LeavesXConfigWriter {
+             config.villagerProfessionAssignmentOptimization(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "ai", "long-jump-candidates"),
++            "performance.ai.long-jump-candidates",
++            config.longJumpCandidateOptimization(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "pathfinding-optimizations"),
+             "performance.pathfinding-optimizations",
+@@ -268,7 +274,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：8。");
++        comments.put("config-version", "配置版本，请勿修改。默认：9。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -282,6 +288,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.entity-query-optimizations", "只查一个实体时立即停止搜索并复用临时列表。默认：true。");
+         comments.put("performance.ai-optimizations", "减少 AI 和村民 POI 搜索的重复计算。默认：true。");
+         comments.put("performance.ai.villager-profession-assignment", "优化村民领取职业时的职业查找，关闭后使用原版查找。默认：true。");
++        comments.put("performance.ai.long-jump-candidates", "优化山羊和青蛙准备长跳时的候选位置构建，关闭后使用原版构建。默认：true。");
+         comments.put("performance.pathfinding-optimizations", "减少寻路重建和临时对象开销。默认：true。");
+         comments.put("performance.mob-spawning-optimizations", "减少刷怪统计的临时对象和重复遍历。默认：true。");
+         comments.put("performance.animal-idle-goals.enabled", "降低动物空闲游走和环顾频率，会改变空闲行为。默认：false。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 2da19db074aeb8e3aeb62b2b6e21376258c24b8c..c6771bdb496c70b5e81dd5683dc6e14f3326ed29 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -27,6 +27,7 @@ public final class LeavesXRuntime {
+     private static boolean entityQueryOptimizations = true;
+     private static boolean aiOptimizations = true;
+     private static boolean villagerProfessionAssignmentOptimization = true;
++    private static boolean longJumpCandidateOptimization = true;
+     private static boolean pathfindingOptimizations = true;
+     private static boolean mobSpawningOptimizations = true;
+     private static boolean animalIdleGoalThrottling;
+@@ -76,6 +77,7 @@ public final class LeavesXRuntime {
+         entityQueryOptimizations = validated.entityQueryOptimizations();
+         aiOptimizations = validated.aiOptimizations();
+         villagerProfessionAssignmentOptimization = validated.villagerProfessionAssignmentOptimization();
++        longJumpCandidateOptimization = validated.longJumpCandidateOptimization();
+         pathfindingOptimizations = validated.pathfindingOptimizations();
+         mobSpawningOptimizations = validated.mobSpawningOptimizations();
+         animalIdleGoalThrottling = validated.animalIdleGoalThrottling();
+@@ -175,6 +177,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && villagerProfessionAssignmentOptimization;
+     }
+ 
++    /** Returns whether long-jump candidate lists may be built without a stream pipeline. */
++    public static boolean longJumpCandidateOptimization() {
++        return aiOptimizations && longJumpCandidateOptimization;
++    }
++
+     /** Returns whether behavior-equivalent path reconstruction optimizations are enabled. */
+     public static boolean pathfindingOptimizations() {
+         return pathfindingOptimizations;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 54627241756b076d564c792410aad7de6b894289..dfcd73b4b24ae20cd266c6e884c10ab31489addf 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -35,6 +35,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(generated.contains("rolling-window-seconds:"));
+         assertTrue(generated.contains("slow-plugin-task-ms:"));
+         assertTrue(generated.contains("villager-profession-assignment:"));
++        assertTrue(generated.contains("long-jump-candidates:"));
+         assertTrue(generated.contains("workers:"));
+         assertFalse(generated.contains("threading:"));
+         assertFalse(generated.contains("folia"));
+@@ -86,6 +87,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(config.entityStateOptimizations());
+         assertTrue(config.entityQueryOptimizations());
+         assertTrue(config.villagerProfessionAssignmentOptimization());
++        assertTrue(config.longJumpCandidateOptimization());
+         assertFalse(reloaded.node("performance", "optimized-varint").getBoolean());
+         assertTrue(reloaded.node("performance", "item-merge-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "block-entity-optimizations").getBoolean());
+@@ -95,6 +97,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(reloaded.node("performance", "entity-state-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "entity-query-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "ai", "villager-profession-assignment").getBoolean());
++        assertTrue(reloaded.node("performance", "ai", "long-jump-candidates").getBoolean());
+         assertTrue(reloaded.node("custom-extension", "retained").getBoolean());
+         assertTrue(upgraded.contains("# User-managed LeavesX settings."), upgraded);
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.item-merge-optimizations")));
+@@ -105,6 +108,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.entity-state-optimizations")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.entity-query-optimizations")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.ai.villager-profession-assignment")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.ai.long-jump-candidates")));
+     }
+ 
+     @Test
+@@ -161,6 +165,7 @@ class LeavesXConfigLoaderTest {
+               ai-optimizations: false
+               ai:
+                 villager-profession-assignment: false
++                long-jump-candidates: false
+               pathfinding-optimizations: false
+               mob-spawning-optimizations: false
+               animal-idle-goals:
+@@ -197,6 +202,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.entityQueryOptimizations());
+         assertFalse(config.aiOptimizations());
+         assertFalse(config.villagerProfessionAssignmentOptimization());
++        assertFalse(config.longJumpCandidateOptimization());
+         assertFalse(config.pathfindingOptimizations());
+         assertFalse(config.mobSpawningOptimizations());
+         assertTrue(config.animalIdleGoalThrottling());
+@@ -219,6 +225,7 @@ class LeavesXConfigLoaderTest {
+             LeavesXRuntime.publish(config);
+             assertFalse(LeavesXRuntime.entityStateOptimizations());
+             assertFalse(LeavesXRuntime.villagerProfessionAssignmentOptimization());
++            assertFalse(LeavesXRuntime.longJumpCandidateOptimization());
+             assertEquals(524_288, LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities());
+             assertEquals(262_144, LeavesXRuntime.aiTargetSearchMinimumCandidates());
+         } finally {
+@@ -237,9 +244,11 @@ class LeavesXConfigLoaderTest {
+             """));
+ 
+         assertTrue(config.villagerProfessionAssignmentOptimization());
++        assertTrue(config.longJumpCandidateOptimization());
+         try {
+             LeavesXRuntime.publish(config);
+             assertFalse(LeavesXRuntime.villagerProfessionAssignmentOptimization());
++            assertFalse(LeavesXRuntime.longJumpCandidateOptimization());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/LongJumpCandidateBuildingTest.java b/src/test/java/org/leavesx/leavesx/performance/LongJumpCandidateBuildingTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..63f28399403772e8a42b6741423dd650e0a8d1bb
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/LongJumpCandidateBuildingTest.java
+@@ -0,0 +1,118 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import com.google.common.collect.Lists;
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.Arrays;
++import java.util.List;
++import java.util.stream.Collectors;
++import net.minecraft.core.BlockPos;
++import net.minecraft.util.Mth;
++import net.minecraft.world.entity.ai.behavior.LongJumpToRandomPos;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies long-jump candidates retain vanilla traversal order, positions and weights. */
++@Normal
++class LongJumpCandidateBuildingTest {
++
++    @Test
++    void directBuilderMatchesVanillaStreamForRepresentativeRanges() throws Exception {
++        final Method directBuilder = LongJumpToRandomPos.class.getDeclaredMethod(
++            "buildJumpCandidatesDirect",
++            BlockPos.class,
++            int.class,
++            int.class
++        );
++        directBuilder.setAccessible(true);
++
++        assertEquivalent(directBuilder, new BlockPos(0, 64, 0), 1, 1);
++        assertEquivalent(directBuilder, new BlockPos(-37, -20, 91), 2, 3);
++        assertEquivalent(directBuilder, new BlockPos(1_000, 200, -1_000), 0, 2);
++    }
++
++    @Test
++    void optimizedAndVanillaBuildersRemainSelectable() throws IOException {
++        final ClassNode behavior = classNode(LongJumpToRandomPos.class);
++        final List<MethodInsnNode> directCalls = invocations(method(behavior, "buildJumpCandidatesDirect"));
++        final List<MethodInsnNode> startCalls = behavior.methods.stream()
++            .filter(method -> method.name.equals("start"))
++            .flatMap(method -> invocations(method).stream())
++            .toList();
++
++        assertFalse(directCalls.stream().anyMatch(call -> call.name.equals("betweenClosedStream") || call.name.equals("collect")));
++        assertTrue(directCalls.stream().anyMatch(call -> call.name.equals("betweenClosed")));
++        assertTrue(directCalls.stream().anyMatch(call -> call.name.equals("immutable")));
++        assertTrue(directCalls.stream().anyMatch(call -> call.name.equals("add")));
++        assertTrue(startCalls.stream().anyMatch(call -> call.name.equals("longJumpCandidateOptimization")));
++        assertTrue(startCalls.stream().anyMatch(call -> call.name.equals("betweenClosedStream")));
++        assertTrue(startCalls.stream().anyMatch(call -> call.name.equals("collect")));
++    }
++
++    private static void assertEquivalent(
++        final Method directBuilder,
++        final BlockPos mobPos,
++        final int maxHeight,
++        final int maxWidth
++    ) throws Exception {
++        final List<LongJumpToRandomPos.PossibleJump> expected = vanillaCandidates(mobPos, maxHeight, maxWidth);
++        @SuppressWarnings("unchecked")
++        final List<LongJumpToRandomPos.PossibleJump> first =
++            (List<LongJumpToRandomPos.PossibleJump>)directBuilder.invoke(null, mobPos, maxHeight, maxWidth);
++        @SuppressWarnings("unchecked")
++        final List<LongJumpToRandomPos.PossibleJump> second =
++            (List<LongJumpToRandomPos.PossibleJump>)directBuilder.invoke(null, mobPos, maxHeight, maxWidth);
++
++        assertEquals(expected, first);
++        assertEquals(expected, second);
++        assertNotSame(first, second, "Each behavior start must retain vanilla's fresh-list ownership");
++    }
++
++    private static List<LongJumpToRandomPos.PossibleJump> vanillaCandidates(
++        final BlockPos mobPos,
++        final int maxHeight,
++        final int maxWidth
++    ) {
++        return BlockPos.betweenClosedStream(
++                mobPos.getX() - maxWidth,
++                mobPos.getY() - maxHeight,
++                mobPos.getZ() - maxWidth,
++                mobPos.getX() + maxWidth,
++                mobPos.getY() + maxHeight,
++                mobPos.getZ() + maxWidth
++            )
++            .filter(pos -> !pos.equals(mobPos))
++            .map(pos -> new LongJumpToRandomPos.PossibleJump(pos.immutable(), Mth.ceil(mobPos.distSqr(pos))))
++            .collect(Collectors.toCollection(Lists::newArrayList));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

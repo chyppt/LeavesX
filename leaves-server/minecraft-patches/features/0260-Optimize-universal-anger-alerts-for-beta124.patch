@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 00:51:08 +0800
+Subject: [PATCH] Optimize universal anger alerts for beta124
+
+
+diff --git a/net/minecraft/world/entity/ai/goal/target/ResetUniversalAngerTargetGoal.java b/net/minecraft/world/entity/ai/goal/target/ResetUniversalAngerTargetGoal.java
+index 24c0c32eb105da2e945ff6d2bb77423bac56b649..f4d2f82a9de4c8152c4d219c1c36489b1b20f0b7 100644
+--- a/net/minecraft/world/entity/ai/goal/target/ResetUniversalAngerTargetGoal.java
++++ b/net/minecraft/world/entity/ai/goal/target/ResetUniversalAngerTargetGoal.java
+@@ -37,16 +37,28 @@ public class ResetUniversalAngerTargetGoal<T extends Mob & NeutralMob> extends G
+         this.lastHurtByPlayerTimestamp = this.mob.getLastHurtByMobTimestamp();
+         this.mob.forgetCurrentTargetAndRefreshUniversalAnger();
+         if (this.alertOthersOfSameType) {
+-            this.getNearbyMobsOfSameType()
+-                .stream()
+-                .filter(otherMob -> otherMob != this.mob)
+-                .map(otherMob -> (NeutralMob)otherMob)
+-                .forEach(NeutralMob::forgetCurrentTargetAndRefreshUniversalAnger);
++            final List<? extends Mob> nearbyMobs = this.getNearbyMobsOfSameType();
++            if (org.leavesx.leavesx.config.LeavesXRuntime.universalAngerAlertOptimization()) {
++                leavesX$alertNearbyMobs(this.mob, nearbyMobs);
++            } else {
++                nearbyMobs.stream()
++                    .filter(otherMob -> otherMob != this.mob)
++                    .map(otherMob -> (NeutralMob)otherMob)
++                    .forEach(NeutralMob::forgetCurrentTargetAndRefreshUniversalAnger);
++            }
+         }
+ 
+         super.start();
+     }
+ 
++    private static void leavesX$alertNearbyMobs(final Mob source, final List<? extends Mob> nearbyMobs) {
++        for (final Mob nearbyMob : nearbyMobs) {
++            if (nearbyMob != source) {
++                ((NeutralMob)nearbyMob).forgetCurrentTargetAndRefreshUniversalAnger();
++            }
++        }
++    }
++
+     private List<? extends Mob> getNearbyMobsOfSameType() {
+         double within = this.mob.getAttributeValue(Attributes.FOLLOW_RANGE);
+         AABB searchAabb = AABB.unitCubeFromLowerCorner(this.mob.position()).inflate(within, 10.0, within);

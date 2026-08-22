@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 16:19:50 +0800
+Subject: [PATCH] Add block entity ticker regression coverage for bate41
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BlockEntityTickerHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTickerHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..bb0cbaded73b5a809a09db7a67e39207cc972120
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTickerHotPathTest.java
+@@ -0,0 +1,60 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import net.minecraft.world.level.chunk.LevelChunk;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies that block-entity ticker coordinates stay off the per-tick getter path. */
++@Normal
++class BlockEntityTickerHotPathTest {
++
++    private static final String BLOCK_ENTITY_OWNER = "net/minecraft/world/level/block/entity/BlockEntity";
++    private static final String BLOCK_POS_DESCRIPTOR = "Lnet/minecraft/core/BlockPos;";
++
++    @Test
++    void boundTickerCachesItsImmutablePosition() throws IOException {
++        final ClassNode boundTicker = classNode(LevelChunk.class.getName() + "$BoundTickingBlockEntity");
++
++        assertTrue(
++            boundTicker.fields.stream().anyMatch(field -> field.name.equals("cachedPos") && field.desc.equals(BLOCK_POS_DESCRIPTOR)),
++            "The bound ticker should retain the immutable block-entity position"
++        );
++        assertEquals(0, invocationCount(method(boundTicker, "tick"), BLOCK_ENTITY_OWNER, "getBlockPos"));
++        assertEquals(0, invocationCount(method(boundTicker, "getPos"), BLOCK_ENTITY_OWNER, "getBlockPos"));
++    }
++
++    private static ClassNode classNode(final String className) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(className).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++
++    private static long invocationCount(
++        final MethodNode method,
++        final String owner,
++        final String methodName
++    ) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .filter(call -> call.owner.equals(owner) && call.name.equals(methodName))
++            .count();
++    }
++}

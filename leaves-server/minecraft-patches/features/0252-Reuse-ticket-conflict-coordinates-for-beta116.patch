@@ -1,0 +1,190 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 15:25:09 +0800
+Subject: [PATCH] Reuse ticket conflict coordinates for beta116
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
+index 49c272c85cd662d7d358d38464e1b0c59e7e8caf..f83fe905021900260cefcd7c02201d10ea2502c9 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
+@@ -375,6 +375,10 @@ public abstract class ThreadedTicketLevelPropagator {
+     // for the last update node being handled
+     private static final class UpdateQueue {
+ 
++        private static final ThreadLocal<LeavesXBlockingNodeBuffer> LEAVESX_BLOCKING_NODE_BUFFER =
++            ThreadLocal.withInitial(LeavesXBlockingNodeBuffer::new);
++        private static final int MAX_INTERSECTION_DISTANCE =
++            1 + ((getMaxSchedulingRadius() + (SECTION_SIZE - 1)) >> SECTION_SHIFT);
+         private volatile UpdateQueueNode head;
+         private volatile UpdateQueueNode tail;
+ 
+@@ -467,49 +471,131 @@ public abstract class ThreadedTicketLevelPropagator {
+             }
+         }
+ 
++        private static LeavesXBlockingNodeBuffer leavesX$acquireBlockingNodeBuffer() {
++            final LeavesXBlockingNodeBuffer buffer = LEAVESX_BLOCKING_NODE_BUFFER.get();
++            return buffer.tryAcquire() ? buffer : null;
++        }
++
++        /** Owns one queue scan's conflict coordinates without retaining the linked update nodes after release. */
++        private static final class LeavesXBlockingNodeBuffer {
++            private int[] sectionX = new int[8];
++            private int[] sectionZ = new int[8];
++            private UpdateQueueNode firstNode;
++            private int size;
++            private boolean inUse;
++
++            private boolean tryAcquire() {
++                if (this.inUse) {
++                    return false;
++                }
++                this.inUse = true;
++                return true;
++            }
++
++            private void add(final UpdateQueueNode node) {
++                if (this.size == this.sectionX.length) {
++                    final int newLength = this.size + (this.size >>> 1);
++                    this.sectionX = Arrays.copyOf(this.sectionX, newLength);
++                    this.sectionZ = Arrays.copyOf(this.sectionZ, newLength);
++                }
++                if (this.size == 0) {
++                    this.firstNode = node;
++                }
++                this.sectionX[this.size] = node.sectionX;
++                this.sectionZ[this.size] = node.sectionZ;
++                ++this.size;
++            }
++
++            private boolean intersects(final UpdateQueueNode other) {
++                for (int i = 0; i < this.size; ++i) {
++                    final int distance = Math.max(
++                        Math.abs(this.sectionX[i] - other.sectionX),
++                        Math.abs(this.sectionZ[i] - other.sectionZ)
++                    );
++                    if (distance <= MAX_INTERSECTION_DISTANCE) {
++                        return true;
++                    }
++                }
++                return false;
++            }
++
++            private void release() {
++                this.firstNode = null;
++                this.size = 0;
++                this.inUse = false;
++            }
++        }
++
+         public UpdateQueueNode acquireNextOrWait(final long maxOrder) {
+             final boolean deferBlockingListAllocation = org.leavesx.leavesx.config.LeavesXRuntime.ticketQueueAllocationOptimization();
+             // Most scans claim the first available node; conflict storage is only needed after contention appears.
+             List<UpdateQueueNode> blocking = deferBlockingListAllocation ? null : new ArrayList<>();
++            LeavesXBlockingNodeBuffer reusableBlocking = null;
+ 
+-            node_search:
+-            for (UpdateQueueNode curr = this.peek(); curr != null && curr.order <= maxOrder; curr = curr.getNextVolatile()) {
+-                if (curr.getSectionVolatile() == null) {
+-                    continue;
+-                }
+-
+-                if (curr.getUpdatingVolatile()) {
+-                    if (blocking == null) {
+-                        blocking = new ArrayList<>();
++            try {
++                node_search:
++                for (UpdateQueueNode curr = this.peek(); curr != null && curr.order <= maxOrder; curr = curr.getNextVolatile()) {
++                    if (curr.getSectionVolatile() == null) {
++                        continue;
+                     }
+-                    blocking.add(curr);
+-                    continue;
+-                }
+ 
+-                for (int i = 0, len = blocking == null ? 0 : blocking.size(); i < len; ++i) {
+-                    final UpdateQueueNode node = blocking.get(i);
++                    if (curr.getUpdatingVolatile()) {
++                        if (blocking == null && reusableBlocking == null) {
++                            reusableBlocking = leavesX$acquireBlockingNodeBuffer();
++                            if (reusableBlocking == null) {
++                                blocking = new ArrayList<>();
++                            }
++                        }
++                        if (reusableBlocking != null) {
++                            reusableBlocking.add(curr);
++                        } else {
++                            blocking.add(curr);
++                        }
++                        continue;
++                    }
+ 
+-                    if (node.intersects(curr)) {
+-                        continue node_search;
++                    if (reusableBlocking != null) {
++                        if (reusableBlocking.intersects(curr)) {
++                            continue node_search;
++                        }
++                    } else {
++                        for (int i = 0, len = blocking == null ? 0 : blocking.size(); i < len; ++i) {
++                            if (blocking.get(i).intersects(curr)) {
++                                continue node_search;
++                            }
++                        }
+                     }
+-                }
+ 
+-                if (curr.getAndSetUpdatingVolatile(true)) {
+-                    if (blocking == null) {
+-                        blocking = new ArrayList<>();
++                    if (curr.getAndSetUpdatingVolatile(true)) {
++                        if (blocking == null && reusableBlocking == null) {
++                            reusableBlocking = leavesX$acquireBlockingNodeBuffer();
++                            if (reusableBlocking == null) {
++                                blocking = new ArrayList<>();
++                            }
++                        }
++                        if (reusableBlocking != null) {
++                            reusableBlocking.add(curr);
++                        } else {
++                            blocking.add(curr);
++                        }
++                        continue;
+                     }
+-                    blocking.add(curr);
+-                    continue;
++
++                    return curr;
+                 }
+ 
+-                return curr;
+-            }
++                if (reusableBlocking != null) {
++                    await(reusableBlocking.firstNode);
++                } else if (blocking != null && !blocking.isEmpty()) {
++                    await(blocking.get(0));
++                }
+ 
+-            if (blocking != null && !blocking.isEmpty()) {
+-                await(blocking.get(0));
++                return null;
++            } finally {
++                if (reusableBlocking != null) {
++                    reusableBlocking.release();
++                }
+             }
+-
+-            return null;
+         }
+ 
+         public UpdateQueueNode peek() {
+@@ -624,7 +710,7 @@ public abstract class ThreadedTicketLevelPropagator {
+                 final int dist = Math.max(Math.abs(this.sectionX - other.sectionX), Math.abs(this.sectionZ - other.sectionZ));
+ 
+                 // intersection radius is ticket update radius (1) + scheduling radius
+-                return dist <= (1 + ((getMaxSchedulingRadius() + (SECTION_SIZE - 1)) >> SECTION_SHIFT));
++                return dist <= MAX_INTERSECTION_DISTANCE;
+             }
+ 
+             /* section */

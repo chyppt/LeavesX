@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 00:05:32 +0800
+Subject: [PATCH] Optimize light layer snapshot copying for beta121
+
+
+diff --git a/net/minecraft/network/protocol/game/ClientboundLightUpdatePacketData.java b/net/minecraft/network/protocol/game/ClientboundLightUpdatePacketData.java
+index 97ec50f09b74db2c9942cb8bdb03e589d1223edf..936bf2fcd688b23aebb0100fac0803978d351e07 100644
+--- a/net/minecraft/network/protocol/game/ClientboundLightUpdatePacketData.java
++++ b/net/minecraft/network/protocol/game/ClientboundLightUpdatePacketData.java
+@@ -122,11 +122,17 @@ public class ClientboundLightUpdatePacketData {
+                 emptyMask.set(sectionIndex);
+             } else {
+                 mask.set(sectionIndex);
+-                updates.add(data.copy().getData());
++                updates.add(leavesX$copyLayerData(data));
+             }
+         }
+     }
+ 
++    private static byte[] leavesX$copyLayerData(final DataLayer data) {
++        return org.leavesx.leavesx.config.LeavesXRuntime.lightLayerSnapshotCopyOptimization()
++            ? data.leavesX$copyData()
++            : data.copy().getData();
++    }
++
+     private static void prepareSectionData(
+         final LayerLightEventListener listener,
+         final SectionPos sectionPos,
+@@ -141,7 +147,7 @@ public class ClientboundLightUpdatePacketData {
+                 emptyMask.set(sectionIndex);
+             } else {
+                 mask.set(sectionIndex);
+-                updates.add(data.copy().getData());
++                updates.add(leavesX$copyLayerData(data));
+             }
+         }
+     }
+diff --git a/net/minecraft/world/level/chunk/DataLayer.java b/net/minecraft/world/level/chunk/DataLayer.java
+index f24e47eb070c1b37a4d2da743a1d64959248f9b3..f6591c8d84ab8f5961d64ffdf5c5d95783444c5e 100644
+--- a/net/minecraft/world/level/chunk/DataLayer.java
++++ b/net/minecraft/world/level/chunk/DataLayer.java
+@@ -98,6 +98,23 @@ public class DataLayer {
+         return this.data == null ? new DataLayer(this.defaultValue) : new DataLayer((byte[])this.data.clone());
+     }
+ 
++    /**
++     * Returns a detached packed snapshot without materializing this layer.
++     *
++     * <p>Homogeneous layers keep their compact representation; the caller owns the returned array.</p>
++     */
++    public byte[] leavesX$copyData() {
++        if (this.data != null) {
++            return this.data.clone();
++        }
++
++        final byte[] snapshot = new byte[SIZE];
++        if (this.defaultValue != 0) {
++            Arrays.fill(snapshot, packFilled(this.defaultValue));
++        }
++        return snapshot;
++    }
++
+     @Override
+     public String toString() {
+         StringBuilder builder = new StringBuilder();

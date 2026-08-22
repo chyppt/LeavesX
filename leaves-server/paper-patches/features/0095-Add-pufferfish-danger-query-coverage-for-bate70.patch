@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 22:53:09 +0800
+Subject: [PATCH] Add pufferfish danger query coverage for bate70
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PufferfishPuffEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/PufferfishPuffEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3f7a68607004e2d797467e580688a2152ce1ca30
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/PufferfishPuffEntityQueryHotPathTest.java
+@@ -0,0 +1,66 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.animal.fish.Pufferfish;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies pufferfish danger checks stop after the first matching living entity. */
++@Normal
++class PufferfishPuffEntityQueryHotPathTest {
++
++    @Test
++    void puffGoalKeepsBoundedAndVanillaQueries() throws IOException {
++        final ClassNode puffGoal = nestedClass(Pufferfish.class, "PufferfishPuffGoal");
++        final List<MethodInsnNode> calls = invocations(method(puffGoal, "canUse"));
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
++    }
++
++    @Test
++    void bothPathsShareTheVanillaTargetingCondition() throws IOException {
++        final ClassNode puffGoal = nestedClass(Pufferfish.class, "PufferfishPuffGoal");
++        final List<MethodInsnNode> calls = invocations(method(puffGoal, "isDangerousTarget"));
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getServerLevel")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("test")));
++    }
++
++    private static ClassNode nestedClass(final Class<?> owner, final String simpleName) throws IOException {
++        return classNode(Arrays.stream(owner.getDeclaredClasses())
++            .filter(type -> type.getSimpleName().equals(simpleName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing nested class " + simpleName)));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

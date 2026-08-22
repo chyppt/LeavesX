@@ -1,0 +1,162 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 02:52:59 +0800
+Subject: [PATCH] Add expiring ticket buffer controls for bate88
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index c163389326384abb6ab59874f659502d37e75622..caff1193b04196a3468874727a9f1c3239851456 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -44,7 +44,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMask
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 19;
++    public static final int CURRENT_CONFIG_VERSION = 20;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 3b5fe1d3158a2cf3b2b8548291de7181a3e4c73b..f282dd0b7ee9fcd0d089dbb360d2b86438f729d0 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：19。");
++        comments.put("config-version", "配置版本，请勿修改。默认：20。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index da771f4c238f96931fed04d0dd294d3b7780c820..c89526c52785582ec36f55a70bb37e413956ca8f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -159,6 +159,10 @@ enum LeavesXOptimization {
+     TICKET_QUEUE_ALLOCATION(
+         "performance.chunk.ticket-queue-allocation",
+         "无竞争票据更新时不创建临时列表，关闭后使用原版流程。默认：true。"
++    ),
++    EXPIRING_TICKET_BUFFERS(
++        "performance.chunk.expiring-ticket-buffers",
++        "没有到期票据时不创建处理缓冲，关闭后使用原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 1b681a5c388a339525668301604f9e266f22685f..05ae2b4ac390a926dd6a6b43f1be9999c9f88a54 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -471,6 +471,11 @@ public final class LeavesXRuntime {
+         return enabled(LeavesXOptimization.TICKET_QUEUE_ALLOCATION);
+     }
+ 
++    /** Returns whether per-tick expiring-ticket buffers may be allocated only when the first section is visited. */
++    public static boolean expiringTicketBuffersOptimization() {
++        return enabled(LeavesXOptimization.EXPIRING_TICKET_BUFFERS);
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(fineGrainedOptimizationMask);
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index ec6aa1623e0b202dd2f43bbc2fe8afb192af495b..5a786ab38b32a4545f7587e0ac818102e0d0378c 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -293,6 +293,7 @@ class LeavesXConfigLoaderTest {
+               block-entity:
+                 hopper-entity-queries: false
+               chunk:
++                expiring-ticket-buffers: false
+                 nbt-list-capacity: false
+                 ticket-queue-allocation: false
+                 unload-serialization: false
+@@ -307,13 +308,14 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PLAYER_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.VILLAGER_BABIES_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_ENTITY_QUERIES));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.EXPIRING_TICKET_BUFFERS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_NBT_LIST_CAPACITY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_SERIALIZATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.TICKET_QUEUE_ALLOCATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 11,
++            LeavesXConfig.fineGrainedOptimizationCount() - 12,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -325,6 +327,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.playerSensorOptimization());
+             assertFalse(LeavesXRuntime.villagerBabiesSensorOptimization());
+             assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
++            assertFalse(LeavesXRuntime.expiringTicketBuffersOptimization());
+             assertFalse(LeavesXRuntime.chunkNbtListCapacityOptimization());
+             assertFalse(LeavesXRuntime.chunkUnloadSerializationOptimization());
+             assertFalse(LeavesXRuntime.ticketQueueAllocationOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ExpiringTicketBufferHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ExpiringTicketBufferHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..61ad412ac846d787076df3e6032262952c936c5c
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ExpiringTicketBufferHotPathTest.java
+@@ -0,0 +1,57 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkHolderManager;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++import org.objectweb.asm.tree.TypeInsnNode;
++
++/** Verifies expiring-ticket ticks retain lazy buffers and the original eager allocation fallback. */
++@Normal
++class ExpiringTicketBufferHotPathTest {
++
++    @Test
++    void ticketTickDefersBuffersWithoutChangingProcessingCalls() throws IOException {
++        final MethodNode method = method(classNode(ChunkHolderManager.class), "tick");
++        final MethodInsnNode[] calls = Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++
++        assertTrue(Arrays.stream(calls).anyMatch(call -> call.name.equals("expiringTicketBuffersOptimization")));
++        assertTrue(Arrays.stream(calls).anyMatch(call -> call.name.equals("processTicketUpdatesNoLock")));
++        assertTrue(Arrays.stream(calls).anyMatch(call -> call.name.equals("processTicketUpdates")));
++        assertTrue(Arrays.stream(method.instructions.toArray())
++            .filter(TypeInsnNode.class::isInstance)
++            .map(TypeInsnNode.class::cast)
++            .filter(instruction -> instruction.getOpcode() == Opcodes.NEW)
++            .filter(instruction -> instruction.desc.equals("java/util/ArrayList"))
++            .count() >= 2L);
++        assertTrue(Arrays.stream(method.instructions.toArray())
++            .filter(TypeInsnNode.class::isInstance)
++            .map(TypeInsnNode.class::cast)
++            .anyMatch(instruction -> instruction.getOpcode() == Opcodes.ANEWARRAY
++                && instruction.desc.equals("net/minecraft/server/level/Ticket")));
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

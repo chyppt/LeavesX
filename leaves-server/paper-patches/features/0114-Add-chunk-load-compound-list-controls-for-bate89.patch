@@ -1,0 +1,159 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 03:03:44 +0800
+Subject: [PATCH] Add chunk load compound list controls for bate89
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index caff1193b04196a3468874727a9f1c3239851456..f689bf77bce7765e2c2665f322f5538fbc80eb64 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -44,7 +44,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMask
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 20;
++    public static final int CURRENT_CONFIG_VERSION = 21;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index f282dd0b7ee9fcd0d089dbb360d2b86438f729d0..ed681be8bc9dc42281b641d4f2b61686d25343b4 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：20。");
++        comments.put("config-version", "配置版本，请勿修改。默认：21。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index c89526c52785582ec36f55a70bb37e413956ca8f..3f4a012475587d2bb03fc1f34966c9097ab6de44 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -163,6 +163,10 @@ enum LeavesXOptimization {
+     EXPIRING_TICKET_BUFFERS(
+         "performance.chunk.expiring-ticket-buffers",
+         "没有到期票据时不创建处理缓冲，关闭后使用原版流程。默认：true。"
++    ),
++    CHUNK_LOAD_COMPOUND_LISTS(
++        "performance.chunk.load-compound-lists",
++        "直接读取区块实体和方块实体列表，关闭后使用原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 05ae2b4ac390a926dd6a6b43f1be9999c9f88a54..d806b07ae2ed768ec363ff9549434d1cc98e7fc4 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -476,6 +476,11 @@ public final class LeavesXRuntime {
+         return enabled(LeavesXOptimization.EXPIRING_TICKET_BUFFERS);
+     }
+ 
++    /** Returns whether chunk loading may copy compound-tag lists without Optional and stream pipelines. */
++    public static boolean chunkLoadCompoundListsOptimization() {
++        return enabled(LeavesXOptimization.CHUNK_LOAD_COMPOUND_LISTS);
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(fineGrainedOptimizationMask);
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 5a786ab38b32a4545f7587e0ac818102e0d0378c..a90b0a88e1c7191885c8a1d6b8320ce5945a6617 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -294,6 +294,7 @@ class LeavesXConfigLoaderTest {
+                 hopper-entity-queries: false
+               chunk:
+                 expiring-ticket-buffers: false
++                load-compound-lists: false
+                 nbt-list-capacity: false
+                 ticket-queue-allocation: false
+                 unload-serialization: false
+@@ -309,13 +310,14 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.VILLAGER_BABIES_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_ENTITY_QUERIES));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.EXPIRING_TICKET_BUFFERS));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_LOAD_COMPOUND_LISTS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_NBT_LIST_CAPACITY));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_SERIALIZATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.TICKET_QUEUE_ALLOCATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 12,
++            LeavesXConfig.fineGrainedOptimizationCount() - 13,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -328,6 +330,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.villagerBabiesSensorOptimization());
+             assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
+             assertFalse(LeavesXRuntime.expiringTicketBuffersOptimization());
++            assertFalse(LeavesXRuntime.chunkLoadCompoundListsOptimization());
+             assertFalse(LeavesXRuntime.chunkNbtListCapacityOptimization());
+             assertFalse(LeavesXRuntime.chunkUnloadSerializationOptimization());
+             assertFalse(LeavesXRuntime.ticketQueueAllocationOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChunkLoadCompoundListHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ChunkLoadCompoundListHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..0a3bcf24eb1830a6a297701497bc316751554b44
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ChunkLoadCompoundListHotPathTest.java
+@@ -0,0 +1,54 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.level.chunk.storage.SerializableChunkData;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies chunk loading retains direct compound-list reads and the vanilla stream fallback. */
++@Normal
++class ChunkLoadCompoundListHotPathTest {
++
++    @Test
++    void parserKeepsOptimizedAndVanillaCompoundListPaths() throws IOException {
++        final ClassNode owner = classNode(SerializableChunkData.class);
++        final List<MethodInsnNode> parseCalls = invocations(method(owner, "parse"));
++        final List<MethodInsnNode> helperCalls = invocations(method(owner, "readCompoundList"));
++
++        assertTrue(parseCalls.stream().anyMatch(call -> call.name.equals("chunkLoadCompoundListsOptimization")));
++        assertTrue(parseCalls.stream().filter(call -> call.name.equals("readCompoundList")).count() >= 2L);
++        assertTrue(helperCalls.stream().anyMatch(call -> call.name.equals("builderWithExpectedSize")));
++        assertTrue(helperCalls.stream().anyMatch(call -> call.name.equals("stream")));
++        assertTrue(helperCalls.stream().anyMatch(call -> call.name.equals("flatMap")));
++        assertTrue(helperCalls.stream().anyMatch(call -> call.name.equals("toList")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

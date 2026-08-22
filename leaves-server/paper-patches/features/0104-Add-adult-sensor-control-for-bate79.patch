@@ -1,0 +1,125 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 01:11:39 +0800
+Subject: [PATCH] Add adult sensor control for bate79
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index e02344e460fce43d63fcbb5cca4cccaa4b127de2..c31d09e1eca4adc096aaca5f48c8f4fca8f77eab 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -44,7 +44,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMask
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 11;
++    public static final int CURRENT_CONFIG_VERSION = 12;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index a11f0a79ce68b61aa2a17eae2bac0c2627751880..6dc8bf64ac0555cd426e89a69e77ec0835d2ae85 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：11。");
++        comments.put("config-version", "配置版本，请勿修改。默认：12。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index f138181bdbc00d0005a58c2e3d2909367da2707b..7177dfac0a15b3b0be13cd48cc36e42f9f81e413 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -127,6 +127,10 @@ enum LeavesXOptimization {
+     WARDEN_TARGET_SENSOR(
+         "performance.ai.warden-target-sensor",
+         "减少监守者目标传感器的临时对象，关闭后使用原版流程。默认：true。"
++    ),
++    ADULT_SENSOR(
++        "performance.ai.adult-sensor",
++        "减少成年同类传感器的临时对象，关闭后使用原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 89da02134a0ad3ee2525f218124170fba8307e9a..d34ac6b41be415a6184cc0d27ec4963e156b1649 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -276,6 +276,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && enabled(LeavesXOptimization.WARDEN_TARGET_SENSOR);
+     }
+ 
++    /** Returns whether adult sensing may use nullable memory and result access without Optional wrappers. */
++    public static boolean adultSensorOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.ADULT_SENSOR);
++    }
++
+     /** Returns whether armor-stand placement may stop after the first blocking entity. */
+     public static boolean armorStandPlacementOptimization() {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.ARMOR_STAND_PLACEMENT);
+diff --git a/src/test/java/org/leavesx/leavesx/performance/AdultSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/AdultSensorHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..b80e3e4ab02423c1f295dcb67188c23ec47d947f
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/AdultSensorHotPathTest.java
+@@ -0,0 +1,56 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ai.sensing.AdultSensor;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies adult sensing keeps both the allocation-free path and the vanilla Optional fallback. */
++@Normal
++class AdultSensorHotPathTest {
++
++    @Test
++    void sensorKeepsDirectAndVanillaMemoryPaths() throws IOException {
++        final ClassNode adultSensor = classNode(AdultSensor.class);
++        final MethodNode doTick = method(adultSensor, "doTick");
++        final List<MethodInsnNode> calls = invocations(doTick);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("adultSensorOptimization")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getMemoryValue")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$findClosestOrNull")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getMemory")));
++        assertTrue(adultSensor.methods.stream()
++            .filter(method -> method.name.startsWith("lambda$doTick"))
++            .flatMap(method -> invocations(method).stream())
++            .anyMatch(call -> call.name.equals("setNearestVisibleAdult")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 01:11:39 +0800
+Subject: [PATCH] Optimize adult sensor memory access for bate79
+
+
+diff --git a/net/minecraft/world/entity/ai/Brain.java b/net/minecraft/world/entity/ai/Brain.java
+index 2b32d4d8111b33a265050d80c66390d063729bac..8fdad6b165a958142711ba1b0f09a78716334b5f 100644
+--- a/net/minecraft/world/entity/ai/Brain.java
++++ b/net/minecraft/world/entity/ai/Brain.java
+@@ -226,6 +226,11 @@ public class Brain<E extends LivingEntity> {
+         return Optional.ofNullable(this.getMemorySlot(type).value());
+     }
+ 
++    /** Returns the registered memory value directly for allocation-sensitive internal AI paths. */
++    public <U> @Nullable U leavesX$getMemoryValue(final MemoryModuleType<U> type) {
++        return this.getMemorySlot(type).value();
++    }
++
+     public <U> @Nullable Optional<U> getMemoryInternal(final MemoryModuleType<U> type) {
+         MemorySlot<U> slot = this.getMemorySlotIfPresent(type);
+         return slot == null ? null : Optional.ofNullable(slot.value());
+diff --git a/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java b/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
+index 130599dca015085e7363506dfd18408e2b651781..42cdc235d79ff8282d9c18785d1e1d0f514bac71 100644
+--- a/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
++++ b/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
+@@ -13,6 +13,7 @@ import net.minecraft.util.VisibleForDebug;
+ import net.minecraft.world.entity.LivingEntity;
+ import net.minecraft.world.entity.ai.Brain;
+ import net.minecraft.world.entity.ai.sensing.Sensor;
++import org.jspecify.annotations.Nullable;
+ 
+ public class NearestVisibleLivingEntities {
+     private static final NearestVisibleLivingEntities EMPTY = new NearestVisibleLivingEntities();
+@@ -93,6 +94,16 @@ public class NearestVisibleLivingEntities {
+         return Optional.empty();
+     }
+ 
++    /** Returns the same first visible match as {@link #findClosest(Predicate)} without an Optional wrapper. */
++    public @Nullable LivingEntity leavesX$findClosestOrNull(final Predicate<LivingEntity> filter) {
++        for (final LivingEntity nearbyEntity : this.nearbyEntities) {
++            if (filter.test(nearbyEntity) && this.lineOfSightTest.test(nearbyEntity)) {
++                return nearbyEntity;
++            }
++        }
++        return null;
++    }
++
+     public Iterable<LivingEntity> findAll(final Predicate<LivingEntity> filter) {
+         return Iterables.filter(this.nearbyEntities, entity -> filter.test(entity) && this.lineOfSightTest.test(entity));
+     }
+diff --git a/net/minecraft/world/entity/ai/sensing/AdultSensor.java b/net/minecraft/world/entity/ai/sensing/AdultSensor.java
+index f5ada20bea9806fa9e5edabbe31fc189f1a8b918..1131204b221abf209dec7224be653d6aa55aef5d 100644
+--- a/net/minecraft/world/entity/ai/sensing/AdultSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/AdultSensor.java
+@@ -16,6 +16,21 @@ public class AdultSensor extends Sensor<LivingEntity> {
+ 
+     @Override
+     protected void doTick(final ServerLevel level, final LivingEntity body) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.adultSensorOptimization()) {
++            final net.minecraft.world.entity.ai.Brain<?> brain = body.getBrain();
++            final NearestVisibleLivingEntities visibleLivingEntities = brain.leavesX$getMemoryValue(
++                MemoryModuleType.NEAREST_VISIBLE_LIVING_ENTITIES
++            );
++            if (visibleLivingEntities != null) {
++                brain.setMemory(
++                    MemoryModuleType.NEAREST_VISIBLE_ADULT,
++                    visibleLivingEntities.leavesX$findClosestOrNull(
++                        entity -> entity.getType() == body.getType() && !entity.isBaby()
++                    )
++                );
++            }
++            return;
++        }
+         body.getBrain()
+             .getMemory(MemoryModuleType.NEAREST_VISIBLE_LIVING_ENTITIES)
+             .ifPresent(livingEntities -> this.setNearestVisibleAdult(body, livingEntities));

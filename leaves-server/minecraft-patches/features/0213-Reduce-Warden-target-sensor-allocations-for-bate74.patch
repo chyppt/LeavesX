@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 23:51:19 +0800
+Subject: [PATCH] Reduce Warden target sensor allocations for bate74
+
+
+diff --git a/net/minecraft/world/entity/ai/sensing/WardenEntitySensor.java b/net/minecraft/world/entity/ai/sensing/WardenEntitySensor.java
+index 83285d9f3310ab7827607f0022a24b5627f7b480..a5ad3e5bc19236cc06354a68742b1fce4cc4bbf4 100644
+--- a/net/minecraft/world/entity/ai/sensing/WardenEntitySensor.java
++++ b/net/minecraft/world/entity/ai/sensing/WardenEntitySensor.java
+@@ -31,8 +31,22 @@ public class WardenEntitySensor extends NearestLivingEntitySensor<Warden> {
+     }
+ 
+     private static Optional<LivingEntity> getClosest(final Warden body, final Predicate<LivingEntity> test) {
+-        return body.getBrain()
+-            .getMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES)
++        final Optional<List<LivingEntity>> nearbyMemory = body.getBrain()
++            .getMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES);
++        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++            if (nearbyMemory.isEmpty()) {
++                return Optional.empty();
++            }
++
++            for (final LivingEntity entity : nearbyMemory.get()) {
++                if (body.canTargetEntity(entity) && test.test(entity)) {
++                    return Optional.of(entity);
++                }
++            }
++            return Optional.empty();
++        }
++
++        return nearbyMemory
+             .stream()
+             .flatMap(Collection::stream)
+             .filter(body::canTargetEntity)

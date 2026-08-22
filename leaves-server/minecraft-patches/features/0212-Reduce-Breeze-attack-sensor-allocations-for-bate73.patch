@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 23:31:33 +0800
+Subject: [PATCH] Reduce Breeze attack sensor allocations for bate73
+
+
+diff --git a/net/minecraft/world/entity/ai/sensing/BreezeAttackEntitySensor.java b/net/minecraft/world/entity/ai/sensing/BreezeAttackEntitySensor.java
+index 4c035ed3eb4eb782e76953c0dca2aa30b8977807..027746a72d0b19edd59bcd303f5ec659770223e3 100644
+--- a/net/minecraft/world/entity/ai/sensing/BreezeAttackEntitySensor.java
++++ b/net/minecraft/world/entity/ai/sensing/BreezeAttackEntitySensor.java
+@@ -4,9 +4,12 @@ import com.google.common.collect.ImmutableSet;
+ import com.google.common.collect.Iterables;
+ import java.util.Collection;
+ import java.util.List;
++import java.util.Optional;
+ import java.util.Set;
+ import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.world.entity.EntitySelector;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.entity.ai.Brain;
+ import net.minecraft.world.entity.ai.memory.MemoryModuleType;
+ import net.minecraft.world.entity.monster.breeze.Breeze;
+ 
+@@ -19,7 +22,29 @@ public class BreezeAttackEntitySensor extends NearestLivingEntitySensor<Breeze>
+     @Override
+     protected void doTick(final ServerLevel level, final Breeze breeze) {
+         super.doTick(level, breeze);
+-        breeze.getBrain()
++        final Brain<?> brain = breeze.getBrain();
++        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++            final Optional<List<LivingEntity>> nearbyMemory = brain.getMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES);
++            LivingEntity nearestAttackable = null;
++            if (nearbyMemory.isPresent()) {
++                for (final LivingEntity entity : nearbyMemory.get()) {
++                    if (EntitySelector.NO_CREATIVE_OR_SPECTATOR.test(entity)
++                        && Sensor.isEntityAttackable(level, breeze, entity)) {
++                        nearestAttackable = entity;
++                        break;
++                    }
++                }
++            }
++
++            if (nearestAttackable != null) {
++                brain.setMemory(MemoryModuleType.NEAREST_ATTACKABLE, nearestAttackable);
++            } else {
++                brain.eraseMemory(MemoryModuleType.NEAREST_ATTACKABLE);
++            }
++            return;
++        }
++
++        brain
+             .getMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES)
+             .stream()
+             .flatMap(Collection::stream)
+@@ -27,8 +52,8 @@ public class BreezeAttackEntitySensor extends NearestLivingEntitySensor<Breeze>
+             .filter(entity -> Sensor.isEntityAttackable(level, breeze, entity))
+             .findFirst()
+             .ifPresentOrElse(
+-                entity -> breeze.getBrain().setMemory(MemoryModuleType.NEAREST_ATTACKABLE, entity),
+-                () -> breeze.getBrain().eraseMemory(MemoryModuleType.NEAREST_ATTACKABLE)
++                entity -> brain.setMemory(MemoryModuleType.NEAREST_ATTACKABLE, entity),
++                () -> brain.eraseMemory(MemoryModuleType.NEAREST_ATTACKABLE)
+             );
+     }
+ }

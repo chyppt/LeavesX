@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 19:34:04 +0800
+Subject: [PATCH] Add chest cat query regression coverage for bate51
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChestCatEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ChestCatEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9471050050b10044765b4c00278c3e5034f1f16f
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ChestCatEntityQueryHotPathTest.java
+@@ -0,0 +1,68 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.level.block.ChestBlock;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies chest obstruction checks stop after the first sitting cat. */
++@Normal
++class ChestCatEntityQueryHotPathTest {
++
++    @Test
++    void chestCatDetectionKeepsPaperDisableAndLeavesXFallbackPaths() throws IOException {
++        final ClassNode chest = classNode(ChestBlock.class);
++        final MethodNode catCheck = method(chest, "isCatSittingOnChest");
++
++        assertTrue(hasInvocation(catCheck, "net/minecraft/world/level/LevelAccessor", "getMinecraftWorld"));
++        assertTrue(hasInvocation(catCheck, "org/leavesx/leavesx/config/LeavesXRuntime", "entityQueryOptimizations"));
++        assertTrue(invocations(catCheck).stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
++        assertTrue(hasInvocation(catCheck, "net/minecraft/world/level/LevelAccessor", "getEntitiesOfClass"));
++        assertTrue(invocations(catCheck).stream().anyMatch(call -> call.name.equals("isInSittingPose")));
++    }
++
++    @Test
++    void fastSelectorPreservesSpectatorAndSittingChecks() throws IOException {
++        final ClassNode chest = classNode(ChestBlock.class);
++        final MethodNode selector = chest.methods.stream()
++            .filter(method -> method.name.startsWith("lambda$static$"))
++            .filter(method -> hasInvocation(method, "net/minecraft/world/entity/animal/feline/Cat", "isInSittingPose"))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing sitting-cat selector"));
++
++        assertTrue(invocations(selector).stream().anyMatch(call -> call.name.equals("isSpectator")));
++    }
++
++    private static boolean hasInvocation(final MethodNode method, final String owner, final String name) {
++        return invocations(method).stream().anyMatch(call -> call.owner.equals(owner) && call.name.equals(name));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

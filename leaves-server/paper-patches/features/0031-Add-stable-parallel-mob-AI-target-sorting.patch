@@ -1,0 +1,540 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 00:35:28 +0800
+Subject: [PATCH] Add stable parallel mob AI target sorting
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index b7f8326570bdcebef6237a88923177e7cb55de33..89e86e1a688aabe9264f07909470844465340879 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -12,6 +12,9 @@ public record LeavesXConfig(
+     boolean immutableCacheOptimizations,
+     boolean resourceIdentifierCache,
+     boolean skipEmptyEvents,
++    boolean aiOptimizations,
++    boolean parallelAiTargetSearch,
++    int aiTargetSearchMinimumCandidates,
+     boolean parallelMobSpawnCounting,
+     int mobSpawnCountingWorkers,
+     int mobSpawnCountingMinimumEntities,
+@@ -31,6 +34,9 @@ public record LeavesXConfig(
+         if (mobSpawnCountingMinimumEntities < 128) {
+             throw new IllegalArgumentException("parallelism.mob-spawning.minimum-entities must be at least 128");
+         }
++        if (aiTargetSearchMinimumCandidates < 64) {
++            throw new IllegalArgumentException("parallelism.ai-target-search.minimum-candidates must be at least 64");
++        }
+     }
+ 
+     /**
+@@ -46,6 +52,9 @@ public record LeavesXConfig(
+             true,
+             true,
+             true,
++            true,
++            128,
++            true,
+             0,
+             512,
+             true
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index c3a24b1a81df0193937dbb634a1adc3e860a9a2e..5f4ae0861c93826211917d9962682801c383381e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -26,11 +26,12 @@ public final class LeavesXConfigBootstrap {
+         org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(config.mobSpawnCountingWorkers());
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+-            "LeavesX behavior-equivalent optimizations: optimized VarInt {}, immutable cache hashes {}, resource identifier cache {}, skip empty events {}, item merge scan {}",
++            "LeavesX behavior-equivalent optimizations: optimized VarInt {}, immutable cache hashes {}, resource identifier cache {}, skip empty events {}, AI hot paths {}, item merge scan {}",
+             config.optimizedVarInt(),
+             config.immutableCacheOptimizations(),
+             config.resourceIdentifierCache(),
+             config.skipEmptyEvents(),
++            config.aiOptimizations(),
+             config.itemMergeOptimizations()
+         );
+         LOGGER.info(
+@@ -39,5 +40,10 @@ public final class LeavesXConfigBootstrap {
+             org.leavesx.leavesx.runtime.LeavesXComputeExecutor.workerCount(),
+             config.mobSpawnCountingMinimumEntities()
+         );
++        LOGGER.info(
++            "LeavesX AI target-distance workers: {}, parallel from {} candidates",
++            config.parallelAiTargetSearch() ? "enabled" : "disabled",
++            config.aiTargetSearchMinimumCandidates()
++        );
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index b8d20b7b309d87247b5a2eb7acf77af2ed4d59a5..970f6dfd7014392c217b7f3765f1660aa04249d9 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -89,6 +89,17 @@ public final class LeavesXConfigLoader {
+                     true
+                 ),
+                 readBoolean(node.node("performance", "skip-empty-events"), "performance.skip-empty-events", true),
++                readBoolean(node.node("performance", "ai-optimizations"), "performance.ai-optimizations", true),
++                readBoolean(
++                    node.node("parallelism", "ai-target-search", "enabled"),
++                    "parallelism.ai-target-search.enabled",
++                    true
++                ),
++                readInt(
++                    node.node("parallelism", "ai-target-search", "minimum-candidates"),
++                    "parallelism.ai-target-search.minimum-candidates",
++                    128
++                ),
+                 readBoolean(
+                     node.node("parallelism", "mob-spawning", "enabled"),
+                     "parallelism.mob-spawning.enabled",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index afaaf27dff6999bacb8292a71806ae8c2777a2fb..a2d65aa46cd6a93ae78166c3a259b1bccdb00170 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -83,6 +83,24 @@ public final class LeavesXConfigWriter {
+             config.skipEmptyEvents(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "ai-optimizations"),
++            "performance.ai-optimizations",
++            config.aiOptimizations(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("parallelism", "ai-target-search", "enabled"),
++            "parallelism.ai-target-search.enabled",
++            config.parallelAiTargetSearch(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("parallelism", "ai-target-search", "minimum-candidates"),
++            "parallelism.ai-target-search.minimum-candidates",
++            config.aiTargetSearchMinimumCandidates(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "item-merge-optimizations"),
+             "performance.item-merge-optimizations",
+@@ -134,6 +152,9 @@ public final class LeavesXConfigWriter {
+         comments.put("parallelism.mob-spawning.enabled", "使用多个线程计算自然刷怪数量。刷怪位置、随机数、事件和实体创建仍在主线程执行；遇到问题可设为 false。默认：true。");
+         comments.put("parallelism.mob-spawning.workers", "自然刷怪统计使用的线程数。0 表示自动选择，普通服务器建议保持 0。默认：0。");
+         comments.put("parallelism.mob-spawning.minimum-entities", "实体少于这个数量时直接在主线程计算，避免线程切换反而变慢。建议保持默认。默认：512。");
++        comments.put("performance.ai-optimizations", "优化生物 AI 的热路径，减少重复计算。不会异步访问实体或世界，也不改变目标选择顺序；遇到问题可设为 false。默认：true。");
++        comments.put("parallelism.ai-target-search.enabled", "用工作线程计算大量目标候选的坐标距离。实体条件、视线检查和最终目标仍在主线程按原顺序确认；遇到问题可设为 false。默认：true。");
++        comments.put("parallelism.ai-target-search.minimum-candidates", "候选生物达到这个数量才使用多线程，数量较少时直接在主线程计算更快。建议保持默认。默认：128。");
+         return Map.copyOf(comments);
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 2c968f28ae9d94917ab07493b73505a8fe4c73d5..62074d09ea2ccd8b5c845900eee4c62924bb9932 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -16,6 +16,9 @@ public final class LeavesXRuntime {
+     // Published during bootstrap before networking and world ticking start; these hot-path flags are not reloadable.
+     private static boolean resourceIdentifierCache = true;
+     private static boolean skipEmptyEvents = true;
++    private static boolean aiOptimizations = true;
++    private static boolean parallelAiTargetSearch = true;
++    private static int aiTargetSearchMinimumCandidates = 128;
+     private static boolean itemMergeOptimizations = true;
+     private static boolean parallelMobSpawnCounting = true;
+     private static int mobSpawnCountingMinimumEntities = 512;
+@@ -43,6 +46,9 @@ public final class LeavesXRuntime {
+         immutableCacheOptimizations = validated.immutableCacheOptimizations();
+         resourceIdentifierCache = validated.resourceIdentifierCache();
+         skipEmptyEvents = validated.skipEmptyEvents();
++        aiOptimizations = validated.aiOptimizations();
++        parallelAiTargetSearch = validated.parallelAiTargetSearch();
++        aiTargetSearchMinimumCandidates = validated.aiTargetSearchMinimumCandidates();
+         itemMergeOptimizations = validated.itemMergeOptimizations();
+         parallelMobSpawnCounting = validated.parallelMobSpawnCounting();
+         mobSpawnCountingMinimumEntities = validated.mobSpawnCountingMinimumEntities();
+@@ -80,6 +86,21 @@ public final class LeavesXRuntime {
+         return skipEmptyEvents;
+     }
+ 
++    /** Returns whether behavior-equivalent synchronous AI hot-path optimizations are enabled. */
++    public static boolean aiOptimizations() {
++        return aiOptimizations;
++    }
++
++    /** Returns whether pure target-distance snapshots may use LeavesX compute workers. */
++    public static boolean parallelAiTargetSearch() {
++        return parallelAiTargetSearch;
++    }
++
++    /** Returns the candidate threshold below which synchronous target-distance calculation is faster. */
++    public static int aiTargetSearchMinimumCandidates() {
++        return aiTargetSearchMinimumCandidates;
++    }
++
+     /** Returns whether full item stacks may stop their neighbour scan early. */
+     public static boolean itemMergeOptimizations() {
+         return itemMergeOptimizations;
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..1d5b5458429e61560f01bfdbfcf52edcff2bb79b
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -0,0 +1,192 @@
++package org.leavesx.leavesx.performance;
++
++import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
++
++/**
++ * Produces a stable index order for immutable coordinate snapshots.
++ *
++ * <p>Worker threads only receive primitive arrays. Entity and world objects remain on the tick thread, which applies
++ * the returned order after all computation has completed.</p>
++ */
++public final class StableDistanceSorter {
++
++    private static final int INSERTION_SORT_THRESHOLD = 24;
++
++    private StableDistanceSorter() {
++    }
++
++    /**
++     * Sorts snapshot indices by squared distance while preserving the input order of equal-distance entries.
++     *
++     * @param x snapshotted x coordinates
++     * @param y snapshotted y coordinates
++     * @param z snapshotted z coordinates
++     * @param originX origin x coordinate
++     * @param originY origin y coordinate
++     * @param originZ origin z coordinate
++     * @param parallel whether eligible inputs may use LeavesX compute workers
++     * @param parallelThreshold minimum snapshot size for worker use
++     * @return indices in the same order as a stable {@code Comparator.comparingDouble} sort
++     */
++    public static int[] sort(
++        final double[] x,
++        final double[] y,
++        final double[] z,
++        final double originX,
++        final double originY,
++        final double originZ,
++        final boolean parallel,
++        final int parallelThreshold
++    ) {
++        requireMatchingLengths(x, y, z);
++        final int size = x.length;
++        final int[] order = new int[size];
++        if (size == 0) {
++            return order;
++        }
++
++        final double[] distances = new double[size];
++        final int[] scratch = new int[size];
++        final int workerLimit = Math.min(LeavesXComputeExecutor.workerCount(), size);
++        final int rangeSize = divideCeil(size, Math.max(1, workerLimit));
++        final boolean completedInParallel = parallel && LeavesXComputeExecutor.invokeRanges(
++            size,
++            parallelThreshold,
++            (taskIndex, start, end) -> {
++                computeDistancesAndInitializeOrder(x, y, z, originX, originY, originZ, distances, order, start, end);
++                stableSortRange(order, scratch, distances, start, end);
++            }
++        );
++
++        if (!completedInParallel) {
++            computeDistancesAndInitializeOrder(x, y, z, originX, originY, originZ, distances, order, 0, size);
++            stableSortRange(order, scratch, distances, 0, size);
++            return order;
++        }
++
++        // Each worker sorted one contiguous range. Merging on the tick thread is deterministic and keeps equal
++        // distances in their original entity-query order.
++        for (int width = rangeSize; width < size; width = nextMergeWidth(width, size)) {
++            final int step = width >= size - width ? size : width << 1;
++            for (int start = 0; start < size - width; start += step) {
++                final int middle = start + width;
++                final int end = Math.min(size, start + step);
++                merge(order, scratch, distances, start, middle, end);
++            }
++        }
++        return order;
++    }
++
++    private static void requireMatchingLengths(final double[] x, final double[] y, final double[] z) {
++        if (x.length != y.length || x.length != z.length) {
++            throw new IllegalArgumentException("Coordinate arrays must have matching lengths");
++        }
++    }
++
++    private static void computeDistancesAndInitializeOrder(
++        final double[] x,
++        final double[] y,
++        final double[] z,
++        final double originX,
++        final double originY,
++        final double originZ,
++        final double[] distances,
++        final int[] order,
++        final int start,
++        final int end
++    ) {
++        for (int index = start; index < end; index++) {
++            final double deltaX = originX - x[index];
++            final double deltaY = originY - y[index];
++            final double deltaZ = originZ - z[index];
++            distances[index] = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
++            order[index] = index;
++        }
++    }
++
++    private static void stableSortRange(
++        final int[] order,
++        final int[] scratch,
++        final double[] distances,
++        final int start,
++        final int end
++    ) {
++        final int length = end - start;
++        if (length < 2) {
++            return;
++        }
++        if (length <= INSERTION_SORT_THRESHOLD) {
++            insertionSort(order, distances, start, end);
++            return;
++        }
++
++        for (int width = 1; width < length; width = nextMergeWidth(width, length)) {
++            final int step = width >= length - width ? length : width << 1;
++            for (int left = start; left < end - width; left += step) {
++                final int middle = left + width;
++                final int right = Math.min(end, left + step);
++                merge(order, scratch, distances, left, middle, right);
++            }
++        }
++    }
++
++    private static void insertionSort(
++        final int[] order,
++        final double[] distances,
++        final int start,
++        final int end
++    ) {
++        for (int index = start + 1; index < end; index++) {
++            final int candidate = order[index];
++            int insertion = index;
++            while (insertion > start && compare(candidate, order[insertion - 1], distances) < 0) {
++                order[insertion] = order[insertion - 1];
++                insertion--;
++            }
++            order[insertion] = candidate;
++        }
++    }
++
++    private static void merge(
++        final int[] order,
++        final int[] scratch,
++        final double[] distances,
++        final int start,
++        final int middle,
++        final int end
++    ) {
++        if (compare(order[middle - 1], order[middle], distances) <= 0) {
++            return;
++        }
++
++        int left = start;
++        int right = middle;
++        int output = start;
++        while (left < middle && right < end) {
++            if (compare(order[left], order[right], distances) <= 0) {
++                scratch[output++] = order[left++];
++            } else {
++                scratch[output++] = order[right++];
++            }
++        }
++        while (left < middle) {
++            scratch[output++] = order[left++];
++        }
++        while (right < end) {
++            scratch[output++] = order[right++];
++        }
++        System.arraycopy(scratch, start, order, start, end - start);
++    }
++
++    private static int compare(final int left, final int right, final double[] distances) {
++        return Double.compare(distances[left], distances[right]);
++    }
++
++    private static int divideCeil(final int dividend, final int divisor) {
++        return (dividend + divisor - 1) / divisor;
++    }
++
++    private static int nextMergeWidth(final int width, final int length) {
++        return width >= length - width ? length : width << 1;
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index ff39b6d00a1176edda7362de6070c0d2eca1b5d7..53b52735f7bcde7c8048623a0a083c0ffc7edf48 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -62,7 +62,8 @@ public final class LeavesXComputeExecutor {
+ 
+         final int taskCount = Math.min(workerCount, size);
+         final int rangeSize = (size + taskCount - 1) / taskCount;
+-        final List<Future<?>> futures = new ArrayList<>(taskCount);
++        final int expectedTaskCount = (size + rangeSize - 1) / rangeSize;
++        final List<Future<?>> futures = new ArrayList<>(expectedTaskCount);
+         boolean succeeded = true;
+         try {
+             for (int start = 0; start < size; start += rangeSize) {
+@@ -99,7 +100,7 @@ public final class LeavesXComputeExecutor {
+         if (interrupted) {
+             Thread.currentThread().interrupt();
+         }
+-        return succeeded && futures.size() == taskCount;
++        return succeeded && futures.size() == expectedTaskCount;
+     }
+ 
+     /** Stops all LeavesX computation workers during normal server shutdown. */
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 0a21906ff9f39fc88c2c246aff7dd1363692a449..4853c19b6c5dcd8212a7302e2c80fe8612cf3559 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -102,8 +102,12 @@ class LeavesXConfigLoaderTest {
+               immutable-cache-optimizations: false
+               resource-identifier-cache: false
+               skip-empty-events: false
++              ai-optimizations: false
+               item-merge-optimizations: false
+             parallelism:
++              ai-target-search:
++                enabled: false
++                minimum-candidates: 256
+               mob-spawning:
+                 enabled: false
+                 workers: 3
+@@ -116,6 +120,9 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.immutableCacheOptimizations());
+         assertFalse(config.resourceIdentifierCache());
+         assertFalse(config.skipEmptyEvents());
++        assertFalse(config.aiOptimizations());
++        assertFalse(config.parallelAiTargetSearch());
++        assertEquals(256, config.aiTargetSearchMinimumCandidates());
+         assertFalse(config.itemMergeOptimizations());
+         assertFalse(config.parallelMobSpawnCounting());
+         assertEquals(3, config.mobSpawnCountingWorkers());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..1ee17a6144cc9c68d29c6e459667e7f7708e538d
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -0,0 +1,82 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++
++import java.util.Arrays;
++import java.util.Comparator;
++import java.util.Random;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
++
++@Normal
++class StableDistanceSorterTest {
++
++    @AfterEach
++    void shutdownExecutor() {
++        LeavesXComputeExecutor.shutdown();
++    }
++
++    @Test
++    void matchesStableComparatorOrderSynchronouslyAndInParallel() {
++        final Random random = new Random(0x4C656176657358L);
++        final int size = 1_027;
++        final double[] x = new double[size];
++        final double[] y = new double[size];
++        final double[] z = new double[size];
++        for (int index = 0; index < size; index++) {
++            // Repeated integer coordinates exercise stable ordering for equal distances.
++            x[index] = random.nextInt(41) - 20;
++            y[index] = random.nextInt(17) - 8;
++            z[index] = random.nextInt(41) - 20;
++        }
++
++        final int[] expected = referenceOrder(x, y, z, 3.5, -2.25, 7.75);
++        assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, 3.5, -2.25, 7.75, false, 64));
++
++        LeavesXComputeExecutor.configure(4);
++        assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, 3.5, -2.25, 7.75, true, 64));
++    }
++
++    @Test
++    void keepsSpecialDoubleOrderingEquivalentToJavaComparator() {
++        final double[] x = {Double.NaN, Double.POSITIVE_INFINITY, -0.0, 0.0, 1.0, -1.0};
++        final double[] y = new double[x.length];
++        final double[] z = new double[x.length];
++        final int[] expected = referenceOrder(x, y, z, 0.0, 0.0, 0.0);
++
++        LeavesXComputeExecutor.configure(3);
++        assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, 0.0, 0.0, 0.0, true, 1));
++    }
++
++    @Test
++    void rejectsMismatchedCoordinateArrays() {
++        assertThrows(
++            IllegalArgumentException.class,
++            () -> StableDistanceSorter.sort(new double[1], new double[2], new double[1], 0.0, 0.0, 0.0, false, 64)
++        );
++    }
++
++    private static int[] referenceOrder(
++        final double[] x,
++        final double[] y,
++        final double[] z,
++        final double originX,
++        final double originY,
++        final double originZ
++    ) {
++        final Integer[] indices = new Integer[x.length];
++        final double[] distances = new double[x.length];
++        for (int index = 0; index < x.length; index++) {
++            indices[index] = index;
++            final double deltaX = originX - x[index];
++            final double deltaY = originY - y[index];
++            final double deltaZ = originZ - z[index];
++            distances[index] = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
++        }
++        Arrays.sort(indices, Comparator.comparingDouble(index -> distances[index]));
++        return Arrays.stream(indices).mapToInt(Integer::intValue).toArray();
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index f7d62eea540a3878816a89faee65f3c45b3ba942..7d50a306f2b646db8f6d4e9f0b45cdcaa3304df8 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -49,6 +49,23 @@ class LeavesXComputeExecutorTest {
+         }));
+     }
+ 
++    @Test
++    void acceptsACompleteNonEvenPartition() {
++        LeavesXComputeExecutor.configure(6);
++        final AtomicIntegerArray counts = new AtomicIntegerArray(10);
++
++        final boolean parallel = LeavesXComputeExecutor.invokeRanges(10, 1, (taskIndex, start, end) -> {
++            for (int index = start; index < end; index++) {
++                counts.incrementAndGet(index);
++            }
++        });
++
++        assertTrue(parallel);
++        for (int index = 0; index < counts.length(); index++) {
++            assertTrue(counts.get(index) == 1, "index " + index + " must be processed exactly once");
++        }
++    }
++
+     @Test
+     void waitsForSubmittedRangesBeforeReportingFailure() throws Exception {
+         LeavesXComputeExecutor.configure(2);

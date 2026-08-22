@@ -1,0 +1,360 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 13 Aug 2026 11:55:54 +0800
+Subject: [PATCH] Document Leaves settings from the official reference
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/YamlCommentInjector.java b/src/main/java/org/leavesx/leavesx/config/YamlCommentInjector.java
+index 0104eba934287c6b70262f04a7ee846f0558ae4f..4991652fc597c77f7fa94363162a3a48c83e15aa 100644
+--- a/src/main/java/org/leavesx/leavesx/config/YamlCommentInjector.java
++++ b/src/main/java/org/leavesx/leavesx/config/YamlCommentInjector.java
+@@ -175,7 +175,7 @@ public final class YamlCommentInjector {
+         for (final String line : description.split("\\R", -1)) {
+             output.append(prefix).append('#');
+             if (!line.isBlank()) {
+-                output.append(' ').append(line.strip());
++                output.append(' ').append(line.stripTrailing());
+             }
+             output.append(lineSeparator);
+         }
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigCommentCatalog.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigCommentCatalog.java
+index 3674a2eec7e44c3b5ab06dac1a87847381d49ce2..2ae70ced47a5ed560ddc2d4305583ef84b6acdcd 100644
+--- a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigCommentCatalog.java
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigCommentCatalog.java
+@@ -28,7 +28,64 @@ final class LeavesConfigCommentCatalog {
+     private static final String DOCUMENTATION_RESOURCE =
+         "/leavesx/leaves-26.1.2-configuration-zh_Hans.yml.b64";
+ 
+-    private static final Map<String, String> COMMENTS = loadOfficialComments();
++    /**
++     * Settings already present in Leaves 26.1.2 but not yet listed by the published reference snapshot.
++     *
++     * <p>Each description is derived from the setting's concrete call site. Keeping these entries separate makes the
++     * official text auditable and prevents an upstream documentation gap from producing undocumented YAML keys.</p>
++     */
++    private static final Map<String, String> IMPLEMENTATION_COMMENTS = Map.ofEntries(
++        Map.entry(
++            "settings.modify.minecraft-old.old-minecart-motion-behavior",
++            "是否恢复旧版矿车穿过下界传送门时的速度和旋转处理。开启后会保留传送前的运动状态。"
++        ),
++        Map.entry(
++            "settings.modify.minecraft-old.allow-inf-nan-motion-values",
++            "是否允许实体运动和旋转保留 Infinity、NaN 等非有限数值。此功能用于兼容依赖该行为的技术玩法，可能造成异常实体状态。"
++        ),
++        Map.entry(
++            "settings.modify.fix-stuck-zombified-piglin-anger-target",
++            "是否修复僵尸猪灵对已经失效的玩家目标持续愤怒的问题。"
++        ),
++        Map.entry(
++            "settings.modify.follow-tick-sequence-merge",
++            "是否让物品实体按当前游戏刻的扫描顺序选择合并目标。可避免较大合并半径下物品堆停在意外位置，但会改变合并目标的选择顺序。"
++        ),
++        Map.entry(
++            "settings.performance.equipment-tracking",
++            "是否启用 Lithium 的实体装备变化追踪，减少每刻重复比较装备的开销。此项需要重启服务器后生效。"
++        ),
++        Map.entry(
++            "settings.protocol.strict-mode",
++            "协议处理发生异常时是否直接抛出异常。关闭时只记录错误日志，通常仅在调试协议兼容问题时开启。"
++        ),
++        Map.entry(
++            "settings.misc.async-keepalive.enable",
++            "是否使用独立线程处理玩家 KeepAlive。可减少主线程卡顿时的误判，此项需要重启服务器后生效。"
++        ),
++        Map.entry(
++            "settings.misc.async-keepalive.timeout-seconds",
++            "异步 KeepAlive 响应允许的最长时间，单位为秒，必须大于 0。"
++        ),
++        Map.entry(
++            "settings.region.linear.region-unload-idle-ms",
++            "Linear 区域文件缓冲区达到此空闲时间后可以卸载。该选项仅在使用 Linear 区域格式时生效。"
++        ),
++        Map.entry(
++            "settings.region.linear.region-unload-check-interval-ms",
++            "检查 Linear 区域文件空闲缓冲区的间隔，单位为毫秒。"
++        ),
++        Map.entry(
++            "settings.region.linear.max-flush-per-run",
++            "每次 Linear 后台保存调度最多提交的区域刷新任务数量。"
++        ),
++        Map.entry(
++            "settings.fix.stacked-container-destroyed-drop",
++            "堆叠容器物品被摧毁时，是否按照堆叠数量分别掉落每个容器中的物品。"
++        )
++    );
++
++    private static final Map<String, String> COMMENTS = loadComments();
+ 
+     static {
+         if (!COMMENTS.containsKey("settings.modify.fakeplayer.enable") || COMMENTS.size() < 100) {
+@@ -43,6 +100,12 @@ final class LeavesConfigCommentCatalog {
+         return COMMENTS;
+     }
+ 
++    private static Map<String, String> loadComments() {
++        final HashMap<String, String> comments = new HashMap<>(loadOfficialComments());
++        IMPLEMENTATION_COMMENTS.forEach(comments::putIfAbsent);
++        return Map.copyOf(comments);
++    }
++
+     /**
+      * Reads the complete official catalog bundled with LeavesX.
+      *
+@@ -99,13 +162,15 @@ final class LeavesConfigCommentCatalog {
+ 
+     private static String normalizeOfficialDescription(final String description) {
+         return description
+-            .replaceAll("(?s)```.*?```", "")
+-            .replaceAll("(?m)^\\s*:::[^\\n]*$", "")
+-            .replaceAll("\\[([^]]+)]\\([^)]+\\)", "$1")
++            .replaceAll("(?mi)^\\s*```[^\\n]*$", "")
++            .replaceAll("(?mi)^\\s*:::\\s*tip\\s*$", "提示：")
++            .replaceAll("(?mi)^\\s*:::\\s*warning\\s*$", "警告：")
++            .replaceAll("(?mi)^\\s*:::\\s*danger\\s*$", "危险：")
++            .replaceAll("(?m)^\\s*:::\\s*$", "")
++            .replaceAll("\\[([^\\r\\n]*?)]\\([^)]+\\)", "$1")
+             .replace("**", "")
+             .replace('`', '\'')
+-            .replaceAll("(?m)^[ \\t]+", "")
+-            .replaceAll("\\n{3,}", "\\n\\n")
++            .replaceAll("\\n{3,}", "\n\n")
+             .trim();
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigDocumenter.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigDocumenter.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..05023a32f8c9e0d75f994735273fd54f77199dff
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigDocumenter.java
+@@ -0,0 +1,84 @@
++package org.leavesx.leavesx.config.migration;
++
++import io.papermc.paper.configuration.ConfigurationLoaders;
++import io.papermc.paper.util.AtomicFiles;
++import java.io.IOException;
++import java.io.StringReader;
++import java.nio.channels.FileChannel;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.nio.file.StandardOpenOption;
++import java.util.Objects;
++import org.leavesx.leavesx.config.YamlCommentInjector;
++import org.spongepowered.configurate.ConfigurateException;
++import org.spongepowered.configurate.ConfigurationNode;
++
++/** Adds the pinned official Leaves descriptions to a generated or edited {@code leaves.yml}. */
++public final class LeavesConfigDocumenter {
++
++    private LeavesConfigDocumenter() {
++    }
++
++    /**
++     * Adds missing official descriptions without changing values, unknown keys, user comments, or line endings.
++     *
++     * <p>Leaves writes its normal configuration first. This method then inserts comment lines into that text and
++     * verifies the parsed value tree before publishing the result atomically. Repeated calls are idempotent.</p>
++     *
++     * @param path generated Leaves configuration
++     * @return number of recognized Leaves settings present in the file
++     * @throws IOException when the file cannot be read, verified, or replaced
++     */
++    public static int document(final Path path) throws IOException {
++        final Path normalized = Objects.requireNonNull(path, "path").toAbsolutePath().normalize();
++        if (!Files.isRegularFile(normalized)) {
++            throw new IOException("Leaves configuration is not a regular file: " + normalized);
++        }
++
++        final String original = Files.readString(normalized, StandardCharsets.UTF_8);
++        final YamlCommentInjector.Result result = documentText(original);
++        if (result.text().equals(original)) {
++            return result.documentedKeys();
++        }
++
++        verifyValuesUnchanged(original, result.text(), normalized);
++        AtomicFiles.atomicWrite(normalized, temporary -> {
++            Files.writeString(temporary, result.text(), StandardCharsets.UTF_8);
++            try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
++                channel.force(true);
++            }
++        });
++        return result.documentedKeys();
++    }
++
++    static YamlCommentInjector.Result documentText(final String yamlText) {
++        return YamlCommentInjector.inject(
++            Objects.requireNonNull(yamlText, "yamlText"),
++            LeavesConfigCommentCatalog.comments()
++        );
++    }
++
++    private static void verifyValuesUnchanged(
++        final String originalText,
++        final String documentedText,
++        final Path source
++    ) throws IOException {
++        try {
++            final ConfigurationNode original = load(originalText);
++            final ConfigurationNode documented = load(documentedText);
++            if (!Objects.equals(original.raw(), documented.raw())) {
++                throw new IOException("Adding Leaves documentation would change configuration values: " + source);
++            }
++        } catch (final ConfigurateException ex) {
++            throw new IOException("Unable to verify documented Leaves configuration: " + source, ex);
++        }
++    }
++
++    private static ConfigurationNode load(final String yamlText) throws ConfigurateException {
++        return ConfigurationLoaders.naturallySorted()
++            .source(() -> new java.io.BufferedReader(new StringReader(yamlText)))
++            .build()
++            .load();
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigDocumenterTest.java b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigDocumenterTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..1bd92dc98920100fec9a085fd14f4d579fb3ad16
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigDocumenterTest.java
+@@ -0,0 +1,141 @@
++package org.leavesx.leavesx.config.migration;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import io.papermc.paper.configuration.ConfigurationLoaders;
++import java.io.IOException;
++import java.lang.reflect.Field;
++import java.lang.reflect.Modifier;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.Set;
++import java.util.TreeSet;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesmc.leaves.LeavesConfig;
++import org.leavesmc.leaves.config.annotations.GlobalConfig;
++import org.leavesmc.leaves.config.annotations.GlobalConfigCategory;
++import org.spongepowered.configurate.ConfigurationNode;
++
++@Normal
++class LeavesConfigDocumenterTest {
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @Test
++    void documentsExistingSettingsWithoutChangingValuesOrUnknownExtensions() throws Exception {
++        final Path path = write("""
++            config-version: 6
++            settings:
++              modify:
++                fakeplayer:
++                  enable: false
++              performance:
++                inactive-goal-selector-disable: false
++            custom-extension:
++              retained: true
++            """);
++        final ConfigurationNode original = load(path);
++
++        final int documentedKeys = LeavesConfigDocumenter.document(path);
++        final String documented = Files.readString(path);
++
++        assertTrue(documentedKeys >= 3);
++        assertTrue(documented.contains("# Leaves 配置文件版本号。请勿修改！"), documented);
++        assertTrue(documented.contains("# 是否开启假人相关功能。"), documented);
++        assertTrue(documented.contains("# 是否限制非活跃实体的目标查找器的运行。"), documented);
++        assertEquals(original.raw(), load(path).raw());
++        assertTrue(load(path).node("custom-extension", "retained").getBoolean());
++        assertFalse(load(path).hasChild("settings", "modify", "fakeplayer", "limit"));
++    }
++
++    @Test
++    void retainsUserCommentsByteOrderMarkCrLfAndIsIdempotent() throws IOException {
++        final Path path = write("\uFEFF# User-managed Leaves settings.\r\n"
++            + "config-version: 6 # Keep version note\r\n"
++            + "settings:\r\n"
++            + "  modify:\r\n"
++            + "    fakeplayer:\r\n"
++            + "      # Keep fake players disabled.\r\n"
++            + "      enable: false\r\n");
++
++        LeavesConfigDocumenter.document(path);
++        final String firstPass = Files.readString(path);
++        LeavesConfigDocumenter.document(path);
++
++        assertEquals(firstPass, Files.readString(path));
++        assertTrue(firstPass.startsWith("\uFEFF# User-managed Leaves settings.\r\n"), firstPass);
++        assertTrue(firstPass.contains("config-version: 6 # Keep version note\r\n"), firstPass);
++        assertTrue(firstPass.contains("# Keep fake players disabled.\r\n"), firstPass);
++        assertFalse(firstPass.replace("\r\n", "").contains("\n"), firstPass);
++    }
++
++    @Test
++    void keepsOfficialWarningsAndConfigurationExamplesReadable() {
++        final String documented = LeavesConfigDocumenter.documentText("""
++            settings:
++              modify:
++                mc-technical-survival-mode: true
++                minecraft-old:
++                  old-hopper-suck-in-behavior: false
++            """).text();
++
++        assertTrue(documented.contains("# paper-global.yml："), documented);
++        assertTrue(documented.contains("#   allow-piston-duplication: true"), documented);
++        assertTrue(documented.contains("# 警告："), documented);
++        assertTrue(documented.contains("# 开启后可能会降低性能。"), documented);
++        assertFalse(documented.contains("https://"), documented);
++    }
++
++    @Test
++    void documentsEverySettingGeneratedByLeaves() {
++        final Set<String> generatedPaths = new TreeSet<>();
++        collectGeneratedPaths(LeavesConfig.class, "settings.", true, generatedPaths);
++
++        final Set<String> missingPaths = new TreeSet<>(generatedPaths);
++        missingPaths.removeAll(LeavesConfigCommentCatalog.comments().keySet());
++
++        assertFalse(generatedPaths.isEmpty());
++        assertTrue(missingPaths.isEmpty(), "Missing leaves.yml comments for: " + missingPaths);
++    }
++
++    private Path write(final String content) throws IOException {
++        final Path path = this.temporaryDirectory.resolve("leaves.yml");
++        Files.writeString(path, content, StandardCharsets.UTF_8);
++        return path;
++    }
++
++    private static ConfigurationNode load(final Path path) throws Exception {
++        return ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
++    }
++
++    /** Mirrors Leaves' annotation-driven template traversal without constructing server runtime objects. */
++    private static void collectGeneratedPaths(
++        final Class<?> type,
++        final String prefix,
++        final boolean staticFieldsOnly,
++        final Set<String> paths
++    ) {
++        for (final Field field : type.getDeclaredFields()) {
++            if (staticFieldsOnly && !Modifier.isStatic(field.getModifiers())) {
++                continue;
++            }
++
++            final GlobalConfig config = field.getAnnotation(GlobalConfig.class);
++            if (config != null) {
++                paths.add(prefix + config.value());
++                continue;
++            }
++
++            final GlobalConfigCategory category = field.getType().getAnnotation(GlobalConfigCategory.class);
++            if (category != null) {
++                collectGeneratedPaths(field.getType(), prefix + category.value() + '.', false, paths);
++            }
++        }
++    }
++}

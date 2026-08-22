@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 03:48:43 +0800
+Subject: [PATCH] Optimize enchantment slot matching for bate30
+
+
+diff --git a/net/minecraft/world/item/enchantment/Enchantment.java b/net/minecraft/world/item/enchantment/Enchantment.java
+index 0d981b86fa7ee8713e2a419fc2f377defbc2ed9c..eadfbe8992951286b0d21a4d6291d7cf06e21a5a 100644
+--- a/net/minecraft/world/item/enchantment/Enchantment.java
++++ b/net/minecraft/world/item/enchantment/Enchantment.java
+@@ -124,9 +124,23 @@ public record Enchantment(Component description, Enchantment.EnchantmentDefiniti
+     }
+ 
+     public boolean matchingSlot(final EquipmentSlot slot) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityStateOptimizations()) {
++            return matchesSlotDirect(this.definition.slots(), slot);
++        }
+         return this.definition.slots().stream().anyMatch(group -> group.test(slot));
+     }
+ 
++    // LeavesX start - preserve enchantment slot order and short-circuiting without a stream pipeline
++    private static boolean matchesSlotDirect(final List<EquipmentSlotGroup> groups, final EquipmentSlot slot) {
++        for (final EquipmentSlotGroup group : groups) {
++            if (group.test(slot)) {
++                return true;
++            }
++        }
++        return false;
++    }
++    // LeavesX end - preserve enchantment slot order and short-circuiting without a stream pipeline
++
+     public boolean isPrimaryItem(final ItemStack item) {
+         return this.isSupportedItem(item) && (this.definition.primaryItems.isEmpty() || item.is(this.definition.primaryItems.get()));
+     }

@@ -1,0 +1,149 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 02:06:27 +0800
+Subject: [PATCH] Optimize village AI traversal for bate25
+
+
+diff --git a/net/minecraft/world/entity/ai/behavior/BehaviorUtils.java b/net/minecraft/world/entity/ai/behavior/BehaviorUtils.java
+index f744ecd20dc70786311a7162b52aa4ceca0717db..e45d6ff017858d042e78252e28b8be3b21ca3840 100644
+--- a/net/minecraft/world/entity/ai/behavior/BehaviorUtils.java
++++ b/net/minecraft/world/entity/ai/behavior/BehaviorUtils.java
+@@ -113,6 +113,9 @@ public class BehaviorUtils {
+     }
+ 
+     public static SectionPos findSectionClosestToVillage(final ServerLevel level, final SectionPos center, final int radius) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations() && radius >= 0) {
++            return findSectionClosestToVillageDirect(level, center, radius);
++        }
+         int distToVillage = level.sectionsToVillage(center);
+         return SectionPos.cube(center, radius)
+             .filter(s -> level.sectionsToVillage(s) < distToVillage)
+@@ -120,6 +123,38 @@ public class BehaviorUtils {
+             .orElse(center);
+     }
+ 
++    // LeavesX start - avoid the stream and repeated village-distance reads while preserving Cursor3D order
++    private static SectionPos findSectionClosestToVillageDirect(
++        final ServerLevel level,
++        final SectionPos center,
++        final int radius
++    ) {
++        SectionPos closestSection = center;
++        int closestDistance = level.sectionsToVillage(center);
++        final int minX = center.getX() - radius;
++        final int minY = center.getY() - radius;
++        final int minZ = center.getZ() - radius;
++        final int maxX = center.getX() + radius;
++        final int maxY = center.getY() + radius;
++        final int maxZ = center.getZ() + radius;
++
++        // Cursor3D advances X first, then Y, then Z. Keeping that order preserves ties exactly.
++        for (int z = minZ; z <= maxZ; ++z) {
++            for (int y = minY; y <= maxY; ++y) {
++                for (int x = minX; x <= maxX; ++x) {
++                    final SectionPos candidate = SectionPos.of(x, y, z);
++                    final int candidateDistance = level.sectionsToVillage(candidate);
++                    if (candidateDistance < closestDistance) {
++                        closestDistance = candidateDistance;
++                        closestSection = candidate;
++                    }
++                }
++            }
++        }
++        return closestSection;
++    }
++    // LeavesX end - avoid the stream and repeated village-distance reads while preserving Cursor3D order
++
+     public static boolean isWithinAttackRange(final Mob body, final LivingEntity target, final int projectileAttackRangeMargin) {
+         if (body.getMainHandItem().getItem() instanceof ProjectileWeaponItem weapon && body.canUseNonMeleeWeapon(body.getMainHandItem())) {
+             int maxAllowedDistance = weapon.getDefaultProjectileRange() - projectileAttackRangeMargin;
+diff --git a/net/minecraft/world/entity/ai/behavior/YieldJobSite.java b/net/minecraft/world/entity/ai/behavior/YieldJobSite.java
+index 09cc0f75c0dea7d9ef9caf9b1f14f46e4da84375..c03b6f99c702f2137036854ea233687144d10b1f 100644
+--- a/net/minecraft/world/entity/ai/behavior/YieldJobSite.java
++++ b/net/minecraft/world/entity/ai/behavior/YieldJobSite.java
+@@ -13,6 +13,7 @@ import net.minecraft.world.entity.ai.village.poi.PoiType;
+ import net.minecraft.world.entity.npc.villager.Villager;
+ import net.minecraft.world.entity.npc.villager.VillagerProfession;
+ import net.minecraft.world.level.pathfinder.Path;
++import org.jspecify.annotations.Nullable;
+ 
+ public class YieldJobSite {
+     public static BehaviorControl<Villager> create(final float speedModifier) {
+@@ -41,29 +42,60 @@ public class YieldJobSite {
+                             return true;
+                         }
+ 
+-                        i.<List<LivingEntity>>get(nearestEntities)
+-                            .stream()
+-                            .filter(v -> v instanceof Villager && v != body)
+-                            .map(v -> (Villager)v)
+-                            .filter(LivingEntity::isAlive)
+-                            .filter(v -> nearbyWantsJobsite(poiType.get(), v, poiPos))
+-                            .findFirst()
+-                            .ifPresent(nearbyVillager -> {
+-                                walkTarget.erase();
+-                                lookTarget.erase();
+-                                potentialJob.erase();
+-                                if (nearbyVillager.getBrain().getMemory(MemoryModuleType.JOB_SITE).isEmpty()) {
+-                                    BehaviorUtils.setWalkAndLookTargetMemories(nearbyVillager, poiPos, speedModifier, 1);
+-                                    nearbyVillager.getBrain().setMemory(MemoryModuleType.POTENTIAL_JOB_SITE, GlobalPos.of(level.dimension(), poiPos));
+-                                    level.debugSynchronizers().updatePoi(poiPos);
+-                                }
+-                            });
++                        final Holder<PoiType> resolvedPoiType = poiType.get();
++                        final Villager nearbyVillager;
++                        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++                            nearbyVillager = findNearbyVillagerWantingJobsite(
++                                i.get(nearestEntities),
++                                body,
++                                resolvedPoiType,
++                                poiPos
++                            );
++                        } else {
++                            nearbyVillager = i.<List<LivingEntity>>get(nearestEntities)
++                                .stream()
++                                .filter(v -> v instanceof Villager && v != body)
++                                .map(v -> (Villager)v)
++                                .filter(LivingEntity::isAlive)
++                                .filter(v -> nearbyWantsJobsite(resolvedPoiType, v, poiPos))
++                                .findFirst()
++                                .orElse(null);
++                        }
++                        if (nearbyVillager != null) {
++                            walkTarget.erase();
++                            lookTarget.erase();
++                            potentialJob.erase();
++                            if (nearbyVillager.getBrain().getMemory(MemoryModuleType.JOB_SITE).isEmpty()) {
++                                BehaviorUtils.setWalkAndLookTargetMemories(nearbyVillager, poiPos, speedModifier, 1);
++                                nearbyVillager.getBrain().setMemory(MemoryModuleType.POTENTIAL_JOB_SITE, GlobalPos.of(level.dimension(), poiPos));
++                                level.debugSynchronizers().updatePoi(poiPos);
++                            }
++                        }
+                         return true;
+                     }
+                 )
+         );
+     }
+ 
++    // LeavesX start - allocation-free equivalent of the original ordered stream/findFirst pipeline
++    private static @Nullable Villager findNearbyVillagerWantingJobsite(
++        final List<LivingEntity> nearestEntities,
++        final Villager body,
++        final Holder<PoiType> poiType,
++        final BlockPos poiPos
++    ) {
++        for (final LivingEntity entity : nearestEntities) {
++            if (entity instanceof Villager nearbyVillager
++                && nearbyVillager != body
++                && nearbyVillager.isAlive()
++                && nearbyWantsJobsite(poiType, nearbyVillager, poiPos)) {
++                return nearbyVillager;
++            }
++        }
++        return null;
++    }
++    // LeavesX end - allocation-free equivalent of the original ordered stream/findFirst pipeline
++
+     private static boolean nearbyWantsJobsite(final Holder<PoiType> type, final Villager nearbyVillager, final BlockPos poiPos) {
+         boolean nearbyHasPotentialJobSite = nearbyVillager.getBrain().getMemory(MemoryModuleType.POTENTIAL_JOB_SITE).isPresent();
+         if (nearbyHasPotentialJobSite) {

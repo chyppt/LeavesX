@@ -1,0 +1,155 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 02:23:22 +0800
+Subject: [PATCH] Optimize entity AI short-circuit checks for bate26
+
+
+diff --git a/net/minecraft/world/entity/ai/behavior/InteractWithDoor.java b/net/minecraft/world/entity/ai/behavior/InteractWithDoor.java
+index 8ab7f9d3ae6f4fd4dbad9a7149f0db96d19d3909..e1fab145e6f74b25235f70a53d898f06d138c2ab 100644
+--- a/net/minecraft/world/entity/ai/behavior/InteractWithDoor.java
++++ b/net/minecraft/world/entity/ai/behavior/InteractWithDoor.java
+@@ -11,6 +11,7 @@ import net.minecraft.core.BlockPos;
+ import net.minecraft.core.GlobalPos;
+ import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.tags.BlockTags;
++import net.minecraft.world.entity.EntityType;
+ import net.minecraft.world.entity.LivingEntity;
+ import net.minecraft.world.entity.ai.Brain;
+ import net.minecraft.world.entity.ai.behavior.declarative.BehaviorBuilder;
+@@ -136,13 +137,36 @@ public class InteractWithDoor {
+     }
+ 
+     private static boolean areOtherMobsComingThroughDoor(final LivingEntity body, final BlockPos doorPos, final Optional<List<LivingEntity>> nearestEntities) {
+-        return !nearestEntities.isEmpty()
+-            && nearestEntities.get()
+-                .stream()
+-                .filter(otherMob -> otherMob.getType() == body.getType())
+-                .filter(otherMob -> doorPos.closerToCenterThan(otherMob.position(), MAX_DISTANCE_TO_HOLD_DOOR_OPEN_FOR_OTHER_MOBS))
+-                .anyMatch(otherMob -> isMobComingThroughDoor(otherMob.getBrain(), doorPos));
++        if (nearestEntities.isEmpty()) {
++            return false;
++        }
++        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++            return hasOtherMobComingThroughDoorDirect(body, doorPos, nearestEntities.get());
++        }
++        return nearestEntities.get()
++            .stream()
++            .filter(otherMob -> otherMob.getType() == body.getType())
++            .filter(otherMob -> doorPos.closerToCenterThan(otherMob.position(), MAX_DISTANCE_TO_HOLD_DOOR_OPEN_FOR_OTHER_MOBS))
++            .anyMatch(otherMob -> isMobComingThroughDoor(otherMob.getBrain(), doorPos));
++    }
++
++    // LeavesX start - allocation-free equivalent of the ordered filter/anyMatch door check
++    private static boolean hasOtherMobComingThroughDoorDirect(
++        final LivingEntity body,
++        final BlockPos doorPos,
++        final List<LivingEntity> nearestEntities
++    ) {
++        final EntityType<?> bodyType = body.getType();
++        for (final LivingEntity otherMob : nearestEntities) {
++            if (otherMob.getType() == bodyType
++                && doorPos.closerToCenterThan(otherMob.position(), MAX_DISTANCE_TO_HOLD_DOOR_OPEN_FOR_OTHER_MOBS)
++                && isMobComingThroughDoor(otherMob.getBrain(), doorPos)) {
++                return true;
++            }
++        }
++        return false;
+     }
++    // LeavesX end - allocation-free equivalent of the ordered filter/anyMatch door check
+ 
+     private static boolean isMobComingThroughDoor(final Brain<?> otherBrain, final BlockPos doorPos) {
+         if (!otherBrain.hasMemoryValue(MemoryModuleType.PATH)) {
+diff --git a/net/minecraft/world/entity/ai/behavior/PlayTagWithOtherKids.java b/net/minecraft/world/entity/ai/behavior/PlayTagWithOtherKids.java
+index daa4697092252502b57c2940178559dcbc519d5a..7e165a2625fb14bad80e2240d470351daffc6d6f 100644
+--- a/net/minecraft/world/entity/ai/behavior/PlayTagWithOtherKids.java
++++ b/net/minecraft/world/entity/ai/behavior/PlayTagWithOtherKids.java
+@@ -15,6 +15,7 @@ import net.minecraft.world.entity.ai.memory.MemoryModuleType;
+ import net.minecraft.world.entity.ai.memory.WalkTarget;
+ import net.minecraft.world.entity.ai.util.LandRandomPos;
+ import net.minecraft.world.phys.Vec3;
++import org.jspecify.annotations.Nullable;
+ 
+ public class PlayTagWithOtherKids {
+     private static final int MAX_FLEE_XZ_DIST = 20;
+@@ -37,15 +38,27 @@ public class PlayTagWithOtherKids {
+                         return false;
+                     }
+ 
+-                    List<LivingEntity> friendsNearby = i.get(babies);
+-                    Optional<LivingEntity> otherKidChasingMe = friendsNearby.stream().filter(friend -> isFriendChasingMe(me, friend)).findAny();
+-                    if (!otherKidChasingMe.isPresent()) {
+-                        Optional<LivingEntity> otherKidBeingChased = findSomeoneBeingChased(friendsNearby);
+-                        if (otherKidBeingChased.isPresent()) {
+-                            chaseKid(interactionTarget, lookTarget, walkTarget, otherKidBeingChased.get());
++                    final List<LivingEntity> friendsNearby = i.get(babies);
++                    final boolean optimizeAi = org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations();
++                    final LivingEntity otherKidChasingMe = optimizeAi
++                        ? findFriendChasingMeDirect(me, friendsNearby)
++                        : friendsNearby.stream().filter(friend -> isFriendChasingMe(me, friend)).findAny().orElse(null);
++                    if (otherKidChasingMe == null) {
++                        final LivingEntity otherKidBeingChased = optimizeAi
++                            ? findSomeoneBeingChasedDirect(friendsNearby)
++                            : findSomeoneBeingChased(friendsNearby).orElse(null);
++                        if (otherKidBeingChased != null) {
++                            chaseKid(interactionTarget, lookTarget, walkTarget, otherKidBeingChased);
+                             return true;
+                         } else {
+-                            friendsNearby.stream().findAny().ifPresent(entity -> chaseKid(interactionTarget, lookTarget, walkTarget, entity));
++                            if (!friendsNearby.isEmpty()) {
++                                final LivingEntity friendToChase = optimizeAi
++                                    ? friendsNearby.get(0)
++                                    : friendsNearby.stream().findAny().orElse(null);
++                                if (friendToChase != null) {
++                                    chaseKid(interactionTarget, lookTarget, walkTarget, friendToChase);
++                                }
++                            }
+                             return true;
+                         }
+                     } else {
+@@ -74,6 +87,46 @@ public class PlayTagWithOtherKids {
+         walkTarget.set(new WalkTarget(new EntityTracker(kidToChase, false), 0.6F, 1));
+     }
+ 
++    // LeavesX start - direct, order-preserving helpers for the villager play behavior
++    private static @Nullable LivingEntity findFriendChasingMeDirect(
++        final LivingEntity me,
++        final List<LivingEntity> friendsNearby
++    ) {
++        for (final LivingEntity friend : friendsNearby) {
++            final Optional<LivingEntity> interactionTarget = friend.getBrain().getMemory(MemoryModuleType.INTERACTION_TARGET);
++            if (interactionTarget.isPresent() && interactionTarget.get() == me) {
++                return friend;
++            }
++        }
++        return null;
++    }
++
++    private static @Nullable LivingEntity findSomeoneBeingChasedDirect(final List<LivingEntity> friendsNearby) {
++        final Map<LivingEntity, Integer> chasedKids = checkHowManyChasersEachFriendHasDirect(friendsNearby);
++        LivingEntity selectedKid = null;
++        int selectedChaserCount = Integer.MAX_VALUE;
++        for (final Entry<LivingEntity, Integer> entry : chasedKids.entrySet()) {
++            final int chaserCount = entry.getValue();
++            if (chaserCount > 0 && chaserCount <= MAX_CHASERS_PER_TARGET && chaserCount < selectedChaserCount) {
++                selectedKid = entry.getKey();
++                selectedChaserCount = chaserCount;
++            }
++        }
++        return selectedKid;
++    }
++
++    private static Map<LivingEntity, Integer> checkHowManyChasersEachFriendHasDirect(final List<LivingEntity> friendsNearby) {
++        final Map<LivingEntity, Integer> chasedKids = Maps.newHashMap();
++        for (final LivingEntity friend : friendsNearby) {
++            final Optional<LivingEntity> interactionTarget = friend.getBrain().getMemory(MemoryModuleType.INTERACTION_TARGET);
++            if (interactionTarget.isPresent()) {
++                chasedKids.compute(interactionTarget.get(), (key, count) -> count == null ? 1 : count + 1);
++            }
++        }
++        return chasedKids;
++    }
++    // LeavesX end - direct, order-preserving helpers for the villager play behavior
++
+     private static Optional<LivingEntity> findSomeoneBeingChased(final List<LivingEntity> friendsNearby) {
+         Map<LivingEntity, Integer> chasedKids = checkHowManyChasersEachFriendHas(friendsNearby);
+         return chasedKids.entrySet()

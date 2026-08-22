@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 03:03:43 +0800
+Subject: [PATCH] Optimize chunk compound list loading for bate89
+
+
+diff --git a/net/minecraft/world/level/chunk/storage/SerializableChunkData.java b/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
+index bb856dd42608fc36b1df813454caae02ad25ac0c..d721738c7725782f2f19ad7650ca44240b6f3205 100644
+--- a/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
++++ b/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
+@@ -1,5 +1,6 @@
+ package net.minecraft.world.level.chunk.storage;
+ 
++import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.Maps;
+ import com.mojang.logging.LogUtils;
+ import com.mojang.serialization.Codec;
+@@ -188,8 +189,9 @@ public record SerializableChunkData(
+             }
+         }
+ 
+-        List<CompoundTag> entities = chunkData.getList("entities").stream().flatMap(ListTag::compoundStream).toList();
+-        List<CompoundTag> blockEntities = chunkData.getList("block_entities").stream().flatMap(ListTag::compoundStream).toList();
++        final boolean optimizeCompoundLists = org.leavesx.leavesx.config.LeavesXRuntime.chunkLoadCompoundListsOptimization();
++        List<CompoundTag> entities = readCompoundList(chunkData, "entities", optimizeCompoundLists);
++        List<CompoundTag> blockEntities = readCompoundList(chunkData, "block_entities", optimizeCompoundLists);
+         CompoundTag structureData = chunkData.getCompoundOrEmpty("structures");
+         ListTag sectionTags = chunkData.getListOrEmpty("sections");
+         List<SerializableChunkData.SectionData> sectionData = new ArrayList<>(sectionTags.size());
+@@ -804,6 +806,29 @@ public record SerializableChunkData(
+         return listTag;
+     }
+ 
++    private static List<CompoundTag> readCompoundList(
++        final CompoundTag chunkData,
++        final String key,
++        final boolean optimizeCompoundLists
++    ) {
++        if (!optimizeCompoundLists) {
++            return chunkData.getList(key).stream().flatMap(ListTag::compoundStream).toList();
++        }
++
++        final ListTag values = chunkData.getListOrEmpty(key);
++        if (values.isEmpty()) {
++            return List.of();
++        }
++
++        final ImmutableList.Builder<CompoundTag> compounds = ImmutableList.builderWithExpectedSize(values.size());
++        for (int index = 0; index < values.size(); index++) {
++            if (values.get(index) instanceof CompoundTag compound) {
++                compounds.add(compound);
++            }
++        }
++        return compounds.build();
++    }
++
+     private static ListTag createListTag(final int expectedSize, final boolean optimizeNbtListCapacity) {
+         return optimizeNbtListCapacity && expectedSize > 0
+             ? new ListTag(new ArrayList<>(expectedSize))

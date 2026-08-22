@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 23:20:06 +0800
+Subject: [PATCH] Bound chicken jockey mount lookups for bate72
+
+
+diff --git a/net/minecraft/world/entity/monster/zombie/Zombie.java b/net/minecraft/world/entity/monster/zombie/Zombie.java
+index 82a01cf20308dc98915a7870495877cc43afed96..e0023761e3e002d47bacea504e8c30a7d3f921bb 100644
+--- a/net/minecraft/world/entity/monster/zombie/Zombie.java
++++ b/net/minecraft/world/entity/monster/zombie/Zombie.java
+@@ -66,6 +66,7 @@ import net.minecraft.world.level.block.LevelEvent;
+ import net.minecraft.world.level.block.state.BlockState;
+ import net.minecraft.world.level.storage.ValueInput;
+ import net.minecraft.world.level.storage.ValueOutput;
++import net.minecraft.world.phys.AABB;
+ import org.jspecify.annotations.Nullable;
+ 
+ public class Zombie extends Monster {
+@@ -512,11 +513,21 @@ public class Zombie extends Monster {
+                 this.setBaby(true);
+                 if (zombieData.canSpawnJockey) {
+                     if (random.nextFloat() < 0.05) {
+-                        List<Chicken> chickens = level.getEntitiesOfClass(
+-                            Chicken.class, this.getBoundingBox().inflate(5.0, 3.0, 5.0), EntitySelector.ENTITY_NOT_BEING_RIDDEN
+-                        );
+-                        if (!chickens.isEmpty()) {
+-                            Chicken chicken = chickens.get(0);
++                        final AABB chickenArea = this.getBoundingBox().inflate(5.0, 3.0, 5.0);
++                        final Chicken chicken;
++                        if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()
++                            && level instanceof Level queryLevel) {
++                            chicken = queryLevel.leavesX$getFirstEntityOfClass(
++                                Chicken.class, chickenArea, EntitySelector.ENTITY_NOT_BEING_RIDDEN
++                            );
++                        } else {
++                            final List<Chicken> chickens = level.getEntitiesOfClass(
++                                Chicken.class, chickenArea, EntitySelector.ENTITY_NOT_BEING_RIDDEN
++                            );
++                            chicken = chickens.isEmpty() ? null : chickens.getFirst();
++                        }
++
++                        if (chicken != null) {
+                             chicken.setChickenJockey(true);
+                             this.startRiding(chicken, false, false);
+                         }

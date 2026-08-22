@@ -1,0 +1,329 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 00:32:22 +0800
+Subject: [PATCH] Avoid blocking system metrics on the main thread for bate22
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 4dff580e0c696aa51dab346e0fcec74d1cc53b0e..6c8bcde5d93fd687866f1100b399716fa6ee26bb 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -758,7 +758,8 @@ public final class LeavesXCommand extends Command {
+     }
+ 
+     private static void sendSystem(final CommandSender sender) {
+-        final LeavesXSystemDiagnostics.Snapshot snapshot = LeavesXSystemDiagnostics.capture();
++        final LeavesXSystemDiagnostics.Reading reading = LeavesXSystemDiagnostics.snapshot();
++        final LeavesXSystemDiagnostics.Snapshot snapshot = reading.snapshot();
+         final LeavesXSystemDiagnostics.CpuQuota quota = snapshot.cpuQuota();
+         final String quotaDescription;
+         if (!quota.known()) {
+@@ -814,6 +815,21 @@ public final class LeavesXCommand extends Command {
+                 : formatBytes(snapshot.cgroupMemoryCurrent()) + " / " + formatBytes(snapshot.cgroupMemoryMaximum()),
+             NamedTextColor.AQUA
+         ));
++        final String sampleDescription = !reading.available()
++            ? "正在后台采样"
++            : formatSampleAge(reading.ageMillis()) + (reading.refreshing() ? "（正在刷新）" : "");
++        sender.sendMessage(line(
++            "系统采样",
++            sampleDescription,
++            !reading.available() || reading.refreshing() ? NamedTextColor.YELLOW : NamedTextColor.GRAY
++        ));
++    }
++
++    private static String formatSampleAge(final long ageMillis) {
++        if (ageMillis < 1_000L) {
++            return ageMillis + " 毫秒前";
++        }
++        return oneDecimal(ageMillis / 1_000.0D) + " 秒前";
+     }
+ 
+     private static void sendStalls(final CommandSender sender, final String[] args) {
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 9ab27eb7a95099ae7a1c977651a1d3972291cf94..59ce6f5df5a3b45a16409bd55801b2342769e5b3 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -29,6 +29,9 @@ public final class LeavesXConfigBootstrap {
+         );
+         LeavesXRuntime.publish(config);
+         org.leavesx.leavesx.diagnostics.LeavesXGcDiagnostics.initialize();
++        if (config.diagnosticsCommandEnabled()) {
++            org.leavesx.leavesx.diagnostics.LeavesXSystemDiagnostics.initialize();
++        }
+         configuredPath = path;
+         logConfiguration(config);
+     }
+diff --git a/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXSystemDiagnostics.java b/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXSystemDiagnostics.java
+index f7ca7be0822a5b7f31a3c162ae3a2405498cdfa8..605131bf3d540df8083b4ae1965547c7347b99b9 100644
+--- a/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXSystemDiagnostics.java
++++ b/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXSystemDiagnostics.java
+@@ -9,10 +9,20 @@ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Locale;
+ import java.util.Map;
++import java.util.concurrent.Executor;
++import java.util.concurrent.RejectedExecutionException;
++import java.util.concurrent.SynchronousQueue;
++import java.util.concurrent.ThreadPoolExecutor;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicBoolean;
++import java.util.concurrent.atomic.AtomicReference;
++import java.util.function.LongSupplier;
++import java.util.function.Supplier;
+ 
+ /** Reads bounded JVM, operating-system, and Linux cgroup diagnostics on operator request. */
+ public final class LeavesXSystemDiagnostics {
+ 
++    private static final long CACHE_MAX_AGE_NANOS = TimeUnit.SECONDS.toNanos(5L);
+     private static final Path PROC_STATUS = Path.of("/proc/self/status");
+     private static final Path CPU_MAX = Path.of("/sys/fs/cgroup/cpu.max");
+     private static final Path CPU_STAT = Path.of("/sys/fs/cgroup/cpu.stat");
+@@ -20,12 +30,34 @@ public final class LeavesXSystemDiagnostics {
+     private static final Path MEMORY_CURRENT = Path.of("/sys/fs/cgroup/memory.current");
+     private static final Path MEMORY_MAX = Path.of("/sys/fs/cgroup/memory.max");
+     private static final long MAX_DIAGNOSTIC_FILE_BYTES = 64L * 1024L;
++    private static final ThreadPoolExecutor REFRESH_EXECUTOR = createRefreshExecutor();
++    private static final AsyncCache CACHE = new AsyncCache(
++        CACHE_MAX_AGE_NANOS,
++        REFRESH_EXECUTOR,
++        System::nanoTime,
++        LeavesXSystemDiagnostics::captureNow
++    );
+ 
+     private LeavesXSystemDiagnostics() {
+     }
+ 
+-    /** Captures a point-in-time system snapshot without retaining operating-system state. */
+-    public static Snapshot capture() {
++    /** Starts the first potentially blocking operating-system sample away from the server thread. */
++    public static void initialize() {
++        CACHE.refresh();
++    }
++
++    /**
++     * Returns the latest immutable system sample and schedules a refresh when it is stale.
++     *
++     * <p>Windows performance counters can block for more than one tick. This method therefore never calls them on
++     * the command or server thread; an expired value remains usable while one bounded background refresh runs.</p>
++     */
++    public static Reading snapshot() {
++        return CACHE.read();
++    }
++
++    /** Captures a point-in-time system snapshot on the dedicated diagnostics worker. */
++    private static Snapshot captureNow() {
+         final java.lang.management.OperatingSystemMXBean baseBean = ManagementFactory.getOperatingSystemMXBean();
+         long physicalTotal = -1L;
+         long physicalFree = -1L;
+@@ -62,6 +94,23 @@ public final class LeavesXSystemDiagnostics {
+         );
+     }
+ 
++    private static ThreadPoolExecutor createRefreshExecutor() {
++        final ThreadPoolExecutor executor = new ThreadPoolExecutor(
++            0,
++            1,
++            30L,
++            TimeUnit.SECONDS,
++            new SynchronousQueue<>(),
++            task -> {
++                final Thread thread = new Thread(task, "LeavesX System Diagnostics");
++                thread.setDaemon(true);
++                return thread;
++            }
++        );
++        executor.allowCoreThreadTimeOut(true);
++        return executor;
++    }
++
+     static CpuQuota parseCpuQuota(final String raw) {
+         if (raw == null || raw.isBlank()) {
+             return CpuQuota.unknown();
+@@ -176,6 +225,10 @@ public final class LeavesXSystemDiagnostics {
+     ) {
+     }
+ 
++    /** Immutable cache view returned to the command path. */
++    public record Reading(Snapshot snapshot, long ageMillis, boolean available, boolean refreshing) {
++    }
++
+     public record CpuQuota(boolean unlimited, long quotaMicros, long periodMicros, double processors) {
+ 
+         private static CpuQuota unknown() {
+@@ -186,4 +239,91 @@ public final class LeavesXSystemDiagnostics {
+             return this.unlimited || this.processors >= 0.0D;
+         }
+     }
++
++    /** Small injectable cache used to verify that slow system calls never run on the reader thread. */
++    static final class AsyncCache {
++
++        private final long maximumAgeNanos;
++        private final Executor executor;
++        private final LongSupplier nanoTime;
++        private final Supplier<Snapshot> capture;
++        private final AtomicReference<CachedSnapshot> latest = new AtomicReference<>();
++        private final AtomicBoolean refreshPending = new AtomicBoolean();
++
++        AsyncCache(
++            final long maximumAgeNanos,
++            final Executor executor,
++            final LongSupplier nanoTime,
++            final Supplier<Snapshot> capture
++        ) {
++            this.maximumAgeNanos = maximumAgeNanos;
++            this.executor = executor;
++            this.nanoTime = nanoTime;
++            this.capture = capture;
++        }
++
++        Reading read() {
++            final long now = this.nanoTime.getAsLong();
++            final CachedSnapshot cached = this.latest.get();
++            if (cached == null || elapsedNanos(now, cached.capturedAtNanos()) >= this.maximumAgeNanos) {
++                this.refresh();
++            }
++
++            if (cached == null) {
++                return new Reading(unknownSnapshot(), -1L, false, this.refreshPending.get());
++            }
++            return new Reading(
++                cached.snapshot(),
++                TimeUnit.NANOSECONDS.toMillis(elapsedNanos(now, cached.capturedAtNanos())),
++                true,
++                this.refreshPending.get()
++            );
++        }
++
++        void refresh() {
++            if (!this.refreshPending.compareAndSet(false, true)) {
++                return;
++            }
++            try {
++                this.executor.execute(this::capture);
++            } catch (final RejectedExecutionException ignored) {
++                this.refreshPending.set(false);
++            }
++        }
++
++        private void capture() {
++            try {
++                this.latest.set(new CachedSnapshot(this.capture.get(), this.nanoTime.getAsLong()));
++            } finally {
++                this.refreshPending.set(false);
++            }
++        }
++    }
++
++    private static long elapsedNanos(final long now, final long then) {
++        return Math.max(0L, now - then);
++    }
++
++    private static Snapshot unknownSnapshot() {
++        return new Snapshot(
++            Runtime.getRuntime().availableProcessors(),
++            null,
++            null,
++            CpuQuota.unknown(),
++            -1L,
++            -1L,
++            -1L,
++            -1L,
++            -1L,
++            -1L,
++            -1L,
++            -1L,
++            -1L,
++            -1.0D,
++            -1.0D
++        );
++    }
++
++    private record CachedSnapshot(Snapshot snapshot, long capturedAtNanos) {
++    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/diagnostics/LeavesXSystemDiagnosticsTest.java b/src/test/java/org/leavesx/leavesx/diagnostics/LeavesXSystemDiagnosticsTest.java
+index 494018819af93cb65ac9ff86d9a18305657bdeb7..d0c8fb0e4257c430b13def9859f7d7fd68b79e0d 100644
+--- a/src/test/java/org/leavesx/leavesx/diagnostics/LeavesXSystemDiagnosticsTest.java
++++ b/src/test/java/org/leavesx/leavesx/diagnostics/LeavesXSystemDiagnosticsTest.java
+@@ -2,8 +2,13 @@ package org.leavesx.leavesx.diagnostics;
+ 
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertSame;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
++import java.util.ArrayDeque;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicInteger;
++import java.util.concurrent.atomic.AtomicLong;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+ 
+@@ -28,4 +33,65 @@ class LeavesXSystemDiagnosticsTest {
+         assertTrue(unlimited.unlimited());
+         assertFalse(invalid.known());
+     }
++
++    @Test
++    void refreshesAwayFromTheReaderAndServesTheLastSnapshotWhileStale() {
++        final ArrayDeque<Runnable> queuedTasks = new ArrayDeque<>();
++        final AtomicLong now = new AtomicLong(1_000L);
++        final AtomicInteger captures = new AtomicInteger();
++        final LeavesXSystemDiagnostics.Snapshot expected = snapshotWithProcessors(16);
++        final LeavesXSystemDiagnostics.AsyncCache cache = new LeavesXSystemDiagnostics.AsyncCache(
++            TimeUnit.SECONDS.toNanos(5L),
++            queuedTasks::addLast,
++            now::get,
++            () -> {
++                captures.incrementAndGet();
++                return expected;
++            }
++        );
++
++        final LeavesXSystemDiagnostics.Reading initial = cache.read();
++        final LeavesXSystemDiagnostics.Reading duplicate = cache.read();
++
++        assertFalse(initial.available());
++        assertTrue(initial.refreshing());
++        assertFalse(duplicate.available());
++        assertEquals(0, captures.get(), "the reader must not execute the system capture");
++        assertEquals(1, queuedTasks.size(), "only one refresh may be pending");
++
++        queuedTasks.removeFirst().run();
++        final LeavesXSystemDiagnostics.Reading fresh = cache.read();
++        assertTrue(fresh.available());
++        assertFalse(fresh.refreshing());
++        assertSame(expected, fresh.snapshot());
++        assertEquals(1, captures.get());
++
++        now.addAndGet(TimeUnit.SECONDS.toNanos(6L));
++        final LeavesXSystemDiagnostics.Reading stale = cache.read();
++        assertTrue(stale.available());
++        assertTrue(stale.refreshing());
++        assertSame(expected, stale.snapshot());
++        assertEquals(1, captures.get(), "stale reads must return before the background refresh runs");
++        assertEquals(1, queuedTasks.size());
++    }
++
++    private static LeavesXSystemDiagnostics.Snapshot snapshotWithProcessors(final int processors) {
++        return new LeavesXSystemDiagnostics.Snapshot(
++            processors,
++            null,
++            null,
++            new LeavesXSystemDiagnostics.CpuQuota(false, -1L, -1L, -1.0D),
++            -1L,
++            -1L,
++            -1L,
++            -1L,
++            -1L,
++            -1L,
++            -1L,
++            -1L,
++            -1L,
++            -1.0D,
++            -1.0D
++        );
++    }
+ }

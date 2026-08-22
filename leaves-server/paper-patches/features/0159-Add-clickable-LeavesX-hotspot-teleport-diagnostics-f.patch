@@ -1,0 +1,395 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 20 Aug 2026 15:27:27 +0800
+Subject: [PATCH] Add clickable LeavesX hotspot teleport diagnostics for
+ beta137
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index fbca63975acbb26c0ee20764fc7ff1299db36925..33559dbfdd358ec3ca010e1cc70ca56fffb8d0a1 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -8,6 +8,7 @@ import ca.spottedleaf.moonrise.patches.chunk_system.ticket.ChunkSystemTicketType
+ import ca.spottedleaf.moonrise.patches.starlight.light.StarLightInterface;
+ import it.unimi.dsi.fastutil.longs.Long2IntMap;
+ import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
++import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
+ import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+ import java.lang.management.BufferPoolMXBean;
+@@ -25,6 +26,8 @@ import java.util.Map;
+ import java.util.Set;
+ import java.util.concurrent.TimeUnit;
+ import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.event.ClickEvent;
++import net.kyori.adventure.text.event.HoverEvent;
+ import net.kyori.adventure.text.format.NamedTextColor;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.core.SectionPos;
+@@ -52,6 +55,7 @@ import org.bukkit.craftbukkit.CraftWorld;
+ import org.bukkit.entity.Player;
+ import org.bukkit.plugin.Plugin;
+ import org.bukkit.util.StringUtil;
++import org.leavesmc.leaves.LeavesConfig;
+ import org.leavesx.leavesx.config.LeavesXConfig;
+ import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.leavesx.leavesx.diagnostics.LeavesXChunkDiagnostics;
+@@ -321,11 +325,15 @@ public final class LeavesXCommand extends Command {
+         sendHeader(sender, "实体密集区块");
+         for (int index = 0; index < Math.min(selection.limit(), hotspots.size()); index++) {
+             final EntityHotspot hotspot = hotspots.get(index);
+-            sender.sendMessage(Component.text(
++            sender.sendMessage(teleportablePosition(
+                 (index + 1) + ". " + hotspot.world() + " 区块[" + hotspot.chunkX() + ", " + hotspot.chunkZ()
+-                    + "] 方块中心[" + ((hotspot.chunkX() << 4) + 8) + ", " + ((hotspot.chunkZ() << 4) + 8)
++                    + "] 位置[" + hotspot.blockX() + ", " + hotspot.blockY() + ", " + hotspot.blockZ()
+                     + "]：" + hotspot.total() + "（活跃 " + hotspot.ticking() + "）",
+-                hotspot.total() >= 250 ? NamedTextColor.RED : hotspot.total() >= 100 ? NamedTextColor.YELLOW : NamedTextColor.AQUA
++                hotspot.total() >= 250 ? NamedTextColor.RED : hotspot.total() >= 100 ? NamedTextColor.YELLOW : NamedTextColor.AQUA,
++                hotspot.world(),
++                hotspot.blockX(),
++                hotspot.blockY(),
++                hotspot.blockZ()
+             ));
+         }
+         if (hotspots.isEmpty()) {
+@@ -356,19 +364,22 @@ public final class LeavesXCommand extends Command {
+             final ServerLevel level = ((CraftWorld)world).getHandle();
+             final Long2IntOpenHashMap chunkTotals = new Long2IntOpenHashMap();
+             final Long2IntOpenHashMap chunkTicking = new Long2IntOpenHashMap();
++            final Long2LongOpenHashMap chunkRepresentativePositions = new Long2LongOpenHashMap();
+             int worldTicking = 0;
+             for (final net.minecraft.world.entity.Entity entity : FeatureHooks.getAllEntities(level)) {
+-                final boolean entityTicking = level.isPositionEntityTicking(entity.blockPosition());
++                final BlockPos blockPosition = entity.blockPosition();
++                final boolean entityTicking = level.isPositionEntityTicking(blockPosition);
+                 final MutableEntityCount count = counts.computeIfAbsent(
+                     EntityType.getKey(entity.getType()),
+                     ignored -> new MutableEntityCount()
+                 );
+                 final long chunkKey = ChunkPos.pack(
+-                    SectionPos.blockToSectionCoord(entity.getBlockX()),
+-                    SectionPos.blockToSectionCoord(entity.getBlockZ())
++                    SectionPos.blockToSectionCoord(blockPosition.getX()),
++                    SectionPos.blockToSectionCoord(blockPosition.getZ())
+                 );
+                 count.total++;
+                 chunkTotals.addTo(chunkKey, 1);
++                chunkRepresentativePositions.putIfAbsent(chunkKey, blockPosition.asLong());
+                 total++;
+                 if (entityTicking) {
+                     count.ticking++;
+@@ -379,10 +390,14 @@ public final class LeavesXCommand extends Command {
+             }
+             tickingByWorld.put(world.getKey().toString(), worldTicking);
+             for (final Long2IntMap.Entry entry : chunkTotals.long2IntEntrySet()) {
++                final long representativePosition = chunkRepresentativePositions.get(entry.getLongKey());
+                 hotspots.add(new EntityHotspot(
+                     world.getKey().toString(),
+                     ChunkPos.getX(entry.getLongKey()),
+                     ChunkPos.getZ(entry.getLongKey()),
++                    BlockPos.getX(representativePosition),
++                    BlockPos.getY(representativePosition),
++                    BlockPos.getZ(representativePosition),
+                     entry.getIntValue(),
+                     chunkTicking.get(entry.getLongKey())
+                 ));
+@@ -445,11 +460,15 @@ public final class LeavesXCommand extends Command {
+         sendHeader(sender, "方块实体密集区块");
+         for (int index = 0; index < Math.min(selection.limit(), hotspots.size()); index++) {
+             final BlockEntityHotspot hotspot = hotspots.get(index);
+-            sender.sendMessage(Component.text(
++            sender.sendMessage(teleportablePosition(
+                 (index + 1) + ". " + hotspot.world() + " 区块[" + hotspot.chunkX() + ", " + hotspot.chunkZ()
+-                    + "] 方块中心[" + ((hotspot.chunkX() << 4) + 8) + ", " + ((hotspot.chunkZ() << 4) + 8)
++                    + "] 位置[" + hotspot.blockX() + ", " + hotspot.blockY() + ", " + hotspot.blockZ()
+                     + "]：" + hotspot.total() + "（更新 " + hotspot.ticking() + "）",
+-                hotspot.total() >= 500 ? NamedTextColor.RED : hotspot.total() >= 100 ? NamedTextColor.YELLOW : NamedTextColor.AQUA
++                hotspot.total() >= 500 ? NamedTextColor.RED : hotspot.total() >= 100 ? NamedTextColor.YELLOW : NamedTextColor.AQUA,
++                hotspot.world(),
++                hotspot.blockX(),
++                hotspot.blockY(),
++                hotspot.blockZ()
+             ));
+         }
+         if (hotspots.isEmpty()) {
+@@ -483,10 +502,15 @@ public final class LeavesXCommand extends Command {
+ 
+                 int chunkTotal = 0;
+                 int chunkTicking = 0;
++                BlockPos representativePosition = null;
+                 for (final BlockEntity blockEntity : chunk.blockEntities.values()) {
++                    final BlockPos blockPosition = blockEntity.getBlockPos();
+                     final Identifier type = BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(blockEntity.getType());
+-                    final boolean isTicking = tickingPositions.contains(blockEntity.getBlockPos().asLong());
++                    final boolean isTicking = tickingPositions.contains(blockPosition.asLong());
+                     final MutableBlockEntityCount count = counts.computeIfAbsent(type, ignored -> new MutableBlockEntityCount());
++                    if (representativePosition == null) {
++                        representativePosition = blockPosition;
++                    }
+                     count.total++;
+                     total++;
+                     chunkTotal++;
+@@ -500,6 +524,9 @@ public final class LeavesXCommand extends Command {
+                     world.getKey().toString(),
+                     chunk.getPos().x(),
+                     chunk.getPos().z(),
++                    representativePosition.getX(),
++                    representativePosition.getY(),
++                    representativePosition.getZ(),
+                     chunkTotal,
+                     chunkTicking
+                 ));
+@@ -938,7 +965,19 @@ public final class LeavesXCommand extends Command {
+ 
+     private static void sendConfig(final CommandSender sender) {
+         final LeavesXConfig config = LeavesXRuntime.configuration();
++        final boolean pistonDuplication = io.papermc.paper.configuration.GlobalConfiguration.get()
++            .unsupportedSettings.allowPistonDuplication;
+         sendHeader(sender, "LeavesX 配置状态");
++        sender.sendMessage(line(
++            "生电模式",
++            onOff(LeavesConfig.modify.mcTechnicalMode),
++            LeavesConfig.modify.mcTechnicalMode ? NamedTextColor.GREEN : NamedTextColor.YELLOW
++        ));
++        sender.sendMessage(line(
++            "TNT/活塞复制",
++            onOff(pistonDuplication),
++            pistonDuplication ? NamedTextColor.GREEN : NamedTextColor.RED
++        ));
+         sender.sendMessage(line("实体状态优化", onOff(config.entityStateOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("实体查询优化", onOff(config.entityQueryOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("AI/寻路", onOff(config.aiOptimizations()) + " / " + onOff(config.pathfindingOptimizations()), NamedTextColor.AQUA));
+@@ -1070,6 +1109,22 @@ public final class LeavesXCommand extends Command {
+             .append(Component.text(value, valueColor)).build();
+     }
+ 
++    /** Adds an operator-only click action without loading a chunk or changing the diagnostic scan itself. */
++    static Component teleportablePosition(
++        final String text,
++        final NamedTextColor color,
++        final String world,
++        final int blockX,
++        final int blockY,
++        final int blockZ
++    ) {
++        final String command = "/minecraft:execute as @s in " + world + " run minecraft:tp @s "
++            + (blockX + 0.5D) + ' ' + blockY + ' ' + (blockZ + 0.5D);
++        return Component.text(text, color)
++            .hoverEvent(HoverEvent.showText(Component.text("点击传送到该位置（需要管理员命令权限）", NamedTextColor.GREEN)))
++            .clickEvent(ClickEvent.runCommand(command));
++    }
++
+     private static String formatTps(final double[] tps) {
+         return oneDecimal(Math.min(20.0D, tps[0])) + " / " + oneDecimal(Math.min(20.0D, tps[1])) + " / "
+             + oneDecimal(Math.min(20.0D, tps[2]));
+@@ -1354,7 +1409,16 @@ public final class LeavesXCommand extends Command {
+     private record Selection(List<World> worlds, int limit) {
+     }
+ 
+-    private record EntityHotspot(String world, int chunkX, int chunkZ, int total, int ticking) {
++    private record EntityHotspot(
++        String world,
++        int chunkX,
++        int chunkZ,
++        int blockX,
++        int blockY,
++        int blockZ,
++        int total,
++        int ticking
++    ) {
+     }
+ 
+     private record EntitySnapshot(
+@@ -1374,7 +1438,16 @@ public final class LeavesXCommand extends Command {
+     ) {
+     }
+ 
+-    private record BlockEntityHotspot(String world, int chunkX, int chunkZ, int total, int ticking) {
++    private record BlockEntityHotspot(
++        String world,
++        int chunkX,
++        int chunkZ,
++        int blockX,
++        int blockY,
++        int blockZ,
++        int total,
++        int ticking
++    ) {
+     }
+ 
+     private record PluginTicketCount(String world, String plugin, int chunks) {
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXVillagerDiagnostics.java b/src/main/java/org/leavesx/leavesx/command/LeavesXVillagerDiagnostics.java
+index 63110182a107e4269575740f2cf1c2758e222558..53d82b505bbd88c9de9756890dd3a5890fccbc64 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXVillagerDiagnostics.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXVillagerDiagnostics.java
+@@ -206,10 +206,14 @@ final class LeavesXVillagerDiagnostics {
+     }
+ 
+     private static void sendVillager(final CommandSender sender, final int index, final VillagerSnapshot villager) {
+-        sender.sendMessage(Component.text(
++        sender.sendMessage(LeavesXCommand.teleportablePosition(
+             index + ". " + villager.world() + " [" + villager.blockX() + ", " + villager.blockY() + ", "
+                 + villager.blockZ() + "] 区块[" + villager.chunkX() + ", " + villager.chunkZ() + "]",
+-            NamedTextColor.GOLD
++            NamedTextColor.GOLD,
++            villager.world(),
++            villager.blockX(),
++            villager.blockY(),
++            villager.blockZ()
+         ));
+         sender.sendMessage(Component.text(
+             "   Tick：区块实体 " + yesNo(villager.entityTicking()) + " / Paper "
+diff --git a/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java b/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java
+index e9bdee03d6bb99d8aaa5008a3d139f71f4c0e869..dbcf8e9ef5ef76ab991be7056590978f574d7b75 100644
+--- a/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java
++++ b/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java
+@@ -1,18 +1,24 @@
+ package org.leavesx.leavesx.command;
+ 
++import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import java.io.IOException;
+ import java.lang.reflect.Field;
+ import java.util.Arrays;
+ import java.util.List;
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.event.ClickEvent;
++import net.kyori.adventure.text.format.NamedTextColor;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+ import org.objectweb.asm.ClassReader;
+ import org.objectweb.asm.Opcodes;
+ import org.objectweb.asm.tree.AbstractInsnNode;
+ import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldInsnNode;
+ import org.objectweb.asm.tree.JumpInsnNode;
+ import org.objectweb.asm.tree.LdcInsnNode;
+ import org.objectweb.asm.tree.MethodInsnNode;
+@@ -69,6 +75,39 @@ class LeavesXCommandSafetyTest {
+                 && call.name.equals("getMemory")));
+     }
+ 
++    @Test
++    void hotspotLocationsExposeAWorldAwareTeleportAction() {
++        final Component component = LeavesXCommand.teleportablePosition(
++            "位置",
++            NamedTextColor.GOLD,
++            "minecraft:the_nether",
++            -5,
++            64,
++            -8
++        );
++
++        final ClickEvent clickEvent = component.clickEvent();
++        assertNotNull(clickEvent);
++        assertEquals(ClickEvent.Action.RUN_COMMAND, clickEvent.action());
++        assertEquals(
++            "/minecraft:execute as @s in minecraft:the_nether run minecraft:tp @s -4.5 64 -7.5",
++            clickEvent.value()
++        );
++        assertNotNull(component.hoverEvent());
++    }
++
++    @Test
++    void configReportReadsTheActualTechnicalAndPistonDuplicationFlags() throws IOException {
++        final MethodNode sendConfig = method(classNode(LeavesXCommand.class.getName()), "sendConfig");
++        final List<FieldInsnNode> fields = Arrays.stream(sendConfig.instructions.toArray())
++            .filter(FieldInsnNode.class::isInstance)
++            .map(FieldInsnNode.class::cast)
++            .toList();
++
++        assertTrue(fields.stream().anyMatch(field -> field.name.equals("mcTechnicalMode")));
++        assertTrue(fields.stream().anyMatch(field -> field.name.equals("allowPistonDuplication")));
++    }
++
+     private static ClassNode classNode(final String className) throws IOException {
+         final ClassNode classNode = new ClassNode(Opcodes.ASM9);
+         new ClassReader(className).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ZombifiedPiglinAlertHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ZombifiedPiglinAlertHotPathTest.java
+index 17fcdb25acc6f46836f09b175f9a80e6df988364..43586a7f1f243343b596f9b394ec8af79216bf6e 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ZombifiedPiglinAlertHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ZombifiedPiglinAlertHotPathTest.java
+@@ -15,9 +15,11 @@ import java.lang.reflect.Method;
+ import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
++import java.util.Arrays;
+ import java.util.List;
+ import net.minecraft.world.entity.LivingEntity;
+ import net.minecraft.world.entity.monster.zombie.ZombifiedPiglin;
++import net.minecraft.world.level.Level;
+ import org.bukkit.event.entity.EntityTargetEvent.TargetReason;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+@@ -26,6 +28,11 @@ import org.leavesx.leavesx.config.LeavesXConfig;
+ import org.leavesx.leavesx.config.LeavesXConfigLoader;
+ import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.mockito.InOrder;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
+ 
+ /** Verifies zombified-piglin alerts preserve vanilla filtering, traversal, and target-read semantics. */
+ @Normal
+@@ -86,6 +93,30 @@ class ZombifiedPiglinAlertHotPathTest {
+         verify(allied, never()).setTarget(any(), any());
+     }
+ 
++    @Test
++    void optimizedAlertReusesTypedQueryStorageAndKeepsTheVanillaFallback() throws IOException {
++        final MethodNode alertOthers = method(classNode(ZombifiedPiglin.class), "alertOthers");
++        final List<MethodInsnNode> calls = invocations(alertOthers);
++
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime")
++                && call.name.equals("zombifiedPiglinAlertOptimization")
++        ));
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("net/minecraft/world/level/Level")
++                && call.name.equals("leavesX$acquireEntityQueryBuffer")
++        ));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("queryOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("close")));
++
++        final MethodNode typedQuery = method(classNode(Level.LeavesXEntityQueryBuffer.class), "queryOfClass");
++        assertTrue(invocations(typedQuery).stream().anyMatch(call ->
++            call.owner.equals("net/minecraft/world/level/Level")
++                && call.name.equals("leavesX$getEntitiesOfClass")
++        ));
++    }
++
+     @Test
+     void version56ConfigurationGainsTheDocumentedSwitchWithoutBackupFiles() throws IOException {
+         final Path path = this.temporaryDirectory.resolve("version-56.yml");
+@@ -132,4 +163,24 @@ class ZombifiedPiglinAlertHotPathTest {
+             throw new AssertionError("Unable to publish LeavesX test configuration", exception);
+         }
+     }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + name));
++    }
+ }

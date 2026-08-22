@@ -1,0 +1,118 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 00:37:46 +0800
+Subject: [PATCH] Optimize behavior-equivalent mob AI hot paths
+
+
+diff --git a/net/minecraft/world/entity/ai/goal/GoalSelector.java b/net/minecraft/world/entity/ai/goal/GoalSelector.java
+index 1ddf8796d14d472bec48546f25ac4583d483c8e9..37dd98b83a91d67d69122578deda81fb9ca92a27 100644
+--- a/net/minecraft/world/entity/ai/goal/GoalSelector.java
++++ b/net/minecraft/world/entity/ai/goal/GoalSelector.java
+@@ -91,7 +91,18 @@ public class GoalSelector {
+             }
+         }
+ 
+-        this.lockedFlags.entrySet().removeIf(entry -> !entry.getValue().isRunning());
++        // LeavesX start - avoid allocating an entry iterator and predicate in the per-mob AI hot path
++        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++            for (final Goal.Flag flag : GOAL_FLAG_VALUES) {
++                final WrappedGoal lockedGoal = this.lockedFlags.get(flag);
++                if (lockedGoal != null && !lockedGoal.isRunning()) {
++                    this.lockedFlags.remove(flag);
++                }
++            }
++        } else {
++            this.lockedFlags.entrySet().removeIf(entry -> !entry.getValue().isRunning());
++        }
++        // LeavesX end - avoid allocating an entry iterator and predicate in the per-mob AI hot path
+         profiler.pop();
+         profiler.push("goalUpdate");
+ 
+diff --git a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
+index 3578ece216827fd5d8c1206c689fc608e97b50df..fe724c70f8ea95264f4ef5be60794da78494d3e7 100644
+--- a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
++++ b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
+@@ -18,7 +18,37 @@ public class NearestLivingEntitySensor<T extends LivingEntity> extends Sensor<T>
+         double followRange = body.getAttributeValue(Attributes.FOLLOW_RANGE);
+         AABB boundingBox = body.getBoundingBox().inflate(followRange, followRange, followRange);
+         List<LivingEntity> livingEntities = level.getEntitiesOfClass(LivingEntity.class, boundingBox, mob -> mob != body && mob.isAlive());
+-        livingEntities.sort(Comparator.comparingDouble(body::distanceToSqr));
++        // LeavesX start - cache target coordinates and isolate pure distance work from live entity state
++        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations() && livingEntities.size() >= 32) {
++            final int candidateCount = livingEntities.size();
++            final LivingEntity[] snapshot = livingEntities.toArray(LivingEntity[]::new);
++            final double[] x = new double[candidateCount];
++            final double[] y = new double[candidateCount];
++            final double[] z = new double[candidateCount];
++            for (int index = 0; index < candidateCount; index++) {
++                final LivingEntity candidate = snapshot[index];
++                x[index] = candidate.getX();
++                y[index] = candidate.getY();
++                z[index] = candidate.getZ();
++            }
++
++            final int[] order = org.leavesx.leavesx.performance.StableDistanceSorter.sort(
++                x,
++                y,
++                z,
++                body.getX(),
++                body.getY(),
++                body.getZ(),
++                org.leavesx.leavesx.config.LeavesXRuntime.parallelAiTargetSearch(),
++                org.leavesx.leavesx.config.LeavesXRuntime.aiTargetSearchMinimumCandidates()
++            );
++            for (int index = 0; index < candidateCount; index++) {
++                livingEntities.set(index, snapshot[order[index]]);
++            }
++        } else {
++            livingEntities.sort(Comparator.comparingDouble(body::distanceToSqr));
++        }
++        // LeavesX end - cache target coordinates and isolate pure distance work from live entity state
+         Brain<?> brain = body.getBrain();
+         brain.setMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES, livingEntities);
+         brain.setMemory(MemoryModuleType.NEAREST_VISIBLE_LIVING_ENTITIES, new NearestVisibleLivingEntities(level, body, livingEntities));
+diff --git a/net/minecraft/world/entity/ai/targeting/TargetingConditions.java b/net/minecraft/world/entity/ai/targeting/TargetingConditions.java
+index 832260c9b2adabd715545ea7e4c0b4c6d4a13d68..5bce0a05827f0d4aad3738a38050aef4c6aa5ea6 100644
+--- a/net/minecraft/world/entity/ai/targeting/TargetingConditions.java
++++ b/net/minecraft/world/entity/ai/targeting/TargetingConditions.java
+@@ -79,12 +79,35 @@ public class TargetingConditions {
+             }
+ 
+             if (this.range > 0.0) {
+-                double modifier = this.testInvisible ? target.getVisibilityPercent(targeter) : 1.0;
+-                double visibilityDistance = Math.max(this.range * modifier, 2.0);
+-                double distanceToSqr = targeter.distanceToSqr(target.getX(), target.getY(), target.getZ());
+-                if (distanceToSqr > visibilityDistance * visibilityDistance) {
+-                    return false;
++                // LeavesX start - reject targets outside the strict vanilla visibility upper bound first
++                // Vanilla clamps the effective distance to at least two blocks, so using range directly here would
++                // incorrectly reject targets when a caller configures a smaller range.
++                if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++                    final double distanceToSqr = targeter.distanceToSqr(target.getX(), target.getY(), target.getZ());
++                    final double maximumVisibilityDistance = Math.max(this.range, MIN_VISIBILITY_DISTANCE_FOR_INVISIBLE_TARGET);
++                    if (distanceToSqr > maximumVisibilityDistance * maximumVisibilityDistance) {
++                        return false;
++                    }
++                    final double modifier = this.testInvisible ? target.getVisibilityPercent(targeter) : 1.0;
++                    final double visibilityDistance = Math.max(
++                        this.range * modifier,
++                        MIN_VISIBILITY_DISTANCE_FOR_INVISIBLE_TARGET
++                    );
++                    if (distanceToSqr > visibilityDistance * visibilityDistance) {
++                        return false;
++                    }
++                } else {
++                    final double modifier = this.testInvisible ? target.getVisibilityPercent(targeter) : 1.0;
++                    final double visibilityDistance = Math.max(
++                        this.range * modifier,
++                        MIN_VISIBILITY_DISTANCE_FOR_INVISIBLE_TARGET
++                    );
++                    final double distanceToSqr = targeter.distanceToSqr(target.getX(), target.getY(), target.getZ());
++                    if (distanceToSqr > visibilityDistance * visibilityDistance) {
++                        return false;
++                    }
+                 }
++                // LeavesX end - reject targets outside the strict vanilla visibility upper bound first
+             }
+ 
+             if (this.checkLineOfSight && targeter instanceof Mob mob && !mob.getSensing().hasLineOfSight(target)) {

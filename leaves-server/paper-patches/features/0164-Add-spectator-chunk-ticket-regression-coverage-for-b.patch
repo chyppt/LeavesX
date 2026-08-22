@@ -1,0 +1,189 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 21 Aug 2026 15:23:04 +0800
+Subject: [PATCH] Add spectator chunk ticket regression coverage for beta143
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java b/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c3544ad01aa72f7faaa9e6abb121d4582d754dde
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java
+@@ -0,0 +1,177 @@
++package org.leavesx.leavesx.chunk;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import ca.spottedleaf.moonrise.patches.chunk_system.player.RegionizedPlayerChunkLoader;
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.Arrays;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldInsnNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies vanilla spectator chunk-loading semantics in Paper's Moonrise player loader. */
++@Normal
++class SpectatorChunkLoadingPolicyTest {
++
++    @Test
++    void spectatorWithoutGenerationPermissionCannotOwnChunkLoadingTickets() throws ReflectiveOperationException {
++        assertFalse(canPlayerLoadChunks(true, false, false));
++        assertTrue(shouldObserveLoadedChunks(true, false, false));
++        assertTrue(canPlayerLoadChunks(true, true, false));
++        assertFalse(shouldObserveLoadedChunks(true, true, false));
++        assertTrue(canPlayerLoadChunks(false, false, false));
++        assertFalse(shouldObserveLoadedChunks(false, false, false));
++        assertFalse(canPlayerLoadChunks(false, true, true));
++        assertFalse(shouldObserveLoadedChunks(true, false, true));
++    }
++
++    @Test
++    void loaderLifecycleReevaluatesThePolicy() throws IOException {
++        final ClassNode loader = classNode(RegionizedPlayerChunkLoader.class);
++
++        assertTrue(hasPolicyCall(method(loader, "addPlayer")));
++        assertTrue(hasPolicyCall(method(loader, "updatePlayer")));
++        assertTrue(hasPolicyCall(method(loader, "tick")));
++        assertTrue(hasObserverPolicyCall(method(loader, "addPlayer")));
++        assertTrue(hasObserverPolicyCall(method(loader, "updatePlayer")));
++        assertTrue(hasObserverPolicyCall(method(loader, "tick")));
++    }
++
++    @Test
++    void observerPathCannotReachLoadingGenerationOrSimulationTicketState() throws IOException {
++        final ClassNode loaderData = classNode(RegionizedPlayerChunkLoader.PlayerChunkLoaderData.class);
++        for (final String observerMethod : new String[] {
++            "addObserver",
++            "updateObserver",
++            "updateObserverQueues",
++            "queueObserverChunkIfReady",
++            "getObserverChunkToSend",
++            "trySendObserverChunk",
++            "sendObserverUnloadChunkRaw"
++        }) {
++            assertNoTicketMutation(method(loaderData, observerMethod));
++        }
++
++        final MethodNode lookup = method(loaderData, "getObserverChunkToSend");
++        assertTrue(invokes(lookup, "net/minecraft/server/level/ChunkHolder", "getChunkToSend"));
++        assertFalse(invokesNamed(lookup, "getChunk"));
++        assertFalse(invokesNamed(lookup, "scheduleChunkLoad"));
++
++        // The ordinary player path must retain Paper's loading and simulation maps.
++        final MethodNode normalAdd = method(loaderData, "add");
++        assertTrue(readsField(normalAdd, "loadTicketCleanup"));
++        assertTrue(readsField(normalAdd, "tickMap"));
++    }
++
++    private static boolean canPlayerLoadChunks(
++        final boolean spectator,
++        final boolean spectatorsGenerateChunks,
++        final boolean explicitlySuppressChunkLoading
++    ) throws ReflectiveOperationException {
++        final Method policy = RegionizedPlayerChunkLoader.class.getDeclaredMethod(
++            "canPlayerLoadChunks",
++            boolean.class,
++            boolean.class,
++            boolean.class
++        );
++        policy.setAccessible(true);
++        return (boolean)policy.invoke(null, spectator, spectatorsGenerateChunks, explicitlySuppressChunkLoading);
++    }
++
++    private static boolean shouldObserveLoadedChunks(
++        final boolean spectator,
++        final boolean spectatorsGenerateChunks,
++        final boolean explicitlySuppressChunkLoading
++    ) throws ReflectiveOperationException {
++        final Method policy = RegionizedPlayerChunkLoader.class.getDeclaredMethod(
++            "shouldObserveLoadedChunks",
++            boolean.class,
++            boolean.class,
++            boolean.class
++        );
++        policy.setAccessible(true);
++        return (boolean)policy.invoke(null, spectator, spectatorsGenerateChunks, explicitlySuppressChunkLoading);
++    }
++
++    private static boolean hasPolicyCall(final MethodNode method) {
++        final String owner = RegionizedPlayerChunkLoader.class.getName().replace('.', '/');
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals(owner) && call.name.equals("canPlayerLoadChunks"));
++    }
++
++    private static boolean hasObserverPolicyCall(final MethodNode method) {
++        final String owner = RegionizedPlayerChunkLoader.class.getName().replace('.', '/');
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals(owner) && call.name.equals("shouldObserveLoadedChunks"));
++    }
++
++    private static void assertNoTicketMutation(final MethodNode method) {
++        final String[] forbiddenFields = {
++            "delayedTicketOps",
++            "chunkTicketStage",
++            "loadTicketCleanup",
++            "tickMap",
++            "loadQueue",
++            "loadingQueue",
++            "genQueue",
++            "generatingQueue",
++            "tickingQueue"
++        };
++        for (final String field : forbiddenFields) {
++            assertFalse(readsField(method, field), () -> method.name + " must not access " + field);
++        }
++        for (final String calledMethod : new String[] {
++            "pushDelayedTicketOp",
++            "flushDelayedTicketOps",
++            "performTicketUpdates",
++            "scheduleChunkLoad"
++        }) {
++            assertFalse(invokesNamed(method, calledMethod), () -> method.name + " must not call " + calledMethod);
++        }
++    }
++
++    private static boolean invokes(final MethodNode method, final String owner, final String name) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals(owner) && call.name.equals(name));
++    }
++
++    private static boolean invokesNamed(final MethodNode method, final String name) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.name.equals(name));
++    }
++
++    private static boolean readsField(final MethodNode method, final String name) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(FieldInsnNode.class::isInstance)
++            .map(FieldInsnNode.class::cast)
++            .anyMatch(field -> field.name.equals(name));
++    }
++
++    private static ClassNode classNode(final Class<?> type) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(type.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + name));
++    }
++}

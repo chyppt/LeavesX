@@ -1,0 +1,452 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 21:10:13 +0800
+Subject: [PATCH] Add bate13 spawn optimization controls and tests
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 95aa754a531d84e3e0c23ebe5d618c1ba06f5b08..02a4daa80f011bd60efc947a57738955de078d2e 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -320,7 +320,8 @@ public final class LeavesXCommand extends Command {
+         sendHeader(sender, "LeavesX 配置状态");
+         sender.sendMessage(line("AI/寻路", onOff(config.aiOptimizations()) + " / " + onOff(config.pathfindingOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line("动物空闲降频", onOff(config.animalIdleGoalThrottling()) + "，倍数 " + config.animalIdleGoalIntervalMultiplier(), config.animalIdleGoalThrottling() ? NamedTextColor.YELLOW : NamedTextColor.GREEN));
+-        sender.sendMessage(line("刷怪并行", onOff(config.parallelMobSpawnCounting()) + "，阈值 " + config.mobSpawnCountingMinimumEntities(), NamedTextColor.AQUA));
++        sender.sendMessage(line("刷怪优化", onOff(config.mobSpawningOptimizations()) + "，并行 " + onOff(config.parallelMobSpawnCounting()), NamedTextColor.AQUA));
++        sender.sendMessage(line("刷怪并行阈值", LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities() + " 实体", NamedTextColor.AQUA));
+         sender.sendMessage(line("目标距离并行", onOff(config.parallelAiTargetSearch()) + "，阈值 " + config.aiTargetSearchMinimumCandidates(), NamedTextColor.AQUA));
+         sender.sendMessage(line("区块卸载", onOff(config.adaptiveChunkUnloading()) + "，预算 " + config.chunkUnloadMinimumPerTick() + '-' + config.chunkUnloadMaximumPerTick(), NamedTextColor.AQUA));
+         sender.sendMessage(line("网络 flush 合并", onOff(config.networkFlushConsolidation()), NamedTextColor.AQUA));
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 58c892d3f0d0590ee02f708550baa04133293419..157de95742a421ef86f44edae7437f327abf9ee1 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -17,6 +17,7 @@ public record LeavesXConfig(
+     boolean skipEmptyEvents,
+     boolean aiOptimizations,
+     boolean pathfindingOptimizations,
++    boolean mobSpawningOptimizations,
+     boolean animalIdleGoalThrottling,
+     int animalIdleGoalIntervalMultiplier,
+     boolean parallelAiTargetSearch,
+@@ -34,7 +35,7 @@ public record LeavesXConfig(
+     int chunkUnloadMaximumPerTick
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 2;
++    public static final int CURRENT_CONFIG_VERSION = 3;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -89,6 +90,7 @@ public record LeavesXConfig(
+             true,
+             true,
+             true,
++            true,
+             false,
+             2,
+             true,
+@@ -96,7 +98,7 @@ public record LeavesXConfig(
+             true,
+             0,
+             64,
+-            512,
++            524_288,
+             true,
+             true,
+             true,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 66da19511b1edaf8e892ee835cfb367d1d6c1e6c..f9152d0f957e6d46c6f9c8bf95728ba08090cde8 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -29,7 +29,7 @@ public final class LeavesXConfigBootstrap {
+         );
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+-            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, AI {}, pathfinding {}, item merge {}, block entities {}, spawn range {}",
++            "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, AI {}, pathfinding {}, mob spawning {}, item merge {}, block entities {}, spawn range {}",
+             config.optimizedVarInt(),
+             config.networkFlushConsolidation(),
+             config.immutableCacheOptimizations(),
+@@ -37,15 +37,17 @@ public final class LeavesXConfigBootstrap {
+             config.skipEmptyEvents(),
+             config.aiOptimizations(),
+             config.pathfindingOptimizations(),
++            config.mobSpawningOptimizations(),
+             config.itemMergeOptimizations(),
+             config.blockEntityTickerRemovalOptimization(),
+             config.chunkSpawnRangeOptimization()
+         );
+         LOGGER.info(
+-            "LeavesX compute pool: {} workers, minimum {} items per worker; natural-spawn counting {} from {} entities",
++            "LeavesX compute pool: {} workers, minimum {} items per worker; natural-spawn counting {} from {} entities (configured {})",
+             org.leavesx.leavesx.runtime.LeavesXComputeExecutor.workerCount(),
+             config.minimumItemsPerWorker(),
+             config.parallelMobSpawnCounting() ? "enabled" : "disabled",
++            LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities(),
+             config.mobSpawnCountingMinimumEntities()
+         );
+         LOGGER.info(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 345676e729252b0853462216fa146265dc2418cc..b3925d679f01d999142339f25194d8b35883ccf1 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -116,6 +116,11 @@ public final class LeavesXConfigLoader {
+                     "performance.pathfinding-optimizations",
+                     true
+                 ),
++                readBoolean(
++                    node.node("performance", "mob-spawning-optimizations"),
++                    "performance.mob-spawning-optimizations",
++                    true
++                ),
+                 readBoolean(
+                     node.node("performance", "animal-idle-goals", "enabled"),
+                     "performance.animal-idle-goals.enabled",
+@@ -154,7 +159,7 @@ public final class LeavesXConfigLoader {
+                 readInt(
+                     node.node("parallelism", "mob-spawning", "minimum-entities"),
+                     "parallelism.mob-spawning.minimum-entities",
+-                    512
++                    524_288
+                 ),
+                 readBoolean(
+                     node.node("performance", "item-merge-optimizations"),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 5ede2d4b790b460b814a52aca6d43bcfcfd5d085..ecfd5e9aaa32a6f7624edd54b09aa379cd4c473e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -123,6 +123,12 @@ public final class LeavesXConfigWriter {
+             config.pathfindingOptimizations(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "mob-spawning-optimizations"),
++            "performance.mob-spawning-optimizations",
++            config.mobSpawningOptimizations(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "animal-idle-goals", "enabled"),
+             "performance.animal-idle-goals.enabled",
+@@ -226,7 +232,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：2。");
++        comments.put("config-version", "配置版本，请勿修改。默认：3。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("performance.optimized-varint", "加快网络整数编码，不改变数据内容。默认：true。");
+@@ -236,6 +242,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.skip-empty-events", "没有监听器时跳过事件对象创建。默认：true。");
+         comments.put("performance.ai-optimizations", "减少 AI 和村民 POI 搜索的重复计算。默认：true。");
+         comments.put("performance.pathfinding-optimizations", "减少寻路重建和临时对象开销。默认：true。");
++        comments.put("performance.mob-spawning-optimizations", "减少刷怪统计的临时对象和重复遍历。默认：true。");
+         comments.put("performance.animal-idle-goals.enabled", "降低动物空闲游走和环顾频率，会改变空闲行为。默认：false。");
+         comments.put("performance.animal-idle-goals.interval-multiplier", "动物空闲行为间隔倍数，仅在上一项开启时生效。默认：2。");
+         comments.put("performance.item-merge-optimizations", "物品堆满后停止无用合并扫描。默认：true。");
+@@ -247,8 +254,8 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.chunk-unloading.maximum-per-tick", "加速卸载时的最大处理量。默认：500。");
+         comments.put("parallelism.workers", "LeavesX 纯计算线程数，0 为自动。默认：0。");
+         comments.put("parallelism.minimum-items-per-worker", "每个计算分片至少处理的项目数。默认：64。");
+-        comments.put("parallelism.mob-spawning.enabled", "多线程统计自然刷怪数量。默认：true。");
+-        comments.put("parallelism.mob-spawning.minimum-entities", "实体达到此数量才并行统计刷怪。默认：512。");
++        comments.put("parallelism.mob-spawning.enabled", "允许超大规模刷怪计数使用多线程。默认：true。");
++        comments.put("parallelism.mob-spawning.minimum-entities", "实体达到此数量才并行统计刷怪。默认：524288。");
+         comments.put("parallelism.ai-target-search.enabled", "多线程计算大量 AI 目标的距离。默认：true。");
+         comments.put("parallelism.ai-target-search.minimum-candidates", "候选达到此数量才并行计算距离。默认：128。");
+         return Map.copyOf(comments);
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 882f10888885916515aee08b053b3ff1db51259a..89f985c32e1daba9e42378d87c4d271c4fc9a651 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -10,6 +10,8 @@ import java.util.Objects;
+  */
+ public final class LeavesXRuntime {
+ 
++    private static final int MOB_SPAWN_COUNTING_PROFITABLE_FLOOR = 524_288;
++
+     private static volatile LeavesXConfig configuration = LeavesXConfig.safeDefaults();
+     private static boolean diagnosticsCommandEnabled = true;
+     private static int diagnosticsDefaultResultLimit = 10;
+@@ -21,6 +23,7 @@ public final class LeavesXRuntime {
+     private static boolean skipEmptyEvents = true;
+     private static boolean aiOptimizations = true;
+     private static boolean pathfindingOptimizations = true;
++    private static boolean mobSpawningOptimizations = true;
+     private static boolean animalIdleGoalThrottling;
+     private static int animalIdleGoalIntervalMultiplier = 2;
+     private static boolean parallelAiTargetSearch = true;
+@@ -29,7 +32,7 @@ public final class LeavesXRuntime {
+     private static boolean blockEntityTickerRemovalOptimization = true;
+     private static boolean chunkSpawnRangeOptimization = true;
+     private static boolean parallelMobSpawnCounting = true;
+-    private static int mobSpawnCountingMinimumEntities = 512;
++    private static int mobSpawnCountingMinimumEntities = MOB_SPAWN_COUNTING_PROFITABLE_FLOOR;
+     private static boolean adaptiveChunkUnloading = true;
+     private static int chunkUnloadBacklogThreshold = 1_000;
+     private static int chunkUnloadMinimumPerTick = 100;
+@@ -63,6 +66,7 @@ public final class LeavesXRuntime {
+         skipEmptyEvents = validated.skipEmptyEvents();
+         aiOptimizations = validated.aiOptimizations();
+         pathfindingOptimizations = validated.pathfindingOptimizations();
++        mobSpawningOptimizations = validated.mobSpawningOptimizations();
+         animalIdleGoalThrottling = validated.animalIdleGoalThrottling();
+         animalIdleGoalIntervalMultiplier = validated.animalIdleGoalIntervalMultiplier();
+         parallelAiTargetSearch = validated.parallelAiTargetSearch();
+@@ -135,6 +139,11 @@ public final class LeavesXRuntime {
+         return pathfindingOptimizations;
+     }
+ 
++    /** Returns whether behavior-equivalent batched natural-spawn accounting is enabled. */
++    public static boolean mobSpawningOptimizations() {
++        return mobSpawningOptimizations;
++    }
++
+     /** Returns whether passive animals may run idle movement and look goals less often. */
+     public static boolean animalIdleGoalThrottling() {
+         return animalIdleGoalThrottling;
+@@ -180,6 +189,11 @@ public final class LeavesXRuntime {
+         return mobSpawnCountingMinimumEntities;
+     }
+ 
++    /** Returns the configured threshold with the measured profitability floor applied. */
++    public static int effectiveMobSpawnCountingMinimumEntities() {
++        return Math.max(mobSpawnCountingMinimumEntities, MOB_SPAWN_COUNTING_PROFITABLE_FLOOR);
++    }
++
+     /** Returns whether unload work may scale up when the pending queue is backed up. */
+     public static boolean adaptiveChunkUnloading() {
+         return adaptiveChunkUnloading;
+diff --git a/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java b/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..a239e44d09e20470fa52e884031071b67ddf7e4b
+--- /dev/null
++++ b/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java
+@@ -0,0 +1,75 @@
++package net.minecraft.world.level;
++
++import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
++import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
++import net.minecraft.world.entity.MobCategory;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
++
++@Normal
++public final class MobSpawnCountAccumulatorTest {
++
++    @AfterEach
++    void stopWorkers() {
++        LeavesXComputeExecutor.shutdown();
++    }
++
++    @Test
++    void parallelAggregationMatchesInsertionOrderedReference() {
++        final int size = 8_192;
++        final long[] chunkKeys = new long[size];
++        final byte[] categories = new byte[size];
++        final Long2ObjectOpenHashMap<int[]> expected = new Long2ObjectOpenHashMap<>();
++        final int categoryCount = MobCategory.values().length;
++
++        for (int index = 0; index < size; index++) {
++            final int chunkX = Math.floorMod(index * 31, 257) - 128;
++            final int chunkZ = Math.floorMod(index * 17, 193) - 96;
++            final long chunkKey = ChunkPos.pack(chunkX, chunkZ);
++            final int category = Math.floorMod(index * 5, categoryCount);
++            chunkKeys[index] = chunkKey;
++            categories[index] = (byte)category;
++            expected.computeIfAbsent(chunkKey, ignored -> new int[categoryCount])[category]++;
++        }
++
++        LeavesXComputeExecutor.configure(4, 64);
++        final MobSpawnCountAccumulator.Inputs inputs = new MobSpawnCountAccumulator.Inputs(chunkKeys, categories, size);
++        final Long2ObjectOpenHashMap<int[]> actual = MobSpawnCountAccumulator.count(inputs, true, 128);
++
++        assertEquals(expected.size(), actual.size());
++        for (final Long2ObjectMap.Entry<int[]> entry : expected.long2ObjectEntrySet()) {
++            assertArrayEquals(entry.getValue(), actual.get(entry.getLongKey()));
++        }
++        assertTrue(LeavesXComputeExecutor.metrics().parallelInvocations() > 0L);
++    }
++
++    @Test
++    void synchronousAndParallelPathsProduceTheSameCounts() {
++        final long[] chunkKeys = new long[2_048];
++        final byte[] categories = new byte[chunkKeys.length];
++        for (int index = 0; index < chunkKeys.length; index++) {
++            chunkKeys[index] = ChunkPos.pack(index & 31, (index >>> 5) & 31);
++            categories[index] = (byte)(index % MobCategory.values().length);
++        }
++
++        final MobSpawnCountAccumulator.Inputs inputs = new MobSpawnCountAccumulator.Inputs(
++            chunkKeys,
++            categories,
++            chunkKeys.length
++        );
++        final Long2ObjectOpenHashMap<int[]> synchronous = MobSpawnCountAccumulator.count(inputs, false, 128);
++        LeavesXComputeExecutor.configure(3, 32);
++        final Long2ObjectOpenHashMap<int[]> parallel = MobSpawnCountAccumulator.count(inputs, true, 128);
++
++        assertEquals(synchronous.size(), parallel.size());
++        for (final Long2ObjectMap.Entry<int[]> entry : synchronous.long2ObjectEntrySet()) {
++            assertArrayEquals(entry.getValue(), parallel.get(entry.getLongKey()));
++        }
++    }
++}
+diff --git a/src/test/java/net/minecraft/world/level/PotentialCalculatorTest.java b/src/test/java/net/minecraft/world/level/PotentialCalculatorTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..bf3eaa6f7c12506201bc73cf7c0c4a6995e5d79b
+--- /dev/null
++++ b/src/test/java/net/minecraft/world/level/PotentialCalculatorTest.java
+@@ -0,0 +1,60 @@
++package net.minecraft.world.level;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import java.util.Random;
++import net.minecraft.core.BlockPos;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++public final class PotentialCalculatorTest {
++
++    @Test
++    void primitiveStoragePreservesSequentialFloatingPointOrder() {
++        final int pointCount = 4_096;
++        final BlockPos[] positions = new BlockPos[pointCount];
++        final double[] charges = new double[pointCount];
++        final PotentialCalculator calculator = new PotentialCalculator();
++        final Random random = new Random(0x4C656176657358L);
++
++        for (int index = 0; index < pointCount; index++) {
++            final BlockPos position = new BlockPos(
++                random.nextInt(4_096) - 2_048,
++                random.nextInt(384) - 64,
++                random.nextInt(4_096) - 2_048
++            );
++            final double pointCharge = 0.125D + random.nextDouble() * 3.0D;
++            positions[index] = position;
++            charges[index] = pointCharge;
++            calculator.addCharge(position, pointCharge);
++        }
++
++        final BlockPos target = new BlockPos(127, 73, -311);
++        final double requestedCharge = 1.75D;
++        double expected = 0.0D;
++        for (int index = 0; index < pointCount; index++) {
++            final double distanceSquared = positions[index].distSqr(target);
++            expected += distanceSquared == 0.0D
++                ? Double.POSITIVE_INFINITY
++                : charges[index] / Math.sqrt(distanceSquared);
++        }
++        expected *= requestedCharge;
++
++        final double actual = calculator.getPotentialEnergyChange(target, requestedCharge);
++
++        assertEquals(Double.doubleToRawLongBits(expected), Double.doubleToRawLongBits(actual));
++    }
++
++    @Test
++    void zeroAndCoincidentChargesRetainVanillaResults() {
++        final PotentialCalculator calculator = new PotentialCalculator();
++        final BlockPos position = new BlockPos(10, 64, -20);
++        calculator.addCharge(position, 0.0D);
++        assertEquals(0.0D, calculator.getPotentialEnergyChange(position, 2.0D));
++
++        calculator.addCharge(position, 1.0D);
++        assertEquals(Double.POSITIVE_INFINITY, calculator.getPotentialEnergyChange(position, 2.0D));
++        assertEquals(0.0D, calculator.getPotentialEnergyChange(position, 0.0D));
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index c59c0b8ed2058403205f2ccf3b6ae2cde32c94e8..a82c9d7830b2d973f03fa621246372d898b3de83 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -73,15 +73,18 @@ class LeavesXConfigLoaderTest {
+         assertTrue(config.itemMergeOptimizations());
+         assertTrue(config.blockEntityTickerRemovalOptimization());
+         assertTrue(config.chunkSpawnRangeOptimization());
++        assertTrue(config.mobSpawningOptimizations());
+         assertFalse(reloaded.node("performance", "optimized-varint").getBoolean());
+         assertTrue(reloaded.node("performance", "item-merge-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "block-entity-ticker-removal").getBoolean());
+         assertTrue(reloaded.node("performance", "chunk-spawn-range-optimization").getBoolean());
++        assertTrue(reloaded.node("performance", "mob-spawning-optimizations").getBoolean());
+         assertTrue(reloaded.node("custom-extension", "retained").getBoolean());
+         assertTrue(upgraded.contains("# User-managed LeavesX settings."), upgraded);
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.item-merge-optimizations")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.block-entity-ticker-removal")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.chunk-spawn-range-optimization")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.mob-spawning-optimizations")));
+     }
+ 
+     @Test
+@@ -114,6 +117,7 @@ class LeavesXConfigLoaderTest {
+               skip-empty-events: false
+               ai-optimizations: false
+               pathfinding-optimizations: false
++              mob-spawning-optimizations: false
+               animal-idle-goals:
+                 enabled: true
+                 interval-multiplier: 3
+@@ -145,6 +149,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.skipEmptyEvents());
+         assertFalse(config.aiOptimizations());
+         assertFalse(config.pathfindingOptimizations());
++        assertFalse(config.mobSpawningOptimizations());
+         assertTrue(config.animalIdleGoalThrottling());
+         assertEquals(3, config.animalIdleGoalIntervalMultiplier());
+         assertFalse(config.parallelAiTargetSearch());
+@@ -160,6 +165,12 @@ class LeavesXConfigLoaderTest {
+         assertEquals(3, config.computeWorkers());
+         assertEquals(96, config.minimumItemsPerWorker());
+         assertEquals(768, config.mobSpawnCountingMinimumEntities());
++        try {
++            LeavesXRuntime.publish(config);
++            assertEquals(524_288, LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities());
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
+     }
+ 
+     @Test
+@@ -185,7 +196,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(assertThrows(LeavesXConfigException.class, () -> LeavesXConfigLoader.load(older))
+             .getMessage().contains("config-version must be at least 1"));
+ 
+-        final Path newer = write("config-version: 3\n");
++        final Path newer = write("config-version: 4\n");
+         assertTrue(assertThrows(LeavesXConfigException.class, () -> LeavesXConfigLoader.load(newer))
+             .getMessage().contains("newer than supported"));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java b/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java
+index 3751590330d15fb2831cc7fe89caecb0a3531a8a..3a06fbec856c259c5e0151b2fdcf3e7be7d47fc7 100644
+--- a/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java
++++ b/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java
+@@ -1,6 +1,8 @@
+ package org.leavesx.leavesx.support;
+ 
+ import io.papermc.paper.ServerBuildInfoCompatibilityTest;
++import net.minecraft.world.level.MobSpawnCountAccumulatorTest;
++import net.minecraft.world.level.PotentialCalculatorTest;
+ import org.junit.platform.suite.api.ConfigurationParameter;
+ import org.junit.platform.suite.api.IncludeTags;
+ import org.junit.platform.suite.api.SelectClasses;
+@@ -17,7 +19,7 @@ import org.junit.platform.suite.api.SuiteDisplayName;
+ @SuiteDisplayName("LeavesX compatibility and migration tests")
+ @IncludeTags("Normal")
+ @SelectPackages("org.leavesx")
+-@SelectClasses(ServerBuildInfoCompatibilityTest.class)
++@SelectClasses({ServerBuildInfoCompatibilityTest.class, MobSpawnCountAccumulatorTest.class, PotentialCalculatorTest.class})
+ @ConfigurationParameter(key = "TestSuite", value = "Normal")
+ public final class LeavesXTestSuite {
+ }

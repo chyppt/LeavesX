@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 20:31:34 +0800
+Subject: [PATCH] Bound shulker duplication density scans for bate57
+
+
+diff --git a/net/minecraft/world/entity/monster/Shulker.java b/net/minecraft/world/entity/monster/Shulker.java
+index e5ee95bcedddb33edec0f039912c02e190364ac9..cad35a9ccad1624a71a20e5e08759db9228c897a 100644
+--- a/net/minecraft/world/entity/monster/Shulker.java
++++ b/net/minecraft/world/entity/monster/Shulker.java
+@@ -455,8 +455,18 @@ public class Shulker extends AbstractGolem implements Enemy {
+         Vec3 oldPosition = this.position();
+         AABB oldAabb = this.getBoundingBox();
+         if (!this.isClosed() && this.teleportSomewhere()) {
+-            int shulkerCount = this.level().getEntities(EntityType.SHULKER, oldAabb.inflate(8.0), Entity::isAlive).size();
+-            float failureChance = (shulkerCount - 1) / 5.0F;
++            final AABB duplicationArea = oldAabb.inflate(OTHER_SHULKER_SCAN_RADIUS);
++            final int shulkerCount;
++            if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++                try (net.minecraft.world.level.Level.LeavesXEntityQueryBuffer scan = net.minecraft.world.level.Level.leavesX$acquireEntityQueryBuffer()) {
++                    shulkerCount = scan.countUpTo(
++                        this.level(), EntityType.SHULKER, duplicationArea, Entity::isAlive, OTHER_SHULKER_LIMIT + 1
++                    );
++                }
++            } else {
++                shulkerCount = this.level().getEntities(EntityType.SHULKER, duplicationArea, Entity::isAlive).size();
++            }
++            float failureChance = (shulkerCount - 1) / (float)OTHER_SHULKER_LIMIT;
+             if (!(this.level().getRandom().nextFloat() < failureChance)) {
+                 Shulker baby = EntityType.SHULKER.create(this.level(), EntitySpawnReason.BREEDING);
+                 if (baby != null) {

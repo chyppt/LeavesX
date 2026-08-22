@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 03:25:46 +0800
+Subject: [PATCH] Optimize villager indoor walking for bate29
+
+
+diff --git a/net/minecraft/world/entity/ai/behavior/InsideBrownianWalk.java b/net/minecraft/world/entity/ai/behavior/InsideBrownianWalk.java
+index b57a48842e31f678de4dcef689a4c9dcf9dd66af..861cc15a923c6a59aba3da967ad0ce095a2541b4 100644
+--- a/net/minecraft/world/entity/ai/behavior/InsideBrownianWalk.java
++++ b/net/minecraft/world/entity/ai/behavior/InsideBrownianWalk.java
+@@ -3,11 +3,13 @@ package net.minecraft.world.entity.ai.behavior;
+ import java.util.Collections;
+ import java.util.List;
+ import net.minecraft.core.BlockPos;
++import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.util.Util;
+ import net.minecraft.world.entity.PathfinderMob;
+ import net.minecraft.world.entity.ai.behavior.declarative.BehaviorBuilder;
+ import net.minecraft.world.entity.ai.memory.MemoryModuleType;
+ import net.minecraft.world.entity.ai.memory.WalkTarget;
++import org.jspecify.annotations.Nullable;
+ 
+ public class InsideBrownianWalk {
+     public static BehaviorControl<PathfinderMob> create(final float speedModifier) {
+@@ -25,15 +27,39 @@ public class InsideBrownianWalk {
+                             .map(BlockPos::immutable)
+                             .collect(Util.toMutableList());
+                         Collections.shuffle(poses);
+-                        poses.stream()
+-                            .filter(pos -> !level.canSeeSky(pos))
+-                            .filter(pos -> level.loadedAndEntityCanStandOn(pos, body))
+-                            .filter(pos -> level.noCollision(body))
+-                            .findFirst()
+-                            .ifPresent(target -> walkTarget.set(new WalkTarget(target, speedModifier, 0)));
++                        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++                            final BlockPos target = findInsideWalkTargetDirect(level, body, poses);
++                            if (target != null) {
++                                walkTarget.set(new WalkTarget(target, speedModifier, 0));
++                            }
++                        } else {
++                            poses.stream()
++                                .filter(pos -> !level.canSeeSky(pos))
++                                .filter(pos -> level.loadedAndEntityCanStandOn(pos, body))
++                                .filter(pos -> level.noCollision(body))
++                                .findFirst()
++                                .ifPresent(target -> walkTarget.set(new WalkTarget(target, speedModifier, 0)));
++                        }
+                         return true;
+                     }
+                 )
+         );
+     }
++
++    // LeavesX start - preserve shuffled indoor-walk order without a stream pipeline
++    private static @Nullable BlockPos findInsideWalkTargetDirect(
++        final ServerLevel level,
++        final PathfinderMob body,
++        final List<BlockPos> poses
++    ) {
++        for (final BlockPos pos : poses) {
++            if (!level.canSeeSky(pos)
++                && level.loadedAndEntityCanStandOn(pos, body)
++                && level.noCollision(body)) {
++                return pos;
++            }
++        }
++        return null;
++    }
++    // LeavesX end - preserve shuffled indoor-walk order without a stream pipeline
+ }

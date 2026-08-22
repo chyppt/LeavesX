@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 06:16:00 +0800
+Subject: [PATCH] Cache experience orb merge parameters for bate99
+
+
+diff --git a/net/minecraft/world/entity/ExperienceOrb.java b/net/minecraft/world/entity/ExperienceOrb.java
+index c8dc203c3411736b859ada25fcae30a8e56e89cf..14ee8cc663142b3717b30156aabf5b9544ea19da 100644
+--- a/net/minecraft/world/entity/ExperienceOrb.java
++++ b/net/minecraft/world/entity/ExperienceOrb.java
+@@ -2,6 +2,7 @@ package net.minecraft.world.entity;
+ 
+ import java.util.List;
+ import java.util.Optional;
++import java.util.function.Predicate;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.network.syncher.EntityDataAccessor;
+ import net.minecraft.network.syncher.EntityDataSerializers;
+@@ -242,8 +243,22 @@ public class ExperienceOrb extends Entity {
+ 
+     private void scanForMerges() {
+         if (this.level() instanceof ServerLevel) {
+-            for (ExperienceOrb orb : this.level().getEntities(EntityTypeTest.forClass(ExperienceOrb.class), this.getBoundingBox().inflate(0.5), this::canMerge)) {
+-                this.merge(orb);
++            if (org.leavesx.leavesx.config.LeavesXRuntime.experienceOrbMergeParametersOptimization()) {
++                // These values cannot change while the synchronous entity query is running.
++                final int groupsPerArea = io.papermc.paper.configuration.GlobalConfiguration.get().misc.xpOrbGroupsPerArea.or(ORB_GROUPS_PER_AREA);
++                final int id = this.getId();
++                final int value = this.getValue();
++                for (ExperienceOrb orb : this.level().getEntities(
++                    EntityTypeTest.forClass(ExperienceOrb.class),
++                    this.getBoundingBox().inflate(0.5),
++                    candidate -> candidate != this && canMerge(candidate, id, value, groupsPerArea)
++                )) {
++                    this.merge(orb);
++                }
++            } else {
++                for (ExperienceOrb orb : this.level().getEntities(EntityTypeTest.forClass(ExperienceOrb.class), this.getBoundingBox().inflate(0.5), this::canMerge)) {
++                    this.merge(orb);
++                }
+             }
+         }
+     }
+@@ -270,16 +285,21 @@ public class ExperienceOrb extends Entity {
+     private static boolean tryMergeToExisting(final ServerLevel level, final Vec3 pos, final int value) {
+         // Paper - TODO some other event for this kind of merge
+         AABB box = AABB.ofSize(pos, 1.0, 1.0, 1.0);
+-        int id = level.getRandom().nextInt(io.papermc.paper.configuration.GlobalConfiguration.get().misc.xpOrbGroupsPerArea.or(ORB_GROUPS_PER_AREA)); // Paper - Configure how many orb groups per area
++        final int id;
++        final Predicate<ExperienceOrb> mergePredicate;
++        if (org.leavesx.leavesx.config.LeavesXRuntime.experienceOrbMergeParametersOptimization()) {
++            final int groupsPerArea = io.papermc.paper.configuration.GlobalConfiguration.get().misc.xpOrbGroupsPerArea.or(ORB_GROUPS_PER_AREA);
++            id = level.getRandom().nextInt(groupsPerArea); // Paper - Configure how many orb groups per area
++            mergePredicate = orb -> canMerge(orb, id, value, groupsPerArea);
++        } else {
++            id = level.getRandom().nextInt(io.papermc.paper.configuration.GlobalConfiguration.get().misc.xpOrbGroupsPerArea.or(ORB_GROUPS_PER_AREA)); // Paper - Configure how many orb groups per area
++            mergePredicate = orb -> canMerge(orb, id, value);
++        }
+         final ExperienceOrb orb;
+         if (org.leavesx.leavesx.config.LeavesXRuntime.experienceOrbMergeOptimization()) {
+-            orb = level.leavesX$getFirstEntity(
+-                EntityTypeTest.forClass(ExperienceOrb.class), box, orbx -> canMerge(orbx, id, value)
+-            );
++            orb = level.leavesX$getFirstEntity(EntityTypeTest.forClass(ExperienceOrb.class), box, mergePredicate);
+         } else {
+-            final List<ExperienceOrb> orbs = level.getEntities(
+-                EntityTypeTest.forClass(ExperienceOrb.class), box, orbx -> canMerge(orbx, id, value)
+-            );
++            final List<ExperienceOrb> orbs = level.getEntities(EntityTypeTest.forClass(ExperienceOrb.class), box, mergePredicate);
+             orb = orbs.isEmpty() ? null : orbs.getFirst();
+         }
+ 
+@@ -297,7 +317,16 @@ public class ExperienceOrb extends Entity {
+     }
+ 
+     private static boolean canMerge(final ExperienceOrb orb, final int id, final int value) {
+-        return !orb.isRemoved() && (orb.getId() - id) % io.papermc.paper.configuration.GlobalConfiguration.get().misc.xpOrbGroupsPerArea.or(ORB_GROUPS_PER_AREA) == 0 && orb.getValue() == value; // Paper - Configure how many orbs will merge together
++        return canMerge(
++            orb,
++            id,
++            value,
++            io.papermc.paper.configuration.GlobalConfiguration.get().misc.xpOrbGroupsPerArea.or(ORB_GROUPS_PER_AREA)
++        ); // Paper - Configure how many orbs will merge together
++    }
++
++    private static boolean canMerge(final ExperienceOrb orb, final int id, final int value, final int groupsPerArea) {
++        return !orb.isRemoved() && (orb.getId() - id) % groupsPerArea == 0 && orb.getValue() == value;
+     }
+ 
+     private void merge(final ExperienceOrb orb) {

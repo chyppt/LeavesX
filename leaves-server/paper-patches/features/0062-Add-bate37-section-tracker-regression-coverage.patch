@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 15:23:33 +0800
+Subject: [PATCH] Add bate37 section tracker regression coverage
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/SectionTrackerHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/SectionTrackerHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..13b9dba14825b1988204c658ba771eb807a03e2e
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/SectionTrackerHotPathTest.java
+@@ -0,0 +1,70 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++
++import java.io.IOException;
++import java.util.Arrays;
++import net.minecraft.core.SectionPos;
++import net.minecraft.server.level.SectionTracker;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++@Normal
++class SectionTrackerHotPathTest {
++
++    @Test
++    void sectionPropagationDecodesTheCenterOnlyOnce() throws IOException {
++        for (final String methodName : new String[] {"checkNeighborsAfterUpdate", "getComputedLevel"}) {
++            final MethodNode method = methodNode(SectionTracker.class, methodName);
++            assertFalse(
++                Arrays.stream(method.instructions.toArray())
++                    .filter(MethodInsnNode.class::isInstance)
++                    .map(MethodInsnNode.class::cast)
++                    .anyMatch(call -> call.owner.equals("net/minecraft/core/SectionPos") && call.name.equals("offset")),
++                methodName + " should decode the center once instead of decoding it for every neighbor"
++            );
++        }
++    }
++
++    @Test
++    void decodedNeighborEncodingMatchesSectionPosOffsetAtCoordinateEdges() {
++        final int[] horizontal = {-2_097_152, -1, 0, 1, 2_097_151};
++        final int[] vertical = {-524_288, -1, 0, 1, 524_287};
++        for (final int x : horizontal) {
++            for (final int y : vertical) {
++                for (final int z : horizontal) {
++                    final long center = SectionPos.asLong(x, y, z);
++                    for (int offsetX = -1; offsetX <= 1; offsetX++) {
++                        for (int offsetY = -1; offsetY <= 1; offsetY++) {
++                            for (int offsetZ = -1; offsetZ <= 1; offsetZ++) {
++                                assertEquals(
++                                    SectionPos.offset(center, offsetX, offsetY, offsetZ),
++                                    SectionPos.asLong(
++                                        SectionPos.x(center) + offsetX,
++                                        SectionPos.y(center) + offsetY,
++                                        SectionPos.z(center) + offsetZ
++                                    )
++                                );
++                            }
++                        }
++                    }
++                }
++            }
++        }
++    }
++
++    private static MethodNode methodNode(final Class<?> owner, final String methodName) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.getName() + '#' + methodName));
++    }
++}

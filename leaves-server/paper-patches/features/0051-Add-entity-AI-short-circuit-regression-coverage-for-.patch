@@ -1,0 +1,205 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 02:23:22 +0800
+Subject: [PATCH] Add entity AI short-circuit regression coverage for bate26
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityAiShortCircuitTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityAiShortCircuitTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..635b56d9c1b1132cbef40de5ec1342593e7662c9
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityAiShortCircuitTest.java
+@@ -0,0 +1,193 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.doReturn;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.verifyNoInteractions;
++import static org.mockito.Mockito.when;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Optional;
++import net.minecraft.core.BlockPos;
++import net.minecraft.world.entity.EntityType;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.entity.ai.Brain;
++import net.minecraft.world.entity.ai.behavior.InteractWithDoor;
++import net.minecraft.world.entity.ai.behavior.PlayTagWithOtherKids;
++import net.minecraft.world.entity.ai.memory.MemoryModuleType;
++import net.minecraft.world.level.pathfinder.Node;
++import net.minecraft.world.level.pathfinder.Path;
++import net.minecraft.world.phys.Vec3;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.ClassVisitor;
++import org.objectweb.asm.MethodVisitor;
++import org.objectweb.asm.Opcodes;
++
++/** Verifies order-sensitive AI short-circuit helpers used in dense entity areas. */
++@Normal
++class EntityAiShortCircuitTest {
++
++    @Test
++    @SuppressWarnings("unchecked")
++    void doorHelperPreservesFiltersAndStopsAtFirstMatchingPath() throws ReflectiveOperationException {
++        final BlockPos doorPos = new BlockPos(4, 65, -2);
++        final EntityType<?> bodyType = mock();
++        final EntityType<?> otherType = mock();
++        final LivingEntity body = mock();
++        final LivingEntity wrongType = mock();
++        final LivingEntity farAway = mock();
++        final LivingEntity noPath = mock();
++        final LivingEntity matching = mock();
++        final LivingEntity afterMatch = mock();
++        doReturn(bodyType).when(body).getType();
++        doReturn(otherType).when(wrongType).getType();
++        doReturn(bodyType).when(farAway).getType();
++        doReturn(bodyType).when(noPath).getType();
++        doReturn(bodyType).when(matching).getType();
++        when(farAway.position()).thenReturn(new Vec3(20.0, 65.0, -2.0));
++        when(noPath.position()).thenReturn(Vec3.atCenterOf(doorPos));
++        when(matching.position()).thenReturn(Vec3.atCenterOf(doorPos));
++
++        final Brain<?> noPathBrain = mock();
++        doReturn(noPathBrain).when(noPath).getBrain();
++        when(noPathBrain.hasMemoryValue(MemoryModuleType.PATH)).thenReturn(false);
++
++        final Brain<?> matchingBrain = mock();
++        final Path matchingPath = mock();
++        final Node previousNode = mock();
++        final Node nextNode = mock();
++        doReturn(matchingBrain).when(matching).getBrain();
++        when(matchingBrain.hasMemoryValue(MemoryModuleType.PATH)).thenReturn(true);
++        when(matchingBrain.getMemory(MemoryModuleType.PATH)).thenReturn(Optional.of(matchingPath));
++        when(matchingPath.isDone()).thenReturn(false);
++        when(matchingPath.getPreviousNode()).thenReturn(previousNode);
++        when(matchingPath.getNextNode()).thenReturn(nextNode);
++        when(previousNode.asBlockPos()).thenReturn(doorPos);
++
++        final Method method = InteractWithDoor.class.getDeclaredMethod(
++            "hasOtherMobComingThroughDoorDirect",
++            LivingEntity.class,
++            BlockPos.class,
++            List.class
++        );
++        method.setAccessible(true);
++
++        final boolean result = (boolean)method.invoke(
++            null,
++            body,
++            doorPos,
++            List.of(wrongType, farAway, noPath, matching, afterMatch)
++        );
++
++        assertTrue(result);
++        verify(wrongType, never()).position();
++        verify(farAway, never()).getBrain();
++        verify(noPathBrain).hasMemoryValue(MemoryModuleType.PATH);
++        verifyNoInteractions(afterMatch);
++    }
++
++    @Test
++    void friendChasingHelperPreservesOrderAndStopsAtFirstMatch() throws ReflectiveOperationException {
++        final LivingEntity me = mock();
++        final LivingEntity first = friendChasing(null);
++        final LivingEntity matching = friendChasing(me);
++        final LivingEntity afterMatch = mock();
++        final Method method = PlayTagWithOtherKids.class.getDeclaredMethod(
++            "findFriendChasingMeDirect",
++            LivingEntity.class,
++            List.class
++        );
++        method.setAccessible(true);
++
++        final LivingEntity result = (LivingEntity)method.invoke(null, me, List.of(first, matching, afterMatch));
++
++        assertSame(matching, result);
++        verifyNoInteractions(afterMatch);
++    }
++
++    @Test
++    void chasedKidHelperKeepsVanillaCountThresholds() throws ReflectiveOperationException {
++        final LivingEntity oneChaserTarget = mock();
++        final LivingEntity twoChaserTarget = mock();
++        final LivingEntity sixChaserTarget = mock();
++        final List<LivingEntity> friends = new ArrayList<>();
++        friends.add(friendChasing(oneChaserTarget));
++        friends.add(friendChasing(twoChaserTarget));
++        friends.add(friendChasing(twoChaserTarget));
++        for (int i = 0; i < 6; ++i) {
++            friends.add(friendChasing(sixChaserTarget));
++        }
++        friends.add(friendChasing(null));
++        final Method method = PlayTagWithOtherKids.class.getDeclaredMethod("findSomeoneBeingChasedDirect", List.class);
++        method.setAccessible(true);
++
++        final LivingEntity result = (LivingEntity)method.invoke(null, friends);
++
++        assertSame(oneChaserTarget, result);
++    }
++
++    @Test
++    void entityAiShortCircuitHelpersDoNotCreateStreams() throws IOException {
++        assertNoStreamCalls(InteractWithDoor.class, "hasOtherMobComingThroughDoorDirect");
++        assertNoStreamCalls(PlayTagWithOtherKids.class, "findFriendChasingMeDirect");
++        assertNoStreamCalls(PlayTagWithOtherKids.class, "findSomeoneBeingChasedDirect");
++    }
++
++    private static LivingEntity friendChasing(final LivingEntity target) {
++        final LivingEntity friend = mock();
++        final Brain<?> brain = mock();
++        doReturn(brain).when(friend).getBrain();
++        when(brain.getMemory(MemoryModuleType.INTERACTION_TARGET)).thenReturn(Optional.ofNullable(target));
++        return friend;
++    }
++
++    private static void assertNoStreamCalls(final Class<?> type, final String methodName) throws IOException {
++        final List<Invocation> calls = new ArrayList<>();
++        final boolean[] found = {false};
++        new ClassReader(type.getName()).accept(
++            new ClassVisitor(Opcodes.ASM9) {
++                @Override
++                public MethodVisitor visitMethod(
++                    final int access,
++                    final String name,
++                    final String descriptor,
++                    final String signature,
++                    final String[] exceptions
++                ) {
++                    if (!name.equals(methodName)) {
++                        return null;
++                    }
++                    found[0] = true;
++                    return new MethodVisitor(Opcodes.ASM9) {
++                        @Override
++                        public void visitMethodInsn(
++                            final int opcode,
++                            final String owner,
++                            final String name,
++                            final String descriptor,
++                            final boolean isInterface
++                        ) {
++                            calls.add(new Invocation(owner, name));
++                        }
++                    };
++                }
++            },
++            ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES
++        );
++        assertTrue(found[0], () -> "Missing method " + type.getName() + "#" + methodName);
++        assertFalse(calls.stream().anyMatch(call -> call.name().equals("stream")));
++        assertFalse(calls.stream().anyMatch(call -> call.owner().startsWith("java/util/stream/")));
++    }
++
++    private record Invocation(String owner, String name) {
++    }
++}

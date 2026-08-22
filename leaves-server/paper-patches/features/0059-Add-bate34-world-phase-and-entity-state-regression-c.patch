@@ -1,0 +1,348 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 11:03:37 +0800
+Subject: [PATCH] Add bate34 world phase and entity state regression coverage
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 948dd8bc7a5cc74bc51164ab73b26177fa27c800..42f4f80e49ed35a679b9228fa3f558df8334b2a4 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -895,7 +895,7 @@ public final class LeavesXCommand extends Command {
+                 NamedTextColor.GRAY
+             ));
+             if (!record.phases().isEmpty()) {
+-                sender.sendMessage(Component.text("   阶段 " + formatPhases(record.phases(), 4), NamedTextColor.GRAY));
++                sender.sendMessage(Component.text("   阶段 " + formatPhases(record.phases(), 7), NamedTextColor.GRAY));
+             }
+             if (gcPauseNanos > 0L) {
+                 sender.sendMessage(Component.text(
+diff --git a/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java b/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java
+index 28f7402230baf71f8d59631dc325f7286407b9df..05eb61fabacc700e04a209e9dc2ad390276e0809 100644
+--- a/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java
++++ b/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java
+@@ -295,6 +295,9 @@ public final class LeavesXTickDiagnostics {
+         BUKKIT_SCHEDULER("Bukkit 调度器"),
+         SERVER_TASKS("服务端任务"),
+         WORLDS("世界 Tick"),
++        WORLD_CHUNKS("世界 - 区块"),
++        WORLD_ENTITIES("世界 - 实体"),
++        WORLD_BLOCK_ENTITIES("世界 - 方块实体"),
+         NETWORK("网络处理"),
+         PLAYERS("玩家处理"),
+         MISCELLANEOUS("其他服务端工作"),
+diff --git a/src/test/java/org/leavesx/leavesx/diagnostics/WorldTickPhaseAttributionTest.java b/src/test/java/org/leavesx/leavesx/diagnostics/WorldTickPhaseAttributionTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3ed0f2ff630bb255e913e850cc537b036f793acd
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/diagnostics/WorldTickPhaseAttributionTest.java
+@@ -0,0 +1,152 @@
++package org.leavesx.leavesx.diagnostics;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.Set;
++import java.util.stream.Collectors;
++import net.minecraft.server.level.ServerLevel;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.AbstractInsnNode;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldInsnNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Locks down the low-overhead phase boundaries used to attribute slow world ticks. */
++@Normal
++class WorldTickPhaseAttributionTest {
++
++    private static final String DIAGNOSTICS_OWNER = "org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics";
++    private static final String PHASE_OWNER = DIAGNOSTICS_OWNER + "$TickPhase";
++
++    @Test
++    void exposesDetailedWorldPhases() {
++        final Set<String> names = Arrays.stream(LeavesXTickDiagnostics.TickPhase.values())
++            .map(Enum::name)
++            .collect(Collectors.toSet());
++
++        assertTrue(names.contains("WORLD_CHUNKS"));
++        assertTrue(names.contains("WORLD_ENTITIES"));
++        assertTrue(names.contains("WORLD_BLOCK_ENTITIES"));
++    }
++
++    @Test
++    void serverLevelTickWrapsTheThreeDominantWorldWorkloads() throws IOException {
++        final AbstractInsnNode[] instructions = methodNode(ServerLevel.class, "tick").instructions.toArray();
++
++        assertPhaseWrapsInvocation(
++            instructions,
++            "net/minecraft/server/level/ServerChunkCache",
++            "tick",
++            "WORLD_CHUNKS",
++            "chunk source tick"
++        );
++        assertPhaseWrapsInvocation(
++            instructions,
++            "net/minecraft/world/level/entity/EntityTickList",
++            "forEach",
++            "WORLD_ENTITIES",
++            "entity tick list"
++        );
++        assertPhaseWrapsInvocation(
++            instructions,
++            "net/minecraft/server/level/ServerLevel",
++            "tickBlockEntities",
++            "WORLD_BLOCK_ENTITIES",
++            "block entity tick list"
++        );
++    }
++
++    private static void assertPhaseWrapsInvocation(
++        final AbstractInsnNode[] instructions,
++        final String invocationOwner,
++        final String invocationName,
++        final String phaseName,
++        final String description
++    ) {
++        final int invocation = findInvocation(instructions, invocationOwner, invocationName);
++        final int phaseStart = findPreviousInvocation(instructions, invocation, DIAGNOSTICS_OWNER, "beginPhase");
++        final int phaseEnd = findNextInvocation(instructions, invocation, DIAGNOSTICS_OWNER, "endPhase");
++        final int phaseAccess = findFieldAccess(instructions, invocation, phaseEnd, PHASE_OWNER, phaseName);
++
++        assertTrue(phaseStart >= 0, description + " must start a LeavesX phase timer");
++        assertTrue(phaseEnd > invocation, description + " must stop its LeavesX phase timer");
++        assertTrue(phaseAccess > invocation && phaseAccess < phaseEnd, description + " must report " + phaseName);
++    }
++
++    private static int findInvocation(
++        final AbstractInsnNode[] instructions,
++        final String owner,
++        final String name
++    ) {
++        for (int index = 0; index < instructions.length; index++) {
++            if (instructions[index] instanceof MethodInsnNode call && call.owner.equals(owner) && call.name.equals(name)) {
++                return index;
++            }
++        }
++        throw new AssertionError("Missing invocation " + owner + '#' + name);
++    }
++
++    private static int findPreviousInvocation(
++        final AbstractInsnNode[] instructions,
++        final int startIndex,
++        final String owner,
++        final String name
++    ) {
++        for (int index = startIndex - 1; index >= 0; index--) {
++            if (instructions[index] instanceof MethodInsnNode call && call.owner.equals(owner) && call.name.equals(name)) {
++                return index;
++            }
++        }
++        return -1;
++    }
++
++    private static int findNextInvocation(
++        final AbstractInsnNode[] instructions,
++        final int startIndex,
++        final String owner,
++        final String name
++    ) {
++        for (int index = startIndex + 1; index < instructions.length; index++) {
++            if (instructions[index] instanceof MethodInsnNode call && call.owner.equals(owner) && call.name.equals(name)) {
++                return index;
++            }
++        }
++        return -1;
++    }
++
++    private static int findFieldAccess(
++        final AbstractInsnNode[] instructions,
++        final int startIndex,
++        final int endIndex,
++        final String owner,
++        final String name
++    ) {
++        if (endIndex < 0) {
++            return -1;
++        }
++        for (int index = startIndex + 1; index < endIndex; index++) {
++            if (instructions[index] instanceof FieldInsnNode field
++                && field.getOpcode() == Opcodes.GETSTATIC
++                && field.owner.equals(owner)
++                && field.name.equals(name)) {
++                return index;
++            }
++        }
++        return -1;
++    }
++
++    private static MethodNode methodNode(final Class<?> owner, final String methodName) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.getName() + '#' + methodName));
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityTickAndSyncHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityTickAndSyncHotPathTest.java
+index 482e1e2febb4ddfb0508706b1a4cea5800bc955a..0596e6f34cd3593033c64cdcb6308751f2977259 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/EntityTickAndSyncHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityTickAndSyncHotPathTest.java
+@@ -14,6 +14,7 @@ import net.minecraft.network.syncher.EntityDataAccessor;
+ import net.minecraft.network.syncher.EntityDataSerializers;
+ import net.minecraft.network.syncher.SyncedDataHolder;
+ import net.minecraft.network.syncher.SynchedEntityData;
++import net.minecraft.server.level.ServerEntity;
+ import net.minecraft.world.entity.LivingEntity;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+@@ -99,6 +100,59 @@ class EntityTickAndSyncHotPathTest {
+         assertTrue(emptyTarget <= pendingEffects, "Empty effects must still process queued Bukkit changes");
+     }
+ 
++    @Test
++    void unchangedMovementSkipsSquaredDistanceOnlyOnTheOptimizedPath() throws IOException {
++        final AbstractInsnNode[] instructions = methodNode(ServerEntity.class, "sendChanges").instructions.toArray();
++        final int movementRead = invocationIndex(instructions, "net/minecraft/world/entity/Entity", "getDeltaMovement");
++        final int distanceCalculation = invocationIndexAfter(
++            instructions,
++            movementRead,
++            "net/minecraft/world/phys/Vec3",
++            "distanceToSqr"
++        );
++
++        assertTrue(
++            hasInvocationBetween(
++                instructions,
++                movementRead,
++                distanceCalculation,
++                "org/leavesx/leavesx/config/LeavesXRuntime",
++                "entityStateOptimizations"
++            ),
++            "The identity fast path must remain controlled by entity-state-optimizations"
++        );
++        assertTrue(
++            hasReferenceComparisonBetween(instructions, movementRead, distanceCalculation),
++            "An unchanged immutable Vec3 should bypass the redundant squared-distance calculation"
++        );
++    }
++
++    @Test
++    void zeroFrozenTicksAvoidRedundantSynchronizedDataWrites() throws IOException {
++        final AbstractInsnNode[] instructions = methodNode(LivingEntity.class, "aiStep").instructions.toArray();
++        final int frozenTicksRead = invocationIndex(instructions, "getTicksFrozen");
++        final int frozenTicksWrite = invocationIndexAfter(
++            instructions,
++            frozenTicksRead,
++            "setTicksFrozen"
++        );
++
++        assertTrue(
++            hasInvocationBetween(
++                instructions,
++                frozenTicksRead,
++                frozenTicksWrite,
++                "org/leavesx/leavesx/config/LeavesXRuntime",
++                "entityStateOptimizations"
++            ),
++            "The frozen-tick fast path must remain controlled by entity-state-optimizations"
++        );
++        assertTrue(
++            hasConditionalJumpBetween(instructions, frozenTicksRead, frozenTicksWrite),
++            "A zero frozen-tick value should branch around setTicksFrozen"
++        );
++    }
++
+     private static List<MethodInsnNode> methodCalls(final Class<?> owner, final String methodName) throws IOException {
+         return Arrays.stream(methodNode(owner, methodName).instructions.toArray())
+             .filter(MethodInsnNode.class::isInstance)
+@@ -124,6 +178,84 @@ class EntityTickAndSyncHotPathTest {
+         throw new AssertionError("Missing invocation " + owner + '#' + name);
+     }
+ 
++    private static int invocationIndex(final AbstractInsnNode[] instructions, final String name) {
++        for (int index = 0; index < instructions.length; index++) {
++            if (instructions[index] instanceof MethodInsnNode call && call.name.equals(name)) {
++                return index;
++            }
++        }
++        throw new AssertionError("Missing invocation " + name);
++    }
++
++    private static int invocationIndexAfter(
++        final AbstractInsnNode[] instructions,
++        final int startIndex,
++        final String owner,
++        final String name
++    ) {
++        for (int index = startIndex + 1; index < instructions.length; index++) {
++            if (instructions[index] instanceof MethodInsnNode call && call.owner.equals(owner) && call.name.equals(name)) {
++                return index;
++            }
++        }
++        throw new AssertionError("Missing invocation " + owner + '#' + name + " after instruction " + startIndex);
++    }
++
++    private static int invocationIndexAfter(
++        final AbstractInsnNode[] instructions,
++        final int startIndex,
++        final String name
++    ) {
++        for (int index = startIndex + 1; index < instructions.length; index++) {
++            if (instructions[index] instanceof MethodInsnNode call && call.name.equals(name)) {
++                return index;
++            }
++        }
++        throw new AssertionError("Missing invocation " + name + " after instruction " + startIndex);
++    }
++
++    private static boolean hasInvocationBetween(
++        final AbstractInsnNode[] instructions,
++        final int startIndex,
++        final int endIndex,
++        final String owner,
++        final String name
++    ) {
++        for (int index = startIndex + 1; index < endIndex; index++) {
++            if (instructions[index] instanceof MethodInsnNode call && call.owner.equals(owner) && call.name.equals(name)) {
++                return true;
++            }
++        }
++        return false;
++    }
++
++    private static boolean hasReferenceComparisonBetween(
++        final AbstractInsnNode[] instructions,
++        final int startIndex,
++        final int endIndex
++    ) {
++        for (int index = startIndex + 1; index < endIndex; index++) {
++            final int opcode = instructions[index].getOpcode();
++            if (opcode == Opcodes.IF_ACMPEQ || opcode == Opcodes.IF_ACMPNE) {
++                return true;
++            }
++        }
++        return false;
++    }
++
++    private static boolean hasConditionalJumpBetween(
++        final AbstractInsnNode[] instructions,
++        final int startIndex,
++        final int endIndex
++    ) {
++        for (int index = startIndex + 1; index < endIndex; index++) {
++            if (instructions[index] instanceof JumpInsnNode) {
++                return true;
++            }
++        }
++        return false;
++    }
++
+     private static int fieldIndex(final AbstractInsnNode[] instructions, final String owner, final String name) {
+         for (int index = 0; index < instructions.length; index++) {
+             if (instructions[index] instanceof FieldInsnNode field && field.owner.equals(owner) && field.name.equals(name)) {

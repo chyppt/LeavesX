@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 19:42:31 +0800
+Subject: [PATCH] Reuse container opener recount scans for bate52
+
+
+diff --git a/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java b/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
+index 52737172ccfa0c7c977e4f2fe1db242e0bb92d25..45cac88755c1aefd64b2b8ef63adf7913678e3e8 100644
+--- a/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
++++ b/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
+@@ -123,14 +123,19 @@ public abstract class ContainerOpenersCounter {
+     }
+ 
+     public void recheckOpeners(final Level level, final BlockPos pos, final BlockState blockState) {
+-        List<ContainerUser> containerUsers = this.getEntitiesWithContainerOpen(level, pos);
+-        this.maxInteractionRange = 0.0;
+-
+-        for (ContainerUser containerUser : containerUsers) {
+-            this.maxInteractionRange = Math.max(containerUser.getContainerInteractionRange(), this.maxInteractionRange);
++        final int detectedOpeners;
++        if (org.leavesx.leavesx.config.LeavesXRuntime.blockEntityOptimizations()) {
++            detectedOpeners = this.leavesXCountOpeners(level, pos);
++        } else {
++            final List<ContainerUser> containerUsers = this.getEntitiesWithContainerOpen(level, pos);
++            this.maxInteractionRange = 0.0;
++            for (final ContainerUser containerUser : containerUsers) {
++                this.maxInteractionRange = Math.max(containerUser.getContainerInteractionRange(), this.maxInteractionRange);
++            }
++            detectedOpeners = containerUsers.size();
+         }
+ 
+-        int openCount = containerUsers.size();
++        int openCount = detectedOpeners;
+         if (this.opened) openCount++; // CraftBukkit - add dummy count from API
+         int prevCount = this.openCount;
+         if (prevCount != openCount) {
+@@ -164,6 +169,20 @@ public abstract class ContainerOpenersCounter {
+         }
+     }
+ 
++    private int leavesXCountOpeners(final Level level, final BlockPos pos) {
++        final double range = this.maxInteractionRange + 4.0;
++        final AABB searchBox = new AABB(pos).inflate(range);
++        try (Level.LeavesXEntityQueryBuffer scan = Level.leavesX$acquireEntityQueryBuffer()) {
++            final List<Entity> entities = scan.query(level, null, searchBox, entity -> this.hasContainerOpen(entity, pos));
++            this.maxInteractionRange = 0.0;
++            for (final Entity entity : entities) {
++                final ContainerUser containerUser = (ContainerUser)entity;
++                this.maxInteractionRange = Math.max(containerUser.getContainerInteractionRange(), this.maxInteractionRange);
++            }
++            return entities.size();
++        }
++    }
++
+     public int getOpenerCount() {
+         return this.openCount;
+     }

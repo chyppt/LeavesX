@@ -1,0 +1,362 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 17:20:24 +0800
+Subject: [PATCH] Improve compute scheduling and backpressure for bate44
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 42f4f80e49ed35a679b9228fa3f558df8334b2a4..ee31e45f98da51ee69d5f2a4b5a855d3274aff80 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -723,7 +723,7 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(line(
+             "并行调用",
+             metrics.parallelInvocations() + " 成功 / " + metrics.synchronousFallbacks() + " 同步执行 / "
+-                + metrics.failedInvocations() + " 失败",
++                + metrics.failedInvocations() + " 失败 / 背压接管 " + metrics.backpressureCallerRuns(),
+             metrics.failedInvocations() == 0 ? NamedTextColor.AQUA : NamedTextColor.RED
+         ));
+         sender.sendMessage(line(
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 203f2be81a48b4e651c6196cdb446649c883d637..68196179197b83185fd141b0b9cedb0b4d7e8359 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -5,7 +5,8 @@ import java.util.ArrayList;
+ import java.util.List;
+ import java.util.concurrent.ArrayBlockingQueue;
+ import java.util.concurrent.CancellationException;
+-import java.util.concurrent.Future;
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.RejectedExecutionException;
+ import java.util.concurrent.ThreadPoolExecutor;
+ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.atomic.AtomicLong;
+@@ -17,7 +18,7 @@ public final class LeavesXComputeExecutor {
+ 
+     private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXComputeExecutor.class);
+     private static final int MAX_QUEUED_TASKS = 128;
+-    private static final int MAX_AUTOMATIC_WORKERS = 8;
++    private static final int MAX_AUTOMATIC_WORKERS = 12;
+     private static volatile ThreadPoolExecutor executor;
+     private static volatile int workerCount = 1;
+     private static volatile int minimumItemsPerWorker = 64;
+@@ -27,6 +28,7 @@ public final class LeavesXComputeExecutor {
+     private static final AtomicLong insufficientPartitionFallbackCount = new AtomicLong();
+     private static final AtomicLong unavailableParallelismFallbackCount = new AtomicLong();
+     private static final AtomicLong failedInvocationCount = new AtomicLong();
++    private static final AtomicLong backpressureCallerRunCount = new AtomicLong();
+     private static final WorkloadCounters[] WORKLOAD_COUNTERS = createWorkloadCounters();
+ 
+     private LeavesXComputeExecutor() {
+@@ -50,6 +52,7 @@ public final class LeavesXComputeExecutor {
+         insufficientPartitionFallbackCount.set(0L);
+         unavailableParallelismFallbackCount.set(0L);
+         failedInvocationCount.set(0L);
++        backpressureCallerRunCount.set(0L);
+         for (final WorkloadCounters counters : WORKLOAD_COUNTERS) {
+             counters.reset();
+         }
+@@ -67,13 +70,19 @@ public final class LeavesXComputeExecutor {
+                 .build(),
+             new ThreadPoolExecutor.AbortPolicy()
+         );
+-        executor.allowCoreThreadTimeOut(true);
++        // Workers remain lazy, but a started pool stays warm between sparse large jobs to avoid repeat start latency.
++        executor.allowCoreThreadTimeOut(false);
+     }
+ 
+     public static int workerCount() {
+         return workerCount;
+     }
+ 
++    static boolean allowsCoreThreadTimeout() {
++        final ThreadPoolExecutor current = executor;
++        return current != null && current.allowsCoreThreadTimeOut();
++    }
++
+     static int automaticWorkerCount(final int availableProcessors) {
+         return Math.max(1, Math.min(MAX_AUTOMATIC_WORKERS, availableProcessors - 2));
+     }
+@@ -150,56 +159,33 @@ public final class LeavesXComputeExecutor {
+         final int rangeSize = (size + taskCount - 1) / taskCount;
+         final int expectedTaskCount = (size + rangeSize - 1) / rangeSize;
+         final int callerTaskIndex = expectedTaskCount - 1;
+-        final List<Future<?>> futures = new ArrayList<>(callerTaskIndex);
+-        boolean succeeded = true;
+-        try {
+-            for (int taskIndex = 0; taskIndex < callerTaskIndex; taskIndex++) {
+-                final int rangeTaskIndex = taskIndex;
+-                final int rangeStart = taskIndex * rangeSize;
+-                final int rangeEnd = Math.min(size, rangeStart + rangeSize);
+-                futures.add(current.submit(() -> task.run(rangeTaskIndex, rangeStart, rangeEnd)));
+-            }
+-        } catch (final RuntimeException submissionFailure) {
+-            succeeded = false;
+-            LOGGER.error("LeavesX parallel computation could not be submitted; recomputing on the main thread", submissionFailure);
+-        }
+-
+-        boolean callerRangeCompleted = false;
+-        if (futures.size() == callerTaskIndex) {
+-            final int callerRangeStart = callerTaskIndex * rangeSize;
++        final RangeInvocation invocation = new RangeInvocation(task, callerTaskIndex);
++        for (int taskIndex = 0; taskIndex < callerTaskIndex; taskIndex++) {
++            final int rangeStart = taskIndex * rangeSize;
++            final int rangeEnd = Math.min(size, rangeStart + rangeSize);
+             try {
+-                task.run(callerTaskIndex, callerRangeStart, size);
+-                callerRangeCompleted = true;
+-            } catch (final RuntimeException | Error computationFailure) {
+-                succeeded = false;
+-                LOGGER.error("LeavesX caller-side computation failed; recomputing on the main thread", computationFailure);
++                current.execute(new RangeRunnable(invocation, taskIndex, rangeStart, rangeEnd));
++            } catch (final RejectedExecutionException rejection) {
++                // Surrender only the rejected partition to the tick thread; recomputing the complete snapshot would
++                // duplicate already completed work and create a larger single-tick latency spike.
++                invocation.runOnCaller(taskIndex, rangeStart, rangeEnd, true);
++            } catch (final RuntimeException submissionFailure) {
++                LOGGER.error(
++                    "LeavesX parallel computation could not be submitted; running the rejected range on the main thread",
++                    submissionFailure
++                );
++                invocation.runOnCaller(taskIndex, rangeStart, rangeEnd, true);
+             }
+         }
+ 
+-        boolean interrupted = false;
+-        for (final Future<?> future : futures) {
+-            boolean completed = false;
+-            while (!completed) {
+-                try {
+-                    future.get();
+-                    completed = true;
+-                } catch (final InterruptedException interruption) {
+-                    interrupted = true;
+-                    succeeded = false;
+-                } catch (final java.util.concurrent.ExecutionException executionFailure) {
+-                    succeeded = false;
+-                    completed = true;
+-                    LOGGER.error("LeavesX parallel computation failed; recomputing on the main thread", executionFailure);
+-                } catch (final CancellationException cancellation) {
+-                    succeeded = false;
+-                    completed = true;
+-                }
+-            }
+-        }
+-        if (interrupted) {
+-            Thread.currentThread().interrupt();
++        final int callerRangeStart = callerTaskIndex * rangeSize;
++        invocation.runOnCaller(callerTaskIndex, callerRangeStart, size, false);
++        invocation.awaitWorkers();
++        final Throwable failure = invocation.failure;
++        if (failure != null) {
++            LOGGER.error("LeavesX parallel computation failed; recomputing on the main thread", failure);
+         }
+-        final boolean completed = succeeded && callerRangeCompleted && futures.size() + 1 == expectedTaskCount;
++        final boolean completed = failure == null;
+         if (completed) {
+             parallelInvocationCount.incrementAndGet();
+             workloadCounters.parallelInvocations.incrementAndGet();
+@@ -245,6 +231,7 @@ public final class LeavesXComputeExecutor {
+             insufficientPartitionFallbacks,
+             unavailableParallelismFallbacks,
+             failedInvocationCount.get(),
++            backpressureCallerRunCount.get(),
+             List.copyOf(workloads)
+         );
+     }
+@@ -254,7 +241,11 @@ public final class LeavesXComputeExecutor {
+         final ThreadPoolExecutor current = executor;
+         executor = null;
+         if (current != null) {
+-            current.shutdownNow();
++            for (final Runnable pending : current.shutdownNow()) {
++                if (pending instanceof RangeRunnable range) {
++                    range.cancel();
++                }
++            }
+         }
+     }
+ 
+@@ -294,6 +285,7 @@ public final class LeavesXComputeExecutor {
+         long insufficientPartitionFallbacks,
+         long unavailableParallelismFallbacks,
+         long failedInvocations,
++        long backpressureCallerRuns,
+         List<WorkloadMetrics> workloads
+     ) {
+     }
+@@ -353,4 +345,104 @@ public final class LeavesXComputeExecutor {
+             );
+         }
+     }
++
++    /** Coordinates one invocation without allocating a Future/list pair for every worker partition. */
++    private static final class RangeInvocation {
++
++        private final RangeTask task;
++        private final CountDownLatch workersDone;
++        private volatile Throwable failure;
++
++        private RangeInvocation(final RangeTask task, final int workerRangeCount) {
++            this.task = task;
++            this.workersDone = new CountDownLatch(workerRangeCount);
++        }
++
++        private void runWorker(final int taskIndex, final int startInclusive, final int endExclusive) {
++            try {
++                this.task.run(taskIndex, startInclusive, endExclusive);
++            } catch (final Throwable computationFailure) {
++                this.recordFailure(computationFailure);
++            } finally {
++                this.workersDone.countDown();
++            }
++        }
++
++        private void runOnCaller(
++            final int taskIndex,
++            final int startInclusive,
++            final int endExclusive,
++            final boolean backpressure
++        ) {
++            if (backpressure) {
++                backpressureCallerRunCount.incrementAndGet();
++            }
++            try {
++                this.task.run(taskIndex, startInclusive, endExclusive);
++            } catch (final Throwable computationFailure) {
++                this.recordFailure(computationFailure);
++            } finally {
++                if (backpressure) {
++                    this.workersDone.countDown();
++                }
++            }
++        }
++
++        private void awaitWorkers() {
++            boolean interrupted = false;
++            while (true) {
++                try {
++                    this.workersDone.await();
++                    break;
++                } catch (final InterruptedException interruption) {
++                    interrupted = true;
++                    this.recordFailure(interruption);
++                }
++            }
++            if (interrupted) {
++                Thread.currentThread().interrupt();
++            }
++        }
++
++        private void cancelWorker() {
++            this.recordFailure(new CancellationException("LeavesX compute range cancelled"));
++            this.workersDone.countDown();
++        }
++
++        private synchronized void recordFailure(final Throwable computationFailure) {
++            if (this.failure == null) {
++                this.failure = computationFailure;
++            }
++        }
++    }
++
++    /** Runnable wrapper used by the bounded executor queue. */
++    private static final class RangeRunnable implements Runnable {
++
++        private final RangeInvocation invocation;
++        private final int taskIndex;
++        private final int startInclusive;
++        private final int endExclusive;
++
++        private RangeRunnable(
++            final RangeInvocation invocation,
++            final int taskIndex,
++            final int startInclusive,
++            final int endExclusive
++        ) {
++            this.invocation = invocation;
++            this.taskIndex = taskIndex;
++            this.startInclusive = startInclusive;
++            this.endExclusive = endExclusive;
++        }
++
++        @Override
++        public void run() {
++            this.invocation.runWorker(this.taskIndex, this.startInclusive, this.endExclusive);
++        }
++
++        private void cancel() {
++            this.invocation.cancelWorker();
++        }
++    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index c0c87f60fe80dded3fc11aa14df08f6a02ec7c96..85910345c0619e4b60326293f933346429d68add 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import java.util.concurrent.CountDownLatch;
+ import java.util.concurrent.TimeUnit;
++import java.util.concurrent.ThreadPoolExecutor;
+ import java.util.concurrent.atomic.AtomicBoolean;
+ import java.util.concurrent.atomic.AtomicInteger;
+ import java.util.concurrent.atomic.AtomicIntegerArray;
+@@ -123,7 +124,56 @@ class LeavesXComputeExecutorTest {
+     void automaticWorkerSelectionLeavesHeadroomAndUsesLargeMachines() {
+         assertEquals(1, LeavesXComputeExecutor.automaticWorkerCount(2));
+         assertEquals(6, LeavesXComputeExecutor.automaticWorkerCount(8));
+-        assertEquals(8, LeavesXComputeExecutor.automaticWorkerCount(32));
++        assertEquals(12, LeavesXComputeExecutor.automaticWorkerCount(32));
++    }
++
++    @Test
++    void keepsStartedWorkersWarmBetweenSparseLargeJobs() {
++        LeavesXComputeExecutor.configure(2);
++        assertFalse(LeavesXComputeExecutor.allowsCoreThreadTimeout());
++    }
++
++    @Test
++    void takesOnlyRejectedPartitionsOnTheCallingThreadDuringBackpressure() throws Exception {
++        LeavesXComputeExecutor.configure(2, 64);
++        final ThreadPoolExecutor executor = executor();
++        final CountDownLatch release = new CountDownLatch(1);
++        final CountDownLatch workersStarted = new CountDownLatch(2);
++        final Runnable blocker = () -> {
++            workersStarted.countDown();
++            try {
++                release.await();
++            } catch (final InterruptedException interruption) {
++                Thread.currentThread().interrupt();
++            }
++        };
++        executor.prestartAllCoreThreads();
++        executor.execute(blocker);
++        executor.execute(blocker);
++        assertTrue(workersStarted.await(2L, TimeUnit.SECONDS), "both compute workers must be occupied first");
++        for (int index = 0; index < 128; index++) {
++            executor.execute(blocker);
++        }
++        assertEquals(128, executor.getQueue().size(), "the synthetic workload must fill the bounded queue");
++
++        final AtomicIntegerArray counts = new AtomicIntegerArray(256);
++        assertTrue(LeavesXComputeExecutor.invokeRanges(256, 128, (taskIndex, start, end) -> {
++            for (int index = start; index < end; index++) {
++                counts.incrementAndGet(index);
++            }
++        }));
++
++        for (int index = 0; index < counts.length(); index++) {
++            assertEquals(1, counts.get(index), "backpressure must not duplicate index " + index);
++        }
++        assertTrue(LeavesXComputeExecutor.metrics().backpressureCallerRuns() > 0L);
++        release.countDown();
++    }
++
++    private static ThreadPoolExecutor executor() throws ReflectiveOperationException {
++        final var field = LeavesXComputeExecutor.class.getDeclaredField("executor");
++        field.setAccessible(true);
++        return (ThreadPoolExecutor) field.get(null);
+     }
+ 
+     @Test

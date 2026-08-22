@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 18:48:37 +0800
+Subject: [PATCH] Add pressure plate scan regression coverage for bate47
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PressurePlateEntityScanHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/PressurePlateEntityScanHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..b93201dedf2046c537fcf403250586008a9752fe
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/PressurePlateEntityScanHotPathTest.java
+@@ -0,0 +1,116 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotSame;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Method;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.level.block.BasePressurePlateBlock;
++import net.minecraft.world.level.block.PressurePlateBlock;
++import net.minecraft.world.level.block.WeightedPressurePlateBlock;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies pressure-plate scans reuse storage without interleaving entity queries and Bukkit events. */
++@Normal
++class PressurePlateEntityScanHotPathTest {
++
++    @Test
++    void basePressurePlateOwnsAReentrancySafeScanBuffer() throws IOException {
++        final ClassNode base = classNode(BasePressurePlateBlock.class);
++        final String scanName = base.name + "$LeavesXEntityScan";
++
++        assertEquals("Ljava/lang/ThreadLocal;", field(base, "LEAVESX_ENTITY_SCAN").desc);
++        final MethodNode acquire = method(base, "leavesXAcquireEntityScan");
++        assertTrue(hasInvocation(acquire, "java/lang/ThreadLocal", "get"));
++
++        final ClassNode scan = classNode(scanName.replace('/', '.'));
++        assertEquals("Ljava/util/List;", field(scan, "results").desc);
++        assertEquals("Z", field(scan, "inUse").desc);
++        assertEquals("Z", field(scan, "pooled").desc);
++        assertTrue(hasInvocation(method(scan, "query"), "net/minecraft/world/level/Level", "leavesX$getEntitiesOfClass"));
++        assertTrue(hasInvocation(method(scan, "close"), "java/util/List", "clear"));
++    }
++
++    @Test
++    void nestedScansDoNotReuseTheOuterEventList()
++        throws NoSuchMethodException, InvocationTargetException, IllegalAccessException {
++        final Method acquire = BasePressurePlateBlock.class.getDeclaredMethod("leavesXAcquireEntityScan");
++        acquire.setAccessible(true);
++        final Object outer = acquire.invoke(null);
++        final Object nested = acquire.invoke(null);
++        final Method close = outer.getClass().getDeclaredMethod("close");
++        close.setAccessible(true);
++
++        assertNotSame(outer, nested, "A plugin-triggered nested scan must not overwrite the outer entity order");
++        close.invoke(nested);
++        close.invoke(outer);
++        final Object reused = acquire.invoke(null);
++        assertSame(outer, reused, "The thread-local scan should be reused after the outer event loop finishes");
++        close.invoke(reused);
++    }
++
++    @Test
++    void bothPressurePlateKindsUseTheConfigurableBufferedQuery() throws IOException {
++        for (final Class<?> plateClass : List.of(PressurePlateBlock.class, WeightedPressurePlateBlock.class)) {
++            final MethodNode signalStrength = method(classNode(plateClass), "getSignalStrength");
++            final List<MethodInsnNode> calls = invocations(signalStrength);
++
++            assertTrue(calls.stream().anyMatch(call ->
++                call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++            ), plateClass.getSimpleName());
++            assertTrue(calls.stream().anyMatch(call ->
++                call.name.equals("leavesXAcquireEntityScan")
++                    && call.desc.equals("()Lnet/minecraft/world/level/block/BasePressurePlateBlock$LeavesXEntityScan;")
++            ), plateClass.getSimpleName());
++            assertTrue(calls.stream().anyMatch(call -> call.name.equals("query")), plateClass.getSimpleName());
++            assertTrue(calls.stream().anyMatch(call -> call.name.equals("close")), plateClass.getSimpleName());
++        }
++    }
++
++    private static FieldNode field(final ClassNode owner, final String name) {
++        return owner.fields.stream()
++            .filter(field -> field.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing field " + owner.name + '#' + name));
++    }
++
++    private static boolean hasInvocation(final MethodNode method, final String owner, final String name) {
++        return invocations(method).stream().anyMatch(call -> call.owner.equals(owner) && call.name.equals(name));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        return classNode(owner.getName());
++    }
++
++    private static ClassNode classNode(final String className) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(className).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

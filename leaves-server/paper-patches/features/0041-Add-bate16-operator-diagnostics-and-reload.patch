@@ -1,0 +1,1470 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 15 Aug 2026 10:27:37 +0800
+Subject: [PATCH] Add bate16 operator diagnostics and reload
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 5300eed1e144808f1124c2fcc336a5b7166280f6..cea8a0ef3119469b85c394d18580cfe1e957d3fe 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -53,20 +53,22 @@ import org.bukkit.plugin.Plugin;
+ import org.bukkit.util.StringUtil;
+ import org.leavesx.leavesx.config.LeavesXConfig;
+ import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.leavesx.leavesx.diagnostics.LeavesXSystemDiagnostics;
++import org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics;
+ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
+ 
+ /** Built-in, main-thread-safe performance diagnostics for LeavesX operators. */
+ public final class LeavesXCommand extends Command {
+ 
+     private static final List<String> SUBCOMMANDS = List.of(
+-        "status", "worlds", "entities", "hotspots", "blockentities", "blockhotspots", "tickets",
+-        "memory", "network", "threads", "config", "help"
++        "status", "all", "gui", "worlds", "entities", "hotspots", "blockentities", "blockhotspots",
++        "tickets", "memory", "network", "threads", "system", "stalls", "config", "help"
+     );
+ 
+     public LeavesXCommand(final String name) {
+         super(name);
+         this.description = "查看 LeavesX 服务器性能状态";
+-        this.usageMessage = "/leavesx <status|worlds|entities|hotspots|blockentities|blockhotspots|tickets|memory|network|threads|config>";
++        this.usageMessage = "/leavesx <status|all|gui|worlds|entities|hotspots|blockentities|blockhotspots|tickets|memory|network|threads|system|stalls|config>";
+         this.setPermission("leavesx.command.performance");
+     }
+ 
+@@ -79,6 +81,8 @@ public final class LeavesXCommand extends Command {
+         final String subcommand = args.length == 0 ? "status" : args[0].toLowerCase(Locale.ROOT);
+         switch (subcommand) {
+             case "status" -> sendStatus(sender);
++            case "all" -> sendAll(sender, args);
++            case "gui" -> LeavesXDiagnosticsGui.open(sender);
+             case "worlds" -> sendWorlds(sender);
+             case "entities" -> sendEntities(sender, args);
+             case "hotspots" -> sendHotspots(sender, args);
+@@ -88,6 +92,8 @@ public final class LeavesXCommand extends Command {
+             case "memory" -> sendMemory(sender);
+             case "network" -> sendNetwork(sender);
+             case "threads" -> sendThreads(sender);
++            case "system" -> sendSystem(sender);
++            case "stalls" -> sendStalls(sender, args);
+             case "config" -> sendConfig(sender);
+             case "help" -> sendHelp(sender);
+             default -> {
+@@ -108,7 +114,11 @@ public final class LeavesXCommand extends Command {
+         if (args.length == 1) {
+             return StringUtil.copyPartialMatches(args[0], SUBCOMMANDS, new ArrayList<>());
+         }
+-        if ((args[0].equalsIgnoreCase("entities")
++        if (args.length == 2 && args[0].equalsIgnoreCase("stalls")) {
++            return StringUtil.copyPartialMatches(args[1], List.of("5", "10", "20", "clear"), new ArrayList<>());
++        }
++        if ((args[0].equalsIgnoreCase("all")
++            || args[0].equalsIgnoreCase("entities")
+             || args[0].equalsIgnoreCase("hotspots")
+             || args[0].equalsIgnoreCase("blockentities")
+             || args[0].equalsIgnoreCase("blockhotspots")
+@@ -122,6 +132,35 @@ public final class LeavesXCommand extends Command {
+         return List.of();
+     }
+ 
++    private static void sendAll(final CommandSender sender, final String[] args) {
++        final Selection selection = selectWorldsAndLimit(sender, args);
++        if (selection == null) {
++            return;
++        }
++
++        final long startedAt = System.nanoTime();
++        // The complete report shares the expensive world scans instead of invoking every subcommand independently.
++        final EntitySnapshot entities = collectEntities(selection.worlds());
++        final BlockEntitySnapshot blockEntities = collectBlockEntities(selection.worlds());
++
++        sendStatus(sender);
++        sendWorlds(sender, selection.worlds(), entities);
++        sendEntities(sender, selection, entities);
++        sendHotspots(sender, selection, entities);
++        sendBlockEntities(sender, selection, blockEntities);
++        sendBlockHotspots(sender, selection, blockEntities);
++        sendTickets(sender, selection);
++        sendMemory(sender);
++        sendNetwork(sender);
++        sendThreads(sender);
++        sendSystem(sender);
++        sendStalls(sender, Math.min(5, selection.limit()));
++        sendConfig(sender);
++
++        final double elapsedMilliseconds = (System.nanoTime() - startedAt) / 1_000_000.0D;
++        sender.sendMessage(line("诊断采样耗时", oneDecimal(elapsedMilliseconds) + " ms", msptColor(elapsedMilliseconds)));
++    }
++
+     private static void sendStatus(final CommandSender sender) {
+         final double[] tps = Bukkit.getTPS();
+         int chunks = 0;
+@@ -146,15 +185,19 @@ public final class LeavesXCommand extends Command {
+     }
+ 
+     private static void sendWorlds(final CommandSender sender) {
++        final List<World> worlds = Bukkit.getWorlds();
++        sendWorlds(sender, worlds, collectEntities(worlds));
++    }
++
++    private static void sendWorlds(
++        final CommandSender sender,
++        final List<World> worlds,
++        final EntitySnapshot entitySnapshot
++    ) {
+         sendHeader(sender, "世界负载");
+-        for (final World world : Bukkit.getWorlds()) {
++        for (final World world : worlds) {
+             final ServerLevel level = ((CraftWorld)world).getHandle();
+-            int tickingEntities = 0;
+-            for (final net.minecraft.world.entity.Entity entity : FeatureHooks.getAllEntities(level)) {
+-                if (level.isPositionEntityTicking(entity.blockPosition())) {
+-                    tickingEntities++;
+-                }
+-            }
++            final int tickingEntities = entitySnapshot.tickingByWorld().getOrDefault(world.getKey().toString(), 0);
+             final long pendingUnloads = level.moonrise$getChunkTaskScheduler()
+                 .chunkHolderManager.leavesX$getPendingUnloadCount();
+             sender.sendMessage(Component.text()
+@@ -173,29 +216,23 @@ public final class LeavesXCommand extends Command {
+         if (selection == null) {
+             return;
+         }
++        sendEntities(sender, selection, collectEntities(selection.worlds()));
++    }
+ 
+-        final Map<Identifier, MutableEntityCount> counts = new HashMap<>();
+-        int total = 0;
+-        int ticking = 0;
+-        for (final World world : selection.worlds()) {
+-            final ServerLevel level = ((CraftWorld)world).getHandle();
+-            for (final net.minecraft.world.entity.Entity entity : FeatureHooks.getAllEntities(level)) {
+-                final boolean entityTicking = level.isPositionEntityTicking(entity.blockPosition());
+-                final MutableEntityCount count = counts.computeIfAbsent(EntityType.getKey(entity.getType()), ignored -> new MutableEntityCount());
+-                count.total++;
+-                total++;
+-                if (entityTicking) {
+-                    count.ticking++;
+-                    ticking++;
+-                }
+-            }
+-        }
+-
+-        final List<Map.Entry<Identifier, MutableEntityCount>> ordered = new ArrayList<>(counts.entrySet());
++    private static void sendEntities(
++        final CommandSender sender,
++        final Selection selection,
++        final EntitySnapshot snapshot
++    ) {
++        final List<Map.Entry<Identifier, MutableEntityCount>> ordered = new ArrayList<>(snapshot.counts().entrySet());
+         ordered.sort(Comparator.<Map.Entry<Identifier, MutableEntityCount>>comparingInt(entry -> entry.getValue().total)
+             .reversed().thenComparing(entry -> entry.getKey().toString()));
+         sendHeader(sender, "实体类型");
+-        sender.sendMessage(Component.text("总数 " + total + "，活跃 " + ticking + "，非活跃 " + (total - ticking), NamedTextColor.GRAY));
++        sender.sendMessage(Component.text(
++            "总数 " + snapshot.total() + "，活跃 " + snapshot.ticking() + "，非活跃 "
++                + (snapshot.total() - snapshot.ticking()),
++            NamedTextColor.GRAY
++        ));
+         for (int index = 0; index < Math.min(selection.limit(), ordered.size()); index++) {
+             final Map.Entry<Identifier, MutableEntityCount> entry = ordered.get(index);
+             final MutableEntityCount count = entry.getValue();
+@@ -211,48 +248,76 @@ public final class LeavesXCommand extends Command {
+         if (selection == null) {
+             return;
+         }
++        sendHotspots(sender, selection, collectEntities(selection.worlds()));
++    }
+ 
++    private static void sendHotspots(
++        final CommandSender sender,
++        final Selection selection,
++        final EntitySnapshot snapshot
++    ) {
++        final List<EntityHotspot> hotspots = new ArrayList<>(snapshot.hotspots());
++        hotspots.sort(Comparator.comparingInt(EntityHotspot::total).reversed()
++            .thenComparing(EntityHotspot::world).thenComparingInt(EntityHotspot::chunkX).thenComparingInt(EntityHotspot::chunkZ));
++        sendHeader(sender, "实体密集区块");
++        for (int index = 0; index < Math.min(selection.limit(), hotspots.size()); index++) {
++            final EntityHotspot hotspot = hotspots.get(index);
++            sender.sendMessage(Component.text(
++                (index + 1) + ". " + hotspot.world() + " 区块[" + hotspot.chunkX() + ", " + hotspot.chunkZ()
++                    + "] 方块中心[" + ((hotspot.chunkX() << 4) + 8) + ", " + ((hotspot.chunkZ() << 4) + 8)
++                    + "]：" + hotspot.total() + "（活跃 " + hotspot.ticking() + "）",
++                hotspot.total() >= 250 ? NamedTextColor.RED : hotspot.total() >= 100 ? NamedTextColor.YELLOW : NamedTextColor.AQUA
++            ));
++        }
++        if (hotspots.isEmpty()) {
++            sender.sendMessage(Component.text("没有找到实体。", NamedTextColor.GRAY));
++        }
++    }
++
++    private static EntitySnapshot collectEntities(final List<World> worlds) {
++        final Map<Identifier, MutableEntityCount> counts = new HashMap<>();
++        final Map<String, Integer> tickingByWorld = new HashMap<>();
+         final List<EntityHotspot> hotspots = new ArrayList<>();
+-        for (final World world : selection.worlds()) {
++        int total = 0;
++        int tickingTotal = 0;
++
++        for (final World world : worlds) {
+             final ServerLevel level = ((CraftWorld)world).getHandle();
+-            final Long2IntOpenHashMap totals = new Long2IntOpenHashMap();
+-            final Long2IntOpenHashMap ticking = new Long2IntOpenHashMap();
++            final Long2IntOpenHashMap chunkTotals = new Long2IntOpenHashMap();
++            final Long2IntOpenHashMap chunkTicking = new Long2IntOpenHashMap();
++            int worldTicking = 0;
+             for (final net.minecraft.world.entity.Entity entity : FeatureHooks.getAllEntities(level)) {
++                final boolean entityTicking = level.isPositionEntityTicking(entity.blockPosition());
++                final MutableEntityCount count = counts.computeIfAbsent(
++                    EntityType.getKey(entity.getType()),
++                    ignored -> new MutableEntityCount()
++                );
+                 final long chunkKey = ChunkPos.pack(
+                     SectionPos.blockToSectionCoord(entity.getBlockX()),
+                     SectionPos.blockToSectionCoord(entity.getBlockZ())
+                 );
+-                totals.addTo(chunkKey, 1);
+-                if (level.isPositionEntityTicking(entity.blockPosition())) {
+-                    ticking.addTo(chunkKey, 1);
++                count.total++;
++                chunkTotals.addTo(chunkKey, 1);
++                total++;
++                if (entityTicking) {
++                    count.ticking++;
++                    chunkTicking.addTo(chunkKey, 1);
++                    worldTicking++;
++                    tickingTotal++;
+                 }
+             }
+-            for (final Long2IntMap.Entry entry : totals.long2IntEntrySet()) {
++            tickingByWorld.put(world.getKey().toString(), worldTicking);
++            for (final Long2IntMap.Entry entry : chunkTotals.long2IntEntrySet()) {
+                 hotspots.add(new EntityHotspot(
+                     world.getKey().toString(),
+                     ChunkPos.getX(entry.getLongKey()),
+                     ChunkPos.getZ(entry.getLongKey()),
+                     entry.getIntValue(),
+-                    ticking.get(entry.getLongKey())
++                    chunkTicking.get(entry.getLongKey())
+                 ));
+             }
+         }
+-
+-        hotspots.sort(Comparator.comparingInt(EntityHotspot::total).reversed()
+-            .thenComparing(EntityHotspot::world).thenComparingInt(EntityHotspot::chunkX).thenComparingInt(EntityHotspot::chunkZ));
+-        sendHeader(sender, "实体密集区块");
+-        for (int index = 0; index < Math.min(selection.limit(), hotspots.size()); index++) {
+-            final EntityHotspot hotspot = hotspots.get(index);
+-            sender.sendMessage(Component.text(
+-                (index + 1) + ". " + hotspot.world() + " 区块[" + hotspot.chunkX() + ", " + hotspot.chunkZ()
+-                    + "] 方块中心[" + ((hotspot.chunkX() << 4) + 8) + ", " + ((hotspot.chunkZ() << 4) + 8)
+-                    + "]：" + hotspot.total() + "（活跃 " + hotspot.ticking() + "）",
+-                hotspot.total() >= 250 ? NamedTextColor.RED : hotspot.total() >= 100 ? NamedTextColor.YELLOW : NamedTextColor.AQUA
+-            ));
+-        }
+-        if (hotspots.isEmpty()) {
+-            sender.sendMessage(Component.text("没有找到实体。", NamedTextColor.GRAY));
+-        }
++        return new EntitySnapshot(counts, tickingByWorld, hotspots, total, tickingTotal);
+     }
+ 
+     private static void sendBlockEntities(final CommandSender sender, final String[] args) {
+@@ -260,8 +325,14 @@ public final class LeavesXCommand extends Command {
+         if (selection == null) {
+             return;
+         }
++        sendBlockEntities(sender, selection, collectBlockEntities(selection.worlds()));
++    }
+ 
+-        final BlockEntitySnapshot snapshot = collectBlockEntities(selection.worlds());
++    private static void sendBlockEntities(
++        final CommandSender sender,
++        final Selection selection,
++        final BlockEntitySnapshot snapshot
++    ) {
+         final List<Map.Entry<Identifier, MutableBlockEntityCount>> ordered = new ArrayList<>(snapshot.counts().entrySet());
+         ordered.sort(Comparator.<Map.Entry<Identifier, MutableBlockEntityCount>>comparingInt(entry -> entry.getValue().total)
+             .reversed().thenComparing(entry -> entry.getKey().toString()));
+@@ -286,8 +357,15 @@ public final class LeavesXCommand extends Command {
+         if (selection == null) {
+             return;
+         }
++        sendBlockHotspots(sender, selection, collectBlockEntities(selection.worlds()));
++    }
+ 
+-        final List<BlockEntityHotspot> hotspots = collectBlockEntities(selection.worlds()).hotspots();
++    private static void sendBlockHotspots(
++        final CommandSender sender,
++        final Selection selection,
++        final BlockEntitySnapshot snapshot
++    ) {
++        final List<BlockEntityHotspot> hotspots = new ArrayList<>(snapshot.hotspots());
+         hotspots.sort(Comparator.comparingInt(BlockEntityHotspot::total).reversed()
+             .thenComparing(BlockEntityHotspot::world)
+             .thenComparingInt(BlockEntityHotspot::chunkX)
+@@ -361,7 +439,10 @@ public final class LeavesXCommand extends Command {
+         if (selection == null) {
+             return;
+         }
++        sendTickets(sender, selection);
++    }
+ 
++    private static void sendTickets(final CommandSender sender, final Selection selection) {
+         final Map<String, MutableTicketCount> counts = new HashMap<>();
+         final List<PluginTicketCount> pluginTickets = new ArrayList<>();
+         int sourceChunks = 0;
+@@ -534,6 +615,135 @@ public final class LeavesXCommand extends Command {
+         ));
+     }
+ 
++    private static void sendSystem(final CommandSender sender) {
++        final LeavesXSystemDiagnostics.Snapshot snapshot = LeavesXSystemDiagnostics.capture();
++        final LeavesXSystemDiagnostics.CpuQuota quota = snapshot.cpuQuota();
++        final String quotaDescription;
++        if (!quota.known()) {
++            quotaDescription = "未知";
++        } else if (quota.unlimited()) {
++            quotaDescription = "无限制";
++        } else {
++            quotaDescription = oneDecimal(quota.processors()) + " 核（" + quota.quotaMicros() + "/"
++                + quota.periodMicros() + " 微秒）";
++        }
++
++        final String throttleDescription;
++        if (snapshot.throttledPeriods() < 0L) {
++            throttleDescription = "未知";
++        } else {
++            final double throttledRatio = snapshot.cpuPeriods() <= 0L
++                ? 0.0D
++                : snapshot.throttledPeriods() * 100.0D / snapshot.cpuPeriods();
++            throttleDescription = snapshot.throttledPeriods() + " 次 / "
++                + (snapshot.throttledMicros() < 0L
++                    ? "时长未知"
++                    : oneDecimal(snapshot.throttledMicros() / 1_000_000.0D) + " 秒") + " / "
++                + oneDecimal(throttledRatio) + "% 周期";
++        }
++
++        sendHeader(sender, "系统与配额");
++        sender.sendMessage(line("JVM 可用处理器", Integer.toString(snapshot.jvmProcessors()), NamedTextColor.AQUA));
++        sender.sendMessage(line("进程允许 CPU", valueOrUnknown(snapshot.allowedCpuList()), NamedTextColor.AQUA));
++        sender.sendMessage(line("cgroup CPU 集", valueOrUnknown(snapshot.effectiveCpuSet()), NamedTextColor.AQUA));
++        sender.sendMessage(line("cgroup CPU 配额", quotaDescription, quota.known() ? NamedTextColor.AQUA : NamedTextColor.YELLOW));
++        sender.sendMessage(line("CPU 节流累计", throttleDescription, snapshot.throttledPeriods() > 0L ? NamedTextColor.YELLOW : NamedTextColor.GREEN));
++        sender.sendMessage(line(
++            "CPU 负载",
++            "进程 " + formatPercent(snapshot.processCpuLoad()) + " / 系统 " + formatPercent(snapshot.systemCpuLoad()),
++            NamedTextColor.AQUA
++        ));
++        sender.sendMessage(line(
++            "物理内存",
++            formatUsedTotal(snapshot.physicalTotal(), snapshot.physicalFree()),
++            memoryPressureColor(snapshot.physicalTotal(), snapshot.physicalFree())
++        ));
++        sender.sendMessage(line(
++            "交换区",
++            formatUsedTotal(snapshot.swapTotal(), snapshot.swapFree()),
++            snapshot.swapTotal() > 0L && snapshot.swapFree() < snapshot.swapTotal() ? NamedTextColor.YELLOW : NamedTextColor.GREEN
++        ));
++        sender.sendMessage(line(
++            "cgroup 内存",
++            snapshot.cgroupMemoryCurrent() < 0L || snapshot.cgroupMemoryMaximum() < 0L
++                ? "未知"
++                : snapshot.cgroupMemoryMaximum() == Long.MAX_VALUE
++                ? formatBytes(snapshot.cgroupMemoryCurrent()) + " / 无限制"
++                : formatBytes(snapshot.cgroupMemoryCurrent()) + " / " + formatBytes(snapshot.cgroupMemoryMaximum()),
++            NamedTextColor.AQUA
++        ));
++    }
++
++    private static void sendStalls(final CommandSender sender, final String[] args) {
++        if (args.length >= 2 && args[1].equalsIgnoreCase("clear")) {
++            LeavesXTickDiagnostics.clear();
++            sender.sendMessage(Component.text("已清空保留的慢 Tick 记录。", NamedTextColor.GREEN));
++            return;
++        }
++
++        int limit = Math.min(10, LeavesXRuntime.diagnosticsDefaultResultLimit());
++        if (args.length >= 2) {
++            try {
++                limit = Math.clamp(Integer.parseInt(args[1]), 1, 50);
++            } catch (final NumberFormatException ignored) {
++                sender.sendMessage(Component.text("数量必须是 1 到 50 的整数，或使用 clear。", NamedTextColor.RED));
++                return;
++            }
++        }
++        sendStalls(sender, limit);
++    }
++
++    private static void sendStalls(final CommandSender sender, final int limit) {
++        final List<LeavesXTickDiagnostics.SlowTick> records = LeavesXTickDiagnostics.recent(limit);
++        sendHeader(sender, "最近慢 Tick");
++        sender.sendMessage(Component.text(
++            "进程启动后共记录 " + LeavesXTickDiagnostics.totalSlowTicks() + " 次，本次显示 " + records.size() + " 次。",
++            NamedTextColor.GRAY
++        ));
++        if (records.isEmpty()) {
++            sender.sendMessage(Component.text("尚未记录到超过 50 ms 的 Tick。", NamedTextColor.GREEN));
++            return;
++        }
++
++        for (int index = 0; index < records.size(); index++) {
++            final LeavesXTickDiagnostics.SlowTick record = records.get(index);
++            final double wallMilliseconds = record.wallNanos() / 1_000_000.0D;
++            final String cpuDescription;
++            if (record.cpuNanos() < 0L) {
++                cpuDescription = "CPU 未知";
++            } else {
++                final double cpuMilliseconds = record.cpuNanos() / 1_000_000.0D;
++                final double cpuRatio = record.wallNanos() == 0L ? 0.0D : record.cpuNanos() * 100.0D / record.wallNanos();
++                cpuDescription = "CPU " + oneDecimal(cpuMilliseconds) + " ms（" + oneDecimal(cpuRatio) + "%）";
++            }
++            sender.sendMessage(Component.text(
++                (index + 1) + ". Tick " + record.tick() + "：" + oneDecimal(wallMilliseconds) + " ms / "
++                    + cpuDescription + " / 落后 " + oneDecimal(record.behindNanos() / 1_000_000.0D) + " ms / "
++                    + record.type().displayName(),
++                stallColor(record.type())
++            ));
++
++            final LeavesXTickDiagnostics.Workload workload = record.workload();
++            sender.sendMessage(Component.text(
++                "   区块 " + workload.chunks() + " / 持有器 " + workload.holders() + " / 待卸载 "
++                    + workload.pendingUnloads() + " / 实体 " + workload.entities() + " / 玩家实体 " + workload.players(),
++                NamedTextColor.GRAY
++            ));
++            final LeavesXTickDiagnostics.StackSample sample = record.sample();
++            if (sample == null) {
++                sender.sendMessage(Component.text("   未截获线程栈，可能是 JVM、宿主暂停或调度器未及时运行。", NamedTextColor.YELLOW));
++                continue;
++            }
++            sender.sendMessage(Component.text(
++                "   线程状态 " + sample.state() + "，在 " + oneDecimal(sample.elapsedNanos() / 1_000_000.0D) + " ms 时采样",
++                NamedTextColor.GRAY
++            ));
++            for (int frameIndex = 0; frameIndex < Math.min(3, sample.frames().size()); frameIndex++) {
++                sender.sendMessage(Component.text("   -> " + sample.frames().get(frameIndex), NamedTextColor.DARK_GRAY));
++            }
++        }
++    }
++
+     private static void sendConfig(final CommandSender sender) {
+         final LeavesXConfig config = LeavesXRuntime.configuration();
+         sendHeader(sender, "LeavesX 配置状态");
+@@ -549,13 +759,16 @@ public final class LeavesXCommand extends Command {
+     private static void sendHelp(final CommandSender sender) {
+         sendHeader(sender, "命令帮助");
+         sender.sendMessage(Component.text("/leavesx status - TPS、MSPT、区块、实体和内存总览", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx all [世界] [数量] - 一次输出完整诊断", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx gui - 打开玩家诊断界面", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx worlds - 各世界区块、卸载队列、实体和方块实体", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx entities [世界] [数量] - 实体类型排行", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx hotspots [世界] [数量] - 实体密集区块坐标", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx blockentities [世界] [数量] - 方块实体类型排行", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx blockhotspots [世界] [数量] - 方块实体密集区块", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx tickets [世界] [数量] - 区块票据和插件强制区块", NamedTextColor.GRAY));
+-        sender.sendMessage(Component.text("/leavesx memory|network|threads|config - 对应详细状态", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx stalls [数量|clear] - 最近慢 Tick 的 CPU、等待和调用栈", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx memory|network|threads|system|config - 对应详细状态", NamedTextColor.GRAY));
+     }
+ 
+     private static Selection selectWorldsAndLimit(final CommandSender sender, final String[] args) {
+@@ -643,6 +856,21 @@ public final class LeavesXCommand extends Command {
+         return enabled ? "开启" : "关闭";
+     }
+ 
++    private static String valueOrUnknown(final String value) {
++        return value == null || value.isBlank() ? "未知" : value;
++    }
++
++    private static String formatPercent(final double ratio) {
++        return ratio < 0.0D ? "未知" : oneDecimal(ratio * 100.0D) + "%";
++    }
++
++    private static String formatUsedTotal(final long total, final long free) {
++        if (total < 0L || free < 0L) {
++            return "未知";
++        }
++        return formatBytes(Math.max(0L, total - free)) + " / " + formatBytes(total);
++    }
++
+     private static String formatLevelRange(final int minimum, final int maximum) {
+         return minimum == maximum ? Integer.toString(minimum) : minimum + "-" + maximum;
+     }
+@@ -707,6 +935,23 @@ public final class LeavesXCommand extends Command {
+         return entities < 2_000 ? NamedTextColor.GREEN : entities < 5_000 ? NamedTextColor.YELLOW : NamedTextColor.RED;
+     }
+ 
++    private static NamedTextColor memoryPressureColor(final long total, final long free) {
++        if (total <= 0L || free < 0L) {
++            return NamedTextColor.GRAY;
++        }
++        final double usedRatio = (double)(total - free) / (double)total;
++        return usedRatio >= 0.9D ? NamedTextColor.RED : usedRatio >= 0.8D ? NamedTextColor.YELLOW : NamedTextColor.GREEN;
++    }
++
++    private static NamedTextColor stallColor(final LeavesXTickDiagnostics.StallType type) {
++        return switch (type) {
++            case COMPUTE -> NamedTextColor.RED;
++            case WAIT_OR_SCHEDULING, JVM_OR_HOST_PAUSE -> NamedTextColor.YELLOW;
++            case MIXED -> NamedTextColor.GOLD;
++            case UNKNOWN -> NamedTextColor.GRAY;
++        };
++    }
++
+     private static final class MutableEntityCount {
+ 
+         private int total;
+@@ -738,6 +983,15 @@ public final class LeavesXCommand extends Command {
+     private record EntityHotspot(String world, int chunkX, int chunkZ, int total, int ticking) {
+     }
+ 
++    private record EntitySnapshot(
++        Map<Identifier, MutableEntityCount> counts,
++        Map<String, Integer> tickingByWorld,
++        List<EntityHotspot> hotspots,
++        int total,
++        int ticking
++    ) {
++    }
++
+     private record BlockEntitySnapshot(
+         Map<Identifier, MutableBlockEntityCount> counts,
+         List<BlockEntityHotspot> hotspots,
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java b/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..ee9e1e5292ce70847a268bc8377ac7a0f6eaf87c
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java
+@@ -0,0 +1,277 @@
++package org.leavesx.leavesx.command;
++
++import java.util.List;
++import java.util.Map;
++import java.util.Objects;
++import java.util.UUID;
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.NamedTextColor;
++import net.kyori.adventure.text.format.TextDecoration;
++import net.minecraft.server.level.ServerLevel;
++import org.bukkit.Bukkit;
++import org.bukkit.Material;
++import org.bukkit.World;
++import org.bukkit.command.CommandSender;
++import org.bukkit.craftbukkit.CraftWorld;
++import org.bukkit.entity.Player;
++import org.bukkit.event.EventHandler;
++import org.bukkit.event.Listener;
++import org.bukkit.event.inventory.InventoryClickEvent;
++import org.bukkit.event.inventory.InventoryDragEvent;
++import org.bukkit.inventory.Inventory;
++import org.bukkit.inventory.InventoryHolder;
++import org.bukkit.inventory.ItemStack;
++import org.leavesmc.leaves.plugin.MinecraftInternalPlugin;
++import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
++
++/** Read-only inventory entry point for LeavesX diagnostics. */
++final class LeavesXDiagnosticsGui implements Listener {
++
++    private static final int INVENTORY_SIZE = 45;
++    private static final LeavesXDiagnosticsGui INSTANCE = new LeavesXDiagnosticsGui();
++    private static final Map<Integer, GuiAction> ACTIONS = Map.ofEntries(
++        Map.entry(10, GuiAction.WORLDS),
++        Map.entry(11, GuiAction.ENTITIES),
++        Map.entry(12, GuiAction.ENTITY_HOTSPOTS),
++        Map.entry(13, GuiAction.BLOCK_ENTITIES),
++        Map.entry(14, GuiAction.BLOCK_HOTSPOTS),
++        Map.entry(15, GuiAction.TICKETS),
++        Map.entry(16, GuiAction.ALL),
++        Map.entry(28, GuiAction.MEMORY),
++        Map.entry(29, GuiAction.STALLS),
++        Map.entry(30, GuiAction.NETWORK),
++        Map.entry(31, GuiAction.SYSTEM),
++        Map.entry(32, GuiAction.THREADS),
++        Map.entry(34, GuiAction.CONFIG),
++        Map.entry(40, GuiAction.REFRESH),
++        Map.entry(44, GuiAction.CLOSE)
++    );
++    private static boolean listenerRegistered;
++
++    private LeavesXDiagnosticsGui() {
++    }
++
++    static void open(final CommandSender sender) {
++        if (!(sender instanceof Player player)) {
++            sender.sendMessage(Component.text("此界面只能由游戏内玩家打开，请使用 /leavesx all。", NamedTextColor.RED));
++            return;
++        }
++
++        ensureListenerRegistered();
++        final GuiHolder holder = new GuiHolder(player.getUniqueId());
++        final Inventory inventory = Bukkit.createInventory(
++            holder,
++            INVENTORY_SIZE,
++            plain("LeavesX 性能诊断", NamedTextColor.DARK_GREEN)
++        );
++        holder.bind(inventory);
++        populate(inventory);
++        player.openInventory(inventory);
++    }
++
++    private static void ensureListenerRegistered() {
++        // Commands and inventory events run on the server thread, so a plain one-time guard is sufficient here.
++        if (!listenerRegistered) {
++            Bukkit.getPluginManager().registerEvents(INSTANCE, MinecraftInternalPlugin.INSTANCE);
++            listenerRegistered = true;
++        }
++    }
++
++    private static void populate(final Inventory inventory) {
++        final Overview overview = collectOverview();
++        final ItemStack filler = item(Material.GRAY_STAINED_GLASS_PANE, " ", NamedTextColor.DARK_GRAY, List.of());
++        for (int slot = 0; slot < inventory.getSize(); slot++) {
++            inventory.setItem(slot, filler);
++        }
++
++        inventory.setItem(4, item(
++            Material.CLOCK,
++            "性能概览",
++            NamedTextColor.GOLD,
++            List.of(
++                "TPS " + oneDecimal(overview.tps()) + " / MSPT " + oneDecimal(overview.mspt()),
++                "区块 " + overview.chunks() + " / 待卸载 " + overview.pendingUnloads(),
++                "实体 " + overview.entities() + " / 方块实体 " + overview.blockEntities(),
++                "堆内存 " + oneDecimal(overview.usedHeapGiB()) + " / " + oneDecimal(overview.maximumHeapGiB()) + " GiB"
++            )
++        ));
++        inventory.setItem(10, actionItem(Material.FILLED_MAP, "世界负载", "区块、持有器、实体和卸载队列"));
++        inventory.setItem(11, actionItem(Material.ZOMBIE_HEAD, "实体类型", "查看实体数量和活跃数量"));
++        inventory.setItem(12, actionItem(Material.SPYGLASS, "实体热点", "查看实体密集区块坐标"));
++        inventory.setItem(13, actionItem(Material.HOPPER, "方块实体", "查看方块实体类型和更新数量"));
++        inventory.setItem(14, actionItem(Material.OBSERVER, "方块实体热点", "查看方块实体密集区块"));
++        inventory.setItem(15, actionItem(Material.NAME_TAG, "区块票据", "查看区块加载来源和插件票据"));
++        inventory.setItem(16, actionItem(Material.NETHER_STAR, "完整诊断", "一次输出全部诊断信息"));
++        inventory.setItem(28, actionItem(Material.REDSTONE_BLOCK, "内存", "堆、堆外、直接缓冲区和 GC"));
++        inventory.setItem(29, actionItem(Material.LIGHTNING_ROD, "慢 Tick", "查看计算、等待和现场调用栈"));
++        inventory.setItem(30, actionItem(Material.COMPARATOR, "网络", "连接、数据包、延迟和发送队列"));
++        inventory.setItem(31, actionItem(Material.COMPASS, "系统配额", "查看 CPU、cgroup、内存和节流"));
++        inventory.setItem(32, item(
++            Material.REDSTONE_TORCH,
++            "线程",
++            NamedTextColor.AQUA,
++            List.of(
++                "JVM 可用处理器 " + Runtime.getRuntime().availableProcessors(),
++                "LeavesX 工作线程 " + LeavesXComputeExecutor.workerCount(),
++                "点击输出完整线程状态"
++            )
++        ));
++        inventory.setItem(34, actionItem(Material.WRITABLE_BOOK, "配置状态", "查看当前生效的 LeavesX 设置"));
++        inventory.setItem(40, item(Material.RECOVERY_COMPASS, "刷新", NamedTextColor.GREEN, List.of("重新读取当前状态")));
++        inventory.setItem(44, item(Material.BARRIER, "关闭", NamedTextColor.RED, List.of()));
++    }
++
++    private static Overview collectOverview() {
++        int chunks = 0;
++        long pendingUnloads = 0L;
++        int entities = 0;
++        int blockEntities = 0;
++        for (final World world : Bukkit.getWorlds()) {
++            final ServerLevel level = ((CraftWorld)world).getHandle();
++            chunks += level.getChunkSource().getFullChunksCount();
++            pendingUnloads += level.moonrise$getChunkTaskScheduler().chunkHolderManager.leavesX$getPendingUnloadCount();
++            entities += level.getEntityCount();
++            blockEntities += world.getTileEntityCount();
++        }
++
++        final Runtime runtime = Runtime.getRuntime();
++        final long usedHeap = runtime.totalMemory() - runtime.freeMemory();
++        return new Overview(
++            Bukkit.getTPS()[0],
++            Bukkit.getAverageTickTime(),
++            chunks,
++            pendingUnloads,
++            entities,
++            blockEntities,
++            usedHeap / 1_073_741_824.0D,
++            runtime.maxMemory() / 1_073_741_824.0D
++        );
++    }
++
++    private static ItemStack actionItem(final Material material, final String name, final String description) {
++        return item(material, name, NamedTextColor.AQUA, List.of(description, "点击查看"));
++    }
++
++    private static ItemStack item(
++        final Material material,
++        final String name,
++        final NamedTextColor color,
++        final List<String> lore
++    ) {
++        final ItemStack item = ItemStack.of(material);
++        item.editMeta(meta -> {
++            meta.displayName(plain(name, color));
++            meta.lore(lore.stream().map(line -> plain(line, NamedTextColor.GRAY)).toList());
++        });
++        return item;
++    }
++
++    private static Component plain(final String text, final NamedTextColor color) {
++        return Component.text(text, color).decoration(TextDecoration.ITALIC, false);
++    }
++
++    private static String oneDecimal(final double value) {
++        return String.format(java.util.Locale.ROOT, "%.1f", value);
++    }
++
++    @EventHandler(ignoreCancelled = true)
++    public void onInventoryClick(final InventoryClickEvent event) {
++        if (!(event.getView().getTopInventory().getHolder() instanceof GuiHolder holder)) {
++            return;
++        }
++        event.setCancelled(true);
++        if (!(event.getWhoClicked() instanceof Player player) || !holder.viewer().equals(player.getUniqueId())) {
++            return;
++        }
++
++        final GuiAction action = ACTIONS.get(event.getRawSlot());
++        if (action == null) {
++            return;
++        }
++        if (action == GuiAction.CLOSE) {
++            player.closeInventory();
++            return;
++        }
++        if (action == GuiAction.REFRESH) {
++            populate(event.getView().getTopInventory());
++            return;
++        }
++
++        player.closeInventory();
++        Bukkit.getScheduler().runTask(MinecraftInternalPlugin.INSTANCE, () -> {
++            if (player.isOnline()) {
++                player.performCommand("leavesx " + action.command());
++            }
++        });
++    }
++
++    @EventHandler(ignoreCancelled = true)
++    public void onInventoryDrag(final InventoryDragEvent event) {
++        if (event.getView().getTopInventory().getHolder() instanceof GuiHolder) {
++            event.setCancelled(true);
++        }
++    }
++
++    private enum GuiAction {
++        WORLDS("worlds"),
++        ENTITIES("entities"),
++        ENTITY_HOTSPOTS("hotspots"),
++        BLOCK_ENTITIES("blockentities"),
++        BLOCK_HOTSPOTS("blockhotspots"),
++        TICKETS("tickets"),
++        ALL("all"),
++        MEMORY("memory"),
++        STALLS("stalls"),
++        NETWORK("network"),
++        SYSTEM("system"),
++        THREADS("threads"),
++        CONFIG("config"),
++        REFRESH(null),
++        CLOSE(null);
++
++        private final String command;
++
++        GuiAction(final String command) {
++            this.command = command;
++        }
++
++        private String command() {
++            return this.command;
++        }
++    }
++
++    private static final class GuiHolder implements InventoryHolder {
++
++        private final UUID viewer;
++        private Inventory inventory;
++
++        private GuiHolder(final UUID viewer) {
++            this.viewer = viewer;
++        }
++
++        private UUID viewer() {
++            return this.viewer;
++        }
++
++        private void bind(final Inventory inventory) {
++            this.inventory = inventory;
++        }
++
++        @Override
++        public Inventory getInventory() {
++            return Objects.requireNonNull(this.inventory, "LeavesX GUI inventory has not been bound yet");
++        }
++    }
++
++    private record Overview(
++        double tps,
++        double mspt,
++        int chunks,
++        long pendingUnloads,
++        int entities,
++        int blockEntities,
++        double usedHeapGiB,
++        double maximumHeapGiB
++    ) {
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index f9152d0f957e6d46c6f9c8bf95728ba08090cde8..70c801ec290ca710c84f58fdf3a541ba86db2f5f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
+ public final class LeavesXConfigBootstrap {
+ 
+     private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXConfigBootstrap.class);
++    private static volatile Path configuredPath;
+ 
+     private LeavesXConfigBootstrap() {
+     }
+@@ -20,13 +21,46 @@ public final class LeavesXConfigBootstrap {
+      * @param options parsed server command-line options
+      */
+     public static void load(final OptionSet options) {
+-        final Path path = ((File) options.valueOf("leavesx-settings")).toPath();
++        final Path path = ((File) options.valueOf("leavesx-settings")).toPath().toAbsolutePath().normalize();
+         final LeavesXConfig config = LeavesXConfigLoader.load(path);
+-        LeavesXRuntime.publish(config);
+         org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(
+             config.computeWorkers(),
+             config.minimumItemsPerWorker()
+         );
++        LeavesXRuntime.publish(config);
++        configuredPath = path;
++        logConfiguration(config);
++    }
++
++    /**
++     * Validates and publishes the current {@code leavesx.yml} without restarting the server.
++     *
++     * <p>The immutable runtime snapshot is replaced only after parsing and validation succeed. The compute pool is
++     * rebuilt only when its own settings changed, preserving metrics during ordinary configuration reloads.</p>
++     *
++     * @return newly published configuration
++     */
++    public static synchronized LeavesXConfig reload() {
++        final Path path = configuredPath;
++        if (path == null) {
++            throw new LeavesXConfigException("LeavesX configuration path is not initialized");
++        }
++
++        final LeavesXConfig previous = LeavesXRuntime.configuration();
++        final LeavesXConfig next = LeavesXConfigLoader.load(path);
++        if (previous.computeWorkers() != next.computeWorkers()
++            || previous.minimumItemsPerWorker() != next.minimumItemsPerWorker()) {
++            org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(
++                next.computeWorkers(),
++                next.minimumItemsPerWorker()
++            );
++        }
++        LeavesXRuntime.publish(next);
++        LOGGER.info("Reloaded LeavesX configuration from {}", path);
++        return next;
++    }
++
++    private static void logConfiguration(final LeavesXConfig config) {
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+             "LeavesX behavior-equivalent optimizations: VarInt {}, network flush {}, immutable caches {}, identifiers {}, empty events {}, AI {}, pathfinding {}, mob spawning {}, item merge {}, block entities {}, spawn range {}",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 89f985c32e1daba9e42378d87c4d271c4fc9a651..7b648affd45494aad56a54f4e29b3d57158e4b09 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -5,8 +5,8 @@ import java.util.Objects;
+ /**
+  * Lock-free access point for the immutable configuration snapshot.
+  *
+- * <p>The configuration is published once during bootstrap, before networking and world ticking start. The volatile
+- * reference provides the publication boundary while primitive hot-path flags avoid loading the complete record.</p>
++ * <p>The volatile configuration reference publishes a coherent snapshot at bootstrap and reload. Primitive hot-path
++ * flags avoid loading the complete record; settings read outside the server thread remain volatile.</p>
+  */
+ public final class LeavesXRuntime {
+ 
+@@ -16,11 +16,10 @@ public final class LeavesXRuntime {
+     private static boolean diagnosticsCommandEnabled = true;
+     private static int diagnosticsDefaultResultLimit = 10;
+     private static volatile boolean optimizedVarInt = true;
+-    private static boolean networkFlushConsolidation = true;
++    private static volatile boolean networkFlushConsolidation = true;
+     private static volatile boolean immutableCacheOptimizations = true;
+-    // Published during bootstrap before networking and world ticking start; these hot-path flags are not reloadable.
+-    private static boolean resourceIdentifierCache = true;
+-    private static boolean skipEmptyEvents = true;
++    private static volatile boolean resourceIdentifierCache = true;
++    private static volatile boolean skipEmptyEvents = true;
+     private static boolean aiOptimizations = true;
+     private static boolean pathfindingOptimizations = true;
+     private static boolean mobSpawningOptimizations = true;
+@@ -51,7 +50,7 @@ public final class LeavesXRuntime {
+     }
+ 
+     /**
+-     * Publishes a fully validated bootstrap snapshot.
++     * Publishes a fully validated bootstrap or reload snapshot.
+      *
+      * @param next validated immutable configuration
+      */
+diff --git a/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXSystemDiagnostics.java b/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXSystemDiagnostics.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f7ca7be0822a5b7f31a3c162ae3a2405498cdfa8
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXSystemDiagnostics.java
+@@ -0,0 +1,189 @@
++package org.leavesx.leavesx.diagnostics;
++
++import java.io.IOException;
++import java.lang.management.ManagementFactory;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++
++/** Reads bounded JVM, operating-system, and Linux cgroup diagnostics on operator request. */
++public final class LeavesXSystemDiagnostics {
++
++    private static final Path PROC_STATUS = Path.of("/proc/self/status");
++    private static final Path CPU_MAX = Path.of("/sys/fs/cgroup/cpu.max");
++    private static final Path CPU_STAT = Path.of("/sys/fs/cgroup/cpu.stat");
++    private static final Path CPUSET_EFFECTIVE = Path.of("/sys/fs/cgroup/cpuset.cpus.effective");
++    private static final Path MEMORY_CURRENT = Path.of("/sys/fs/cgroup/memory.current");
++    private static final Path MEMORY_MAX = Path.of("/sys/fs/cgroup/memory.max");
++    private static final long MAX_DIAGNOSTIC_FILE_BYTES = 64L * 1024L;
++
++    private LeavesXSystemDiagnostics() {
++    }
++
++    /** Captures a point-in-time system snapshot without retaining operating-system state. */
++    public static Snapshot capture() {
++        final java.lang.management.OperatingSystemMXBean baseBean = ManagementFactory.getOperatingSystemMXBean();
++        long physicalTotal = -1L;
++        long physicalFree = -1L;
++        long swapTotal = -1L;
++        long swapFree = -1L;
++        double processCpuLoad = -1.0D;
++        double systemCpuLoad = -1.0D;
++        if (baseBean instanceof com.sun.management.OperatingSystemMXBean bean) {
++            physicalTotal = bean.getTotalMemorySize();
++            physicalFree = bean.getFreeMemorySize();
++            swapTotal = bean.getTotalSwapSpaceSize();
++            swapFree = bean.getFreeSwapSpaceSize();
++            processCpuLoad = bean.getProcessCpuLoad();
++            systemCpuLoad = bean.getCpuLoad();
++        }
++
++        final Map<String, Long> cpuStat = readLongMap(CPU_STAT);
++        return new Snapshot(
++            Runtime.getRuntime().availableProcessors(),
++            readStatusValue("Cpus_allowed_list"),
++            readFirstLine(CPUSET_EFFECTIVE),
++            parseCpuQuota(readFirstLine(CPU_MAX)),
++            cpuStat.getOrDefault("nr_periods", -1L),
++            cpuStat.getOrDefault("nr_throttled", -1L),
++            cpuStat.getOrDefault("throttled_usec", -1L),
++            physicalTotal,
++            physicalFree,
++            swapTotal,
++            swapFree,
++            readLongValue(MEMORY_CURRENT),
++            readLimitValue(MEMORY_MAX),
++            processCpuLoad,
++            systemCpuLoad
++        );
++    }
++
++    static CpuQuota parseCpuQuota(final String raw) {
++        if (raw == null || raw.isBlank()) {
++            return CpuQuota.unknown();
++        }
++        final String[] parts = raw.trim().split("\\s+");
++        if (parts.length < 2) {
++            return CpuQuota.unknown();
++        }
++        try {
++            final long periodMicros = Long.parseLong(parts[1]);
++            if (periodMicros <= 0L) {
++                return CpuQuota.unknown();
++            }
++            if (parts[0].equals("max")) {
++                return new CpuQuota(true, -1L, periodMicros, -1.0D);
++            }
++            final long quotaMicros = Long.parseLong(parts[0]);
++            if (quotaMicros <= 0L) {
++                return CpuQuota.unknown();
++            }
++            return new CpuQuota(false, quotaMicros, periodMicros, (double)quotaMicros / (double)periodMicros);
++        } catch (final NumberFormatException ignored) {
++            return CpuQuota.unknown();
++        }
++    }
++
++    private static String readStatusValue(final String key) {
++        for (final String line : readSmallLines(PROC_STATUS)) {
++            final int separator = line.indexOf(':');
++            if (separator > 0 && line.substring(0, separator).equals(key)) {
++                return line.substring(separator + 1).trim();
++            }
++        }
++        return null;
++    }
++
++    private static Map<String, Long> readLongMap(final Path path) {
++        final Map<String, Long> values = new HashMap<>();
++        for (final String line : readSmallLines(path)) {
++            final String[] parts = line.trim().split("\\s+");
++            if (parts.length != 2) {
++                continue;
++            }
++            try {
++                values.put(parts[0].toLowerCase(Locale.ROOT), Long.parseLong(parts[1]));
++            } catch (final NumberFormatException ignored) {
++                // Ignore unknown future cgroup counters while retaining supported fields.
++            }
++        }
++        return values;
++    }
++
++    private static long readLongValue(final Path path) {
++        final String value = readFirstLine(path);
++        if (value == null) {
++            return -1L;
++        }
++        try {
++            return Long.parseLong(value.trim());
++        } catch (final NumberFormatException ignored) {
++            return -1L;
++        }
++    }
++
++    private static long readLimitValue(final Path path) {
++        final String value = readFirstLine(path);
++        if (value == null) {
++            return -1L;
++        }
++        if (value.equals("max")) {
++            return Long.MAX_VALUE;
++        }
++        try {
++            return Long.parseLong(value.trim());
++        } catch (final NumberFormatException ignored) {
++            return -1L;
++        }
++    }
++
++    private static String readFirstLine(final Path path) {
++        final List<String> lines = readSmallLines(path);
++        return lines.isEmpty() ? null : lines.getFirst().trim();
++    }
++
++    private static List<String> readSmallLines(final Path path) {
++        try {
++            if (!Files.isRegularFile(path) || Files.size(path) > MAX_DIAGNOSTIC_FILE_BYTES) {
++                return List.of();
++            }
++            return Files.readAllLines(path, StandardCharsets.UTF_8);
++        } catch (final IOException | SecurityException ignored) {
++            return List.of();
++        }
++    }
++
++    public record Snapshot(
++        int jvmProcessors,
++        String allowedCpuList,
++        String effectiveCpuSet,
++        CpuQuota cpuQuota,
++        long cpuPeriods,
++        long throttledPeriods,
++        long throttledMicros,
++        long physicalTotal,
++        long physicalFree,
++        long swapTotal,
++        long swapFree,
++        long cgroupMemoryCurrent,
++        long cgroupMemoryMaximum,
++        double processCpuLoad,
++        double systemCpuLoad
++    ) {
++    }
++
++    public record CpuQuota(boolean unlimited, long quotaMicros, long periodMicros, double processors) {
++
++        private static CpuQuota unknown() {
++            return new CpuQuota(false, -1L, -1L, -1.0D);
++        }
++
++        public boolean known() {
++            return this.unlimited || this.processors >= 0.0D;
++        }
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java b/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c58ccf5914e416129c7248e30c2a5ad6dffc9765
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java
+@@ -0,0 +1,263 @@
++package org.leavesx.leavesx.diagnostics;
++
++import java.lang.management.ManagementFactory;
++import java.lang.management.ThreadInfo;
++import java.lang.management.ThreadMXBean;
++import java.time.Instant;
++import java.util.ArrayDeque;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.concurrent.Executors;
++import java.util.concurrent.ScheduledExecutorService;
++import java.util.concurrent.ThreadFactory;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.server.level.ServerLevel;
++
++/**
++ * Captures bounded, read-only evidence for slow server ticks.
++ *
++ * <p>Normal ticks only perform a few primitive reads and writes. Once a tick exceeds the 50 ms budget, a daemon
++ * sampler captures the server thread state and stack without pausing or modifying world execution.</p>
++ */
++public final class LeavesXTickDiagnostics {
++
++    public static final long SLOW_TICK_NANOS = TimeUnit.MILLISECONDS.toNanos(50L);
++    private static final long SAMPLE_PERIOD_MILLIS = 25L;
++    private static final long REPEAT_SAMPLE_NANOS = TimeUnit.MILLISECONDS.toNanos(100L);
++    private static final int MAX_RECORDS = 120;
++    private static final int STACK_DEPTH = 16;
++    private static final ThreadMXBean THREADS = ManagementFactory.getThreadMXBean();
++    private static final Object RECORD_LOCK = new Object();
++    private static final ArrayDeque<SlowTick> RECORDS = new ArrayDeque<>(MAX_RECORDS);
++    private static final AtomicLong TOTAL_SLOW_TICKS = new AtomicLong();
++    private static final ScheduledExecutorService SAMPLER = Executors.newSingleThreadScheduledExecutor(new SamplerThreadFactory());
++    private static final boolean CPU_TIME_AVAILABLE = enableThreadCpuTime();
++
++    private static volatile Thread tickThread;
++    private static volatile long activeTick;
++    private static volatile long activeTickStartedNanos;
++    private static volatile long activeTickCpuStartedNanos;
++    private static volatile StackSample activeSample;
++    private static volatile long lastSampledTick = Long.MIN_VALUE;
++    private static volatile long lastSampleElapsedNanos;
++
++    static {
++        SAMPLER.scheduleAtFixedRate(
++            LeavesXTickDiagnostics::sampleSlowTick,
++            SAMPLE_PERIOD_MILLIS,
++            SAMPLE_PERIOD_MILLIS,
++            TimeUnit.MILLISECONDS
++        );
++    }
++
++    private LeavesXTickDiagnostics() {
++    }
++
++    /** Marks the start of server-thread work for one tick. */
++    public static void beginTick(final long tick, final long startedNanos) {
++        if (!org.leavesx.leavesx.config.LeavesXRuntime.diagnosticsCommandEnabled()) {
++            activeTickStartedNanos = 0L;
++            return;
++        }
++        tickThread = Thread.currentThread();
++        activeTick = tick;
++        activeSample = null;
++        activeTickCpuStartedNanos = currentThreadCpuTime();
++        // Publish the start last so the sampler sees the rest of the tick state consistently.
++        activeTickStartedNanos = startedNanos;
++    }
++
++    /** Completes the active tick and stores a bounded record when it exceeded 50 ms. */
++    public static void endTick(final MinecraftServer server, final long endedNanos, final long remainingNanos) {
++        final long startedNanos = activeTickStartedNanos;
++        if (startedNanos == 0L) {
++            return;
++        }
++
++        final long tick = activeTick;
++        activeTickStartedNanos = 0L;
++        final long wallNanos = Math.max(0L, endedNanos - startedNanos);
++        if (wallNanos < SLOW_TICK_NANOS) {
++            return;
++        }
++
++        final long cpuEndedNanos = currentThreadCpuTime();
++        final long cpuStartedNanos = activeTickCpuStartedNanos;
++        final long cpuNanos = cpuEndedNanos < 0L || cpuStartedNanos < 0L
++            ? -1L
++            : Math.clamp(cpuEndedNanos - cpuStartedNanos, 0L, wallNanos);
++        final Workload workload = collectWorkload(server);
++        final StackSample sample = activeSample != null && activeSample.tick() == tick ? activeSample : null;
++        final SlowTick slowTick = new SlowTick(
++            Instant.now(),
++            tick,
++            wallNanos,
++            cpuNanos,
++            Math.max(0L, -remainingNanos),
++            classify(wallNanos, cpuNanos, sample != null),
++            workload,
++            sample
++        );
++
++        TOTAL_SLOW_TICKS.incrementAndGet();
++        synchronized (RECORD_LOCK) {
++            if (RECORDS.size() == MAX_RECORDS) {
++                RECORDS.removeFirst();
++            }
++            RECORDS.addLast(slowTick);
++        }
++    }
++
++    /** Returns newest records first without exposing the mutable ring buffer. */
++    public static List<SlowTick> recent(final int requestedLimit) {
++        final int limit = Math.clamp(requestedLimit, 1, MAX_RECORDS);
++        synchronized (RECORD_LOCK) {
++            final List<SlowTick> result = new ArrayList<>(Math.min(limit, RECORDS.size()));
++            final var iterator = RECORDS.descendingIterator();
++            while (iterator.hasNext() && result.size() < limit) {
++                result.add(iterator.next());
++            }
++            return List.copyOf(result);
++        }
++    }
++
++    /** Returns the number of slow ticks observed since process start. */
++    public static long totalSlowTicks() {
++        return TOTAL_SLOW_TICKS.get();
++    }
++
++    /** Clears retained records while leaving the lifetime counter intact. */
++    public static void clear() {
++        synchronized (RECORD_LOCK) {
++            RECORDS.clear();
++        }
++    }
++
++    static StallType classify(final long wallNanos, final long cpuNanos, final boolean sampled) {
++        if (cpuNanos < 0L || wallNanos <= 0L) {
++            return sampled ? StallType.UNKNOWN : StallType.JVM_OR_HOST_PAUSE;
++        }
++        final double cpuRatio = (double)cpuNanos / (double)wallNanos;
++        if (cpuRatio >= 0.75D) {
++            return StallType.COMPUTE;
++        }
++        if (cpuRatio <= 0.35D) {
++            return sampled ? StallType.WAIT_OR_SCHEDULING : StallType.JVM_OR_HOST_PAUSE;
++        }
++        return StallType.MIXED;
++    }
++
++    private static void sampleSlowTick() {
++        final long startedNanos = activeTickStartedNanos;
++        final Thread serverThread = tickThread;
++        if (startedNanos == 0L || serverThread == null) {
++            return;
++        }
++
++        final long elapsedNanos = System.nanoTime() - startedNanos;
++        if (elapsedNanos < SLOW_TICK_NANOS) {
++            return;
++        }
++        final long tick = activeTick;
++        if (lastSampledTick == tick && elapsedNanos - lastSampleElapsedNanos < REPEAT_SAMPLE_NANOS) {
++            return;
++        }
++
++        final ThreadInfo info = THREADS.getThreadInfo(serverThread.threadId(), STACK_DEPTH);
++        if (info == null) {
++            return;
++        }
++        final StackTraceElement[] trace = info.getStackTrace();
++        final List<String> frames = new ArrayList<>(trace.length);
++        for (final StackTraceElement frame : trace) {
++            frames.add(frame.toString());
++        }
++        activeSample = new StackSample(tick, elapsedNanos, info.getThreadState(), List.copyOf(frames));
++        lastSampledTick = tick;
++        lastSampleElapsedNanos = elapsedNanos;
++    }
++
++    private static Workload collectWorkload(final MinecraftServer server) {
++        int chunks = 0;
++        int holders = 0;
++        long pendingUnloads = 0L;
++        int entities = 0;
++        for (final ServerLevel level : server.getAllLevels()) {
++            chunks += level.getChunkSource().getFullChunksCount();
++            holders += level.getChunkSource().getLoadedChunksCount();
++            pendingUnloads += level.moonrise$getChunkTaskScheduler().chunkHolderManager.leavesX$getPendingUnloadCount();
++            entities += level.getEntityCount();
++        }
++        return new Workload(chunks, holders, pendingUnloads, entities, server.getPlayerList().getPlayerCount());
++    }
++
++    private static boolean enableThreadCpuTime() {
++        if (!THREADS.isCurrentThreadCpuTimeSupported()) {
++            return false;
++        }
++        try {
++            if (!THREADS.isThreadCpuTimeEnabled()) {
++                THREADS.setThreadCpuTimeEnabled(true);
++            }
++            return THREADS.isThreadCpuTimeEnabled();
++        } catch (final SecurityException ignored) {
++            return false;
++        }
++    }
++
++    private static long currentThreadCpuTime() {
++        return CPU_TIME_AVAILABLE ? THREADS.getCurrentThreadCpuTime() : -1L;
++    }
++
++    public enum StallType {
++        COMPUTE("主线程计算"),
++        WAIT_OR_SCHEDULING("等待或调度"),
++        MIXED("计算与等待混合"),
++        JVM_OR_HOST_PAUSE("JVM 或宿主暂停"),
++        UNKNOWN("无法分类");
++
++        private final String displayName;
++
++        StallType(final String displayName) {
++            this.displayName = displayName;
++        }
++
++        public String displayName() {
++            return this.displayName;
++        }
++    }
++
++    public record SlowTick(
++        Instant capturedAt,
++        long tick,
++        long wallNanos,
++        long cpuNanos,
++        long behindNanos,
++        StallType type,
++        Workload workload,
++        StackSample sample
++    ) {
++    }
++
++    public record Workload(int chunks, int holders, long pendingUnloads, int entities, int players) {
++    }
++
++    public record StackSample(long tick, long elapsedNanos, Thread.State state, List<String> frames) {
++    }
++
++    private static final class SamplerThreadFactory implements ThreadFactory {
++
++        @Override
++        public Thread newThread(final Runnable task) {
++            final Thread thread = new Thread(task, "LeavesX Slow Tick Sampler");
++            thread.setDaemon(true);
++            thread.setPriority(Thread.NORM_PRIORITY - 1);
++            thread.setUncaughtExceptionHandler((ignored, throwable) ->
++                org.slf4j.LoggerFactory.getLogger(LeavesXTickDiagnostics.class)
++                    .error("LeavesX slow tick sampler failed", throwable));
++            return thread;
++        }
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/diagnostics/LeavesXSystemDiagnosticsTest.java b/src/test/java/org/leavesx/leavesx/diagnostics/LeavesXSystemDiagnosticsTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..494018819af93cb65ac9ff86d9a18305657bdeb7
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/diagnostics/LeavesXSystemDiagnosticsTest.java
+@@ -0,0 +1,31 @@
++package org.leavesx.leavesx.diagnostics;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class LeavesXSystemDiagnosticsTest {
++
++    @Test
++    void parsesBoundedCpuQuota() {
++        final LeavesXSystemDiagnostics.CpuQuota quota = LeavesXSystemDiagnostics.parseCpuQuota("800000 100000");
++
++        assertTrue(quota.known());
++        assertFalse(quota.unlimited());
++        assertEquals(8.0D, quota.processors());
++    }
++
++    @Test
++    void parsesUnlimitedAndInvalidCpuQuota() {
++        final LeavesXSystemDiagnostics.CpuQuota unlimited = LeavesXSystemDiagnostics.parseCpuQuota("max 100000");
++        final LeavesXSystemDiagnostics.CpuQuota invalid = LeavesXSystemDiagnostics.parseCpuQuota("invalid");
++
++        assertTrue(unlimited.known());
++        assertTrue(unlimited.unlimited());
++        assertFalse(invalid.known());
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnosticsTest.java b/src/test/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnosticsTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c94c58437cd0a67b3c51562e75c179831956c2fe
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnosticsTest.java
+@@ -0,0 +1,46 @@
++package org.leavesx.leavesx.diagnostics;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import java.util.concurrent.TimeUnit;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class LeavesXTickDiagnosticsTest {
++
++    private static final long HUNDRED_MILLISECONDS = TimeUnit.MILLISECONDS.toNanos(100L);
++
++    @Test
++    void classifiesCpuBoundTicks() {
++        assertEquals(
++            LeavesXTickDiagnostics.StallType.COMPUTE,
++            LeavesXTickDiagnostics.classify(HUNDRED_MILLISECONDS, TimeUnit.MILLISECONDS.toNanos(90L), true)
++        );
++    }
++
++    @Test
++    void distinguishesWaitsFromHostPausesUsingSamplerEvidence() {
++        final long lowCpuTime = TimeUnit.MILLISECONDS.toNanos(10L);
++        assertEquals(
++            LeavesXTickDiagnostics.StallType.WAIT_OR_SCHEDULING,
++            LeavesXTickDiagnostics.classify(HUNDRED_MILLISECONDS, lowCpuTime, true)
++        );
++        assertEquals(
++            LeavesXTickDiagnostics.StallType.JVM_OR_HOST_PAUSE,
++            LeavesXTickDiagnostics.classify(HUNDRED_MILLISECONDS, lowCpuTime, false)
++        );
++    }
++
++    @Test
++    void classifiesMixedAndUnavailableCpuSamples() {
++        assertEquals(
++            LeavesXTickDiagnostics.StallType.MIXED,
++            LeavesXTickDiagnostics.classify(HUNDRED_MILLISECONDS, TimeUnit.MILLISECONDS.toNanos(50L), true)
++        );
++        assertEquals(
++            LeavesXTickDiagnostics.StallType.UNKNOWN,
++            LeavesXTickDiagnostics.classify(HUNDRED_MILLISECONDS, -1L, true)
++        );
++    }
++}

@@ -1,0 +1,137 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 19:02:17 +0800
+Subject: [PATCH] Add tripwire scan regression coverage for bate48
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..af61c61ad7c9995cf02c700a214f41ed5f33a515
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java
+@@ -0,0 +1,125 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotSame;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Method;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.level.Level;
++import net.minecraft.world.level.block.TripWireBlock;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies tripwire scans reuse storage while preserving the existing Bukkit event boundary. */
++@Normal
++class TripWireEntityScanHotPathTest {
++
++    private static final String SIMPLE_CHECK_DESC =
++        "(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/BlockPos;)V";
++    private static final String EVENT_CHECK_DESC =
++        "(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/BlockPos;Ljava/util/List;)V";
++
++    @Test
++    void levelOwnsAReentrancySafeFullQueryBuffer() throws IOException {
++        final ClassNode level = classNode(Level.class);
++        final String bufferName = level.name + "$LeavesXEntityQueryBuffer";
++
++        assertEquals("Ljava/lang/ThreadLocal;", field(level, "LEAVESX_ENTITY_QUERY_BUFFER").desc);
++        assertTrue(hasInvocation(method(level, "leavesX$acquireEntityQueryBuffer"), "java/lang/ThreadLocal", "get"));
++        assertTrue(hasInvocation(method(level, "getEntities", "(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/phys/AABB;Ljava/util/function/Predicate;)Ljava/util/List;"), level.name, "leavesX$getEntities"));
++
++        final ClassNode buffer = classNode(bufferName.replace('/', '.'));
++        assertEquals("Ljava/util/List;", field(buffer, "results").desc);
++        assertEquals("Z", field(buffer, "inUse").desc);
++        assertEquals("Z", field(buffer, "pooled").desc);
++        assertTrue(hasInvocation(method(buffer, "query"), level.name, "leavesX$getEntities"));
++        assertTrue(hasInvocation(method(buffer, "close"), "java/util/List", "clear"));
++    }
++
++    @Test
++    void nestedScansDoNotReuseTheOuterEventList()
++        throws NoSuchMethodException, InvocationTargetException, IllegalAccessException {
++        final Method acquire = Level.class.getDeclaredMethod("leavesX$acquireEntityQueryBuffer");
++        final Object outer = acquire.invoke(null);
++        final Object nested = acquire.invoke(null);
++        final Method close = outer.getClass().getDeclaredMethod("close");
++
++        assertNotSame(outer, nested, "A plugin-triggered nested scan must not overwrite the outer entity order");
++        close.invoke(nested);
++        close.invoke(outer);
++        final Object reused = acquire.invoke(null);
++        assertSame(outer, reused, "The thread-local scan should be reused after the outer event loop finishes");
++        close.invoke(reused);
++    }
++
++    @Test
++    void tripwireQueriesBeforeEnteringTheExistingEventLoop() throws IOException {
++        final ClassNode tripwire = classNode(TripWireBlock.class);
++        final MethodNode scan = method(tripwire, "checkPressed", SIMPLE_CHECK_DESC);
++        final List<MethodInsnNode> scanCalls = invocations(scan);
++
++        assertTrue(hasInvocation(scan, "org/leavesx/leavesx/config/LeavesXRuntime", "entityQueryOptimizations"));
++        assertTrue(hasInvocation(scan, "net/minecraft/world/level/Level", "leavesX$acquireEntityQueryBuffer"));
++        assertTrue(scanCalls.stream().anyMatch(call -> call.name.equals("query")));
++        assertTrue(scanCalls.stream().anyMatch(call -> call.name.equals("getEntities")), "The disabled setting must retain the original query path");
++        assertTrue(scanCalls.stream().anyMatch(call -> call.name.equals("close")));
++
++        final MethodNode eventLoop = method(tripwire, "checkPressed", EVENT_CHECK_DESC);
++        assertTrue(hasInvocation(eventLoop, "org/bukkit/craftbukkit/event/CraftEventFactory", "callPlayerInteractEvent"));
++        assertTrue(invocations(eventLoop).stream().anyMatch(call -> call.name.equals("callEvent")));
++        assertTrue(invocations(eventLoop).stream().noneMatch(call -> call.name.equals("getEntities")));
++    }
++
++    private static FieldNode field(final ClassNode owner, final String name) {
++        return owner.fields.stream()
++            .filter(field -> field.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing field " + owner.name + '#' + name));
++    }
++
++    private static boolean hasInvocation(final MethodNode method, final String owner, final String name) {
++        return invocations(method).stream().anyMatch(call -> call.owner.equals(owner) && call.name.equals(name));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        return classNode(owner.getName());
++    }
++
++    private static ClassNode classNode(final String className) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(className).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName, final String descriptor) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName) && method.desc.equals(descriptor))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName + descriptor));
++    }
++}

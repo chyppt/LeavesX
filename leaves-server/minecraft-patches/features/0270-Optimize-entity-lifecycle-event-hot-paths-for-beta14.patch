@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 20 Aug 2026 23:19:30 +0800
+Subject: [PATCH] Optimize entity lifecycle event hot paths for beta141
+
+
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index cd02e59a1b40c02692ca96ea049b9699ef6a55f4..5908b20bec67396c217dee861b4e52ce724c1912 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -2980,7 +2980,11 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+                 entity.originWorld = ServerLevel.this.getWorld().getUID();
+             }
+             // Paper end - Entity origin API
+-            new com.destroystokyo.paper.event.entity.EntityAddToWorldEvent(entity.getBukkitEntity(), ServerLevel.this.getWorld()).callEvent(); // Paper - fire while valid
++            // LeavesX - lifecycle events are observable only when a plugin has registered a listener.
++            if (!org.leavesx.leavesx.config.LeavesXRuntime.entityLifecycleEventOptimization()
++                || com.destroystokyo.paper.event.entity.EntityAddToWorldEvent.getHandlerList().getRegisteredListeners().length != 0) {
++                new com.destroystokyo.paper.event.entity.EntityAddToWorldEvent(entity.getBukkitEntity(), ServerLevel.this.getWorld()).callEvent(); // Paper - fire while valid
++            }
+         }
+ 
+         @Override
+@@ -3009,8 +3013,13 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+                     merchant.getTrader().closeInventory(org.bukkit.event.inventory.InventoryCloseEvent.Reason.UNLOADED);
+                 }
+                 // Paper end - Fix merchant inventory not closing on entity removal
+-                for (org.bukkit.entity.HumanEntity h : Lists.newArrayList(((org.bukkit.inventory.InventoryHolder) entity.getBukkitEntity()).getInventory().getViewers())) {
+-                    h.closeInventory(org.bukkit.event.inventory.InventoryCloseEvent.Reason.UNLOADED); // Paper - Inventory close reason
++                final org.bukkit.inventory.Inventory inventory = ((org.bukkit.inventory.InventoryHolder) entity.getBukkitEntity()).getInventory();
++                final List<org.bukkit.entity.HumanEntity> viewers = inventory.getViewers();
++                if (!viewers.isEmpty()) {
++                    // Copy only when needed: viewers may close their inventory during the callback.
++                    for (org.bukkit.entity.HumanEntity h : Lists.newArrayList(viewers)) {
++                        h.closeInventory(org.bukkit.event.inventory.InventoryCloseEvent.Reason.UNLOADED); // Paper - Inventory close reason
++                    }
+                 }
+             }
+             // Spigot end
+@@ -3053,7 +3062,10 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+                 }
+             }
+             // CraftBukkit end
+-            new com.destroystokyo.paper.event.entity.EntityRemoveFromWorldEvent(entity.getBukkitEntity(), ServerLevel.this.getWorld()).callEvent(); // Paper - fire while valid
++            if (!org.leavesx.leavesx.config.LeavesXRuntime.entityLifecycleEventOptimization()
++                || com.destroystokyo.paper.event.entity.EntityRemoveFromWorldEvent.getHandlerList().getRegisteredListeners().length != 0) {
++                new com.destroystokyo.paper.event.entity.EntityRemoveFromWorldEvent(entity.getBukkitEntity(), ServerLevel.this.getWorld()).callEvent(); // Paper - fire while valid
++            }
+         }
+ 
+         @Override

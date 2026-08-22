@@ -1,0 +1,180 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 03:11:54 +0800
+Subject: [PATCH] Add schooling fish AI regression coverage for bate28
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/SchoolingFishAiTest.java b/src/test/java/org/leavesx/leavesx/performance/SchoolingFishAiTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..80939e930bb54e412674fd64e736a6b6c8286821
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/SchoolingFishAiTest.java
+@@ -0,0 +1,168 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertInstanceOf;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.inOrder;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.verifyNoInteractions;
++import static org.mockito.Mockito.when;
++
++import java.io.IOException;
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Method;
++import java.util.ArrayList;
++import java.util.List;
++import net.minecraft.world.entity.ai.goal.FollowFlockLeaderGoal;
++import net.minecraft.world.entity.animal.fish.AbstractSchoolingFish;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.mockito.InOrder;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.ClassVisitor;
++import org.objectweb.asm.MethodVisitor;
++import org.objectweb.asm.Opcodes;
++
++/** Locks down order-sensitive schooling-fish AI while removing per-scan stream pipelines. */
++@Normal
++class SchoolingFishAiTest {
++
++    @Test
++    void leaderSelectionStopsAtFirstFollowableFish() throws ReflectiveOperationException {
++        final AbstractSchoolingFish fallback = mock();
++        final AbstractSchoolingFish first = mock();
++        final AbstractSchoolingFish selected = mock();
++        final AbstractSchoolingFish afterSelection = mock();
++        when(first.canBeFollowed()).thenReturn(false);
++        when(selected.canBeFollowed()).thenReturn(true);
++        final Method method = FollowFlockLeaderGoal.class.getDeclaredMethod(
++            "findFirstFollowableFishDirect",
++            List.class,
++            AbstractSchoolingFish.class
++        );
++        method.setAccessible(true);
++
++        final AbstractSchoolingFish result = (AbstractSchoolingFish)method.invoke(
++            null,
++            List.of(first, selected, afterSelection),
++            fallback
++        );
++
++        assertSame(selected, result);
++        final InOrder order = inOrder(first, selected);
++        order.verify(first).canBeFollowed();
++        order.verify(selected).canBeFollowed();
++        verifyNoInteractions(afterSelection, fallback);
++    }
++
++    @Test
++    void followerLimitStillAppliesBeforeLeaderSelfFilter() throws ReflectiveOperationException {
++        final AbstractSchoolingFish leader = mock();
++        leader.schoolSize = 1;
++        when(leader.getMaxSchoolSize()).thenReturn(3);
++        final AbstractSchoolingFish existingFollower = mock();
++        final AbstractSchoolingFish firstJoiner = mock();
++        final AbstractSchoolingFish afterLimit = mock();
++        when(existingFollower.isFollower()).thenReturn(true);
++        when(leader.isFollower()).thenReturn(false);
++        when(firstJoiner.isFollower()).thenReturn(false);
++        final Method method = FollowFlockLeaderGoal.class.getDeclaredMethod(
++            "addFollowersDirect",
++            AbstractSchoolingFish.class,
++            List.class
++        );
++        method.setAccessible(true);
++
++        method.invoke(null, leader, List.of(existingFollower, leader, firstJoiner, afterLimit));
++
++        final InOrder order = inOrder(existingFollower, leader, firstJoiner);
++        order.verify(existingFollower).isFollower();
++        order.verify(leader).isFollower();
++        order.verify(firstJoiner).isFollower();
++        order.verify(firstJoiner).startFollowing(leader);
++        verifyNoInteractions(afterLimit);
++    }
++
++    @Test
++    void negativeFollowerCapacityKeepsStreamLimitFailure() throws ReflectiveOperationException {
++        final AbstractSchoolingFish leader = mock();
++        leader.schoolSize = 4;
++        when(leader.getMaxSchoolSize()).thenReturn(3);
++        final Method method = FollowFlockLeaderGoal.class.getDeclaredMethod(
++            "addFollowersDirect",
++            AbstractSchoolingFish.class,
++            List.class
++        );
++        method.setAccessible(true);
++
++        final InvocationTargetException failure = assertThrows(
++            InvocationTargetException.class,
++            () -> method.invoke(null, leader, List.of())
++        );
++
++        assertInstanceOf(IllegalArgumentException.class, failure.getCause());
++        assertEquals("-1", failure.getCause().getMessage());
++    }
++
++    @Test
++    void directSchoolingHelpersDoNotCreateStreams() throws IOException {
++        assertNoStreamCalls("findFirstFollowableFishDirect");
++        assertNoStreamCalls("addFollowersDirect");
++    }
++
++    @Test
++    void schoolingGoalDelegatesToDirectHelpers() throws IOException {
++        final List<Invocation> calls = invocations("canUse");
++        assertTrue(calls.stream().anyMatch(call -> call.name().equals("findFirstFollowableFishDirect")));
++        assertTrue(calls.stream().anyMatch(call -> call.name().equals("addFollowersDirect")));
++    }
++
++    private static void assertNoStreamCalls(final String methodName) throws IOException {
++        final List<Invocation> calls = invocations(methodName);
++        assertFalse(calls.stream().anyMatch(call -> call.name().equals("stream")));
++        assertFalse(calls.stream().anyMatch(call -> call.owner().startsWith("java/util/stream/")));
++    }
++
++    private static List<Invocation> invocations(final String methodName) throws IOException {
++        final List<Invocation> calls = new ArrayList<>();
++        final boolean[] found = {false};
++        new ClassReader(FollowFlockLeaderGoal.class.getName()).accept(
++            new ClassVisitor(Opcodes.ASM9) {
++                @Override
++                public MethodVisitor visitMethod(
++                    final int access,
++                    final String name,
++                    final String descriptor,
++                    final String signature,
++                    final String[] exceptions
++                ) {
++                    if (!name.equals(methodName)) {
++                        return null;
++                    }
++                    found[0] = true;
++                    return new MethodVisitor(Opcodes.ASM9) {
++                        @Override
++                        public void visitMethodInsn(
++                            final int opcode,
++                            final String owner,
++                            final String name,
++                            final String descriptor,
++                            final boolean isInterface
++                        ) {
++                            calls.add(new Invocation(owner, name));
++                        }
++                    };
++                }
++            },
++            ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES
++        );
++        assertTrue(found[0], () -> "Missing FollowFlockLeaderGoal#" + methodName);
++        return calls;
++    }
++
++    private record Invocation(String owner, String name) {
++    }
++}

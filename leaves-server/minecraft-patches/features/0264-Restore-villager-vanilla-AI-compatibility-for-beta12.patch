@@ -1,0 +1,121 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 13:07:17 +0800
+Subject: [PATCH] Restore villager vanilla AI compatibility for beta128
+
+
+diff --git a/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java b/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
+index e0ac326513f5028664a06f81bee27b4aee8671f4..4086e37fef9d951ccc151a57913599abd6a5a0f3 100644
+--- a/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
++++ b/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
+@@ -1,5 +1,6 @@
+ package net.minecraft.world.entity.monster.zombie;
+ 
++import java.util.List;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.resources.Identifier;
+ import net.minecraft.server.level.ServerLevel;
+@@ -143,15 +144,37 @@ public class ZombifiedPiglin extends Zombie implements NeutralMob {
+     private void alertOthers() {
+         double within = this.getAttributeValue(Attributes.FOLLOW_RANGE);
+         AABB searchAabb = AABB.unitCubeFromLowerCorner(this.position()).inflate(within, 10.0, within);
+-        this.level()
+-            .getEntitiesOfClass(ZombifiedPiglin.class, searchAabb, EntitySelector.NO_SPECTATORS)
+-            .stream()
++        final List<ZombifiedPiglin> nearby = this.level()
++            .getEntitiesOfClass(ZombifiedPiglin.class, searchAabb, EntitySelector.NO_SPECTATORS);
++        if (org.leavesx.leavesx.config.LeavesXRuntime.zombifiedPiglinAlertOptimization()) {
++            leavesX$alertOthers(this, nearby);
++            return;
++        }
++        nearby.stream()
+             .filter(other -> other != this)
+             .filter(other -> other.getTarget() == null)
+             .filter(other -> !other.isAlliedTo(this.getTarget()))
+             .forEach(other -> other.setTarget(this.getTarget(), org.bukkit.event.entity.EntityTargetEvent.TargetReason.TARGET_ATTACKED_NEARBY_ENTITY)); // CraftBukkit
+     }
+ 
++    /**
++     * Alerts nearby piglins in the query's original order without allocating a stream pipeline.
++     *
++     * <p>The source target is deliberately read at both original call sites. A Bukkit target event may run plugin
++     * code while this loop is active, so caching that value would change observable behavior.</p>
++     */
++    private static void leavesX$alertOthers(final ZombifiedPiglin source, final List<ZombifiedPiglin> nearby) {
++        for (final ZombifiedPiglin other : nearby) {
++            if (other == source || other.getTarget() != null || other.isAlliedTo(source.getTarget())) {
++                continue;
++            }
++            other.setTarget(
++                source.getTarget(),
++                org.bukkit.event.entity.EntityTargetEvent.TargetReason.TARGET_ATTACKED_NEARBY_ENTITY
++            );
++        }
++    }
++
+     private void playAngerSound() {
+         this.playSound(SoundEvents.ZOMBIFIED_PIGLIN_ANGRY, this.getSoundVolume() * 2.0F, this.getVoicePitch() * 1.8F);
+     }
+diff --git a/net/minecraft/world/entity/npc/villager/Villager.java b/net/minecraft/world/entity/npc/villager/Villager.java
+index 349c1c1cb0454d6a21e6ff103ef1acbae2f9d228..4c86271413f2fed00d48e1fea8d8095c620ebafc 100644
+--- a/net/minecraft/world/entity/npc/villager/Villager.java
++++ b/net/minecraft/world/entity/npc/villager/Villager.java
+@@ -247,19 +247,24 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+     // Paper start - EAR 2
+     @Override
+     public void inactiveTick() {
+-        // SPIGOT-3874, SPIGOT-3894, SPIGOT-3846, SPIGOT-5286 :(
+-        if (this.getUnhappyCounter() > 0) {
+-            this.setUnhappyCounter(this.getUnhappyCounter() - 1);
+-        }
+-        if (this.aware && this.isEffectiveAi()) { // Paper - Do not tick AI for inactive unaware mobs
+-            if (this.level().spigotConfig.tickInactiveVillagers) {
+-                this.customServerAiStep(this.level().getMinecraftWorld());
+-            } else {
+-                this.customServerAiStep(this.level().getMinecraftWorld(), true);
++        final boolean previousCompatibilityContext = org.leavesx.leavesx.config.LeavesXRuntime.enterVillagerCompatibilityContext();
++        try {
++            // SPIGOT-3874, SPIGOT-3894, SPIGOT-3846, SPIGOT-5286 :(
++            if (this.getUnhappyCounter() > 0) {
++                this.setUnhappyCounter(this.getUnhappyCounter() - 1);
++            }
++            if (this.aware && this.isEffectiveAi()) { // Paper - Do not tick AI for inactive unaware mobs
++                if (this.level().spigotConfig.tickInactiveVillagers) {
++                    this.customServerAiStep(this.level().getMinecraftWorld());
++                } else {
++                    this.customServerAiStep(this.level().getMinecraftWorld(), true);
++                }
+             }
++            this.maybeDecayGossip();
++            super.inactiveTick();
++        } finally {
++            org.leavesx.leavesx.config.LeavesXRuntime.exitVillagerCompatibilityContext(previousCompatibilityContext);
+         }
+-        this.maybeDecayGossip();
+-        super.inactiveTick();
+     }
+     // Paper end - EAR 2
+ 
+@@ -313,12 +318,17 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+ 
+     @Override
+     public void tick() {
+-        super.tick();
+-        if (this.getUnhappyCounter() > 0) {
+-            this.setUnhappyCounter(this.getUnhappyCounter() - 1);
+-        }
++        final boolean previousCompatibilityContext = org.leavesx.leavesx.config.LeavesXRuntime.enterVillagerCompatibilityContext();
++        try {
++            super.tick();
++            if (this.getUnhappyCounter() > 0) {
++                this.setUnhappyCounter(this.getUnhappyCounter() - 1);
++            }
+ 
+-        this.maybeDecayGossip();
++            this.maybeDecayGossip();
++        } finally {
++            org.leavesx.leavesx.config.LeavesXRuntime.exitVillagerCompatibilityContext(previousCompatibilityContext);
++        }
+     }
+ 
+     @Override

@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 22:01:32 +0800
+Subject: [PATCH] Short-circuit cat relax occupancy scans for bate66
+
+
+diff --git a/net/minecraft/world/entity/animal/feline/Cat.java b/net/minecraft/world/entity/animal/feline/Cat.java
+index 40a9072b0cabc43dd247336d754c6d9953116c03..06f67b12fdf02a9951294bc4451ee79c98e443b5 100644
+--- a/net/minecraft/world/entity/animal/feline/Cat.java
++++ b/net/minecraft/world/entity/animal/feline/Cat.java
+@@ -561,7 +561,16 @@ public class Cat extends TamableAnimal {
+         }
+ 
+         private boolean spaceIsOccupied() {
+-            for (Cat otherCat : this.cat.level().getEntitiesOfClass(Cat.class, new AABB(this.goalPos).inflate(2.0))) {
++            final AABB occupiedArea = new AABB(this.goalPos).inflate(2.0);
++            if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++                return this.cat.level().leavesX$getFirstEntityOfClass(
++                    Cat.class,
++                    occupiedArea,
++                    otherCat -> otherCat != this.cat && (otherCat.isLying() || otherCat.isRelaxStateOne())
++                ) != null;
++            }
++
++            for (Cat otherCat : this.cat.level().getEntitiesOfClass(Cat.class, occupiedArea)) {
+                 if (otherCat != this.cat && (otherCat.isLying() || otherCat.isRelaxStateOne())) {
+                     return true;
+                 }

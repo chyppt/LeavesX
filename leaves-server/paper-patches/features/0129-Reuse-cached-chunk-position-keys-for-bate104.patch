@@ -1,0 +1,215 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 07:38:01 +0800
+Subject: [PATCH] Reuse cached chunk position keys for bate104
+
+
+diff --git a/src/main/java/ca/spottedleaf/moonrise/common/util/CoordinateUtils.java b/src/main/java/ca/spottedleaf/moonrise/common/util/CoordinateUtils.java
+index 47d2f0cd01619cb6ba4eed7145aeaf573141d047..6da4f6e4270e17b083a3c57ab5a6f8ca7a994276 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/common/util/CoordinateUtils.java
++++ b/src/main/java/ca/spottedleaf/moonrise/common/util/CoordinateUtils.java
+@@ -6,6 +6,7 @@ import net.minecraft.util.Mth;
+ import net.minecraft.world.entity.Entity;
+ import net.minecraft.world.level.ChunkPos;
+ import net.minecraft.world.phys.Vec3;
++import org.leavesx.leavesx.config.LeavesXRuntime;
+ 
+ public final class CoordinateUtils {
+ 
+@@ -21,6 +22,9 @@ public final class CoordinateUtils {
+     }
+ 
+     public static long getChunkKey(final ChunkPos pos) {
++        if (LeavesXRuntime.cachedChunkPosKeyOptimization()) {
++            return pos.longKey();
++        }
+         return ((long)pos.z() << 32) | (pos.x() & 0xFFFFFFFFL);
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index c501b34f5af6f1eafff641c7e1434180c1eeaff2..d813c4997de0836f8bdd708de58fb6ced9bc9a10 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 34;
++    public static final int CURRENT_CONFIG_VERSION = 35;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 7062ec15e0548645250e88ce22ca4df8db84a7a4..42d0e2004adb271945a903a99741ca6c9aa0dc82 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：34。");
++        comments.put("config-version", "配置版本，请勿修改。默认：35。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index c2186d7599ccbffe2023074e23f0c0ec9414ac58..c6f613e052e859afc3498bc2f9c5a6f209ca3ac3 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -219,6 +219,10 @@ enum LeavesXOptimization {
+     ENTITY_LOOKUP_VISIBILITY(
+         "performance.entity-queries.entity-lookup-visibility",
+         "直接判断实体所在区块的可见状态，关闭后使用 Paper 映射。默认：true。"
++    ),
++    CACHED_CHUNK_POS_KEY(
++        "performance.chunk.cached-chunk-pos-key",
++        "复用区块坐标已缓存的键值，关闭后重新计算。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 51af9de83291f0e90f0092d993d9a371feb13f0a..52bc518e6ad9d4b41e74d67dc685db0d562ba81d 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -200,6 +200,11 @@ public final class LeavesXRuntime {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.ENTITY_LOOKUP_VISIBILITY);
+     }
+ 
++    /** Returns whether chunk-coordinate lookups may reuse Paper's immutable cached key. */
++    public static boolean cachedChunkPosKeyOptimization() {
++        return enabled(LeavesXOptimization.CACHED_CHUNK_POS_KEY);
++    }
++
+     /** Returns whether pressure plates may reuse one entity scan per signal update. */
+     public static boolean pressurePlateEntityScansOptimization() {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS);
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChunkPosCachedKeyHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ChunkPosCachedKeyHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..2785918a803fc4f72edb3fd6e624019c84cad7dc
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ChunkPosCachedKeyHotPathTest.java
+@@ -0,0 +1,124 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import ca.spottedleaf.moonrise.common.util.CoordinateUtils;
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.Arrays;
++import net.minecraft.world.level.ChunkPos;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies Moonrise chunk-key lookups can reuse Paper's immutable {@link ChunkPos} key. */
++@Normal
++class ChunkPosCachedKeyHotPathTest {
++
++    private static final int[][] REPRESENTATIVE_COORDINATES = {
++        {0, 0},
++        {1, -1},
++        {-1, 1},
++        {Integer.MAX_VALUE, Integer.MIN_VALUE},
++        {Integer.MIN_VALUE, Integer.MAX_VALUE}
++    };
++
++    @TempDir
++    Path tempDir;
++
++    @Test
++    void optimizedAndFallbackKeysMatchForRepresentativeCoordinates() throws Exception {
++        try {
++            publish(this.configuration(true, "optimized.yml"));
++            for (final int[] coordinates : REPRESENTATIVE_COORDINATES) {
++                assertMatchesVanillaPacking(coordinates);
++            }
++
++            publish(this.configuration(false, "fallback.yml"));
++            for (final int[] coordinates : REPRESENTATIVE_COORDINATES) {
++                assertMatchesVanillaPacking(coordinates);
++            }
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void dedicatedSwitchCanDisableTheCachedKeyPath() throws Exception {
++        try {
++            publish(this.configuration(true, "enabled.yml"));
++            assertTrue(LeavesXRuntime.cachedChunkPosKeyOptimization());
++
++            publish(this.configuration(false, "disabled.yml"));
++            assertFalse(LeavesXRuntime.cachedChunkPosKeyOptimization());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void chunkPosOverloadKeepsCachedAndArithmeticPaths() throws IOException {
++        final MethodNode method = method(classNode(), "getChunkKey", "(Lnet/minecraft/world/level/ChunkPos;)J");
++        final MethodInsnNode[] calls = Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++
++        assertEquals(1L, countCall(calls, "org/leavesx/leavesx/config/LeavesXRuntime", "cachedChunkPosKeyOptimization"));
++        assertEquals(1L, countCall(calls, "net/minecraft/world/level/ChunkPos", "longKey"));
++        assertEquals(1L, countCall(calls, "net/minecraft/world/level/ChunkPos", "x"));
++        assertEquals(1L, countCall(calls, "net/minecraft/world/level/ChunkPos", "z"));
++    }
++
++    private static void assertMatchesVanillaPacking(final int[] coordinates) {
++        final ChunkPos position = new ChunkPos(coordinates[0], coordinates[1]);
++        assertEquals(ChunkPos.pack(coordinates[0], coordinates[1]), CoordinateUtils.getChunkKey(position));
++        assertEquals(position.longKey(), CoordinateUtils.getChunkKey(position));
++    }
++
++    private LeavesXConfig configuration(final boolean enabled, final String fileName) throws IOException {
++        final Path path = this.tempDir.resolve(fileName);
++        Files.writeString(path, """
++            config-version: 1
++            performance:
++              chunk:
++                cached-chunk-pos-key: %s
++            """.formatted(enabled));
++        return LeavesXConfigLoader.load(path);
++    }
++
++    private static void publish(final LeavesXConfig config) throws ReflectiveOperationException {
++        final Method method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++        method.setAccessible(true);
++        method.invoke(null, config);
++    }
++
++    private static ClassNode classNode() throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(CoordinateUtils.class.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name, final String descriptor) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(name) && method.desc.equals(descriptor))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + name + descriptor));
++    }
++
++    private static long countCall(final MethodInsnNode[] calls, final String owner, final String name) {
++        return Arrays.stream(calls).filter(call -> call.owner.equals(owner) && call.name.equals(name)).count();
++    }
++}

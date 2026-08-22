@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 03:46:31 +0800
+Subject: [PATCH] Optimize entity pairing equipment lists for bate92
+
+
+diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
+index f9863ec2f50dcb738641301a7fcc16f3f9d99aea..be080fbbc51f512eb8e8fc2e23ad2bb29b134469 100644
+--- a/net/minecraft/server/level/ServerEntity.java
++++ b/net/minecraft/server/level/ServerEntity.java
+@@ -376,16 +376,12 @@ public class ServerEntity {
+         }
+ 
+         if (this.entity instanceof LivingEntity livingEntity) {
+-            List<Pair<EquipmentSlot, ItemStack>> slots = Lists.newArrayList();
++            final @Nullable List<Pair<EquipmentSlot, ItemStack>> slots = collectEquipmentForPairing(
++                livingEntity,
++                org.leavesx.leavesx.config.LeavesXRuntime.entitySyncEquipmentListsOptimization()
++            );
+ 
+-            for (EquipmentSlot slot : EquipmentSlot.VALUES) {
+-                ItemStack itemStack = livingEntity.getItemBySlot(slot);
+-                if (!itemStack.isEmpty()) {
+-                    slots.add(Pair.of(slot, itemStack.copy()));
+-                }
+-            }
+-
+-            if (!slots.isEmpty()) {
++            if (slots != null && !slots.isEmpty()) {
+                 broadcast.accept(new ClientboundSetEquipmentPacket(this.entity.getId(), slots, true)); // Paper - data sanitization
+             }
+             if (this.entity.totalEntityAge == 0) ((LivingEntity) this.entity).detectEquipmentUpdates(); // CraftBukkit - SPIGOT-3789: sync again immediately after sending // Leaves - fix chunk reload detector (#492)
+@@ -404,6 +400,23 @@ public class ServerEntity {
+         }
+     }
+ 
++    private static @Nullable List<Pair<EquipmentSlot, ItemStack>> collectEquipmentForPairing(
++        final LivingEntity entity,
++        final boolean optimizeEquipmentList
++    ) {
++        @Nullable List<Pair<EquipmentSlot, ItemStack>> slots = optimizeEquipmentList ? null : Lists.newArrayList();
++        for (EquipmentSlot slot : EquipmentSlot.VALUES) {
++            final ItemStack itemStack = entity.getItemBySlot(slot);
++            if (!itemStack.isEmpty()) {
++                if (slots == null) {
++                    slots = new ArrayList<>(EquipmentSlot.VALUES.size());
++                }
++                slots.add(Pair.of(slot, itemStack.copy()));
++            }
++        }
++        return slots;
++    }
++
+     public Vec3 getPositionBase() {
+         return this.positionCodec.getBase();
+     }

@@ -1,0 +1,234 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 05:08:23 +0800
+Subject: [PATCH] Add tempting sensor and version regression coverage for
+ bate32
+
+
+diff --git a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
+index 616b8e15c9c5215ee610af586cf4984cc31d38b8..4073c8c5696b4ef4faaaf2713b122d81bf768dc8 100644
+--- a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
++++ b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
+@@ -65,6 +65,10 @@ public class PaperVersionFetcher implements VersionFetcher {
+     }
+ 
+     public static void getUpdateStatusStartupMessage() {
++        if (!shouldCheckPaperUpdates(BUILD_INFO)) {
++            return;
++        }
++
+         int distance = DISTANCE_ERROR;
+ 
+         final OptionalInt buildNumber = BUILD_INFO.buildNumber();
+@@ -106,6 +110,10 @@ public class PaperVersionFetcher implements VersionFetcher {
+         }
+     }
+ 
++    private static boolean shouldCheckPaperUpdates(final ServerBuildInfo build) {
++        return !"LeavesX".equals(build.brandName());
++    }
++
+     private static Component getUpdateStatusMessage() {
+         int distance = DISTANCE_ERROR;
+ 
+diff --git a/src/test/java/org/leavesx/leavesx/performance/TemptingSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/TemptingSensorHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..b28ca4d0541ae14c7b01f323bec5d9cfd8e5da69
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/TemptingSensorHotPathTest.java
+@@ -0,0 +1,134 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.times;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.ArrayList;
++import java.util.List;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.entity.PathfinderMob;
++import net.minecraft.world.entity.ai.sensing.TemptingSensor;
++import net.minecraft.world.entity.ai.targeting.TargetingConditions;
++import net.minecraft.world.entity.player.Player;
++import net.minecraft.world.item.ItemStack;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.ClassVisitor;
++import org.objectweb.asm.MethodVisitor;
++import org.objectweb.asm.Opcodes;
++
++/** Verifies single-pass tempting-player selection without changing vanilla filtering or stable ties. */
++@Normal
++class TemptingSensorHotPathTest {
++
++    @Test
++    void directSelectionPreservesFiltersAndFirstPlayerOnDistanceTies() throws ReflectiveOperationException {
++        final ItemStack temptation = mock();
++        final TemptingSensor sensor = new TemptingSensor(item -> item == temptation);
++        final ServerLevel level = mock();
++        final PathfinderMob body = mock();
++        final TargetingConditions targeting = mock();
++        final Player outOfRange = mock();
++        final Player passenger = mock();
++        final Player farther = mock();
++        final Player firstNearest = mock();
++        final Player tiedNearest = mock();
++
++        when(targeting.test(level, body, outOfRange)).thenReturn(false);
++        when(targeting.test(level, body, passenger)).thenReturn(true);
++        when(targeting.test(level, body, farther)).thenReturn(true);
++        when(targeting.test(level, body, firstNearest)).thenReturn(true);
++        when(targeting.test(level, body, tiedNearest)).thenReturn(true);
++        when(passenger.getMainHandItem()).thenReturn(temptation);
++        when(farther.getMainHandItem()).thenReturn(temptation);
++        when(firstNearest.getMainHandItem()).thenReturn(temptation);
++        when(tiedNearest.getMainHandItem()).thenReturn(temptation);
++        when(body.hasPassenger(passenger)).thenReturn(true);
++        when(body.distanceToSqr(farther)).thenReturn(9.0);
++        when(body.distanceToSqr(firstNearest)).thenReturn(4.0);
++        when(body.distanceToSqr(tiedNearest)).thenReturn(4.0);
++
++        final Player selected = (Player)method(
++            "findNearestTemptingPlayerDirect",
++            ServerLevel.class,
++            PathfinderMob.class,
++            TargetingConditions.class,
++            List.class
++        ).invoke(sensor, level, body, targeting, List.of(outOfRange, passenger, farther, firstNearest, tiedNearest));
++
++        assertSame(firstNearest, selected);
++        verify(body, never()).distanceToSqr(outOfRange);
++        verify(body, never()).distanceToSqr(passenger);
++        verify(body, times(1)).distanceToSqr(farther);
++        verify(body, times(1)).distanceToSqr(firstNearest);
++        verify(body, times(1)).distanceToSqr(tiedNearest);
++    }
++
++    @Test
++    void directSelectionAvoidsStreamsSortingAndTemporaryLists() throws IOException {
++        final List<Invocation> calls = invocations("findNearestTemptingPlayerDirect");
++        assertFalse(calls.stream().anyMatch(call -> call.owner().startsWith("java/util/stream/")));
++        assertFalse(calls.stream().anyMatch(call -> call.name().equals("stream") || call.name().equals("sort")));
++        assertFalse(calls.stream().anyMatch(call -> call.owner().equals("java/util/ArrayList") && call.name().equals("<init>")));
++    }
++
++    @Test
++    void sensorTickDelegatesToDirectSelection() throws IOException {
++        assertTrue(invocations("doTick").stream().anyMatch(call -> call.name().equals("findNearestTemptingPlayerDirect")));
++    }
++
++    private static Method method(final String name, final Class<?>... parameterTypes) throws NoSuchMethodException {
++        final Method method = TemptingSensor.class.getDeclaredMethod(name, parameterTypes);
++        method.setAccessible(true);
++        return method;
++    }
++
++    private static List<Invocation> invocations(final String methodName) throws IOException {
++        final List<Invocation> calls = new ArrayList<>();
++        final boolean[] found = {false};
++        new ClassReader(TemptingSensor.class.getName()).accept(
++            new ClassVisitor(Opcodes.ASM9) {
++                @Override
++                public MethodVisitor visitMethod(
++                    final int access,
++                    final String name,
++                    final String descriptor,
++                    final String signature,
++                    final String[] exceptions
++                ) {
++                    if (!name.equals(methodName)) {
++                        return null;
++                    }
++                    found[0] = true;
++                    return new MethodVisitor(Opcodes.ASM9) {
++                        @Override
++                        public void visitMethodInsn(
++                            final int opcode,
++                            final String owner,
++                            final String calledName,
++                            final String calledDescriptor,
++                            final boolean isInterface
++                        ) {
++                            calls.add(new Invocation(owner, calledName));
++                        }
++                    };
++                }
++            },
++            ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES
++        );
++        assertTrue(found[0], () -> "Missing TemptingSensor#" + methodName);
++        return calls;
++    }
++
++    private record Invocation(String owner, String name) {
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/version/LeavesVersionFetcherTest.java b/src/test/java/org/leavesx/leavesx/version/LeavesVersionFetcherTest.java
+index 6f8c870d0996ad3cc49dfafb3e347baefb01e482..f7664f3e97be29b22fbac570c9ca75b105f3d3e9 100644
+--- a/src/test/java/org/leavesx/leavesx/version/LeavesVersionFetcherTest.java
++++ b/src/test/java/org/leavesx/leavesx/version/LeavesVersionFetcherTest.java
+@@ -1,11 +1,14 @@
+ package org.leavesx.leavesx.version;
+ 
+ import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
+ import static org.mockito.Mockito.mock;
+ import static org.mockito.Mockito.verify;
+ import static org.mockito.Mockito.verifyNoMoreInteractions;
+ import static org.mockito.Mockito.when;
+ 
++import com.destroystokyo.paper.PaperVersionFetcher;
+ import io.papermc.paper.ServerBuildInfo;
+ import java.lang.reflect.Method;
+ import java.util.OptionalInt;
+@@ -15,7 +18,7 @@ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+ import org.leavesmc.leaves.util.LeavesVersionFetcher;
+ 
+-/** Verifies that custom LeavesX builds never query the upstream Leaves release service. */
++/** Verifies that custom LeavesX builds never query upstream Paper or Leaves release services. */
+ @Normal
+ class LeavesVersionFetcherTest {
+ 
+@@ -39,4 +42,32 @@ class LeavesVersionFetcherTest {
+         verify(build).buildNumber();
+         verifyNoMoreInteractions(build);
+     }
++
++    @Test
++    void leavesXBuildSkipsPaperStartupUpdateLookup() throws ReflectiveOperationException {
++        final ServerBuildInfo build = mock();
++        when(build.brandName()).thenReturn("LeavesX");
++
++        assertFalse((boolean)paperStartupUpdateMethod().invoke(null, build));
++
++        verify(build).brandName();
++        verifyNoMoreInteractions(build);
++    }
++
++    @Test
++    void upstreamBuildKeepsPaperStartupUpdateLookup() throws ReflectiveOperationException {
++        final ServerBuildInfo build = mock();
++        when(build.brandName()).thenReturn("Paper");
++
++        assertTrue((boolean)paperStartupUpdateMethod().invoke(null, build));
++
++        verify(build).brandName();
++        verifyNoMoreInteractions(build);
++    }
++
++    private static Method paperStartupUpdateMethod() throws NoSuchMethodException {
++        final Method method = PaperVersionFetcher.class.getDeclaredMethod("shouldCheckPaperUpdates", ServerBuildInfo.class);
++        method.setAccessible(true);
++        return method;
++    }
+ }

@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 06:04:00 +0800
+Subject: [PATCH] Optimize stationary entity speed tracking for bate98
+
+
+diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
+index b7f692fb84971e2f07beaef67874d9b6457ef8dc..2d362b73c9ad72e77fc5f839b20bf87f95b6fdea 100644
+--- a/net/minecraft/world/entity/Entity.java
++++ b/net/minecraft/world/entity/Entity.java
+@@ -934,12 +934,28 @@ public abstract class Entity
+     }
+ 
+     protected void computeSpeed() {
++        final Vec3 currentPosition = this.position();
+         if (this.lastKnownPosition == null) {
+-            this.lastKnownPosition = this.position();
++            this.lastKnownPosition = currentPosition;
+         }
+ 
+-        this.lastKnownSpeed = this.position().subtract(this.lastKnownPosition);
+-        this.lastKnownPosition = this.position();
++        this.lastKnownSpeed = leavesX$calculateKnownSpeed(
++            currentPosition,
++            this.lastKnownPosition,
++            org.leavesx.leavesx.config.LeavesXRuntime.stationaryEntitySpeedOptimization()
++        );
++        this.lastKnownPosition = currentPosition;
++    }
++
++    private static Vec3 leavesX$calculateKnownSpeed(
++        final Vec3 currentPosition,
++        final Vec3 previousPosition,
++        final boolean reuseStationaryZero
++    ) {
++        // Entity positions are immutable, so equal positions always produce the same zero delta.
++        return reuseStationaryZero && currentPosition.equals(previousPosition)
++            ? Vec3.ZERO
++            : currentPosition.subtract(previousPosition);
+     }
+ 
+     public void setSharedFlagOnFire(final boolean value) {

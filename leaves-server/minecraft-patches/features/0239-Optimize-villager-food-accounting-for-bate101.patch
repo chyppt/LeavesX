@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 06:49:00 +0800
+Subject: [PATCH] Optimize villager food accounting for bate101
+
+
+diff --git a/net/minecraft/world/entity/npc/villager/Villager.java b/net/minecraft/world/entity/npc/villager/Villager.java
+index 18b0024bfcfec10953c18a09b80594dfcf10d6b9..b01dedad0b1064929376d5a7f45e6e60527f0ea7 100644
+--- a/net/minecraft/world/entity/npc/villager/Villager.java
++++ b/net/minecraft/world/entity/npc/villager/Villager.java
+@@ -849,17 +849,22 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+ 
+     private int countFoodPointsInInventory() {
+         SimpleContainer inventory = this.getInventory();
+-        if (!org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++        if (!org.leavesx.leavesx.config.LeavesXRuntime.villagerFoodInventoryOptimization()) {
+             return FOOD_POINTS.entrySet().stream().mapToInt(entry -> inventory.countItem(entry.getKey()) * entry.getValue()).sum();
+         }
+ 
+-        // LeavesX start - avoid a stream pipeline in a frequently queried villager inventory path
++        // LeavesX start - count every slot once instead of rescanning the inventory for each food type
+         int foodPoints = 0;
+-        for (final Map.Entry<Item, Integer> entry : FOOD_POINTS.entrySet()) {
+-            foodPoints += inventory.countItem(entry.getKey()) * entry.getValue();
++        final int size = inventory.items.size();
++        for (int slot = 0; slot < size; ++slot) {
++            final ItemStack stack = inventory.items.get(slot);
++            final Integer points = FOOD_POINTS.get(stack.getItem());
++            if (points != null) {
++                foodPoints += stack.getCount() * points;
++            }
+         }
+         return foodPoints;
+-        // LeavesX end - avoid a stream pipeline in a frequently queried villager inventory path
++        // LeavesX end - count every slot once instead of rescanning the inventory for each food type
+     }
+ 
+     public boolean hasFarmSeeds() {

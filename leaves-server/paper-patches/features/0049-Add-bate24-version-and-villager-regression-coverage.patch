@@ -1,0 +1,144 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 01:44:04 +0800
+Subject: [PATCH] Add bate24 version and villager regression coverage
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/VillagerAiHotPathBytecodeTest.java b/src/test/java/org/leavesx/leavesx/performance/VillagerAiHotPathBytecodeTest.java
+index 3f7c7f13a757b9cfe05e208de06db64f0a540c1d..dffea766ee183294105eb25c4940680f02155d4a 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/VillagerAiHotPathBytecodeTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/VillagerAiHotPathBytecodeTest.java
+@@ -11,6 +11,7 @@ import static org.mockito.Mockito.inOrder;
+ import static org.mockito.Mockito.mock;
+ import static org.mockito.Mockito.never;
+ import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.verifyNoInteractions;
+ import static org.mockito.Mockito.when;
+ 
+ import com.google.common.collect.ImmutableSet;
+@@ -89,6 +90,14 @@ class VillagerAiHotPathBytecodeTest {
+         assertFalse(calls.stream().anyMatch(call -> call.owner().endsWith("/NearestVisibleLivingEntities") && call.name().equals("findAll")));
+     }
+ 
++    @Test
++    void golemAgreementCounterDoesNotCreateAStreamPipeline() throws IOException {
++        final List<Invocation> calls = invocations(Villager.class, "countVillagersWantingGolem");
++
++        assertFalse(calls.stream().anyMatch(call -> call.name().equals("stream")));
++        assertFalse(calls.stream().anyMatch(call -> call.owner().startsWith("java/util/stream/")));
++    }
++
+     @Test
+     @SuppressWarnings("unchecked")
+     void acquirePoiChecksValidationMemoryBeforeAcquisitionMemory() {
+@@ -174,6 +183,62 @@ class VillagerAiHotPathBytecodeTest {
+         assertThrows(UnsupportedOperationException.class, matches::clear);
+     }
+ 
++    @Test
++    void golemAgreementCounterPreservesOrderAndStopsAfterFiveAgreements() throws ReflectiveOperationException {
++        final long timestamp = 1200L;
++        final Villager firstDecline = mock();
++        final Villager firstAgreement = mock();
++        final Villager secondAgreement = mock();
++        final Villager secondDecline = mock();
++        final Villager thirdAgreement = mock();
++        final Villager fourthAgreement = mock();
++        final Villager fifthAgreement = mock();
++        final Villager afterLimit = mock();
++        when(firstDecline.wantsToSpawnGolem(timestamp)).thenReturn(false);
++        when(firstAgreement.wantsToSpawnGolem(timestamp)).thenReturn(true);
++        when(secondAgreement.wantsToSpawnGolem(timestamp)).thenReturn(true);
++        when(secondDecline.wantsToSpawnGolem(timestamp)).thenReturn(false);
++        when(thirdAgreement.wantsToSpawnGolem(timestamp)).thenReturn(true);
++        when(fourthAgreement.wantsToSpawnGolem(timestamp)).thenReturn(true);
++        when(fifthAgreement.wantsToSpawnGolem(timestamp)).thenReturn(true);
++        final Method method = Villager.class.getDeclaredMethod("countVillagersWantingGolem", List.class, long.class);
++        method.setAccessible(true);
++
++        final int agreements = (int)method.invoke(
++            null,
++            List.of(
++                firstDecline,
++                firstAgreement,
++                secondAgreement,
++                secondDecline,
++                thirdAgreement,
++                fourthAgreement,
++                fifthAgreement,
++                afterLimit
++            ),
++            timestamp
++        );
++
++        assertEquals(5, agreements);
++        final InOrder order = inOrder(
++            firstDecline,
++            firstAgreement,
++            secondAgreement,
++            secondDecline,
++            thirdAgreement,
++            fourthAgreement,
++            fifthAgreement
++        );
++        order.verify(firstDecline).wantsToSpawnGolem(timestamp);
++        order.verify(firstAgreement).wantsToSpawnGolem(timestamp);
++        order.verify(secondAgreement).wantsToSpawnGolem(timestamp);
++        order.verify(secondDecline).wantsToSpawnGolem(timestamp);
++        order.verify(thirdAgreement).wantsToSpawnGolem(timestamp);
++        order.verify(fourthAgreement).wantsToSpawnGolem(timestamp);
++        order.verify(fifthAgreement).wantsToSpawnGolem(timestamp);
++        verifyNoInteractions(afterLimit);
++    }
++
+     private static Villager villagerRequesting(final ImmutableSet<Item> requestedItems) {
+         final Villager villager = mock();
+         final VillagerData data = mock();
+diff --git a/src/test/java/org/leavesx/leavesx/version/LeavesVersionFetcherTest.java b/src/test/java/org/leavesx/leavesx/version/LeavesVersionFetcherTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..6f8c870d0996ad3cc49dfafb3e347baefb01e482
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/version/LeavesVersionFetcherTest.java
+@@ -0,0 +1,42 @@
++package org.leavesx.leavesx.version;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.verifyNoMoreInteractions;
++import static org.mockito.Mockito.when;
++
++import io.papermc.paper.ServerBuildInfo;
++import java.lang.reflect.Method;
++import java.util.OptionalInt;
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.NamedTextColor;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.leavesmc.leaves.util.LeavesVersionFetcher;
++
++/** Verifies that custom LeavesX builds never query the upstream Leaves release service. */
++@Normal
++class LeavesVersionFetcherTest {
++
++    @Test
++    void leavesXBuildUsesLocalVersionInformation() throws ReflectiveOperationException {
++        final ServerBuildInfo build = mock();
++        when(build.brandName()).thenReturn("LeavesX");
++        when(build.minecraftVersionId()).thenReturn("26.1.2");
++        when(build.buildNumber()).thenReturn(OptionalInt.of(24));
++        final Method method = LeavesVersionFetcher.class.getDeclaredMethod("getUpdateStatusMessage", ServerBuildInfo.class);
++        method.setAccessible(true);
++
++        final Component message = (Component)method.invoke(null, build);
++
++        assertEquals(
++            Component.text("You are running LeavesX build 24 for Minecraft 26.1.2", NamedTextColor.GREEN),
++            message
++        );
++        verify(build).brandName();
++        verify(build).minecraftVersionId();
++        verify(build).buildNumber();
++        verifyNoMoreInteractions(build);
++    }
++}

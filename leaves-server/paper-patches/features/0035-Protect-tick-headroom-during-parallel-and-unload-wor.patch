@@ -1,0 +1,288 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 12:56:37 +0800
+Subject: [PATCH] Protect tick headroom during parallel and unload work
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 463272174a84530f03dcd022b2d5bebcd86aff0b..45383ed3bdac221db9c5b905b1730209be5d3e1f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -193,10 +193,10 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.ai-optimizations", "优化生物 AI 的热路径，减少重复计算。不会异步访问实体或世界，也不改变目标选择顺序；遇到问题可设为 false。默认：true。");
+         comments.put("parallelism.ai-target-search.enabled", "用工作线程计算大量目标候选的坐标距离。实体条件、视线检查和最终目标仍在主线程按原顺序确认；遇到问题可设为 false。默认：true。");
+         comments.put("parallelism.ai-target-search.minimum-candidates", "候选生物达到这个数量才使用多线程，数量较少时直接在主线程计算更快。建议保持默认。默认：128。");
+-        comments.put("performance.chunk-unloading.enabled", "区块卸载队列积压时逐步增加每刻处理量。仍会检查区块票据、保存状态和插件事件，不会强制卸载正在使用的区块。遇到问题可设为 false。默认：true。");
++        comments.put("performance.chunk-unloading.enabled", "区块卸载队列积压且服务器有足够 tick 余量时，逐步增加处理量；服务器变慢时会自动降压。仍会检查区块票据、保存状态和插件事件，不会强制卸载正在使用的区块。遇到问题可设为 false。默认：true。");
+         comments.put("performance.chunk-unloading.backlog-threshold", "待卸载区块达到这个数量后开始提高处理量。数值越小，区块回收越积极；建议保持默认。默认：1000。");
+-        comments.put("performance.chunk-unloading.minimum-per-tick", "积压超过阈值后，每刻至少处理的区块数。提高可更快回收区块，但过高可能造成卡顿。默认：100。");
+-        comments.put("performance.chunk-unloading.maximum-per-tick", "自适应卸载的每刻硬上限，防止卸载工作挤占世界 tick。普通服务器建议保持默认。默认：500。");
++        comments.put("performance.chunk-unloading.minimum-per-tick", "服务器有足够 tick 余量且积压超过阈值后，卸载预算从这个数值开始增加。提高可更快回收区块，但过高可能造成卡顿。默认：100。");
++        comments.put("performance.chunk-unloading.maximum-per-tick", "自适应卸载的每刻硬上限；服务器变慢时不会强行跑满此上限。普通服务器建议保持默认。默认：500。");
+         return Map.copyOf(comments);
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/performance/ChunkUnloadBudget.java b/src/main/java/org/leavesx/leavesx/performance/ChunkUnloadBudget.java
+index fdc0afb73a331e3abdf6cddfdb0dcacf68a6187a..086e7b42dae33b033f47093c7ed33bb5691ed8af 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/ChunkUnloadBudget.java
++++ b/src/main/java/org/leavesx/leavesx/performance/ChunkUnloadBudget.java
+@@ -3,6 +3,9 @@ package org.leavesx.leavesx.performance;
+ /** Calculates a bounded chunk-unload budget from an exact queue backlog. */
+ public final class ChunkUnloadBudget {
+ 
++    private static final double FULL_PRESSURE_TICK_RATIO = 0.60D;
++    private static final double NO_PRESSURE_TICK_RATIO = 0.80D;
++
+     private ChunkUnloadBudget() {
+     }
+ 
+@@ -19,7 +22,9 @@ public final class ChunkUnloadBudget {
+         final boolean adaptive,
+         final int backlogThreshold,
+         final int minimumPerTick,
+-        final int maximumPerTick
++        final int maximumPerTick,
++        final long averageTickTimeNanos,
++        final long targetTickTimeNanos
+     ) {
+         if (pendingChunkCount <= 0L) {
+             return 0;
+@@ -30,21 +35,47 @@ public final class ChunkUnloadBudget {
+             return (int)Math.min(Integer.MAX_VALUE, Math.min(pendingChunkCount, boundedBase));
+         }
+ 
++        final int minimum = Math.max(1, minimumPerTick);
++        final int maximum = Math.max(minimum, maximumPerTick);
++        final long cappedBase = Math.min(boundedBase, (long)maximum);
+         final long threshold = Math.max(1L, backlogThreshold);
+         if (pendingChunkCount <= threshold) {
+-            return (int)Math.min(Integer.MAX_VALUE, Math.min(pendingChunkCount, boundedBase));
++            return (int)Math.min(pendingChunkCount, cappedBase);
+         }
+ 
+-        final int minimum = Math.max(1, minimumPerTick);
+-        final int maximum = Math.max(minimum, maximumPerTick);
+         final double fraction = Math.clamp(unloadFraction, 0.0, 1.0);
+         final long availableIncrease = (long)maximum - minimum;
+         final long pressure = Math.min(
+             availableIncrease,
+             (long)Math.ceil((pendingChunkCount - threshold) * fraction)
+         );
+-        final long target = Math.max(boundedBase, minimum + pressure);
++        final long fullPressureTarget = Math.min((long)maximum, Math.max(cappedBase, minimum + pressure));
++        final double headroomScale = tickHeadroomScale(averageTickTimeNanos, targetTickTimeNanos);
++        final long scaledIncrease = (long)Math.ceil((fullPressureTarget - cappedBase) * headroomScale);
++        final long target = cappedBase + scaledIncrease;
++
++        return (int)Math.min(pendingChunkCount, target);
++    }
+ 
+-        return (int)Math.min(pendingChunkCount, Math.min((long)maximum, target));
++    /**
++     * Converts recent tick cost into a stable unload-pressure multiplier.
++     *
++     * <p>Full pressure is allowed below 60% of the target tick time. It then fades to zero at 80%, retaining enough
++     * headroom for entity, plugin, and chunk-load spikes instead of reacting only after TPS has already fallen.</p>
++     */
++    private static double tickHeadroomScale(final long averageTickTimeNanos, final long targetTickTimeNanos) {
++        if (averageTickTimeNanos <= 0L || targetTickTimeNanos <= 0L) {
++            return 1.0D;
++        }
++
++        final double tickRatio = (double)averageTickTimeNanos / (double)targetTickTimeNanos;
++        if (tickRatio <= FULL_PRESSURE_TICK_RATIO) {
++            return 1.0D;
++        }
++        if (tickRatio >= NO_PRESSURE_TICK_RATIO) {
++            return 0.0D;
++        }
++        return (NO_PRESSURE_TICK_RATIO - tickRatio)
++            / (NO_PRESSURE_TICK_RATIO - FULL_PRESSURE_TICK_RATIO);
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+index 1d5b5458429e61560f01bfdbfcf52edcff2bb79b..cd8b62d2c67d243c983e45d4012cb1415617407e 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -47,8 +47,8 @@ public final class StableDistanceSorter {
+ 
+         final double[] distances = new double[size];
+         final int[] scratch = new int[size];
+-        final int workerLimit = Math.min(LeavesXComputeExecutor.workerCount(), size);
+-        final int rangeSize = divideCeil(size, Math.max(1, workerLimit));
++        final int laneLimit = Math.min(LeavesXComputeExecutor.computeLaneCount(), size);
++        final int rangeSize = divideCeil(size, Math.max(1, laneLimit));
+         final boolean completedInParallel = parallel && LeavesXComputeExecutor.invokeRanges(
+             size,
+             parallelThreshold,
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 53b52735f7bcde7c8048623a0a083c0ffc7edf48..a12413ab0588b9ecfc2ed214a5866c3fc677fd9b 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -49,6 +49,16 @@ public final class LeavesXComputeExecutor {
+         return workerCount;
+     }
+ 
++    /**
++     * Returns the maximum number of ranges that can make progress concurrently.
++     *
++     * <p>The calling tick thread owns one lane so it continues doing useful pure computation instead of waiting for
++     * every worker range. A single configured worker retains the historical synchronous fallback.</p>
++     */
++    public static int computeLaneCount() {
++        return executor != null && workerCount > 1 ? workerCount + 1 : 1;
++    }
++
+     /**
+      * Processes contiguous ranges and waits for every range before returning.
+      *
+@@ -60,23 +70,36 @@ public final class LeavesXComputeExecutor {
+             return false;
+         }
+ 
+-        final int taskCount = Math.min(workerCount, size);
++        final int taskCount = Math.min(computeLaneCount(), size);
+         final int rangeSize = (size + taskCount - 1) / taskCount;
+         final int expectedTaskCount = (size + rangeSize - 1) / rangeSize;
+-        final List<Future<?>> futures = new ArrayList<>(expectedTaskCount);
++        final int callerTaskIndex = expectedTaskCount - 1;
++        final List<Future<?>> futures = new ArrayList<>(callerTaskIndex);
+         boolean succeeded = true;
+         try {
+-            for (int start = 0; start < size; start += rangeSize) {
+-                final int rangeStart = start;
+-                final int rangeEnd = Math.min(size, start + rangeSize);
+-                final int taskIndex = futures.size();
+-                futures.add(current.submit(() -> task.run(taskIndex, rangeStart, rangeEnd)));
++            for (int taskIndex = 0; taskIndex < callerTaskIndex; taskIndex++) {
++                final int rangeTaskIndex = taskIndex;
++                final int rangeStart = taskIndex * rangeSize;
++                final int rangeEnd = Math.min(size, rangeStart + rangeSize);
++                futures.add(current.submit(() -> task.run(rangeTaskIndex, rangeStart, rangeEnd)));
+             }
+         } catch (final RuntimeException submissionFailure) {
+             succeeded = false;
+             LOGGER.error("LeavesX parallel computation could not be submitted; recomputing on the main thread", submissionFailure);
+         }
+ 
++        boolean callerRangeCompleted = false;
++        if (futures.size() == callerTaskIndex) {
++            final int callerRangeStart = callerTaskIndex * rangeSize;
++            try {
++                task.run(callerTaskIndex, callerRangeStart, size);
++                callerRangeCompleted = true;
++            } catch (final RuntimeException | Error computationFailure) {
++                succeeded = false;
++                LOGGER.error("LeavesX caller-side computation failed; recomputing on the main thread", computationFailure);
++            }
++        }
++
+         boolean interrupted = false;
+         for (final Future<?> future : futures) {
+             boolean completed = false;
+@@ -100,7 +123,7 @@ public final class LeavesXComputeExecutor {
+         if (interrupted) {
+             Thread.currentThread().interrupt();
+         }
+-        return succeeded && futures.size() == expectedTaskCount;
++        return succeeded && callerRangeCompleted && futures.size() + 1 == expectedTaskCount;
+     }
+ 
+     /** Stops all LeavesX computation workers during normal server shutdown. */
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadBudgetTest.java b/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadBudgetTest.java
+index c0a6c5e5d5d6c15a9d99619f4dc34f6279f38b93..d868b9a70eb19e6cff6e4a75fcc5fdadf77e6463 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadBudgetTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadBudgetTest.java
+@@ -8,24 +8,41 @@ import org.junit.jupiter.api.Test;
+ @Normal
+ class ChunkUnloadBudgetTest {
+ 
++    private static final long TARGET_TICK_NANOS = 50_000_000L;
++
+     @Test
+     void preservesPaperBaselineBelowBacklogThreshold() {
+-        assertEquals(50, ChunkUnloadBudget.calculate(900, 50, 0.05, true, 1_000, 100, 500));
++        assertEquals(50, ChunkUnloadBudget.calculate(900, 50, 0.05, true, 1_000, 100, 500, 20_000_000L, TARGET_TICK_NANOS));
++    }
++
++    @Test
++    void keepsTheConfiguredSafetyCapBelowTheBacklogThreshold() {
++        assertEquals(500, ChunkUnloadBudget.calculate(900, 1_000, 0.05, true, 1_000, 100, 500, 20_000_000L, TARGET_TICK_NANOS));
+     }
+ 
+     @Test
+     void raisesBudgetGraduallyAndCapsLargeBacklogs() {
+-        assertEquals(150, ChunkUnloadBudget.calculate(2_000, 100, 0.05, true, 1_000, 100, 500));
+-        assertEquals(500, ChunkUnloadBudget.calculate(20_000, 1_000, 0.05, true, 1_000, 100, 500));
++        assertEquals(150, ChunkUnloadBudget.calculate(2_000, 100, 0.05, true, 1_000, 100, 500, 20_000_000L, TARGET_TICK_NANOS));
++        assertEquals(500, ChunkUnloadBudget.calculate(20_000, 1_000, 0.05, true, 1_000, 100, 500, 20_000_000L, TARGET_TICK_NANOS));
+     }
+ 
+     @Test
+     void preservesBaselineWhenAdaptivePolicyIsDisabled() {
+-        assertEquals(1_000, ChunkUnloadBudget.calculate(20_000, 1_000, 0.05, false, 1_000, 100, 500));
++        assertEquals(1_000, ChunkUnloadBudget.calculate(20_000, 1_000, 0.05, false, 1_000, 100, 500, 80_000_000L, TARGET_TICK_NANOS));
+     }
+ 
+     @Test
+     void neverSchedulesMoreChunksThanRemainQueued() {
+-        assertEquals(12, ChunkUnloadBudget.calculate(12, 50, 0.05, true, 1_000, 100, 500));
++        assertEquals(12, ChunkUnloadBudget.calculate(12, 50, 0.05, true, 1_000, 100, 500, 20_000_000L, TARGET_TICK_NANOS));
++    }
++
++    @Test
++    void stopsAddingUnloadPressureWhenTheServerHasNoTickHeadroom() {
++        assertEquals(100, ChunkUnloadBudget.calculate(2_000, 100, 0.05, true, 1_000, 100, 500, 50_000_000L, TARGET_TICK_NANOS));
++    }
++
++    @Test
++    void retainsTheConfiguredSafetyCapWhileTheServerIsLagging() {
++        assertEquals(500, ChunkUnloadBudget.calculate(20_000, 1_000, 0.05, true, 1_000, 100, 500, 80_000_000L, TARGET_TICK_NANOS));
+     }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index 7d50a306f2b646db8f6d4e9f0b45cdcaa3304df8..a926dfe7caba93bb18cacd48340214b0b168dc22 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -1,12 +1,14 @@
+ package org.leavesx.leavesx.runtime;
+ 
+ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import java.util.concurrent.CountDownLatch;
+ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.atomic.AtomicBoolean;
++import java.util.concurrent.atomic.AtomicInteger;
+ import java.util.concurrent.atomic.AtomicIntegerArray;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.AfterEach;
+@@ -66,6 +68,26 @@ class LeavesXComputeExecutorTest {
+         }
+     }
+ 
++    @Test
++    void keepsTheCallingThreadProductiveWhileWorkersRun() {
++        LeavesXComputeExecutor.configure(4);
++        final Thread callingThread = Thread.currentThread();
++        final AtomicInteger callerRanges = new AtomicInteger();
++        final AtomicInteger workerRanges = new AtomicInteger();
++
++        final boolean parallel = LeavesXComputeExecutor.invokeRanges(1_024, 128, (taskIndex, start, end) -> {
++            if (Thread.currentThread() == callingThread) {
++                callerRanges.incrementAndGet();
++            } else {
++                workerRanges.incrementAndGet();
++            }
++        });
++
++        assertTrue(parallel);
++        assertEquals(1, callerRanges.get(), "the tick thread should compute exactly one partition instead of only waiting");
++        assertTrue(workerRanges.get() > 0, "at least one partition should still execute on a worker");
++    }
++
+     @Test
+     void waitsForSubmittedRangesBeforeReportingFailure() throws Exception {
+         LeavesXComputeExecutor.configure(2);

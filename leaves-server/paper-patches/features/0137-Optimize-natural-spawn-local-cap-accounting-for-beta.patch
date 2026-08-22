@@ -1,0 +1,215 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 12:37:59 +0800
+Subject: [PATCH] Optimize natural spawn local-cap accounting for beta112
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index a52ef6241ec943aa0e4b6cfdd83ce0bf468d283e..452457f0eb51ec8bda3c124fb83253a1e274274e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 42;
++    public static final int CURRENT_CONFIG_VERSION = 43;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index b586dac1f942b25658409489ad77675818e0eabd..f2bbd940f53b12e7493449fbb0fb8d88ff7277d4 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：42。");
++        comments.put("config-version", "配置版本，请勿修改。默认：43。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 40168003cf220a94f7d7cb792f7bc50e6e5b2c59..d0ccd56fbee92d0fb8ad60a960ae1048b8a2acb6 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -384,6 +384,10 @@ enum LeavesXOptimization {
+         "performance.mob-spawning.spawn-chunk-readiness-checks",
+         "自然刷怪跨区块就绪判断直接使用坐标，关闭后保留 ChunkPos 判断。默认：true。"
+     ),
++    NATURAL_SPAWN_LOCAL_CAP_ACCOUNTING(
++        "performance.mob-spawning.local-cap-accounting",
++        "自然刷怪本地上限记账直接使用区块键，关闭后保留 ChunkPos 记账。默认：true。"
++    ),
+     BLOCK_ENTITY_TYPE_VALIDATION(
+         "performance.block-entity.type-validation",
+         "缓存方块实体类型校验，重复映射自动使用原版查询。默认：true。"
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index d52692ffabb31468dc598a0313e006aaff67bc21..2c28d7f0bfb18a41fac3dab55c7cdf4452b06c84 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -54,6 +54,7 @@ public final class LeavesXRuntime {
+     private static boolean insideBlockEffectCollectorOptimization = true;
+     private static boolean naturalSpawnPositionChecksOptimization = true;
+     private static boolean naturalSpawnChunkReadinessOptimization = true;
++    private static boolean naturalSpawnLocalCapAccountingOptimization = true;
+     private static long fineGrainedOptimizationMaskLow = LeavesXOptimization.allEnabledMaskLow();
+     private static long fineGrainedOptimizationMaskHigh = LeavesXOptimization.allEnabledMaskHigh();
+ 
+@@ -122,6 +123,8 @@ public final class LeavesXRuntime {
+             && validated.optimizationEnabled(LeavesXOptimization.NATURAL_SPAWN_POSITION_CHECKS);
+         naturalSpawnChunkReadinessOptimization = validated.mobSpawningOptimizations()
+             && validated.optimizationEnabled(LeavesXOptimization.NATURAL_SPAWN_CHUNK_READINESS);
++        naturalSpawnLocalCapAccountingOptimization = validated.mobSpawningOptimizations()
++            && validated.optimizationEnabled(LeavesXOptimization.NATURAL_SPAWN_LOCAL_CAP_ACCOUNTING);
+         fineGrainedOptimizationMaskLow = validated.fineGrainedOptimizationMaskLow();
+         fineGrainedOptimizationMaskHigh = validated.fineGrainedOptimizationMaskHigh();
+         configuration = validated;
+@@ -603,6 +606,11 @@ public final class LeavesXRuntime {
+         return naturalSpawnChunkReadinessOptimization;
+     }
+ 
++    /** Returns whether natural-spawn local-cap accounting may use a packed chunk key without a ChunkPos allocation. */
++    public static boolean naturalSpawnLocalCapAccountingOptimization() {
++        return naturalSpawnLocalCapAccountingOptimization;
++    }
++
+     /** Returns whether POI searches may stop traversing once the requested bounded range is exhausted. */
+     public static boolean poiBoundedTraversalOptimization() {
+         return aiOptimizations && enabled(LeavesXOptimization.POI_BOUNDED_TRAVERSAL);
+diff --git a/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java b/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
+index bf0f5ca449139b7df75fb84a85549ec951bdc1ef..09c08c73cbdc378eaf86127ce74026be72aa48f6 100644
+--- a/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
++++ b/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
+@@ -1,5 +1,6 @@
+ package net.minecraft.world.level;
+ 
++import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ import static org.junit.jupiter.api.Assertions.fail;
+@@ -25,10 +26,14 @@ import org.objectweb.asm.tree.MethodInsnNode;
+ import org.objectweb.asm.tree.MethodNode;
+ import org.objectweb.asm.tree.TypeInsnNode;
+ 
+-/** Verifies natural-spawn position checks avoid allocations without changing Paper's decisions. */
++/** Verifies natural-spawn coordinate hot paths avoid allocations without changing Paper's decisions. */
+ @Normal
+ public class NaturalSpawnPositionHotPathTest {
+ 
++    private static final int[] CHUNK_BOUNDARY_COORDINATES = {
++        -65, -64, -63, -33, -32, -31, -17, -16, -15, -1, 0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65
++    };
++
+     @TempDir
+     Path tempDir;
+ 
+@@ -69,15 +74,11 @@ public class NaturalSpawnPositionHotPathTest {
+ 
+     @Test
+     void directChunkCheckMatchesChunkPosContainingAcrossNegativeBoundaries() {
+-        final int[] coordinates = {
+-            -65, -64, -63, -33, -32, -31, -17, -16, -15, -1, 0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65
+-        };
+-
+         for (int chunkX = -5; chunkX <= 5; chunkX++) {
+             for (int chunkZ = -5; chunkZ <= 5; chunkZ++) {
+                 final ChunkPos chunkPos = new ChunkPos(chunkX, chunkZ);
+-                for (final int candidateX : coordinates) {
+-                    for (final int candidateZ : coordinates) {
++                for (final int candidateX : CHUNK_BOUNDARY_COORDINATES) {
++                    for (final int candidateZ : CHUNK_BOUNDARY_COORDINATES) {
+                         final boolean expected = ChunkPos.containing(new BlockPos(candidateX, 0, candidateZ)).equals(chunkPos);
+                         final boolean actual = NaturalSpawner.leavesX$isInChunk(candidateX, candidateZ, chunkPos);
+                         if (expected != actual) {
+@@ -90,6 +91,20 @@ public class NaturalSpawnPositionHotPathTest {
+         }
+     }
+ 
++    @Test
++    void packedLocalCapChunkKeyMatchesChunkPosContainingAcrossNegativeBoundaries() {
++        for (final int blockX : CHUNK_BOUNDARY_COORDINATES) {
++            for (final int blockZ : CHUNK_BOUNDARY_COORDINATES) {
++                final BlockPos position = new BlockPos(blockX, 0, blockZ);
++                assertEquals(
++                    ChunkPos.containing(position).pack(),
++                    ChunkPos.pack(blockX >> 4, blockZ >> 4),
++                    () -> "Packed chunk key changed for block [" + blockX + ", " + blockZ + ']'
++                );
++            }
++        }
++    }
++
+     @Test
+     void directWorldBorderChunkCheckMatchesChunkObjectCheck() {
+         final WorldBorder border = new WorldBorder();
+@@ -114,36 +129,41 @@ public class NaturalSpawnPositionHotPathTest {
+             publish(this.configuration(true, true, "enabled.yml"));
+             assertTrue(LeavesXRuntime.naturalSpawnPositionChecksOptimization());
+             assertTrue(LeavesXRuntime.naturalSpawnChunkReadinessOptimization());
++            assertTrue(LeavesXRuntime.naturalSpawnLocalCapAccountingOptimization());
+ 
+             publish(this.configuration(true, false, "setting-disabled.yml"));
+             assertFalse(LeavesXRuntime.naturalSpawnPositionChecksOptimization());
+             assertFalse(LeavesXRuntime.naturalSpawnChunkReadinessOptimization());
++            assertFalse(LeavesXRuntime.naturalSpawnLocalCapAccountingOptimization());
+ 
+             publish(this.configuration(false, true, "master-disabled.yml"));
+             assertFalse(LeavesXRuntime.naturalSpawnPositionChecksOptimization());
+             assertFalse(LeavesXRuntime.naturalSpawnChunkReadinessOptimization());
++            assertFalse(LeavesXRuntime.naturalSpawnLocalCapAccountingOptimization());
+         } finally {
+             publish(LeavesXConfig.safeDefaults());
+         }
+     }
+ 
+     @Test
+-    void version41ConfigurationGainsTheDocumentedDefaultInPlace() throws IOException {
+-        final Path path = this.tempDir.resolve("version-41.yml");
++    void version42ConfigurationGainsTheDocumentedDefaultInPlace() throws IOException {
++        final Path path = this.tempDir.resolve("version-42.yml");
+         Files.writeString(path, """
+-            config-version: 41
++            config-version: 42
+             performance:
+               mob-spawning-optimizations: true
+               mob-spawning:
+                 spawn-position-distance-checks: true
++                spawn-chunk-readiness-checks: true
+             """);
+ 
+         LeavesXConfigLoader.load(path);
+         final String upgraded = Files.readString(path);
+ 
+-        assertTrue(upgraded.contains("config-version: 42"));
++        assertTrue(upgraded.contains("config-version: 43"));
+         assertTrue(upgraded.contains("spawn-position-distance-checks: true"));
+         assertTrue(upgraded.contains("spawn-chunk-readiness-checks: true"));
++        assertTrue(upgraded.contains("local-cap-accounting: true"));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx.yml.bak")));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx-migration-report.yml")));
+     }
+@@ -168,6 +188,12 @@ public class NaturalSpawnPositionHotPathTest {
+         assertTrue(calls(decision, "net/minecraft/server/level/ServerLevel", "canSpawnEntitiesInChunk", "(Lnet/minecraft/world/level/ChunkPos;)Z"));
+         assertTrue(allocates(decision, "net/minecraft/world/phys/Vec3"), "Disabled path must retain Paper's Vec3 flow");
+         assertTrue(calls(decision, "net/minecraft/world/level/ChunkPos", "containing"), "Disabled path must retain Paper's chunk flow");
++
++        final ClassNode spawnState = classNode(NaturalSpawner.SpawnState.class);
++        final MethodNode afterSpawn = method(spawnState, "afterSpawn");
++        assertTrue(calls(afterSpawn, "org/leavesx/leavesx/config/LeavesXRuntime", "naturalSpawnLocalCapAccountingOptimization"));
++        assertTrue(calls(afterSpawn, "net/minecraft/world/level/LocalMobCapCalculator", "addMob", "(JLnet/minecraft/world/entity/MobCategory;)V"));
++        assertTrue(calls(afterSpawn, "net/minecraft/world/level/ChunkPos", "containing"), "Disabled path must retain ChunkPos accounting");
+     }
+ 
+     private LeavesXConfig configuration(
+@@ -183,7 +209,8 @@ public class NaturalSpawnPositionHotPathTest {
+               mob-spawning:
+                 spawn-position-distance-checks: %s
+                 spawn-chunk-readiness-checks: %s
+-            """.formatted(masterEnabled, settingEnabled, settingEnabled));
++                local-cap-accounting: %s
++            """.formatted(masterEnabled, settingEnabled, settingEnabled, settingEnabled));
+         return LeavesXConfigLoader.load(path);
+     }
+ 

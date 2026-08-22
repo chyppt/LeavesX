@@ -1,0 +1,1054 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 00:56:30 +0800
+Subject: [PATCH] Add fine-grained LeavesX controls for bate78
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index b91779165b3b7673f43c4d31505d284f815744d9..67d6f40d40e1563070434cbab1d96093598c0705 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -939,6 +939,11 @@ public final class LeavesXCommand extends Command {
+         ));
+         sender.sendMessage(line("区块卸载", onOff(config.adaptiveChunkUnloading()) + "，预算 " + config.chunkUnloadMinimumPerTick() + '-' + config.chunkUnloadMaximumPerTick(), NamedTextColor.AQUA));
+         sender.sendMessage(line("网络 flush 合并", onOff(config.networkFlushConsolidation()), NamedTextColor.AQUA));
++        sender.sendMessage(line(
++            "细项优化",
++            config.enabledFineGrainedOptimizationCount() + " / " + LeavesXConfig.fineGrainedOptimizationCount() + " 开启",
++            NamedTextColor.AQUA
++        ));
+         sender.sendMessage(line("诊断窗口", config.diagnosticsRollingWindowSeconds() + " 秒", NamedTextColor.AQUA));
+         sender.sendMessage(line("慢插件任务阈值", config.diagnosticsSlowPluginTaskMillis() + " ms", NamedTextColor.AQUA));
+     }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 6ea3ba30d67274118f557b7ceb8aa29c76bf6104..e02344e460fce43d63fcbb5cca4cccaa4b127de2 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -40,10 +40,11 @@ public record LeavesXConfig(
+     boolean adaptiveChunkUnloading,
+     int chunkUnloadBacklogThreshold,
+     int chunkUnloadMinimumPerTick,
+-    int chunkUnloadMaximumPerTick
++    int chunkUnloadMaximumPerTick,
++    long fineGrainedOptimizationMask
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 10;
++    public static final int CURRENT_CONFIG_VERSION = 11;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -85,6 +86,9 @@ public record LeavesXConfig(
+                 "performance.chunk-unloading.maximum-per-tick must be at least minimum-per-tick and at most 10000"
+             );
+         }
++        if ((fineGrainedOptimizationMask & ~LeavesXOptimization.allEnabledMask()) != 0L) {
++            throw new IllegalArgumentException("fine-grained optimization mask contains unsupported bits");
++        }
+     }
+ 
+     /**
+@@ -127,7 +131,23 @@ public record LeavesXConfig(
+             true,
+             1_000,
+             100,
+-            500
++            500,
++            LeavesXOptimization.allEnabledMask()
+         );
+     }
++
++    /** Returns whether one independently configurable optimization is enabled. */
++    boolean optimizationEnabled(final LeavesXOptimization optimization) {
++        return optimization.enabledIn(this.fineGrainedOptimizationMask);
++    }
++
++    /** Returns the number of enabled fine-grained optimization switches. */
++    public int enabledFineGrainedOptimizationCount() {
++        return Long.bitCount(this.fineGrainedOptimizationMask);
++    }
++
++    /** Returns the number of supported fine-grained optimization switches. */
++    public static int fineGrainedOptimizationCount() {
++        return LeavesXOptimization.count();
++    }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index fd461f3ce79726d61fec19c0b5f28ba4a6f11d91..dc496ea80dcf16a3f9f6de0f2da36c5b10fbd654 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -117,5 +117,10 @@ public final class LeavesXConfigBootstrap {
+             config.diagnosticsRollingWindowSeconds(),
+             config.diagnosticsSlowPluginTaskMillis()
+         );
++        LOGGER.info(
++            "LeavesX fine-grained optimization switches: {}/{} enabled",
++            config.enabledFineGrainedOptimizationCount(),
++            LeavesXConfig.fineGrainedOptimizationCount()
++        );
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 94d2a23a4aa01874206e60e5cb0fdd6b8dcb9786..96aa16d672b23d8079c6813d7aa92cecf8238d36 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -232,13 +232,24 @@ public final class LeavesXConfigLoader {
+                     node.node("performance", "chunk-unloading", "maximum-per-tick"),
+                     "performance.chunk-unloading.maximum-per-tick",
+                     500
+-                )
++                ),
++                readFineGrainedOptimizationMask(node)
+             );
+         } catch (final IllegalArgumentException ex) {
+             throw new LeavesXConfigException("Invalid LeavesX configuration at " + path + ": " + ex.getMessage(), ex);
+         }
+     }
+ 
++    private static long readFineGrainedOptimizationMask(final ConfigurationNode node) {
++        long enabledMask = 0L;
++        for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
++            if (readBoolean(node.node(optimization.nodePath()), optimization.path(), true)) {
++                enabledMask |= optimization.mask();
++            }
++        }
++        return enabledMask;
++    }
++
+     private static void save(final Path path, final LeavesXConfig config) throws IOException, ConfigurateException {
+         save(path, LeavesXConfigWriter.render(config, HEADER));
+     }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 1c5cf46e5666154288690fb6012a41b10dd15c17..a11f0a79ce68b61aa2a17eae2bac0c2627751880 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -262,6 +262,14 @@ public final class LeavesXConfigWriter {
+             config.chunkUnloadMaximumPerTick(),
+             missingOnly
+         );
++        for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
++            changed |= writeValue(
++                node.node(optimization.nodePath()),
++                optimization.path(),
++                config.optimizationEnabled(optimization),
++                missingOnly
++            );
++        }
+         return changed;
+     }
+ 
+@@ -280,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：10。");
++        comments.put("config-version", "配置版本，请勿修改。默认：11。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -314,6 +322,9 @@ public final class LeavesXConfigWriter {
+         comments.put("parallelism.mob-spawning.minimum-entities", "实体达到此数量才并行统计刷怪。默认：524288。");
+         comments.put("parallelism.ai-target-search.enabled", "多线程计算大量 AI 目标的距离。默认：true。");
+         comments.put("parallelism.ai-target-search.minimum-candidates", "候选达到此数量才并行排序；较小列表在主线程更快。默认：262144。");
++        for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
++            comments.put(optimization.path(), optimization.comment());
++        }
+         return Map.copyOf(comments);
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f138181bdbc00d0005a58c2e3d2909367da2707b
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -0,0 +1,176 @@
++package org.leavesx.leavesx.config;
++
++/**
++ * Fine-grained switches for independently disabling LeavesX optimizations.
++ *
++ * <p>The runtime stores these values in one primitive bit mask. Configuration stays detailed without adding map
++ * lookups or object traversal to entity, AI, and block-entity hot paths.</p>
++ */
++enum LeavesXOptimization {
++
++    HOPPER_ENTITY_QUERIES(
++        "performance.block-entity.hopper-entity-queries",
++        "优化漏斗实体查询，关闭后使用原版查询。默认：true。"
++    ),
++    FIRST_MATCH_ENTITY_QUERIES(
++        "performance.entity-queries.first-match-queries",
++        "只需要一个实体时提前停止搜索，关闭后构建完整列表。默认：true。"
++    ),
++    PRESSURE_PLATE_ENTITY_SCANS(
++        "performance.entity-queries.pressure-plate-scans",
++        "复用压力板实体扫描结果，关闭后使用原版扫描。默认：true。"
++    ),
++    TRIPWIRE_ENTITY_SCANS(
++        "performance.entity-queries.tripwire-scans",
++        "复用绊线实体扫描结果，关闭后使用原版扫描。默认：true。"
++    ),
++    DETECTOR_RAIL_ENTITY_QUERIES(
++        "performance.entity-queries.detector-rail-queries",
++        "限制探测铁轨只查需要的矿车，关闭后查询完整列表。默认：true。"
++    ),
++    COMPARATOR_ITEM_FRAME_QUERIES(
++        "performance.entity-queries.comparator-item-frame-queries",
++        "限制比较器物品展示框查询数量，关闭后查询完整列表。默认：true。"
++    ),
++    CHEST_CAT_DETECTION(
++        "performance.entity-queries.chest-cat-detection",
++        "找到阻挡箱子的猫后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    CONTAINER_OPENER_RECOUNT(
++        "performance.block-entity.container-opener-recount",
++        "复用容器开关人数扫描结果，关闭后使用原版扫描。默认：true。"
++    ),
++    OCCUPIED_BED_VILLAGER_QUERIES(
++        "performance.entity-queries.occupied-bed-villager-queries",
++        "找到占床村民后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    OCCUPIED_POI_BED_QUERIES(
++        "performance.entity-queries.occupied-poi-bed-queries",
++        "验证床位时找到村民后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    SPAWNER_NEARBY_ENTITY_SCANS(
++        "performance.entity-queries.spawner-nearby-entity-scans",
++        "刷怪笼达到实体上限后停止计数，关闭后查询完整列表。默认：true。"
++    ),
++    ENDERMAN_PLACEMENT_CHECKS(
++        "performance.entity-queries.enderman-placement-checks",
++        "末影人放置方块时找到占位实体后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    SHULKER_DUPLICATION_DENSITY(
++        "performance.entity-queries.shulker-duplication-density",
++        "潜影贝复制达到密度上限后停止计数，关闭后查询完整列表。默认：true。"
++    ),
++    CAT_SPAWNING_DENSITY(
++        "performance.entity-queries.cat-spawning-density",
++        "村庄和女巫小屋生成猫时限制住宅和猫的计数，关闭后完整统计。默认：true。"
++    ),
++    RIDDEN_ENTITY_FOLLOW_SCANS(
++        "performance.entity-queries.ridden-entity-follow-scans",
++        "生物跟随载具时找到目标后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    PARROT_FOLLOW_TARGET_SCANS(
++        "performance.entity-queries.parrot-follow-target-scans",
++        "鹦鹉寻找跟随目标时找到目标后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    VILLAGER_HOSTILE_SENSOR(
++        "performance.ai.villager-hostile-sensor",
++        "减少村民敌对生物传感器的重复查找，关闭后使用原版流程。默认：true。"
++    ),
++    ARMOR_STAND_PLACEMENT(
++        "performance.entity-queries.armor-stand-placement",
++        "放置盔甲架时找到碰撞实体后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    DRAGON_BREATH_CLOUD(
++        "performance.entity-queries.dragon-breath-cloud",
++        "收集龙息时找到效果云后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    EQUIPMENT_DISPENSER(
++        "performance.entity-queries.equipment-dispenser",
++        "发射器装备物品时找到目标后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    CAT_SLEEPING_PLAYER(
++        "performance.entity-queries.cat-sleeping-player",
++        "猫寻找睡眠玩家时找到目标后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    CAT_RELAX_OCCUPANCY(
++        "performance.entity-queries.cat-relax-occupancy",
++        "猫检查床和箱子占用时找到实体后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    PANDA_EDIBLE_ITEMS(
++        "performance.entity-queries.panda-edible-items",
++        "熊猫找到可食用物品后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    DOLPHIN_ITEM_PLAY(
++        "performance.entity-queries.dolphin-item-play",
++        "海豚找到可玩的物品后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    FOX_ITEM_SEARCH(
++        "performance.entity-queries.fox-item-search",
++        "狐狸找到可拾取物品后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    PUFFERFISH_DANGER_SCANS(
++        "performance.entity-queries.pufferfish-danger-scans",
++        "河豚找到危险生物后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    EXPERIENCE_ORB_MERGE(
++        "performance.entity-queries.experience-orb-merge",
++        "经验球合并达到需要数量后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    CHICKEN_JOCKEY_MOUNT(
++        "performance.entity-queries.chicken-jockey-mount",
++        "鸡骑士找到可用鸡后停止搜索，关闭后查询完整列表。默认：true。"
++    ),
++    BREEZE_ATTACK_SENSOR(
++        "performance.ai.breeze-attack-sensor",
++        "减少旋风人攻击传感器的临时对象，关闭后使用原版流程。默认：true。"
++    ),
++    WARDEN_TARGET_SENSOR(
++        "performance.ai.warden-target-sensor",
++        "减少监守者目标传感器的临时对象，关闭后使用原版流程。默认：true。"
++    );
++
++    private static final LeavesXOptimization[] VALUES = values();
++    private static final long ALL_ENABLED_MASK = (1L << VALUES.length) - 1L;
++
++    private final String path;
++    private final String comment;
++    private final long mask;
++
++    LeavesXOptimization(final String path, final String comment) {
++        this.path = path;
++        this.comment = comment;
++        this.mask = 1L << this.ordinal();
++    }
++
++    static LeavesXOptimization[] cachedValues() {
++        return VALUES;
++    }
++
++    static long allEnabledMask() {
++        return ALL_ENABLED_MASK;
++    }
++
++    static int count() {
++        return VALUES.length;
++    }
++
++    String path() {
++        return this.path;
++    }
++
++    Object[] nodePath() {
++        return this.path.split("\\.");
++    }
++
++    String comment() {
++        return this.comment;
++    }
++
++    long mask() {
++        return this.mask;
++    }
++
++    boolean enabledIn(final long enabledMask) {
++        return (enabledMask & this.mask) != 0L;
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index ae7f33f140a268ad632a05e4a22d876121aea413..89da02134a0ad3ee2525f218124170fba8307e9a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -45,6 +45,7 @@ public final class LeavesXRuntime {
+     private static int chunkUnloadBacklogThreshold = 1_000;
+     private static int chunkUnloadMinimumPerTick = 100;
+     private static int chunkUnloadMaximumPerTick = 500;
++    private static long fineGrainedOptimizationMask = LeavesXOptimization.allEnabledMask();
+ 
+     private LeavesXRuntime() {
+     }
+@@ -100,6 +101,7 @@ public final class LeavesXRuntime {
+         chunkUnloadBacklogThreshold = validated.chunkUnloadBacklogThreshold();
+         chunkUnloadMinimumPerTick = validated.chunkUnloadMinimumPerTick();
+         chunkUnloadMaximumPerTick = validated.chunkUnloadMaximumPerTick();
++        fineGrainedOptimizationMask = validated.fineGrainedOptimizationMask();
+         configuration = validated;
+     }
+ 
+@@ -169,11 +171,166 @@ public final class LeavesXRuntime {
+         return entityQueryOptimizations;
+     }
+ 
++    /** Returns whether fixed hopper entity queries may reuse their private result buffers. */
++    public static boolean hopperEntityQueriesOptimization() {
++        return blockEntityOptimizations && enabled(LeavesXOptimization.HOPPER_ENTITY_QUERIES);
++    }
++
++    /** Returns whether first-match entity queries may stop in deterministic lookup order. */
++    public static boolean firstMatchEntityQueriesOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.FIRST_MATCH_ENTITY_QUERIES);
++    }
++
++    /** Returns whether pressure plates may reuse one entity scan per signal update. */
++    public static boolean pressurePlateEntityScansOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS);
++    }
++
++    /** Returns whether tripwire updates may reuse one bounded entity scan. */
++    public static boolean tripWireEntityScansOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.TRIPWIRE_ENTITY_SCANS);
++    }
++
++    /** Returns whether detector rails may stop once the required cart count is known. */
++    public static boolean detectorRailEntityQueriesOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.DETECTOR_RAIL_ENTITY_QUERIES);
++    }
++
++    /** Returns whether comparator item-frame queries may stop after ambiguity is known. */
++    public static boolean comparatorItemFrameQueriesOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.COMPARATOR_ITEM_FRAME_QUERIES);
++    }
++
++    /** Returns whether chest obstruction checks may stop after the first sitting cat. */
++    public static boolean chestCatDetectionOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.CHEST_CAT_DETECTION);
++    }
++
++    /** Returns whether container opener recounts may reuse private result storage. */
++    public static boolean containerOpenerRecountOptimization() {
++        return blockEntityOptimizations && enabled(LeavesXOptimization.CONTAINER_OPENER_RECOUNT);
++    }
++
++    /** Returns whether occupied-bed villager lookups may stop after the first match. */
++    public static boolean occupiedBedVillagerQueriesOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.OCCUPIED_BED_VILLAGER_QUERIES);
++    }
++
++    /** Returns whether occupied POI bed validation may stop after the first matching villager. */
++    public static boolean occupiedPoiBedQueriesOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.OCCUPIED_POI_BED_QUERIES);
++    }
++
++    /** Returns whether spawner density scans may stop at the configured entity cap. */
++    public static boolean spawnerNearbyEntityScansOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.SPAWNER_NEARBY_ENTITY_SCANS);
++    }
++
++    /** Returns whether Enderman placement occupancy checks may stop after the first entity. */
++    public static boolean endermanPlacementChecksOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.ENDERMAN_PLACEMENT_CHECKS);
++    }
++
++    /** Returns whether Shulker duplication density scans may stop at the decision threshold. */
++    public static boolean shulkerDuplicationDensityOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.SHULKER_DUPLICATION_DENSITY);
++    }
++
++    /** Returns whether village-cat occupied-home counting may stop at the spawn threshold. */
++    public static boolean catSpawningHomeCountOptimization() {
++        return mobSpawningOptimizations && enabled(LeavesXOptimization.CAT_SPAWNING_DENSITY);
++    }
++
++    /** Returns whether village and hut cat-density scans may stop at their decision thresholds. */
++    public static boolean catSpawningEntityDensityOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.CAT_SPAWNING_DENSITY);
++    }
++
++    /** Returns whether ridden-entity follow goals may stop after the first valid target. */
++    public static boolean riddenEntityFollowScansOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.RIDDEN_ENTITY_FOLLOW_SCANS);
++    }
++
++    /** Returns whether parrot follow goals may stop after the first visible target. */
++    public static boolean parrotFollowTargetScansOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.PARROT_FOLLOW_TARGET_SCANS);
++    }
++
+     /** Returns whether behavior-equivalent synchronous AI hot-path optimizations are enabled. */
+     public static boolean aiOptimizations() {
+         return aiOptimizations;
+     }
+ 
++    /** Returns whether villager hostile sensing may reuse its immutable type-distance lookup. */
++    public static boolean villagerHostileSensorOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.VILLAGER_HOSTILE_SENSOR);
++    }
++
++    /** Returns whether Breeze attack sensing may avoid stream and optional allocation. */
++    public static boolean breezeAttackSensorOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.BREEZE_ATTACK_SENSOR);
++    }
++
++    /** Returns whether Warden target sensing may avoid stream and optional allocation. */
++    public static boolean wardenTargetSensorOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.WARDEN_TARGET_SENSOR);
++    }
++
++    /** Returns whether armor-stand placement may stop after the first blocking entity. */
++    public static boolean armorStandPlacementOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.ARMOR_STAND_PLACEMENT);
++    }
++
++    /** Returns whether dragon-breath bottle use may stop after the first effect cloud. */
++    public static boolean dragonBreathCloudOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.DRAGON_BREATH_CLOUD);
++    }
++
++    /** Returns whether equipment dispensers may stop after the first valid target. */
++    public static boolean equipmentDispenserOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.EQUIPMENT_DISPENSER);
++    }
++
++    /** Returns whether cats may stop after the first valid sleeping player. */
++    public static boolean catSleepingPlayerOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.CAT_SLEEPING_PLAYER);
++    }
++
++    /** Returns whether cat relax goals may stop after the first occupying entity. */
++    public static boolean catRelaxOccupancyOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.CAT_RELAX_OCCUPANCY);
++    }
++
++    /** Returns whether panda edible-item searches may stop at the required result count. */
++    public static boolean pandaEdibleItemsOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.PANDA_EDIBLE_ITEMS);
++    }
++
++    /** Returns whether dolphin item-play searches may stop at the required result count. */
++    public static boolean dolphinItemPlayOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.DOLPHIN_ITEM_PLAY);
++    }
++
++    /** Returns whether fox item searches may stop at the required result count. */
++    public static boolean foxItemSearchOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.FOX_ITEM_SEARCH);
++    }
++
++    /** Returns whether pufferfish danger scans may stop after the first matching entity. */
++    public static boolean pufferfishDangerScansOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.PUFFERFISH_DANGER_SCANS);
++    }
++
++    /** Returns whether experience-orb merge scans may stop at the merge bound. */
++    public static boolean experienceOrbMergeOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.EXPERIENCE_ORB_MERGE);
++    }
++
++    /** Returns whether chicken-jockey mount searches may stop after the first available chicken. */
++    public static boolean chickenJockeyMountOptimization() {
++        return entityQueryOptimizations && enabled(LeavesXOptimization.CHICKEN_JOCKEY_MOUNT);
++    }
++
+     /** Returns whether villager profession lookup may use the allocation-free registry-order scan. */
+     public static boolean villagerProfessionAssignmentOptimization() {
+         return aiOptimizations && villagerProfessionAssignmentOptimization;
+@@ -273,4 +430,8 @@ public final class LeavesXRuntime {
+     public static int chunkUnloadMaximumPerTick() {
+         return chunkUnloadMaximumPerTick;
+     }
++
++    private static boolean enabled(final LeavesXOptimization optimization) {
++        return optimization.enabledIn(fineGrainedOptimizationMask);
++    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 54003656774a812d8bb26b3e81c3788b6cc5a1e0..72a268bd017af100117702838af6403f7ba7bb8f 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -37,6 +37,9 @@ class LeavesXConfigLoaderTest {
+         assertTrue(generated.contains("villager-profession-assignment:"));
+         assertTrue(generated.contains("long-jump-candidates:"));
+         assertTrue(generated.contains("ram-position-selection:"));
++        assertTrue(generated.contains("entity-queries:"));
++        assertTrue(generated.contains("hopper-entity-queries:"));
++        assertTrue(generated.contains("warden-target-sensor:"));
+         assertTrue(generated.contains("workers:"));
+         assertFalse(generated.contains("threading:"));
+         assertFalse(generated.contains("folia"));
+@@ -90,6 +93,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(config.villagerProfessionAssignmentOptimization());
+         assertTrue(config.longJumpCandidateOptimization());
+         assertTrue(config.ramPositionSelectionOptimization());
++        assertEquals(LeavesXConfig.fineGrainedOptimizationCount(), config.enabledFineGrainedOptimizationCount());
+         assertFalse(reloaded.node("performance", "optimized-varint").getBoolean());
+         assertTrue(reloaded.node("performance", "item-merge-optimizations").getBoolean());
+         assertTrue(reloaded.node("performance", "block-entity-optimizations").getBoolean());
+@@ -113,6 +117,11 @@ class LeavesXConfigLoaderTest {
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.ai.villager-profession-assignment")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.ai.long-jump-candidates")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.ai.ram-position-selection")));
++        for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
++            assertTrue(config.optimizationEnabled(optimization));
++            assertTrue(reloaded.node(optimization.nodePath()).getBoolean(), optimization.path());
++            assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get(optimization.path())), optimization.path());
++        }
+     }
+ 
+     @Test
+@@ -258,6 +267,75 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.villagerProfessionAssignmentOptimization());
+             assertFalse(LeavesXRuntime.longJumpCandidateOptimization());
+             assertFalse(LeavesXRuntime.ramPositionSelectionOptimization());
++            assertFalse(LeavesXRuntime.villagerHostileSensorOptimization());
++            assertFalse(LeavesXRuntime.breezeAttackSensorOptimization());
++            assertFalse(LeavesXRuntime.wardenTargetSensorOptimization());
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void loadsIndependentFineGrainedOptimizationSwitches() throws IOException {
++        final LeavesXConfig config = LeavesXConfigLoader.load(write("""
++            config-version: 1
++            performance:
++              ai:
++                breeze-attack-sensor: false
++              block-entity:
++                hopper-entity-queries: false
++              entity-queries:
++                pressure-plate-scans: false
++                fox-item-search: false
++            """));
++
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.BREEZE_ATTACK_SENSOR));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_ENTITY_QUERIES));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
++        assertEquals(
++            LeavesXConfig.fineGrainedOptimizationCount() - 4,
++            config.enabledFineGrainedOptimizationCount()
++        );
++
++        try {
++            LeavesXRuntime.publish(config);
++            assertFalse(LeavesXRuntime.breezeAttackSensorOptimization());
++            assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
++            assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
++            assertFalse(LeavesXRuntime.foxItemSearchOptimization());
++            assertTrue(LeavesXRuntime.wardenTargetSensorOptimization());
++            assertTrue(LeavesXRuntime.tripWireEntityScansOptimization());
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void masterSwitchesOverrideFineGrainedSettings() throws IOException {
++        final LeavesXConfig config = LeavesXConfigLoader.load(write("""
++            config-version: 1
++            performance:
++              ai-optimizations: false
++              block-entity-optimizations: false
++              entity-query-optimizations: false
++              mob-spawning-optimizations: false
++              ai:
++                breeze-attack-sensor: true
++              block-entity:
++                hopper-entity-queries: true
++              entity-queries:
++                cat-spawning-density: true
++                pressure-plate-scans: true
++            """));
++
++        try {
++            LeavesXRuntime.publish(config);
++            assertFalse(LeavesXRuntime.breezeAttackSensorOptimization());
++            assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
++            assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
++            assertFalse(LeavesXRuntime.catSpawningHomeCountOptimization());
++            assertFalse(LeavesXRuntime.catSpawningEntityDensityOptimization());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ArmorStandPlacementEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ArmorStandPlacementEntityQueryHotPathTest.java
+index 6875c36d06122a1052dd337bc265ba3c1aa9a0d7..134077fe1908268c0d73155351ad42d61d656179 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ArmorStandPlacementEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ArmorStandPlacementEntityQueryHotPathTest.java
+@@ -23,7 +23,7 @@ class ArmorStandPlacementEntityQueryHotPathTest {
+         final MethodNode useOn = method(classNode(ArmorStandItem.class), "useOn");
+         final List<MethodInsnNode> calls = invocations(useOn);
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("armorStandPlacementOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$hasEntity")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntities")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("noCollision")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BedVillagerEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BedVillagerEntityQueryHotPathTest.java
+index 3f61ce020720089d92d9dd8d0525ab0cd13da295..4ecb5cd05075e1690054063cb4a78e7dce722fc1 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/BedVillagerEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/BedVillagerEntityQueryHotPathTest.java
+@@ -25,7 +25,7 @@ class BedVillagerEntityQueryHotPathTest {
+         final List<MethodInsnNode> calls = invocations(kickVillager);
+ 
+         assertTrue(calls.stream().anyMatch(call ->
+-            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("occupiedBedVillagerQueriesOptimization")
+         ));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BreezeAttackSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BreezeAttackSensorHotPathTest.java
+index d8aa59861532d5179527dae524cd12fd18adf713..6fcdf66c45fa8f957fbab402609a338e72c1947c 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/BreezeAttackSensorHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/BreezeAttackSensorHotPathTest.java
+@@ -23,7 +23,7 @@ class BreezeAttackSensorHotPathTest {
+         final MethodNode doTick = method(classNode(BreezeAttackEntitySensor.class), "doTick");
+         final List<MethodInsnNode> calls = invocations(doTick);
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("aiOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("breezeAttackSensorOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.owner.equals("java/util/Iterator") && call.name.equals("hasNext")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("isEntityAttackable")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("stream")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/CatRelaxGoalEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/CatRelaxGoalEntityQueryHotPathTest.java
+index b2993627fcf38048f6eacb60ff4e41711a45a0dd..7b8dc8c28304513f4dffa96eba2d37871dffad04 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/CatRelaxGoalEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/CatRelaxGoalEntityQueryHotPathTest.java
+@@ -24,7 +24,7 @@ class CatRelaxGoalEntityQueryHotPathTest {
+         final MethodNode occupied = method(relaxGoal, "spaceIsOccupied");
+         final List<MethodInsnNode> calls = invocations(occupied);
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("catRelaxOccupancyOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("isLying")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/CatSleepingPlayerEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/CatSleepingPlayerEntityQueryHotPathTest.java
+index c10e72b95dd36ec937bbe065ac2f328b4b19dca1..3342ed00c14544ba2447f2331da9902c381c9120 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/CatSleepingPlayerEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/CatSleepingPlayerEntityQueryHotPathTest.java
+@@ -23,7 +23,7 @@ class CatSleepingPlayerEntityQueryHotPathTest {
+         final MethodNode handleLieDown = method(classNode(Cat.class), "handleLieDown");
+         final List<MethodInsnNode> calls = invocations(handleLieDown);
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("catSleepingPlayerOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("isSleeping")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/CatSpawnerDensityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/CatSpawnerDensityQueryHotPathTest.java
+index e3467e033c56cf482c28b5c5f092f7730f82e7b6..df5bf8eb4c33bd4c48dbaee89b89c23b6a2074cf 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/CatSpawnerDensityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/CatSpawnerDensityQueryHotPathTest.java
+@@ -24,7 +24,8 @@ class CatSpawnerDensityQueryHotPathTest {
+         final MethodNode villageSpawn = method(classNode(CatSpawner.class), "spawnInVillage");
+         final List<MethodInsnNode> calls = invocations(villageSpawn);
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("mobSpawningOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("catSpawningHomeCountOptimization")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("catSpawningEntityDensityOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$hasAtLeastInRange")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getCountInRange")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("countUpTo")));
+@@ -36,6 +37,7 @@ class CatSpawnerDensityQueryHotPathTest {
+         final MethodNode hutSpawn = method(classNode(CatSpawner.class), "spawnInHut");
+         final List<MethodInsnNode> calls = invocations(hutSpawn);
+ 
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("catSpawningEntityDensityOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$hasEntityOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChestCatEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ChestCatEntityQueryHotPathTest.java
+index 9471050050b10044765b4c00278c3e5034f1f16f..4215c64809d8cb6a42d9de8857265920b9f8eb14 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ChestCatEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ChestCatEntityQueryHotPathTest.java
+@@ -24,7 +24,7 @@ class ChestCatEntityQueryHotPathTest {
+         final MethodNode catCheck = method(chest, "isCatSittingOnChest");
+ 
+         assertTrue(hasInvocation(catCheck, "net/minecraft/world/level/LevelAccessor", "getMinecraftWorld"));
+-        assertTrue(hasInvocation(catCheck, "org/leavesx/leavesx/config/LeavesXRuntime", "entityQueryOptimizations"));
++        assertTrue(hasInvocation(catCheck, "org/leavesx/leavesx/config/LeavesXRuntime", "chestCatDetectionOptimization"));
+         assertTrue(invocations(catCheck).stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
+         assertTrue(hasInvocation(catCheck, "net/minecraft/world/level/LevelAccessor", "getEntitiesOfClass"));
+         assertTrue(invocations(catCheck).stream().anyMatch(call -> call.name.equals("isInSittingPose")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ComparatorUniqueEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ComparatorUniqueEntityQueryHotPathTest.java
+index 3a3508ef0cb27c9ed73752d774be914e5afb623a..060130413c384556e896c57c2f8a3bd581866c57 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ComparatorUniqueEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ComparatorUniqueEntityQueryHotPathTest.java
+@@ -47,7 +47,7 @@ class ComparatorUniqueEntityQueryHotPathTest {
+     void comparatorKeepsTheConfigurableFullListFallback() throws IOException {
+         final MethodNode itemFrame = method(classNode(ComparatorBlock.class), "getItemFrame");
+ 
+-        assertTrue(hasInvocation(itemFrame, "org/leavesx/leavesx/config/LeavesXRuntime", "entityQueryOptimizations"));
++        assertTrue(hasInvocation(itemFrame, "org/leavesx/leavesx/config/LeavesXRuntime", "comparatorItemFrameQueriesOptimization"));
+         assertTrue(hasInvocation(itemFrame, "net/minecraft/world/level/Level", "leavesX$getSingleEntityOfClass"));
+         assertTrue(hasInvocation(itemFrame, "net/minecraft/world/level/Level", "getEntitiesOfClass"));
+         assertTrue(hasInvocation(itemFrame, "java/util/List", "size"));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ContainerOpenerRecheckHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ContainerOpenerRecheckHotPathTest.java
+index f3f704ed9ff0648f164a9cb1428b29c0ef4b254c..0002f9bcbf69165ebc8d29afcb5872d03147d690 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ContainerOpenerRecheckHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ContainerOpenerRecheckHotPathTest.java
+@@ -23,7 +23,7 @@ class ContainerOpenerRecheckHotPathTest {
+         final ClassNode counter = classNode(ContainerOpenersCounter.class);
+         final MethodNode recheck = method(counter, "recheckOpeners");
+ 
+-        assertTrue(hasInvocation(recheck, "org/leavesx/leavesx/config/LeavesXRuntime", "blockEntityOptimizations"));
++        assertTrue(hasInvocation(recheck, "org/leavesx/leavesx/config/LeavesXRuntime", "containerOpenerRecountOptimization"));
+         assertTrue(invocations(recheck).stream().anyMatch(call -> call.name.equals("leavesXCountOpeners")));
+         assertTrue(invocations(recheck).stream().anyMatch(call -> call.name.equals("getEntitiesWithContainerOpen")));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/DetectorRailEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/DetectorRailEntityQueryHotPathTest.java
+index d7e6333efb3e29b05b15bc881b3a4bffd6fddbd2..844a20696ac331e465e45ca47d2c137011392a99 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/DetectorRailEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/DetectorRailEntityQueryHotPathTest.java
+@@ -27,7 +27,7 @@ class DetectorRailEntityQueryHotPathTest {
+         final ClassNode detectorRail = classNode(DetectorRailBlock.class);
+         final MethodNode helper = method(detectorRail, "getFirstInteractingMinecartOfType", FIRST_MINECART_DESC);
+ 
+-        assertTrue(hasInvocation(helper, "org/leavesx/leavesx/config/LeavesXRuntime", "entityQueryOptimizations"));
++        assertTrue(hasInvocation(helper, "org/leavesx/leavesx/config/LeavesXRuntime", "detectorRailEntityQueriesOptimization"));
+         assertTrue(hasInvocation(helper, "net/minecraft/world/level/Level", "leavesX$getFirstEntityOfClass"));
+         assertTrue(hasInvocation(helper, "net/minecraft/world/level/Level", "getEntitiesOfClass"));
+         assertTrue(hasInvocation(helper, "java/util/List", "isEmpty"));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/DolphinItemEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/DolphinItemEntityQueryHotPathTest.java
+index fa52d65c4d6b3422213cce0bafca0084875d4655..643d3cd2aacdff79c16daf22bbebe16d8526d81b 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/DolphinItemEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/DolphinItemEntityQueryHotPathTest.java
+@@ -23,7 +23,7 @@ class DolphinItemEntityQueryHotPathTest {
+         final ClassNode playGoal = nestedClass(Dolphin.class, "PlayWithItemsGoal");
+         final List<MethodInsnNode> calls = invocations(method(playGoal, "findNearbyItem"));
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("dolphinItemPlayOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/DragonBreathBottleEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/DragonBreathBottleEntityQueryHotPathTest.java
+index 59567e44f6ed36992fea3ad9bbd219e81ed79e8b..2c628ac44f16270a0335d756d61ba9f0937f5598 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/DragonBreathBottleEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/DragonBreathBottleEntityQueryHotPathTest.java
+@@ -23,7 +23,7 @@ class DragonBreathBottleEntityQueryHotPathTest {
+         final MethodNode use = method(classNode(BottleItem.class), "use");
+         final List<MethodInsnNode> calls = invocations(use);
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("dragonBreathCloudOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("setRadius")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EndermanPlacementEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EndermanPlacementEntityQueryHotPathTest.java
+index 9df661a65ab3bf3e5f55a56008927467bc53405b..e5abf95b77e9d795fc80586bf08fab440d90a655 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/EndermanPlacementEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/EndermanPlacementEntityQueryHotPathTest.java
+@@ -26,7 +26,7 @@ class EndermanPlacementEntityQueryHotPathTest {
+         final List<MethodInsnNode> calls = invocations(canPlaceBlock);
+ 
+         assertTrue(calls.stream().anyMatch(call ->
+-            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("endermanPlacementChecksOptimization")
+         ));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$hasEntity")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntities")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityQueryShortCircuitTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityQueryShortCircuitTest.java
+index a45f90555173675ee9123c6a484a29d5fc6d1657..46cd9476bddf7899f71eb63f38c8eca219a8eee1 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/EntityQueryShortCircuitTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityQueryShortCircuitTest.java
+@@ -85,7 +85,7 @@ class EntityQueryShortCircuitTest {
+ 
+         assertFalse(calls.stream().anyMatch(call -> call.owner.equals("java/util/stream/Stream") && call.name.equals("findFirst")));
+         assertTrue(calls.stream().anyMatch(call ->
+-            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("firstMatchEntityQueriesOptimization")
+         ));
+         assertTrue(calls.stream().anyMatch(call ->
+             call.owner.equals("net/minecraft/world/level/Level") && call.name.equals("leavesX$getFirstEntityOfClass")
+@@ -98,7 +98,7 @@ class EntityQueryShortCircuitTest {
+         final List<MethodInsnNode> calls = invocations(check);
+ 
+         assertTrue(calls.stream().anyMatch(call ->
+-            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("firstMatchEntityQueriesOptimization")
+         ));
+         assertTrue(calls.stream().anyMatch(call ->
+             call.owner.equals("net/minecraft/server/level/ServerLevel") && call.name.equals("leavesX$hasEntityOfClass")
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EquipmentDispenserEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EquipmentDispenserEntityQueryHotPathTest.java
+index 4b7c713dbe392be6398e6e105a3ee3b8c1bb401f..4548464ec587de3412f6c13f2a622424554db09b 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/EquipmentDispenserEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/EquipmentDispenserEntityQueryHotPathTest.java
+@@ -24,7 +24,7 @@ class EquipmentDispenserEntityQueryHotPathTest {
+         final MethodNode dispense = method(classNode(EquipmentDispenseItemBehavior.class), "dispenseEquipment", 3);
+         final List<MethodInsnNode> calls = invocations(dispense);
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("equipmentDispenserOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("callEvent")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ExperienceOrbMergeEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ExperienceOrbMergeEntityQueryHotPathTest.java
+index e36dd2ace31f3193a802f6caac7774a407a8a263..7e46dfcf7e9b8e19b69b815a1e7d924744883842 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ExperienceOrbMergeEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ExperienceOrbMergeEntityQueryHotPathTest.java
+@@ -29,7 +29,7 @@ class ExperienceOrbMergeEntityQueryHotPathTest {
+         final MethodNode mergeLookup = method(classNode(ExperienceOrb.class), "tryMergeToExisting");
+         final List<MethodInsnNode> calls = invocations(mergeLookup);
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("experienceOrbMergeOptimization")));
+         assertTrue(calls.stream().anyMatch(call ->
+             call.name.equals("leavesX$getFirstEntity") && call.desc.equals(TYPED_FIRST_QUERY_DESCRIPTOR)
+         ));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FollowMobEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/FollowMobEntityQueryHotPathTest.java
+index 1504778711246b068887487c1c7b64bfe698f9c4..c434ef31c629bdf58f97804389623897e2ccbe92 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FollowMobEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FollowMobEntityQueryHotPathTest.java
+@@ -24,7 +24,7 @@ class FollowMobEntityQueryHotPathTest {
+         final MethodNode canUse = method(goal, "canUse");
+         final List<MethodInsnNode> calls = invocations(canUse);
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("parrotFollowTargetScansOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+         assertTrue(goal.methods.stream()
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FollowPlayerRiddenEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/FollowPlayerRiddenEntityQueryHotPathTest.java
+index 366d3b5ce37230b473353631e33f1969890fc1be..b0c4bbbbfd6c0a157053e8cce4dd67243c76e692 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FollowPlayerRiddenEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FollowPlayerRiddenEntityQueryHotPathTest.java
+@@ -23,7 +23,7 @@ class FollowPlayerRiddenEntityQueryHotPathTest {
+         final MethodNode canUse = method(classNode(FollowPlayerRiddenEntityGoal.class), "canUse");
+         final List<MethodInsnNode> calls = invocations(canUse);
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("riddenEntityFollowScansOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("hasMovedHorizontallyRecently")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FoxItemEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/FoxItemEntityQueryHotPathTest.java
+index dc761cbea572290c85453f8e6751504571ef7fd7..3d6355b1680c2d7915f5fc6d8df15b47a27b51dc 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FoxItemEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FoxItemEntityQueryHotPathTest.java
+@@ -23,7 +23,7 @@ class FoxItemEntityQueryHotPathTest {
+         final ClassNode searchGoal = nestedClass(Fox.class, "FoxSearchForItemsGoal");
+         final List<MethodInsnNode> calls = invocations(method(searchGoal, "findNearbyItem"));
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("foxItemSearchOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/HopperEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/HopperEntityQueryHotPathTest.java
+index de1d9d9edc45cb32b4a90512b8988fd105e0846f..5ebada159347d28eaea749f7d4d37fc736583768 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/HopperEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/HopperEntityQueryHotPathTest.java
+@@ -97,7 +97,7 @@ class HopperEntityQueryHotPathTest {
+         assertTrue(
+             invocations(method(hopper, "suckInItems")).stream().anyMatch(call ->
+                 call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime")
+-                    && call.name.equals("blockEntityOptimizations")
++                    && call.name.equals("hopperEntityQueriesOptimization")
+             ),
+             "The fixed-coordinate fast path must remain configurable"
+         );
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PandaItemEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/PandaItemEntityQueryHotPathTest.java
+index dfe1a2add636e16d1ff475d24ca1fd220a39a284..e6c51c48be795bd0643277e3773d89ac0a49bd00 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/PandaItemEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/PandaItemEntityQueryHotPathTest.java
+@@ -23,7 +23,7 @@ class PandaItemEntityQueryHotPathTest {
+         final ClassNode sitGoal = nestedClass(Panda.class, "PandaSitGoal");
+         final List<MethodInsnNode> calls = invocations(method(sitGoal, "canUse"));
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("pandaEdibleItemsOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PressurePlateEntityScanHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/PressurePlateEntityScanHotPathTest.java
+index b93201dedf2046c537fcf403250586008a9752fe..3a5abd9b5018da104cbf7a2b389448be790242b0 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/PressurePlateEntityScanHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/PressurePlateEntityScanHotPathTest.java
+@@ -68,7 +68,7 @@ class PressurePlateEntityScanHotPathTest {
+             final List<MethodInsnNode> calls = invocations(signalStrength);
+ 
+             assertTrue(calls.stream().anyMatch(call ->
+-                call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++                call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("pressurePlateEntityScansOptimization")
+             ), plateClass.getSimpleName());
+             assertTrue(calls.stream().anyMatch(call ->
+                 call.name.equals("leavesXAcquireEntityScan")
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PufferfishPuffEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/PufferfishPuffEntityQueryHotPathTest.java
+index 3f7a68607004e2d797467e580688a2152ce1ca30..f78182910e7e93b8899ff5d4d100a40561fee451 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/PufferfishPuffEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/PufferfishPuffEntityQueryHotPathTest.java
+@@ -23,7 +23,7 @@ class PufferfishPuffEntityQueryHotPathTest {
+         final ClassNode puffGoal = nestedClass(Pufferfish.class, "PufferfishPuffGoal");
+         final List<MethodInsnNode> calls = invocations(method(puffGoal, "canUse"));
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("pufferfishDangerScansOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ShulkerDuplicationEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ShulkerDuplicationEntityQueryHotPathTest.java
+index fd92ed4f1e9e54e28f3903cfdb4fc4c6dd44c22f..914087c76f03fa00f1d03ad48c3e9fe7172f3356 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ShulkerDuplicationEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ShulkerDuplicationEntityQueryHotPathTest.java
+@@ -24,7 +24,7 @@ class ShulkerDuplicationEntityQueryHotPathTest {
+         final List<MethodInsnNode> calls = invocations(duplication);
+ 
+         assertTrue(calls.stream().anyMatch(call ->
+-            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("shulkerDuplicationDensityOptimization")
+         ));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("countUpTo")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntities")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/SpawnerNearbyEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/SpawnerNearbyEntityQueryHotPathTest.java
+index a22950a8d1e1a66e201c4d80fca768b956e167a1..fa9e6f6d0ade904a0e8057a38c1238ffe0827914 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/SpawnerNearbyEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/SpawnerNearbyEntityQueryHotPathTest.java
+@@ -25,7 +25,7 @@ class SpawnerNearbyEntityQueryHotPathTest {
+         final List<MethodInsnNode> calls = invocations(serverTick);
+ 
+         assertTrue(calls.stream().anyMatch(call ->
+-            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("spawnerNearbyEntityScansOptimization")
+         ));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$acquireEntityQueryBuffer")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("countUpTo")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java
+index af61c61ad7c9995cf02c700a214f41ed5f33a515..2713ce23e1b96d965bd249d7b814560823d615aa 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java
+@@ -69,7 +69,7 @@ class TripWireEntityScanHotPathTest {
+         final MethodNode scan = method(tripwire, "checkPressed", SIMPLE_CHECK_DESC);
+         final List<MethodInsnNode> scanCalls = invocations(scan);
+ 
+-        assertTrue(hasInvocation(scan, "org/leavesx/leavesx/config/LeavesXRuntime", "entityQueryOptimizations"));
++        assertTrue(hasInvocation(scan, "org/leavesx/leavesx/config/LeavesXRuntime", "tripWireEntityScansOptimization"));
+         assertTrue(hasInvocation(scan, "net/minecraft/world/level/Level", "leavesX$acquireEntityQueryBuffer"));
+         assertTrue(scanCalls.stream().anyMatch(call -> call.name.equals("query")));
+         assertTrue(scanCalls.stream().anyMatch(call -> call.name.equals("getEntities")), "The disabled setting must retain the original query path");
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ValidateNearbyPoiEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ValidateNearbyPoiEntityQueryHotPathTest.java
+index 2318b00d705c0923481440236f5a34e4d3a6e567..f7eb34c0b2f23f167d822703bb45b2a71a209776 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ValidateNearbyPoiEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ValidateNearbyPoiEntityQueryHotPathTest.java
+@@ -25,7 +25,7 @@ class ValidateNearbyPoiEntityQueryHotPathTest {
+         final List<MethodInsnNode> calls = invocations(occupiedByVillager);
+ 
+         assertTrue(calls.stream().anyMatch(call ->
+-            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("entityQueryOptimizations")
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime") && call.name.equals("occupiedPoiBedQueriesOptimization")
+         ));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/VillagerHostileSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/VillagerHostileSensorHotPathTest.java
+index d27fb4e9d9c40cc55ea60716fd468e661f45bdf3..1d70d557d78e389314f495a8fc48ff422c42843b 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/VillagerHostileSensorHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/VillagerHostileSensorHotPathTest.java
+@@ -23,7 +23,7 @@ class VillagerHostileSensorHotPathTest {
+         final MethodNode matching = method(classNode(VillagerHostilesSensor.class), "isMatchingEntity");
+         final List<MethodInsnNode> calls = invocations(matching);
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("aiOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("villagerHostileSensorOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("get")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("distanceToSqr")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("isHostile")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/WardenAttackSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/WardenAttackSensorHotPathTest.java
+index 64d6491986a9533afa142ff7847ded5bf96bfd92..077a32157413e4dd2d7221511dcdf3ba27dbc6fb 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/WardenAttackSensorHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/WardenAttackSensorHotPathTest.java
+@@ -24,7 +24,7 @@ class WardenAttackSensorHotPathTest {
+         final MethodNode closest = method(classNode(WardenEntitySensor.class), "getClosest");
+         final List<MethodInsnNode> calls = invocations(closest);
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("aiOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("wardenTargetSensorOptimization")));
+         assertTrue(calls.stream().anyMatch(call ->
+             call.owner.equals("java/util/Iterator") && call.name.equals("hasNext")
+         ));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ZombieChickenJockeyEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ZombieChickenJockeyEntityQueryHotPathTest.java
+index 15a63509d7ffa9a0a0d686fc0fdc428753e9fb12..1de7f6b1ec85fe4a4fb7ef1fd58fd476381c3b82 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ZombieChickenJockeyEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ZombieChickenJockeyEntityQueryHotPathTest.java
+@@ -26,7 +26,7 @@ class ZombieChickenJockeyEntityQueryHotPathTest {
+         final MethodNode finalizeSpawn = method(classNode(Zombie.class), "finalizeSpawn");
+         final List<MethodInsnNode> calls = invocations(finalizeSpawn);
+ 
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("chickenJockeyMountOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+         assertTrue(hasLevelTypeGuard(finalizeSpawn));

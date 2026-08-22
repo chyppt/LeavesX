@@ -1,0 +1,173 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 18 Aug 2026 00:51:08 +0800
+Subject: [PATCH] Optimize universal anger alerts for beta124
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 90d0eb98fee34503aa7a2b666dc846c506f47e00..4e28dca88d325c90d22d9f7ceab96b365780f4f0 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 52;
++    public static final int CURRENT_CONFIG_VERSION = 53;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 4a09d230c40b8d39ee13f3e9b01952b631080b1b..bf9c10408ab2475e58b2c4169628c7a129548607 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：52。");
++        comments.put("config-version", "配置版本，请勿修改。默认：53。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index f7f9e14e0dde7f147025f3666e02a27439fe4640..9f441d6dcecc9d29270333cc1aecf056e266b9ef 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -427,6 +427,10 @@ enum LeavesXOptimization {
+     SYNCABLE_ATTRIBUTE_COLLECTION(
+         "performance.entity-sync.syncable-attribute-collection",
+         "属性同步直接遍历可同步属性，关闭后使用原版流。默认：true。"
++    ),
++    UNIVERSAL_ANGER_ALERTS(
++        "performance.ai.universal-anger-alerts",
++        "群体仇恨刷新直接遍历附近生物，关闭后使用原版流。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 8ae058a83e23fd393b5e6f2181f39edf2e205f89..d523050c5fb764e500b6da75138f725064b292e5 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -761,6 +761,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && enabled(LeavesXOptimization.YIELD_JOB_SITE);
+     }
+ 
++    /** Returns whether universal-anger alerts may traverse nearby mobs without a stream pipeline. */
++    public static boolean universalAngerAlertOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.UNIVERSAL_ANGER_ALERTS);
++    }
++
+     /** Returns whether path candidates may be compared without allocating a comparator. */
+     public static boolean pathCandidateComparisonOptimization() {
+         return pathfindingOptimizations && enabled(LeavesXOptimization.PATH_CANDIDATE_COMPARISON);
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+index 792e00772a28ae0191473d243d4f507dd2e75961..eb668885857ad20184f68a57f7daf3aa55c92a88 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+@@ -52,6 +52,10 @@ class FineGrainedOptimizationWiringTest {
+                 "net.minecraft.world.entity.ai.attributes.AttributeMap",
+                 "syncableAttributeCollectionOptimization"
+             ),
++            new Wiring(
++                "net.minecraft.world.entity.ai.goal.target.ResetUniversalAngerTargetGoal",
++                "universalAngerAlertOptimization"
++            ),
+             new Wiring(
+                 "net.minecraft.network.protocol.game.ClientboundLightUpdatePacketData",
+                 "lightUpdatePacketAssemblyOptimization"
+diff --git a/src/test/java/org/leavesx/leavesx/performance/UniversalAngerAlertHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/UniversalAngerAlertHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c744ba4d688695b9c5f7238eef59822948410ac6
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/UniversalAngerAlertHotPathTest.java
+@@ -0,0 +1,89 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.inOrder;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++
++import java.io.IOException;
++import java.lang.reflect.Method;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.List;
++import net.minecraft.world.entity.Mob;
++import net.minecraft.world.entity.ai.goal.target.ResetUniversalAngerTargetGoal;
++import net.minecraft.world.entity.monster.zombie.ZombifiedPiglin;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.mockito.InOrder;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++
++/** Verifies universal-anger notification preserves list order and excludes the source mob. */
++@Normal
++class UniversalAngerAlertHotPathTest {
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @Test
++    void optimizedAlertVisitsOtherMobsInOriginalOrder() throws ReflectiveOperationException {
++        final ZombifiedPiglin source = mock(ZombifiedPiglin.class);
++        final ZombifiedPiglin first = mock(ZombifiedPiglin.class);
++        final ZombifiedPiglin second = mock(ZombifiedPiglin.class);
++
++        final Method method = ResetUniversalAngerTargetGoal.class.getDeclaredMethod(
++            "leavesX$alertNearbyMobs",
++            Mob.class,
++            List.class
++        );
++        method.setAccessible(true);
++        method.invoke(null, source, List.of(first, source, second));
++
++        final InOrder order = inOrder(first, second);
++        order.verify(first).forgetCurrentTargetAndRefreshUniversalAnger();
++        order.verify(second).forgetCurrentTargetAndRefreshUniversalAnger();
++        verify(source, never()).forgetCurrentTargetAndRefreshUniversalAnger();
++    }
++
++    @Test
++    void version52ConfigurationGainsTheDocumentedSwitchWithoutBackupFiles() throws IOException {
++        final Path path = this.temporaryDirectory.resolve("version-52.yml");
++        Files.writeString(path, """
++            config-version: 52
++            performance:
++              ai:
++                universal-anger-alerts: false
++            """, StandardCharsets.UTF_8);
++
++        final LeavesXConfig configuration = LeavesXConfigLoader.load(path);
++        try {
++            publish(configuration);
++            assertFalse(LeavesXRuntime.universalAngerAlertOptimization());
++        } finally {
++            publish(LeavesXConfig.safeDefaults());
++        }
++
++        final String upgraded = Files.readString(path);
++        assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
++        assertTrue(upgraded.contains("universal-anger-alerts: false"));
++        assertTrue(upgraded.contains("# 群体仇恨刷新直接遍历附近生物，关闭后使用原版流。默认：true。"));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
++    }
++
++    private static void publish(final LeavesXConfig config) {
++        try {
++            final Method method = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++            method.setAccessible(true);
++            method.invoke(null, config);
++        } catch (final ReflectiveOperationException exception) {
++            throw new AssertionError("Unable to publish LeavesX test configuration", exception);
++        }
++    }
++}

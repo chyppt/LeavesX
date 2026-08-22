@@ -1,0 +1,292 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 20 Aug 2026 21:40:23 +0800
+Subject: [PATCH] Parallelize stable AI distance merge phases for beta139
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+index 8b2f2b5c46925b1aabc92b825a5c3a8c6813162f..7eb3d5ec98531855ebcb98ec6a04b5559355334c 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -17,6 +17,8 @@ public final class StableDistanceSorter {
+     /** Below this size the vanilla TimSort path is consistently competitive and avoids workspace setup. */
+     public static final int MINIMUM_OPTIMIZED_ENTITY_COUNT = 64;
+     private static final int RADIX_BUCKETS = 256;
++    /** Avoids dispatching a worker task for the final one or two merge pairs. */
++    private static final int MIN_PARALLEL_MERGE_PAIRS = 4;
+     private static final int INITIAL_WORKSPACE_CAPACITY = 64;
+     private static final ThreadLocal<Workspace> WORKSPACE = ThreadLocal.withInitial(() -> new Workspace(true));
+ 
+@@ -133,11 +135,57 @@ public final class StableDistanceSorter {
+         final int rangeSize = divideCeil(size, completedPartitions);
+         for (int width = rangeSize; width < size; width = nextMergeWidth(width, size)) {
+             final int step = width >= size - width ? size : width << 1;
+-            for (int start = 0; start < size - width; start += step) {
+-                final int middle = start + width;
+-                final int end = Math.min(size, start + step);
+-                mergeByKey(workspace.order, workspace.scratch, workspace.keys, start, middle, end);
++            final int pairCount = divideCeil(size, step);
++            if (pairCount >= MIN_PARALLEL_MERGE_PAIRS) {
++                final int mergeWidth = width;
++                final int mergeStep = step;
++                final int mergedPartitions = LeavesXComputeExecutor.invokeRangesWithCount(
++                    LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++                    pairCount,
++                    2,
++                    1,
++                    (taskIndex, startPair, endPair) -> mergePairs(
++                        workspace.order,
++                        workspace.scratch,
++                        workspace.keys,
++                        size,
++                        mergeWidth,
++                        mergeStep,
++                        startPair,
++                        endPair
++                    )
++                );
++                if (mergedPartitions == 0) {
++                    // A failed merge can leave individual disjoint ranges completed. Rebuild from identity so the
++                    // fallback never consumes a mixture of pre-merge and post-merge ranges.
++                    initializeOrder(workspace.order, size);
++                    stableRadixRange(workspace.order, workspace.scratch, workspace.keys, 0, size, workspace.offsets, 0);
++                    return;
++                }
++            } else {
++                mergePairs(workspace.order, workspace.scratch, workspace.keys, size, width, step, 0, pairCount);
++            }
++        }
++    }
++
++    /** Merges independent ordered range pairs; callers may safely assign disjoint pair indexes to workers. */
++    private static void mergePairs(
++        final int[] order,
++        final int[] scratch,
++        final long[] keys,
++        final int size,
++        final int width,
++        final int step,
++        final int startPair,
++        final int endPair
++    ) {
++        for (int pair = startPair; pair < endPair; pair++) {
++            final int start = pair * step;
++            final int middle = start + width;
++            if (middle >= size) {
++                continue;
+             }
++            mergeByKey(order, scratch, keys, start, middle, Math.min(size, start + step));
+         }
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index fee792b718ab95eb3aa7dbda99f0840474f92440..ae842cd03fe55570e21efe6bbe0775a92e3901ae 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -157,6 +157,22 @@ public final class LeavesXComputeExecutor {
+         final int size,
+         final int minimumSize,
+         final RangeTask task
++    ) {
++        return invokeRangesWithCount(workload, size, minimumSize, minimumItemsPerWorker, task);
++    }
++
++    /**
++     * Processes ranges with a workload-specific partition size.
++     *
++     * <p>This is intended for coarse operations whose item is already a sizeable independent range, such as one
++     * merge pair. Ordinary element-wise workloads should use the overload that honors the configured global size.</p>
++     */
++    public static int invokeRangesWithCount(
++        final Workload workload,
++        final int size,
++        final int minimumSize,
++        final int minimumItemsPerTask,
++        final RangeTask task
+     ) {
+         final WorkloadCounters workloadCounters = WORKLOAD_COUNTERS[workload.ordinal()];
+         invocationCount.incrementAndGet();
+@@ -173,7 +189,7 @@ public final class LeavesXComputeExecutor {
+             return 0;
+         }
+ 
+-        final int taskCount = taskCountFor(size, computeLaneCount(), minimumItemsPerWorker);
++        final int taskCount = taskCountFor(size, computeLaneCount(), minimumItemsPerTask);
+         if (taskCount <= 1) {
+             insufficientPartitionFallbackCount.incrementAndGet();
+             workloadCounters.insufficientPartitionFallbacks.incrementAndGet();
+diff --git a/src/test/java/org/leavesx/leavesx/performance/NearestEntitySensorQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/NearestEntitySensorQueryHotPathTest.java
+index 31daf52bca6c1203577a5c26708f274af392462c..3b9703ee427c8548b4bcb6d745373c3ad9f2bff7 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/NearestEntitySensorQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/NearestEntitySensorQueryHotPathTest.java
+@@ -1,6 +1,5 @@
+ package org.leavesx.leavesx.performance;
+ 
+-import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import java.io.IOException;
+@@ -51,6 +50,8 @@ class NearestEntitySensorQueryHotPathTest {
+ 
+         assertBufferedQuery(doTick);
+         assertUsesObjectArrayList(doTick);
++        assertTrue(methodCalls(doTick).stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(methodCalls(doTick).stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+         assertTrue(Arrays.stream(doTick.instructions.toArray())
+             .filter(InvokeDynamicInsnNode.class::isInstance)
+             .map(InvokeDynamicInsnNode.class::cast)
+@@ -63,6 +64,8 @@ class NearestEntitySensorQueryHotPathTest {
+ 
+         assertBufferedQuery(doTick);
+         assertUsesObjectArrayList(doTick);
++        assertTrue(methodCalls(doTick).stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(methodCalls(doTick).stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+     }
+ 
+     private static void assertBufferedQuery(final MethodNode method) {
+@@ -70,7 +73,6 @@ class NearestEntitySensorQueryHotPathTest {
+         assertTrue(calls.stream().anyMatch(call ->
+             call.name.equals("leavesX$getEntitiesOfClass") && call.desc.equals(BUFFERED_QUERY_DESCRIPTOR)
+         ));
+-        assertFalse(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+     }
+ 
+     private static void assertUsesObjectArrayList(final MethodNode method) {
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PlayerSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/PlayerSensorHotPathTest.java
+index 56ee98e922028b33cd5b176c328b42b804151dc2..c0961dcbc808d5c8b9a316fe95adf422be130b9a 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/PlayerSensorHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/PlayerSensorHotPathTest.java
+@@ -1,13 +1,20 @@
+ package org.leavesx.leavesx.performance;
+ 
+ import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
+ 
+ import java.io.IOException;
++import java.lang.reflect.Method;
++import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.List;
+ import net.minecraft.world.entity.ai.Brain;
+ import net.minecraft.world.entity.ai.sensing.PlayerSensor;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.entity.player.Player;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+ import org.objectweb.asm.ClassReader;
+@@ -26,13 +33,29 @@ class PlayerSensorHotPathTest {
+ 
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("playerSensorOptimization")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getMemoryValueIfRegistered")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("sortNearbyPlayers")));
+         assertFalse(calls.stream().anyMatch(call -> call.name.equals("leavesX$getMemoryValue")));
+-        assertTrue(calls.stream().anyMatch(call -> call.name.equals("sort")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("stream")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("collect")));
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("toList")));
+     }
+ 
++    @Test
++    void smallPlayerSortMatchesStableVanillaDistanceOrder() throws ReflectiveOperationException {
++        final LivingEntity body = mock(LivingEntity.class);
++        final Player farther = playerAtDistance(body, 9.0D);
++        final Player equalFirst = playerAtDistance(body, 1.0D);
++        final Player nearest = playerAtDistance(body, 0.0D);
++        final Player equalSecond = playerAtDistance(body, 1.0D);
++        final List<Player> players = new ArrayList<>(List.of(farther, equalFirst, nearest, equalSecond));
++
++        final Method sorter = PlayerSensor.class.getDeclaredMethod("sortNearbyPlayers", List.class, LivingEntity.class);
++        sorter.setAccessible(true);
++        sorter.invoke(null, players, body);
++
++        assertEquals(List.of(nearest, equalFirst, equalSecond, farther), players);
++    }
++
+     @Test
+     void optionalAttackTargetLookupDoesNotRequireTheMemoryToBeRegistered() throws IOException {
+         final List<MethodInsnNode> calls = invocations(method(classNode(Brain.class), "leavesX$getMemoryValueIfRegistered"));
+@@ -60,4 +83,10 @@ class PlayerSensorHotPathTest {
+             .findFirst()
+             .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
+     }
++
++    private static Player playerAtDistance(final LivingEntity body, final double distance) {
++        final Player player = mock(Player.class);
++        when(body.distanceToSqr(player)).thenReturn(distance);
++        return player;
++    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+index 42ecf20323891ac583d1b48e1f6f3955140bc01d..eca4cac420eea3162d6b91add07c770e6a0cd458 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -65,6 +65,32 @@ class StableDistanceSorterTest {
+         assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, -17.5, 4.25, 31.75, true, 1));
+     }
+ 
++    @Test
++    void preservesStableOrderAcrossParallelRadixMergeBoundaries() {
++        final Random random = new Random(0x42657461313339L);
++        LeavesXComputeExecutor.configure(4, 16);
++
++        // These sizes cross radix partition and merge-width boundaries. Repeated coordinates make equal-distance
++        // ordering observable, while the fixed seed keeps the regression deterministic.
++        for (final int size : new int[] {64, 65, 127, 128, 129, 191, 255, 256, 257, 511, 512, 513, 1_027, 2_049}) {
++            final double[] x = new double[size];
++            final double[] y = new double[size];
++            final double[] z = new double[size];
++            for (int index = 0; index < size; index++) {
++                x[index] = random.nextInt(33) - 16;
++                y[index] = random.nextInt(9) - 4;
++                z[index] = random.nextInt(33) - 16;
++            }
++
++            final int[] expected = referenceOrder(x, y, z, 1.25, -2.5, 3.75);
++            assertArrayEquals(
++                expected,
++                StableDistanceSorter.sort(x, y, z, 1.25, -2.5, 3.75, true, 64),
++                "parallel stable order changed at size " + size
++            );
++        }
++    }
++
+     @Test
+     void keepsSpecialDoubleOrderingEquivalentToJavaComparator() {
+         final double[] x = {Double.NaN, Double.POSITIVE_INFINITY, -0.0, 0.0, 1.0, -1.0};
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index 4f1cb63ce8b9403fbb22af4e6e9aff28e4691dc0..ebac8491c2c607d4215b185c25bf2deeae0c48aa 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -110,6 +110,29 @@ class LeavesXComputeExecutorTest {
+         }
+     }
+ 
++    @Test
++    void supportsCoarseWorkloadsWithSmallIndependentTaskCounts() {
++        LeavesXComputeExecutor.configure(4, 64);
++        final AtomicIntegerArray counts = new AtomicIntegerArray(4);
++
++        final int partitions = LeavesXComputeExecutor.invokeRangesWithCount(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++            counts.length(),
++            2,
++            1,
++            (taskIndex, start, end) -> {
++                for (int index = start; index < end; index++) {
++                    counts.incrementAndGet(index);
++                }
++            }
++        );
++
++        assertTrue(partitions > 1);
++        for (int index = 0; index < counts.length(); index++) {
++            assertEquals(1, counts.get(index));
++        }
++    }
++
+     @Test
+     void limitsLaneCountWhenEachWorkerWouldReceiveTooLittleWork() {
+         assertEquals(1, LeavesXComputeExecutor.taskCountFor(127, 8, 64));

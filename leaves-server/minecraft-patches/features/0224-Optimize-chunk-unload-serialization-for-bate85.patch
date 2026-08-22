@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 02:19:32 +0800
+Subject: [PATCH] Optimize chunk unload serialization for bate85
+
+
+diff --git a/net/minecraft/world/level/chunk/storage/SerializableChunkData.java b/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
+index 7d29fdc6548324d97ec34d476b5b48ec0bdba0d2..109b6cf540733d62675ec5d50538aeaeb518cf7d 100644
+--- a/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
++++ b/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
+@@ -448,12 +448,15 @@ public record SerializableChunkData(
+             throw new IllegalArgumentException("Chunk can't be serialized: " + chunk);
+         }
+ 
++        final boolean optimizeUnloadSerialization = org.leavesx.leavesx.config.LeavesXRuntime.chunkUnloadSerializationOptimization();
+         ChunkPos pos = chunk.getPos();
+-        List<SerializableChunkData.SectionData> sectionData = new ArrayList<>();
+         // Paper start - starlight
+         final int minLightSection = ca.spottedleaf.moonrise.common.util.WorldUtil.getMinLightSection(level);
+         final int maxLightSection = ca.spottedleaf.moonrise.common.util.WorldUtil.getMaxLightSection(level);
+         final int minBlockSection = ca.spottedleaf.moonrise.common.util.WorldUtil.getMinSection(level);
++        final List<SerializableChunkData.SectionData> sectionData = optimizeUnloadSerialization
++            ? new ArrayList<>(maxLightSection - minLightSection + 1)
++            : new ArrayList<>();
+ 
+         final LevelChunkSection[] chunkSections = chunk.getSections();
+         final ca.spottedleaf.moonrise.patches.starlight.light.SWMRNibbleArray[] blockNibbles = ((ca.spottedleaf.moonrise.patches.starlight.chunk.StarlightChunk)chunk).starlight$getBlockNibbles();
+@@ -498,15 +501,21 @@ public record SerializableChunkData(
+             }
+         }
+ 
+-        List<CompoundTag> entities = new ArrayList<>();
++        List<CompoundTag> entities;
+         long[] carvingMask = null;
+         if (chunk.getPersistedStatus().getChunkType() == ChunkType.PROTOCHUNK) {
+             ProtoChunk protoChunk = (ProtoChunk)chunk;
+-            entities.addAll(protoChunk.getEntities());
++            final List<CompoundTag> protoChunkEntities = protoChunk.getEntities();
++            entities = optimizeUnloadSerialization
++                ? new ArrayList<>(protoChunkEntities.size())
++                : new ArrayList<>();
++            entities.addAll(protoChunkEntities);
+             CarvingMask existingMask = protoChunk.getCarvingMask();
+             if (existingMask != null) {
+                 carvingMask = existingMask.toArray();
+             }
++        } else {
++            entities = new ArrayList<>();
+         }
+ 
+         Map<Heightmap.Types, long[]> heightmaps = new EnumMap<>(Heightmap.Types.class);
+@@ -519,9 +528,21 @@ public record SerializableChunkData(
+         }
+ 
+         ChunkAccess.PackedTicks ticksForSerialization = chunk.getTicksForSerialization(level.getGameTime());
+-        ShortList[] postProcessingSections = Arrays.stream(chunk.getPostProcessing())
+-            .map(shorts -> shorts != null && !shorts.isEmpty() ? new ShortArrayList(shorts) : null)
+-            .toArray(ShortList[]::new);
++        final ShortList[] postProcessingSections;
++        if (optimizeUnloadSerialization) {
++            final ShortList[] postProcessing = chunk.getPostProcessing();
++            postProcessingSections = new ShortList[postProcessing.length];
++            for (int sectionIndex = 0; sectionIndex < postProcessing.length; sectionIndex++) {
++                final ShortList offsets = postProcessing[sectionIndex];
++                if (offsets != null && !offsets.isEmpty()) {
++                    postProcessingSections[sectionIndex] = new ShortArrayList(offsets);
++                }
++            }
++        } else {
++            postProcessingSections = Arrays.stream(chunk.getPostProcessing())
++                .map(shorts -> shorts != null && !shorts.isEmpty() ? new ShortArrayList(shorts) : null)
++                .toArray(ShortList[]::new);
++        }
+         CompoundTag structureData = packStructureData(StructurePieceSerializationContext.fromLevel(level), pos, chunk.getAllStarts(), chunk.getAllReferences());
+         // CraftBukkit start - store chunk persistent data in nbt
+         CompoundTag persistentDataContainer = null;

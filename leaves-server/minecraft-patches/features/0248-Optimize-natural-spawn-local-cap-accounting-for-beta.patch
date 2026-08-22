@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 12:37:59 +0800
+Subject: [PATCH] Optimize natural spawn local-cap accounting for beta112
+
+
+diff --git a/net/minecraft/world/level/LocalMobCapCalculator.java b/net/minecraft/world/level/LocalMobCapCalculator.java
+index 0813c0e56511a9b086b301b5913a88482fc90a14..8e090cf059d82c41e888a070df096d28c0989428 100644
+--- a/net/minecraft/world/level/LocalMobCapCalculator.java
++++ b/net/minecraft/world/level/LocalMobCapCalculator.java
+@@ -33,6 +33,11 @@ public class LocalMobCapCalculator {
+         this.addMobs(pos.pack(), category, 1);
+     }
+ 
++    /** Adds one mob using an already packed chunk key without allocating a temporary ChunkPos. */
++    public void addMob(final long chunkKey, final MobCategory category) {
++        this.addMobs(chunkKey, category, 1);
++    }
++
+     /** Adds an already aggregated count while preserving the same per-player mob-cap result. */
+     public void addMobs(final ChunkPos pos, final MobCategory category, final int count) {
+         this.addMobs(pos.pack(), category, count);
+diff --git a/net/minecraft/world/level/NaturalSpawner.java b/net/minecraft/world/level/NaturalSpawner.java
+index f70e2fa59d9440533fc06642c781e5cc69a9034d..56f88e1887cf37719f3858f16ff04ec72bce2fe8 100644
+--- a/net/minecraft/world/level/NaturalSpawner.java
++++ b/net/minecraft/world/level/NaturalSpawner.java
+@@ -736,7 +736,13 @@ public final class NaturalSpawner {
+             this.spawnPotential.addCharge(pos, charge);
+             MobCategory category = type.getCategory();
+             this.mobCategoryCounts.addTo(category, 1);
+-            if (this.localMobCapCalculator != null) this.localMobCapCalculator.addMob(ChunkPos.containing(pos), category); // Paper - Optional per player mob spawns
++            if (this.localMobCapCalculator != null) {
++                if (org.leavesx.leavesx.config.LeavesXRuntime.naturalSpawnLocalCapAccountingOptimization()) {
++                    this.localMobCapCalculator.addMob(ChunkPos.pack(pos.getX() >> 4, pos.getZ() >> 4), category);
++                } else {
++                    this.localMobCapCalculator.addMob(ChunkPos.containing(pos), category); // Paper - Optional per player mob spawns
++                }
++            }
+         }
+ 
+         public int getSpawnableChunkCount() {

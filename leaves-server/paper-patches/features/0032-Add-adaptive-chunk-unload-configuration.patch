@@ -1,0 +1,420 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 10:26:08 +0800
+Subject: [PATCH] Add adaptive chunk unload configuration
+
+
+diff --git a/src/main/java/ca/spottedleaf/moonrise/common/PlatformHooks.java b/src/main/java/ca/spottedleaf/moonrise/common/PlatformHooks.java
+index de5be8939fc1e7608b4a083a63ee0379917f9375..92231fda7892d5f84c2da1d5d7076c7fbb79b011 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/common/PlatformHooks.java
++++ b/src/main/java/ca/spottedleaf/moonrise/common/PlatformHooks.java
+@@ -90,6 +90,18 @@ public interface PlatformHooks extends ChunkSystemHooks {
+ 
+     public double configMinChunkUnloadFraction(final ServerLevel world);
+ 
++    /** Returns whether LeavesX may increase unload work while the queue is backed up. */
++    public boolean configAdaptiveChunkUnloading(final ServerLevel world);
++
++    /** Returns the queue size at which adaptive unload pressure begins. */
++    public int configChunkUnloadBacklogThreshold(final ServerLevel world);
++
++    /** Returns the minimum adaptive unload budget per tick. */
++    public int configChunkUnloadMinimumPerTick(final ServerLevel world);
++
++    /** Returns the hard maximum adaptive unload budget per tick. */
++    public int configChunkUnloadMaximumPerTick(final ServerLevel world);
++
+     public boolean configFixMC159283();
+ 
+     // support for CB chunk mustNotSave
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 89e86e1a688aabe9264f07909470844465340879..1f08ee608d35ee725b908ec137db0960159ec9bc 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -18,7 +18,11 @@ public record LeavesXConfig(
+     boolean parallelMobSpawnCounting,
+     int mobSpawnCountingWorkers,
+     int mobSpawnCountingMinimumEntities,
+-    boolean itemMergeOptimizations
++    boolean itemMergeOptimizations,
++    boolean adaptiveChunkUnloading,
++    int chunkUnloadBacklogThreshold,
++    int chunkUnloadMinimumPerTick,
++    int chunkUnloadMaximumPerTick
+ ) {
+ 
+     public static final int CURRENT_CONFIG_VERSION = 1;
+@@ -37,6 +41,17 @@ public record LeavesXConfig(
+         if (aiTargetSearchMinimumCandidates < 64) {
+             throw new IllegalArgumentException("parallelism.ai-target-search.minimum-candidates must be at least 64");
+         }
++        if (chunkUnloadBacklogThreshold < 100) {
++            throw new IllegalArgumentException("performance.chunk-unloading.backlog-threshold must be at least 100");
++        }
++        if (chunkUnloadMinimumPerTick < 1 || chunkUnloadMinimumPerTick > 10_000) {
++            throw new IllegalArgumentException("performance.chunk-unloading.minimum-per-tick must be between 1 and 10000");
++        }
++        if (chunkUnloadMaximumPerTick < chunkUnloadMinimumPerTick || chunkUnloadMaximumPerTick > 10_000) {
++            throw new IllegalArgumentException(
++                "performance.chunk-unloading.maximum-per-tick must be at least minimum-per-tick and at most 10000"
++            );
++        }
+     }
+ 
+     /**
+@@ -57,7 +72,11 @@ public record LeavesXConfig(
+             true,
+             0,
+             512,
+-            true
++            true,
++            true,
++            1_000,
++            100,
++            500
+         );
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 5f4ae0861c93826211917d9962682801c383381e..8748053043765f08ac21954d0e9b23ddb58a8e7a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -45,5 +45,12 @@ public final class LeavesXConfigBootstrap {
+             config.parallelAiTargetSearch() ? "enabled" : "disabled",
+             config.aiTargetSearchMinimumCandidates()
+         );
++        LOGGER.info(
++            "LeavesX adaptive chunk unloading: {}, backlog threshold {}, budget {}-{} chunks/tick",
++            config.adaptiveChunkUnloading() ? "enabled" : "disabled",
++            config.chunkUnloadBacklogThreshold(),
++            config.chunkUnloadMinimumPerTick(),
++            config.chunkUnloadMaximumPerTick()
++        );
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 970f6dfd7014392c217b7f3765f1660aa04249d9..ee6e66df7f26e6607ba0fb3406ae2aa7cbf9452c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -119,6 +119,26 @@ public final class LeavesXConfigLoader {
+                     node.node("performance", "item-merge-optimizations"),
+                     "performance.item-merge-optimizations",
+                     true
++                ),
++                readBoolean(
++                    node.node("performance", "chunk-unloading", "enabled"),
++                    "performance.chunk-unloading.enabled",
++                    true
++                ),
++                readInt(
++                    node.node("performance", "chunk-unloading", "backlog-threshold"),
++                    "performance.chunk-unloading.backlog-threshold",
++                    1_000
++                ),
++                readInt(
++                    node.node("performance", "chunk-unloading", "minimum-per-tick"),
++                    "performance.chunk-unloading.minimum-per-tick",
++                    100
++                ),
++                readInt(
++                    node.node("performance", "chunk-unloading", "maximum-per-tick"),
++                    "performance.chunk-unloading.maximum-per-tick",
++                    500
+                 )
+             );
+         } catch (final IllegalArgumentException ex) {
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index a2d65aa46cd6a93ae78166c3a259b1bccdb00170..c35b8783f56fa5255dbe1e366fdbbd8d6885d2ba 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -125,6 +125,30 @@ public final class LeavesXConfigWriter {
+             config.mobSpawnCountingMinimumEntities(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "chunk-unloading", "enabled"),
++            "performance.chunk-unloading.enabled",
++            config.adaptiveChunkUnloading(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "chunk-unloading", "backlog-threshold"),
++            "performance.chunk-unloading.backlog-threshold",
++            config.chunkUnloadBacklogThreshold(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "chunk-unloading", "minimum-per-tick"),
++            "performance.chunk-unloading.minimum-per-tick",
++            config.chunkUnloadMinimumPerTick(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "chunk-unloading", "maximum-per-tick"),
++            "performance.chunk-unloading.maximum-per-tick",
++            config.chunkUnloadMaximumPerTick(),
++            missingOnly
++        );
+         return changed;
+     }
+ 
+@@ -155,6 +179,10 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.ai-optimizations", "优化生物 AI 的热路径，减少重复计算。不会异步访问实体或世界，也不改变目标选择顺序；遇到问题可设为 false。默认：true。");
+         comments.put("parallelism.ai-target-search.enabled", "用工作线程计算大量目标候选的坐标距离。实体条件、视线检查和最终目标仍在主线程按原顺序确认；遇到问题可设为 false。默认：true。");
+         comments.put("parallelism.ai-target-search.minimum-candidates", "候选生物达到这个数量才使用多线程，数量较少时直接在主线程计算更快。建议保持默认。默认：128。");
++        comments.put("performance.chunk-unloading.enabled", "区块卸载队列积压时逐步增加每刻处理量。仍会检查区块票据、保存状态和插件事件，不会强制卸载正在使用的区块。遇到问题可设为 false。默认：true。");
++        comments.put("performance.chunk-unloading.backlog-threshold", "待卸载区块达到这个数量后开始提高处理量。数值越小，区块回收越积极；建议保持默认。默认：1000。");
++        comments.put("performance.chunk-unloading.minimum-per-tick", "积压超过阈值后，每刻至少处理的区块数。提高可更快回收区块，但过高可能造成卡顿。默认：100。");
++        comments.put("performance.chunk-unloading.maximum-per-tick", "自适应卸载的每刻硬上限，防止卸载工作挤占世界 tick。普通服务器建议保持默认。默认：500。");
+         return Map.copyOf(comments);
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 62074d09ea2ccd8b5c845900eee4c62924bb9932..8c46d0b699b768410e219d2772e6fee0965425f8 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -22,6 +22,10 @@ public final class LeavesXRuntime {
+     private static boolean itemMergeOptimizations = true;
+     private static boolean parallelMobSpawnCounting = true;
+     private static int mobSpawnCountingMinimumEntities = 512;
++    private static boolean adaptiveChunkUnloading = true;
++    private static int chunkUnloadBacklogThreshold = 1_000;
++    private static int chunkUnloadMinimumPerTick = 100;
++    private static int chunkUnloadMaximumPerTick = 500;
+ 
+     private LeavesXRuntime() {
+     }
+@@ -52,6 +56,10 @@ public final class LeavesXRuntime {
+         itemMergeOptimizations = validated.itemMergeOptimizations();
+         parallelMobSpawnCounting = validated.parallelMobSpawnCounting();
+         mobSpawnCountingMinimumEntities = validated.mobSpawnCountingMinimumEntities();
++        adaptiveChunkUnloading = validated.adaptiveChunkUnloading();
++        chunkUnloadBacklogThreshold = validated.chunkUnloadBacklogThreshold();
++        chunkUnloadMinimumPerTick = validated.chunkUnloadMinimumPerTick();
++        chunkUnloadMaximumPerTick = validated.chunkUnloadMaximumPerTick();
+         configuration = validated;
+     }
+ 
+@@ -115,4 +123,24 @@ public final class LeavesXRuntime {
+     public static int mobSpawnCountingMinimumEntities() {
+         return mobSpawnCountingMinimumEntities;
+     }
++
++    /** Returns whether unload work may scale up when the pending queue is backed up. */
++    public static boolean adaptiveChunkUnloading() {
++        return adaptiveChunkUnloading;
++    }
++
++    /** Returns the pending chunk count at which adaptive unload pressure begins. */
++    public static int chunkUnloadBacklogThreshold() {
++        return chunkUnloadBacklogThreshold;
++    }
++
++    /** Returns the minimum adaptive unload budget per world tick. */
++    public static int chunkUnloadMinimumPerTick() {
++        return chunkUnloadMinimumPerTick;
++    }
++
++    /** Returns the hard upper bound for adaptive unload work per world tick. */
++    public static int chunkUnloadMaximumPerTick() {
++        return chunkUnloadMaximumPerTick;
++    }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/performance/ChunkUnloadBudget.java b/src/main/java/org/leavesx/leavesx/performance/ChunkUnloadBudget.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..fdc0afb73a331e3abdf6cddfdb0dcacf68a6187a
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/performance/ChunkUnloadBudget.java
+@@ -0,0 +1,50 @@
++package org.leavesx.leavesx.performance;
++
++/** Calculates a bounded chunk-unload budget from an exact queue backlog. */
++public final class ChunkUnloadBudget {
++
++    private ChunkUnloadBudget() {
++    }
++
++    /**
++     * Returns the number of queued chunks to process during the current world tick.
++     *
++     * <p>Below the configured threshold the Paper baseline is retained. Above it, pressure grows using the same
++     * fraction as the baseline queue policy and is capped so unload recovery cannot monopolize the main thread.</p>
++     */
++    public static int calculate(
++        final long pendingChunkCount,
++        final int baseUnloadCount,
++        final double unloadFraction,
++        final boolean adaptive,
++        final int backlogThreshold,
++        final int minimumPerTick,
++        final int maximumPerTick
++    ) {
++        if (pendingChunkCount <= 0L) {
++            return 0;
++        }
++
++        final long boundedBase = Math.max(1, baseUnloadCount);
++        if (!adaptive) {
++            return (int)Math.min(Integer.MAX_VALUE, Math.min(pendingChunkCount, boundedBase));
++        }
++
++        final long threshold = Math.max(1L, backlogThreshold);
++        if (pendingChunkCount <= threshold) {
++            return (int)Math.min(Integer.MAX_VALUE, Math.min(pendingChunkCount, boundedBase));
++        }
++
++        final int minimum = Math.max(1, minimumPerTick);
++        final int maximum = Math.max(minimum, maximumPerTick);
++        final double fraction = Math.clamp(unloadFraction, 0.0, 1.0);
++        final long availableIncrease = (long)maximum - minimum;
++        final long pressure = Math.min(
++            availableIncrease,
++            (long)Math.ceil((pendingChunkCount - threshold) * fraction)
++        );
++        final long target = Math.max(boundedBase, minimum + pressure);
++
++        return (int)Math.min(pendingChunkCount, Math.min((long)maximum, target));
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 4853c19b6c5dcd8212a7302e2c80fe8612cf3559..737fb981b34c3dc7e645c6c65e5f54f062a4c9d9 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -104,6 +104,11 @@ class LeavesXConfigLoaderTest {
+               skip-empty-events: false
+               ai-optimizations: false
+               item-merge-optimizations: false
++              chunk-unloading:
++                enabled: false
++                backlog-threshold: 2000
++                minimum-per-tick: 75
++                maximum-per-tick: 400
+             parallelism:
+               ai-target-search:
+                 enabled: false
+@@ -124,6 +129,10 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.parallelAiTargetSearch());
+         assertEquals(256, config.aiTargetSearchMinimumCandidates());
+         assertFalse(config.itemMergeOptimizations());
++        assertFalse(config.adaptiveChunkUnloading());
++        assertEquals(2_000, config.chunkUnloadBacklogThreshold());
++        assertEquals(75, config.chunkUnloadMinimumPerTick());
++        assertEquals(400, config.chunkUnloadMaximumPerTick());
+         assertFalse(config.parallelMobSpawnCounting());
+         assertEquals(3, config.mobSpawnCountingWorkers());
+         assertEquals(768, config.mobSpawnCountingMinimumEntities());
+@@ -157,6 +166,24 @@ class LeavesXConfigLoaderTest {
+             .getMessage().contains("newer than supported"));
+     }
+ 
++    @Test
++    void rejectsInvalidChunkUnloadBudgetRange() throws IOException {
++        final Path path = write("""
++            config-version: 1
++            performance:
++              chunk-unloading:
++                minimum-per-tick: 600
++                maximum-per-tick: 500
++            """);
++
++        final LeavesXConfigException exception = assertThrows(
++            LeavesXConfigException.class,
++            () -> LeavesXConfigLoader.load(path)
++        );
++
++        assertTrue(exception.getMessage().contains("performance.chunk-unloading.maximum-per-tick"));
++    }
++
+     private Path write(final String content) throws IOException {
+         final Path path = this.temporaryDirectory.resolve("leavesx.yml");
+         Files.writeString(path, content, StandardCharsets.UTF_8);
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadBudgetTest.java b/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadBudgetTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c0a6c5e5d5d6c15a9d99619f4dc34f6279f38b93
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadBudgetTest.java
+@@ -0,0 +1,31 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class ChunkUnloadBudgetTest {
++
++    @Test
++    void preservesPaperBaselineBelowBacklogThreshold() {
++        assertEquals(50, ChunkUnloadBudget.calculate(900, 50, 0.05, true, 1_000, 100, 500));
++    }
++
++    @Test
++    void raisesBudgetGraduallyAndCapsLargeBacklogs() {
++        assertEquals(150, ChunkUnloadBudget.calculate(2_000, 100, 0.05, true, 1_000, 100, 500));
++        assertEquals(500, ChunkUnloadBudget.calculate(20_000, 1_000, 0.05, true, 1_000, 100, 500));
++    }
++
++    @Test
++    void preservesBaselineWhenAdaptivePolicyIsDisabled() {
++        assertEquals(1_000, ChunkUnloadBudget.calculate(20_000, 1_000, 0.05, false, 1_000, 100, 500));
++    }
++
++    @Test
++    void neverSchedulesMoreChunksThanRemainQueued() {
++        assertEquals(12, ChunkUnloadBudget.calculate(12, 50, 0.05, true, 1_000, 100, 500));
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadQueueTest.java b/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadQueueTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..a569719b35a8feaf9c469631f9e98d4c34ddc788
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadQueueTest.java
+@@ -0,0 +1,47 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import ca.spottedleaf.moonrise.patches.chunk_system.queue.ChunkUnloadQueue;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class ChunkUnloadQueueTest {
++
++    @Test
++    void tracksDuplicateAddsIndividualRemovesAndPartialDrainsExactly() {
++        final ChunkUnloadQueue queue = new ChunkUnloadQueue(2);
++
++        assertTrue(queue.addChunk(0, 0));
++        assertFalse(queue.addChunk(0, 0));
++        assertTrue(queue.addChunk(1, 1));
++        assertEquals(2L, queue.pendingChunkCount());
++
++        assertFalse(queue.removeChunk(2, 2));
++        assertTrue(queue.removeChunk(0, 0));
++        assertEquals(1L, queue.pendingChunkCount());
++
++        final ChunkUnloadQueue.UnloadSection section = queue.getSectionUnsynchronized(0, 0);
++        assertEquals(net.minecraft.world.level.ChunkPos.pack(1, 1), queue.removeFirstChunk(0, 0, section));
++        assertEquals(0L, queue.pendingChunkCount());
++        assertNull(queue.getSectionUnsynchronized(0, 0));
++    }
++
++    @Test
++    void removingAWholeSectionSubtractsEveryQueuedChunkOnce() {
++        final ChunkUnloadQueue queue = new ChunkUnloadQueue(2);
++        queue.addChunk(0, 0);
++        queue.addChunk(1, 0);
++        queue.addChunk(8, 8);
++
++        assertEquals(3L, queue.pendingChunkCount());
++        queue.removeSection(0, 0);
++        assertEquals(1L, queue.pendingChunkCount());
++        queue.removeSection(0, 0);
++        assertEquals(1L, queue.pendingChunkCount());
++    }
++}

@@ -1,0 +1,184 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 01:53:51 +0800
+Subject: [PATCH] Add villager baby sensor controls for bate83
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index f3c85d3ee1f2927016f73025873a132e3febd7aa..d705b8880f70a8fd4ab21b636af9f0ee1215a580 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -44,7 +44,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMask
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 14;
++    public static final int CURRENT_CONFIG_VERSION = 15;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 3ba373d51f9312a276f55177e6503fcc5943c326..ea589e6cc4b1b8232f5f0ec1affb6de78b4c1cea 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：14。");
++        comments.put("config-version", "配置版本，请勿修改。默认：15。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 0c7aab43aec07a3e43a635b167f8b42c20b60aac..67179f5c1edf4653a3455bbf071762a97022192c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -139,6 +139,10 @@ enum LeavesXOptimization {
+     MOB_PRESENCE_SENSORS(
+         "performance.ai.mob-presence-sensors",
+         "减少附近生物存在性检测的临时对象，关闭后使用原版流程。默认：true。"
++    ),
++    VILLAGER_BABIES_SENSOR(
++        "performance.ai.villager-babies-sensor",
++        "减少幼年村民感知器的临时对象，关闭后使用原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 40da87cd99e15be045c0d4a19e5be321e8d6df1e..573d6b49e39df4ffc686efda844c85e114c47929 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -291,6 +291,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && enabled(LeavesXOptimization.MOB_PRESENCE_SENSORS);
+     }
+ 
++    /** Returns whether visible villager-baby sensing may use direct memory and list construction. */
++    public static boolean villagerBabiesSensorOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.VILLAGER_BABIES_SENSOR);
++    }
++
+     /** Returns whether armor-stand placement may stop after the first blocking entity. */
+     public static boolean armorStandPlacementOptimization() {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.ARMOR_STAND_PLACEMENT);
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index d2bdca5ba9d7fba4f51c799897f2a7c772dd0370..f2b384d116e924551a5a37e983349a14eb6664ce 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -272,6 +272,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.wardenTargetSensorOptimization());
+             assertFalse(LeavesXRuntime.hurtBySensorOptimization());
+             assertFalse(LeavesXRuntime.mobPresenceSensorOptimization());
++            assertFalse(LeavesXRuntime.villagerBabiesSensorOptimization());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+@@ -286,6 +287,7 @@ class LeavesXConfigLoaderTest {
+                 breeze-attack-sensor: false
+                 hurt-by-sensor: false
+                 mob-presence-sensors: false
++                villager-babies-sensor: false
+               block-entity:
+                 hopper-entity-queries: false
+               entity-queries:
+@@ -296,11 +298,12 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.BREEZE_ATTACK_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HURT_BY_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.MOB_PRESENCE_SENSORS));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.VILLAGER_BABIES_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_ENTITY_QUERIES));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 6,
++            LeavesXConfig.fineGrainedOptimizationCount() - 7,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -309,6 +312,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.breezeAttackSensorOptimization());
+             assertFalse(LeavesXRuntime.hurtBySensorOptimization());
+             assertFalse(LeavesXRuntime.mobPresenceSensorOptimization());
++            assertFalse(LeavesXRuntime.villagerBabiesSensorOptimization());
+             assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.foxItemSearchOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/VillagerAiHotPathBytecodeTest.java b/src/test/java/org/leavesx/leavesx/performance/VillagerAiHotPathBytecodeTest.java
+index dffea766ee183294105eb25c4940680f02155d4a..826f6dc8d451335898307ef34c66744f1093b93f 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/VillagerAiHotPathBytecodeTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/VillagerAiHotPathBytecodeTest.java
+@@ -83,11 +83,11 @@ class VillagerAiHotPathBytecodeTest {
+     }
+ 
+     @Test
+-    void babyVillagerSensorDoesNotCreateFilteredIterableWrappers() throws IOException {
++    void babyVillagerSensorKeepsItsConfiguredDirectListPath() throws IOException {
+         final List<Invocation> calls = invocations(VillagerBabiesSensor.class, "getNearestVillagerBabies");
+ 
+-        assertFalse(calls.stream().anyMatch(call -> call.owner().equals("com/google/common/collect/ImmutableList") && call.name().equals("copyOf")));
+-        assertFalse(calls.stream().anyMatch(call -> call.owner().endsWith("/NearestVisibleLivingEntities") && call.name().equals("findAll")));
++        assertTrue(calls.stream().anyMatch(call -> call.name().equals("villagerBabiesSensorOptimization")));
++        assertTrue(calls.stream().anyMatch(call -> call.name().equals("findAllToList")));
+     }
+ 
+     @Test
+diff --git a/src/test/java/org/leavesx/leavesx/performance/VillagerBabiesSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/VillagerBabiesSensorHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..88f1b68c0e7d965157712e8c418ccf652cc2ab77
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/VillagerBabiesSensorHotPathTest.java
+@@ -0,0 +1,54 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ai.sensing.VillagerBabiesSensor;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies villager-baby sensing keeps direct list construction and the vanilla Guava fallback. */
++@Normal
++class VillagerBabiesSensorHotPathTest {
++
++    @Test
++    void sensorKeepsDirectAndVanillaListPaths() throws IOException {
++        final ClassNode sensor = classNode(VillagerBabiesSensor.class);
++        final List<MethodInsnNode> calls = invocations(method(sensor, "getNearestVillagerBabies"));
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("villagerBabiesSensorOptimization")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getMemoryValue")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("findAllToList")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("findAll")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("copyOf")));
++        assertTrue(invocations(method(sensor, "getVisibleEntities")).stream()
++            .anyMatch(call -> call.name.equals("getMemory")));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

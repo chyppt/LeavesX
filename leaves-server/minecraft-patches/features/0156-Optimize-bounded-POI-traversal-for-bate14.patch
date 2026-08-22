@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 14 Aug 2026 21:50:28 +0800
+Subject: [PATCH] Optimize bounded POI traversal for bate14
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
+index 4407b5efd663aed0fa30f0a0fc685cae74c2b5b9..86af8bc0c030ae68854b016f6931517a2cdf5dc6 100644
+--- a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
++++ b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
+@@ -69,9 +69,10 @@ public final class PoiAccess {
+         final int lowerZ,
+         final int upperX,
+         final int upperY,
+-        final int upperZ
++        final int upperZ,
++        final boolean boundedTraversal
+     ) {
+-        if (!org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++        if (!boundedTraversal) {
+             return new LongOpenHashSet();
+         }
+         return new LongOpenHashSet(PoiSearchCapacity.forBounds(lowerX, lowerY, lowerZ, upperX, upperY, upperZ));
+@@ -133,8 +134,9 @@ public final class PoiAccess {
+         final int centerZ = sourcePosition.getZ() >> 4;
+         final long centerKey = CoordinateUtils.getChunkSectionKey(centerX, centerY, centerZ);
+ 
++        final boolean boundedTraversal = org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations();
+         final LongArrayFIFOQueue queue = new LongArrayFIFOQueue();
+-        final LongOpenHashSet seen = createVisitedSectionSet(lowerX, lowerY, lowerZ, upperX, upperY, upperZ);
++        final LongOpenHashSet seen = createVisitedSectionSet(lowerX, lowerY, lowerZ, upperX, upperY, upperZ, boundedTraversal);
+         seen.add(centerKey);
+         queue.enqueue(centerKey);
+ 
+@@ -176,6 +178,12 @@ public final class PoiAccess {
+                         final int neighbourY = sectionY + dy;
+                         final int neighbourZ = sectionZ + dz;
+ 
++                        // LeavesX - boundary nodes are discarded immediately when dequeued, so do not enqueue them.
++                        if (boundedTraversal && !PoiSearchCapacity.contains(
++                            neighbourX, neighbourY, neighbourZ, lowerX, lowerY, lowerZ, upperX, upperY, upperZ
++                        )) {
++                            continue;
++                        }
+                         final long neighbourKey = CoordinateUtils.getChunkSectionKey(neighbourX, neighbourY, neighbourZ);
+                         if (seen.add(neighbourKey)) {
+                             queue.enqueue(neighbourKey);
+@@ -376,8 +384,9 @@ public final class PoiAccess {
+         final int centerZ = sourcePosition.getZ() >> 4;
+         final long centerKey = CoordinateUtils.getChunkSectionKey(centerX, centerY, centerZ);
+ 
++        final boolean boundedTraversal = org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations();
+         final LongArrayFIFOQueue queue = new LongArrayFIFOQueue();
+-        final LongOpenHashSet seen = createVisitedSectionSet(lowerX, lowerY, lowerZ, upperX, upperY, upperZ);
++        final LongOpenHashSet seen = createVisitedSectionSet(lowerX, lowerY, lowerZ, upperX, upperY, upperZ, boundedTraversal);
+         seen.add(centerKey);
+         queue.enqueue(centerKey);
+ 
+@@ -420,6 +429,12 @@ public final class PoiAccess {
+                         final int neighbourY = sectionY + dy;
+                         final int neighbourZ = sectionZ + dz;
+ 
++                        // LeavesX - boundary nodes are discarded immediately when dequeued, so do not enqueue them.
++                        if (boundedTraversal && !PoiSearchCapacity.contains(
++                            neighbourX, neighbourY, neighbourZ, lowerX, lowerY, lowerZ, upperX, upperY, upperZ
++                        )) {
++                            continue;
++                        }
+                         final long neighbourKey = CoordinateUtils.getChunkSectionKey(neighbourX, neighbourY, neighbourZ);
+                         if (seen.add(neighbourKey)) {
+                             queue.enqueue(neighbourKey);

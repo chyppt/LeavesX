@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 15:33:10 +0800
+Subject: [PATCH] Add bate38 activation range regression coverage
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..25e6133c158e876fe34497ff440ab783e2f55b40
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java
+@@ -0,0 +1,47 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++
++import io.papermc.paper.entity.activation.ActivationRange;
++import java.io.IOException;
++import java.util.Arrays;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++@Normal
++class ActivationRangeHotPathTest {
++
++    @Test
++    void activationLoopReusesPlayerBoundingBoxAndAvoidsListIterators() throws IOException {
++        final MethodNode method = methodNode(ActivationRange.class, "activateEntities");
++        final MethodInsnNode[] calls = Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++
++        assertEquals(
++            1L,
++            Arrays.stream(calls).filter(call -> call.name.equals("getBoundingBox")).count(),
++            "Each player bounding box should be read once and reused for all activation ranges"
++        );
++        assertFalse(
++            Arrays.stream(calls).anyMatch(call -> call.name.equals("iterator")),
++            "The per-tick activation scan should use the stable indexed entity and player lists"
++        );
++    }
++
++    private static MethodNode methodNode(final Class<?> owner, final String methodName) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.getName() + '#' + methodName));
++    }
++}

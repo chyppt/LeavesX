@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 02:43:34 +0800
+Subject: [PATCH] Optimize villager gossip scans for bate27
+
+
+diff --git a/net/minecraft/world/entity/ai/gossip/GossipContainer.java b/net/minecraft/world/entity/ai/gossip/GossipContainer.java
+index c56d55bab1b4704a26ced328bf25180e76f5080d..f717af74d277f772ad76b1223565c321b672b338 100644
+--- a/net/minecraft/world/entity/ai/gossip/GossipContainer.java
++++ b/net/minecraft/world/entity/ai/gossip/GossipContainer.java
+@@ -127,7 +127,9 @@ public class GossipContainer {
+             if (entry != null) {
+                 otherRep = entry.weightedValue(v -> types.test(v) && !v.equals(GossipType.MAJOR_POSITIVE));
+             }
+-            int majorPositiveRep = this.gossips.values().stream().mapToInt(a -> a.weightedValue(v -> v.equals(GossipType.MAJOR_POSITIVE))).sum();
++            int majorPositiveRep = org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()
++                ? this.sumMajorPositiveReputationDirect()
++                : this.gossips.values().stream().mapToInt(a -> a.weightedValue(v -> v.equals(GossipType.MAJOR_POSITIVE))).sum();
+             return otherRep + Math.min(majorPositiveRep, GossipType.MAJOR_POSITIVE.max * GossipType.MAJOR_POSITIVE.weight);
+         }
+         // Leaves end - sharedVillagerDiscounts
+@@ -135,9 +137,33 @@ public class GossipContainer {
+     }
+ 
+     public long getCountForType(final GossipType type, final DoublePredicate valueTest) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++            return this.countForTypeDirect(type, valueTest);
++        }
+         return this.gossips.values().stream().filter(e -> valueTest.test(e.entries.getOrDefault(type, 0) * type.weight)).count();
+     }
+ 
++    // LeavesX start - allocation-free equivalents for villager reputation hot paths
++    private int sumMajorPositiveReputationDirect() {
++        int reputation = 0;
++        for (final GossipContainer.EntityGossips entityGossips : this.gossips.values()) {
++            reputation += entityGossips.entries.getInt(GossipType.MAJOR_POSITIVE) * GossipType.MAJOR_POSITIVE.weight;
++        }
++        return reputation;
++    }
++
++    private long countForTypeDirect(final GossipType type, final DoublePredicate valueTest) {
++        long count = 0L;
++        for (final GossipContainer.EntityGossips entityGossips : this.gossips.values()) {
++            // The predicate must still run once for every villager, including entries where this type is absent.
++            if (valueTest.test(entityGossips.entries.getOrDefault(type, 0) * type.weight)) {
++                ++count;
++            }
++        }
++        return count;
++    }
++    // LeavesX end - allocation-free equivalents for villager reputation hot paths
++
+     public void add(final UUID target, final GossipType type, final int amountToAdd) {
+         GossipContainer.EntityGossips entityGossips = this.getOrCreate(target);
+         entityGossips.entries.mergeInt(type, amountToAdd, (o, n) -> this.mergeValuesForAddition(type, o, n));

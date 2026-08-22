@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 20:58:59 +0800
+Subject: [PATCH] Add parrot follow query coverage for bate60
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FollowMobEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/FollowMobEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..1504778711246b068887487c1c7b64bfe698f9c4
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/FollowMobEntityQueryHotPathTest.java
+@@ -0,0 +1,54 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.ai.goal.FollowMobGoal;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies parrot follow-target selection stops after the first visible different mob. */
++@Normal
++class FollowMobEntityQueryHotPathTest {
++
++    @Test
++    void canUseKeepsFirstMatchAndVanillaPaths() throws IOException {
++        final ClassNode goal = classNode(FollowMobGoal.class);
++        final MethodNode canUse = method(goal, "canUse");
++        final List<MethodInsnNode> calls = invocations(canUse);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
++        assertTrue(goal.methods.stream()
++            .filter(method -> method.name.startsWith("lambda$new$"))
++            .anyMatch(method -> invocations(method).stream().anyMatch(call -> call.name.equals("isInvisible"))));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

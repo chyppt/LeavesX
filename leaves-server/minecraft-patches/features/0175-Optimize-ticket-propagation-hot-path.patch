@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 15:04:08 +0800
+Subject: [PATCH] Optimize ticket propagation hot path
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
+index 3922616c82a9a38fb51038cd4f4c10d7921b649a..3bd1ff7605c66a3cc7e176b0de5b516617c24ef9 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
+@@ -944,6 +944,9 @@ public abstract class ThreadedTicketLevelPropagator {
+             final int decodeOffsetZ = -this.encodeOffsetZ;
+             final int encodeOffset = this.coordinateOffset;
+             final int sectionOffset = this.sectionIndexOffset;
++            // This cache is immutable for the duration of propagation. Keeping the reference local avoids
++            // repeatedly loading it through the Propagator object in the innermost ticket loops.
++            final Section[] sections = this.sections;
+ 
+             final Long2ByteLinkedOpenHashMap updatedPositions = this.updatedPositions;
+ 
+@@ -958,13 +961,24 @@ public abstract class ThreadedTicketLevelPropagator {
+                 int propagateDirectionBitset = (int)(queueValue >>> (COORDINATE_BITS + COORDINATE_BITS + LEVEL_BITS)) & ((1 << 16) - 1);
+ 
+                 if ((queueValue & FLAG_RECHECK_LEVEL) != 0L) {
+-                    if (this.getLevel(posX, posZ) != propagatedLevel) {
++                    final int sectionIndex = (posX >> SECTION_SHIFT) + ((posZ >> SECTION_SHIFT) * SECTION_CACHE_WIDTH) + sectionOffset;
++                    final Section section = sections[sectionIndex];
++                    final int localIndex = (posX & (SECTION_SIZE - 1)) | ((posZ & (SECTION_SIZE - 1)) << SECTION_SHIFT);
++                    final int currentLevel = section == null ? 0 : section.levels[localIndex] & 0xFF;
++                    if (currentLevel != propagatedLevel) {
+                         // not at the level we expect, so something changed.
+                         continue;
+                     }
+                 } else if ((queueValue & FLAG_WRITE_LEVEL) != 0L) {
+                     // these are used to restore sources after a propagation decrease
+-                    this.setLevel(posX, posZ, propagatedLevel);
++                    final int sectionIndex = (posX >> SECTION_SHIFT) + ((posZ >> SECTION_SHIFT) * SECTION_CACHE_WIDTH) + sectionOffset;
++                    final Section section = sections[sectionIndex];
++                    if (section != null) {
++                        final int localIndex = (posX & (SECTION_SIZE - 1)) | ((posZ & (SECTION_SIZE - 1)) << SECTION_SHIFT);
++                        final short currentLevel = section.levels[localIndex];
++                        section.levels[localIndex] = (short)((currentLevel & ~0xFF) | (propagatedLevel & 0xFF));
++                        updatedPositions.put(CoordinateUtils.getChunkKey(posX, posZ), (byte)propagatedLevel);
++                    }
+                 }
+ 
+                 // this bitset represents the values that we have not propagated to
+@@ -1039,7 +1053,7 @@ public abstract class ThreadedTicketLevelPropagator {
+                     currentPropagation ^= (bitsetLine1 | bitsetLine2 | bitsetLine3);
+ 
+                     // now try to propagate
+-                    final Section section = this.sections[sectionIndex];
++                    final Section section = sections[sectionIndex];
+ 
+                     // lower 8 bits are current level, next upper 7 bits are source level, next 1 bit is updated source flag
+                     final short currentStoredLevel = section.levels[localIndex];
+@@ -1090,6 +1104,7 @@ public abstract class ThreadedTicketLevelPropagator {
+             final int decodeOffsetZ = -this.encodeOffsetZ;
+             final int encodeOffset = this.coordinateOffset;
+             final int sectionOffset = this.sectionIndexOffset;
++            final Section[] sections = this.sections;
+ 
+             final Long2ByteLinkedOpenHashMap updatedPositions = this.updatedPositions;
+ 
+@@ -1173,7 +1188,7 @@ public abstract class ThreadedTicketLevelPropagator {
+                     final long bitsetLine3 = currentPropagation & (7L << (start + (8 + 8)));
+ 
+                     // now try to propagate
+-                    final Section section = this.sections[sectionIndex];
++                    final Section section = sections[sectionIndex];
+ 
+                     // lower 8 bits are current level, next upper 7 bits are source level, next 1 bit is updated source flag
+                     final short currentStoredLevel = section.levels[localIndex];

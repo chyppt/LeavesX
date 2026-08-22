@@ -1,0 +1,156 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 02:19:32 +0800
+Subject: [PATCH] Add chunk unload serialization controls for bate85
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index f26507d54b565e8916e6c8e2c7c99cf8cdbedccf..6cfb158b28215b18a18034b5706a0a580f7c2745 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -44,7 +44,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMask
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 16;
++    public static final int CURRENT_CONFIG_VERSION = 17;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 6084bd66c0e83c89aef9135ebf5e463c0bc65adf..70875c5c6d0227041741343fd6136a10d1a85a50 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：16。");
++        comments.put("config-version", "配置版本，请勿修改。默认：17。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 8e035e2df75e1402fb63fa6f5aa752a107e7bba4..91821ef3c1abff9d4e34e3fb9968fbc352cd84e5 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -147,6 +147,10 @@ enum LeavesXOptimization {
+     PLAYER_SENSOR(
+         "performance.ai.player-sensor",
+         "减少生物查找附近玩家时的临时对象和重复读取，关闭后使用原版流程。默认：true。"
++    ),
++    CHUNK_UNLOAD_SERIALIZATION(
++        "performance.chunk.unload-serialization",
++        "减少区块卸载保存时的临时对象，关闭后使用原版流程。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index e3f44cd7a4ffb7e087f5b94a3b1b38a54311b1a8..552b0f7b116268004e9e2579d0d439a91d38f213 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -456,6 +456,11 @@ public final class LeavesXRuntime {
+         return chunkUnloadMaximumPerTick;
+     }
+ 
++    /** Returns whether chunk unload snapshots may pre-size containers and copy post-processing data directly. */
++    public static boolean chunkUnloadSerializationOptimization() {
++        return enabled(LeavesXOptimization.CHUNK_UNLOAD_SERIALIZATION);
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(fineGrainedOptimizationMask);
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 10b25c17106ef214b086a7989482cb4b3c5af0d2..fc4f11a48a10ebeb81453f43579fb1930cf0ef5a 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -292,6 +292,8 @@ class LeavesXConfigLoaderTest {
+                 villager-babies-sensor: false
+               block-entity:
+                 hopper-entity-queries: false
++              chunk:
++                unload-serialization: false
+               entity-queries:
+                 pressure-plate-scans: false
+                 fox-item-search: false
+@@ -303,10 +305,11 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PLAYER_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.VILLAGER_BABIES_SENSOR));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_ENTITY_QUERIES));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_SERIALIZATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.FOX_ITEM_SEARCH));
+         assertEquals(
+-            LeavesXConfig.fineGrainedOptimizationCount() - 8,
++            LeavesXConfig.fineGrainedOptimizationCount() - 9,
+             config.enabledFineGrainedOptimizationCount()
+         );
+ 
+@@ -318,6 +321,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.playerSensorOptimization());
+             assertFalse(LeavesXRuntime.villagerBabiesSensorOptimization());
+             assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
++            assertFalse(LeavesXRuntime.chunkUnloadSerializationOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.foxItemSearchOptimization());
+             assertTrue(LeavesXRuntime.wardenTargetSensorOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadSerializationHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadSerializationHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f0007bfb5042f608eaa49051b11a72e43cb7a679
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadSerializationHotPathTest.java
+@@ -0,0 +1,53 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.level.chunk.storage.SerializableChunkData;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies chunk snapshots keep allocation-light and vanilla serialization paths. */
++@Normal
++class ChunkUnloadSerializationHotPathTest {
++
++    @Test
++    void copyKeepsOptimizedAndVanillaSerializationPaths() throws IOException {
++        final List<MethodInsnNode> calls = invocations(method(classNode(SerializableChunkData.class), "copyOf"));
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("chunkUnloadSerializationOptimization")));
++        assertTrue(calls.stream().anyMatch(call -> call.owner.equals("java/util/Arrays") && call.name.equals("stream")));
++        assertTrue(calls.stream().anyMatch(call -> call.owner.equals("it/unimi/dsi/fastutil/shorts/ShortArrayList")));
++        assertTrue(calls.stream()
++            .filter(call -> call.owner.equals("java/util/ArrayList"))
++            .filter(call -> call.name.equals("<init>") && call.desc.equals("(I)V"))
++            .count() >= 3L);
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

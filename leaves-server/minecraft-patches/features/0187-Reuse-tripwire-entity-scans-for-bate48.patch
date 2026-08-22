@@ -1,0 +1,133 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 19:02:17 +0800
+Subject: [PATCH] Reuse tripwire entity scans for bate48
+
+
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index 6fdd832b0d249992020bed1f8dbf5c8fd6b8a68c..73fa10730519421476af3fca33a638c62dfe9f08 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -209,6 +209,8 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+     // LeavesX - one reusable result slot per calling thread; nested calls allocate a private fallback.
+     private static final ThreadLocal<LeavesXFirstEntityQueryBuffer> LEAVESX_FIRST_ENTITY_QUERY_BUFFER =
+         ThreadLocal.withInitial(LeavesXFirstEntityQueryBuffer::new);
++    private static final ThreadLocal<LeavesXEntityQueryBuffer> LEAVESX_ENTITY_QUERY_BUFFER =
++        ThreadLocal.withInitial(() -> new LeavesXEntityQueryBuffer(true));
+     private ca.spottedleaf.moonrise.patches.chunk_system.level.entity.EntityLookup entityLookup;
+     private final ca.spottedleaf.concurrentutil.map.concurrent.longs.ConcurrentChainedLong2ReferenceHashTable<ca.spottedleaf.moonrise.patches.chunk_system.level.chunk.ChunkData> chunkData = new ca.spottedleaf.concurrentutil.map.concurrent.longs.ConcurrentChainedLong2ReferenceHashTable<>();
+ 
+@@ -247,6 +249,28 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+             .moonrise$getEntityLookup().getEntities(entityClass, null, boundingBox, into, predicate);
+     }
+ 
++    public final void leavesX$getEntities(
++        final @Nullable Entity except,
++        final AABB boundingBox,
++        final Predicate<? super Entity> predicate,
++        final List<Entity> into
++    ) {
++        Profiler.get().incrementCounter("getEntities");
++        ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemLevel)this)
++            .moonrise$getEntityLookup().getEntities(except, boundingBox, into, predicate);
++        ca.spottedleaf.moonrise.common.PlatformHooks.get()
++            .addToGetEntities((Level)(Object)this, except, boundingBox, predicate, into);
++    }
++
++    public static LeavesXEntityQueryBuffer leavesX$acquireEntityQueryBuffer() {
++        final LeavesXEntityQueryBuffer pooledBuffer = LEAVESX_ENTITY_QUERY_BUFFER.get();
++        if (pooledBuffer.acquire()) {
++            return pooledBuffer;
++        }
++        // Bukkit events can synchronously enter another entity scan on the same thread.
++        return new LeavesXEntityQueryBuffer(false);
++    }
++
+     /** Returns the first entity in the same deterministic order as {@link #getEntitiesOfClass}. */
+     public final <T extends Entity> @Nullable T leavesX$getFirstEntityOfClass(
+         final Class<T> entityClass,
+@@ -1891,13 +1915,9 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+ 
+     @Override
+     public List<Entity> getEntities(final @Nullable Entity except, final AABB bb, final Predicate<? super Entity> selector) {
+-        Profiler.get().incrementCounter("getEntities");
+         // Paper start - rewrite chunk system
+         final List<Entity> ret = new java.util.ArrayList<>();
+-
+-        ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemLevel)this).moonrise$getEntityLookup().getEntities(except, bb, ret, selector);
+-
+-        ca.spottedleaf.moonrise.common.PlatformHooks.get().addToGetEntities((Level)(Object)this, except, bb, selector, ret);
++        this.leavesX$getEntities(except, bb, selector, ret);
+ 
+         return ret;
+         // Paper end - rewrite chunk system
+@@ -2279,6 +2299,46 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         }
+     }
+ 
++    /** Reusable full-query storage with an isolated fallback for nested scans on the same thread. */
++    public static final class LeavesXEntityQueryBuffer implements AutoCloseable {
++
++        private final List<Entity> results = new java.util.ArrayList<>();
++        private final boolean pooled;
++        private boolean inUse;
++
++        private LeavesXEntityQueryBuffer(final boolean pooled) {
++            this.pooled = pooled;
++        }
++
++        private boolean acquire() {
++            if (this.inUse) {
++                return false;
++            }
++            this.inUse = true;
++            this.results.clear();
++            return true;
++        }
++
++        public List<Entity> query(
++            final Level level,
++            final @Nullable Entity except,
++            final AABB boundingBox,
++            final Predicate<? super Entity> predicate
++        ) {
++            this.results.clear();
++            level.leavesX$getEntities(except, boundingBox, predicate, this.results);
++            return this.results;
++        }
++
++        @Override
++        public void close() {
++            this.results.clear();
++            if (this.pooled) {
++                this.inUse = false;
++            }
++        }
++    }
++
+     @Override
+     public long nextSubTickCount() {
+         return this.subTickCount++;
+diff --git a/net/minecraft/world/level/block/TripWireBlock.java b/net/minecraft/world/level/block/TripWireBlock.java
+index 50a70afc257deaddd8224b5f18077eba21664f8a..a77582c9997c6054d69af106deab753edf051c35 100644
+--- a/net/minecraft/world/level/block/TripWireBlock.java
++++ b/net/minecraft/world/level/block/TripWireBlock.java
+@@ -187,9 +187,15 @@ public class TripWireBlock extends Block {
+     }
+ 
+     private void checkPressed(final Level level, final BlockPos pos) {
+-        BlockState state = level.getBlockState(pos);
+-        List<? extends Entity> entities = level.getEntities(null, state.getShape(level, pos).bounds().move(pos));
+-        this.checkPressed(level, pos, entities);
++        final BlockState state = level.getBlockState(pos);
++        final net.minecraft.world.phys.AABB searchBox = state.getShape(level, pos).bounds().move(pos);
++        if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++            try (Level.LeavesXEntityQueryBuffer scan = Level.leavesX$acquireEntityQueryBuffer()) {
++                this.checkPressed(level, pos, scan.query(level, null, searchBox, net.minecraft.world.entity.EntitySelector.NO_SPECTATORS));
++            }
++            return;
++        }
++        this.checkPressed(level, pos, level.getEntities(null, searchBox));
+     }
+ 
+     private void checkPressed(final Level level, final BlockPos pos, final List<? extends Entity> entities) {

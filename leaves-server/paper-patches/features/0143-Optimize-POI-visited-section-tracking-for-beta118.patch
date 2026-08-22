@@ -1,0 +1,448 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 22:59:15 +0800
+Subject: [PATCH] Optimize POI visited-section tracking for beta118
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 1b4a5f551fc7f16c64b049ef3e48f479b1e7b5e3..e4511029614f9a5877d40377c69b7dfb699fd925 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -45,7 +45,7 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskHigh
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 46;
++    public static final int CURRENT_CONFIG_VERSION = 47;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index ce4f1afdffbaa42c64897bca07581956cf84dca5..44dd7bcf96d5e67b75a3c7d4d09226db697dd7d5 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -288,7 +288,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：46。");
++        comments.put("config-version", "配置版本，请勿修改。默认：47。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index d72183cc45734ee03296e8d1ab7663991142f8cc..4edb68791c3293d487571f49d3de7f77f3056505 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -248,6 +248,10 @@ enum LeavesXOptimization {
+         "performance.ai.poi-bounded-traversal",
+         "限制 POI 搜索只遍历需要的范围，关闭后使用原版遍历。默认：true。"
+     ),
++    POI_SECTION_BITSET(
++        "performance.ai.poi-section-bitset",
++        "使用位图记录已检查的 POI 区段，关闭后使用哈希集合。默认：true。"
++    ),
+     VILLAGER_GOLEM_AGREEMENT(
+         "performance.ai.villager-golem-agreement",
+         "村民召唤铁傀儡时达到人数后停止计数，关闭后完整收集。默认：true。"
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 1c0f71088b20557b3bdfdf3f058c2a6cc4537b99..96c58a0dfa3fe1498c4249df1f24635c92e8f685 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -626,6 +626,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && enabled(LeavesXOptimization.POI_BOUNDED_TRAVERSAL);
+     }
+ 
++    /** Returns whether bounded POI searches may track visited sections with one compact bit per section. */
++    public static boolean poiSectionBitSetOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.POI_SECTION_BITSET);
++    }
++
+     /** Returns whether villager golem agreement counting may stop at the required threshold. */
+     public static boolean villagerGolemAgreementOptimization() {
+         return aiOptimizations && enabled(LeavesXOptimization.VILLAGER_GOLEM_AGREEMENT);
+diff --git a/src/main/java/org/leavesx/leavesx/performance/PoiVisitedSectionSet.java b/src/main/java/org/leavesx/leavesx/performance/PoiVisitedSectionSet.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..e1a712ecba8db3a1fc2e889828ec874777eee81e
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/performance/PoiVisitedSectionSet.java
+@@ -0,0 +1,142 @@
++package org.leavesx.leavesx.performance;
++
++import ca.spottedleaf.moonrise.common.util.CoordinateUtils;
++import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
++
++/**
++ * Tracks sections visited by one deterministic POI breadth-first search.
++ *
++ * <p>Bounded searches use one bit per possible section when the search box is reasonably sized. Unbounded or
++ * unusually large searches retain the existing hash-set representation so memory use stays bounded and the
++ * compatibility fallback remains available.</p>
++ */
++public final class PoiVisitedSectionSet {
++
++    private static final long MAXIMUM_BITSET_SECTIONS = 1L << 20;
++
++    private final int minimumX;
++    private final int minimumY;
++    private final int minimumZ;
++    private final int sizeX;
++    private final int sizeY;
++    private final long[] visitedBits;
++    private final LongOpenHashSet fallback;
++
++    private PoiVisitedSectionSet(
++        final int minimumX,
++        final int minimumY,
++        final int minimumZ,
++        final int sizeX,
++        final int sizeY,
++        final long sectionCount
++    ) {
++        this.minimumX = minimumX;
++        this.minimumY = minimumY;
++        this.minimumZ = minimumZ;
++        this.sizeX = sizeX;
++        this.sizeY = sizeY;
++        this.visitedBits = new long[(int)((sectionCount + Long.SIZE - 1L) >>> 6)];
++        this.fallback = null;
++    }
++
++    private PoiVisitedSectionSet(final int expectedSections) {
++        this.minimumX = 0;
++        this.minimumY = 0;
++        this.minimumZ = 0;
++        this.sizeX = 0;
++        this.sizeY = 0;
++        this.visitedBits = null;
++        this.fallback = expectedSections > 0 ? new LongOpenHashSet(expectedSections) : new LongOpenHashSet();
++    }
++
++    /**
++     * Creates the smallest safe representation for an inclusive section box.
++     *
++     * @param boundedTraversal whether callers reject out-of-bounds neighbours before marking them
++     * @param preferBitSet whether the compact representation is enabled
++     * @return a tracker preserving the original packed-coordinate fallback
++     */
++    public static PoiVisitedSectionSet create(
++        final int lowerX,
++        final int lowerY,
++        final int lowerZ,
++        final int upperX,
++        final int upperY,
++        final int upperZ,
++        final boolean boundedTraversal,
++        final boolean preferBitSet
++    ) {
++        if (boundedTraversal && preferBitSet) {
++            final long sizeX = inclusiveLength(lowerX, upperX);
++            final long sizeY = inclusiveLength(lowerY, upperY);
++            final long sizeZ = inclusiveLength(lowerZ, upperZ);
++            final long sectionCount = boundedVolume(sizeX, sizeY, sizeZ);
++            if (sectionCount > 0L) {
++                return new PoiVisitedSectionSet(
++                    lowerX,
++                    lowerY,
++                    lowerZ,
++                    (int)sizeX,
++                    (int)sizeY,
++                    sectionCount
++                );
++            }
++        }
++
++        final int expectedSections = boundedTraversal
++            ? PoiSearchCapacity.forBounds(lowerX, lowerY, lowerZ, upperX, upperY, upperZ)
++            : 0;
++        return new PoiVisitedSectionSet(expectedSections);
++    }
++
++    /**
++     * Marks one section and reports whether it had not been visited before.
++     *
++     * <p>Bit-set callers must only pass coordinates inside the bounds supplied to {@link #create}; POI traversal
++     * checks those bounds before every neighbour insertion.</p>
++     *
++     * @return {@code true} only for the first mark of a section
++     */
++    public boolean mark(final int x, final int y, final int z) {
++        if (this.visitedBits == null) {
++            return this.fallback.add(CoordinateUtils.getChunkSectionKey(x, y, z));
++        }
++
++        final int localX = x - this.minimumX;
++        final int localY = y - this.minimumY;
++        final int localZ = z - this.minimumZ;
++        final int index = ((localZ * this.sizeX + localX) * this.sizeY) + localY;
++        final int wordIndex = index >>> 6;
++        final long mask = 1L << (index & 63);
++        final long previous = this.visitedBits[wordIndex];
++        if ((previous & mask) != 0L) {
++            return false;
++        }
++        this.visitedBits[wordIndex] = previous | mask;
++        return true;
++    }
++
++    boolean usesBitSet() {
++        return this.visitedBits != null;
++    }
++
++    int allocatedWordCount() {
++        return this.visitedBits == null ? 0 : this.visitedBits.length;
++    }
++
++    private static long inclusiveLength(final int lower, final int upper) {
++        return upper < lower ? 0L : (long)upper - (long)lower + 1L;
++    }
++
++    private static long boundedVolume(final long sizeX, final long sizeY, final long sizeZ) {
++        if (sizeX == 0L || sizeY == 0L || sizeZ == 0L
++            || sizeX > Integer.MAX_VALUE || sizeY > Integer.MAX_VALUE || sizeZ > Integer.MAX_VALUE) {
++            return 0L;
++        }
++        if (sizeX > MAXIMUM_BITSET_SECTIONS / sizeY) {
++            return 0L;
++        }
++        final long area = sizeX * sizeY;
++        return area > MAXIMUM_BITSET_SECTIONS / sizeZ ? 0L : area * sizeZ;
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index fd9074b0b6d5dcac9aa5c28e9f1cfcc7164b77df..99c1332f4bbfe44826cc2afbdb2a352e06710c9b 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -400,6 +400,7 @@ class LeavesXConfigLoaderTest {
+                 nearest-entity-distance-sort: false
+                 player-distance-queries: false
+                 poi-bounded-traversal: false
++                poi-section-bitset: false
+                 schooling-fish-leader: false
+                 sensor-follow-range-cache: false
+                 targeting-range-checks: false
+@@ -442,6 +443,7 @@ class LeavesXConfigLoaderTest {
+             LeavesXOptimization.NEAREST_ENTITY_DISTANCE_SORT,
+             LeavesXOptimization.PLAYER_DISTANCE_QUERIES,
+             LeavesXOptimization.POI_BOUNDED_TRAVERSAL,
++            LeavesXOptimization.POI_SECTION_BITSET,
+             LeavesXOptimization.SCHOOLING_FISH_LEADER,
+             LeavesXOptimization.SENSOR_FOLLOW_RANGE_CACHE,
+             LeavesXOptimization.TARGETING_RANGE_CHECKS,
+@@ -488,6 +490,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.nearestEntityDistanceSortOptimization());
+             assertFalse(LeavesXRuntime.playerDistanceQueriesOptimization());
+             assertFalse(LeavesXRuntime.poiBoundedTraversalOptimization());
++            assertFalse(LeavesXRuntime.poiSectionBitSetOptimization());
+             assertFalse(LeavesXRuntime.schoolingFishLeaderOptimization());
+             assertFalse(LeavesXRuntime.sensorFollowRangeCacheOptimization());
+             assertFalse(LeavesXRuntime.targetingRangeChecksOptimization());
+@@ -535,6 +538,7 @@ class LeavesXConfigLoaderTest {
+               ai:
+                 breeze-attack-sensor: true
+                 poi-bounded-traversal: true
++                poi-section-bitset: true
+                 villager-farmland-seed-scan: true
+                 villager-food-inventory: true
+               block-entity:
+@@ -563,6 +567,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.villagerFarmlandSeedScanOptimization());
+             assertFalse(LeavesXRuntime.villagerFoodInventoryOptimization());
+             assertFalse(LeavesXRuntime.poiBoundedTraversalOptimization());
++            assertFalse(LeavesXRuntime.poiSectionBitSetOptimization());
+             assertFalse(LeavesXRuntime.hopperEntityQueriesOptimization());
+             assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+             assertFalse(LeavesXRuntime.catSpawningHomeCountOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/DespawnRangeLookupHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/DespawnRangeLookupHotPathTest.java
+index c446c667e055df04a1eceeb3c02d12aede045f5a..31ec25108039a4fbdf9692777bb55ea9bde87f02 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/DespawnRangeLookupHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/DespawnRangeLookupHotPathTest.java
+@@ -107,7 +107,7 @@ class DespawnRangeLookupHotPathTest {
+         }
+ 
+         final String upgraded = Files.readString(path);
+-        assertTrue(upgraded.contains("config-version: 46"));
++        assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
+         assertTrue(upgraded.contains("despawn-range-lookup: false"));
+         assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
+         assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+index d009ab6d1307bfc3e39a34221f82e3d5081e8bdb..dbbbc0ae3f14f8ff7609b34ff152d6f75faa45cc 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+@@ -43,7 +43,11 @@ class FineGrainedOptimizationWiringTest {
+ 
+     private static List<Wiring> wirings() {
+         return List.of(
+-            new Wiring("ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess", "poiBoundedTraversalOptimization"),
++            new Wiring(
++                "ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess",
++                "poiBoundedTraversalOptimization",
++                "poiSectionBitSetOptimization"
++            ),
+             new Wiring("net.minecraft.world.entity.npc.villager.Villager", "villagerGolemAgreementOptimization"),
+             new Wiring("net.minecraft.world.entity.ai.targeting.TargetingConditions", "targetingRangeChecksOptimization"),
+             new Wiring("net.minecraft.world.entity.ai.sensing.TemptingSensor", "temptingPlayerSearchOptimization"),
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PoiVisitedSectionSetTest.java b/src/test/java/org/leavesx/leavesx/performance/PoiVisitedSectionSetTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..011a1ecaed2a4d62be3bb311f5fd116b7e4ebb68
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/PoiVisitedSectionSetTest.java
+@@ -0,0 +1,157 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.util.ArrayDeque;
++import java.util.ArrayList;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Set;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class PoiVisitedSectionSetTest {
++
++    @Test
++    void usesNineteenWordsForAStandardVillagerSearch() {
++        final PoiVisitedSectionSet visited = PoiVisitedSectionSet.create(-3, -4, -3, 3, 19, 3, true, true);
++
++        assertTrue(visited.usesBitSet());
++        assertEquals(19, visited.allocatedWordCount());
++    }
++
++    @Test
++    void reportsOnlyTheFirstMarkAcrossNegativeCoordinates() {
++        final PoiVisitedSectionSet visited = PoiVisitedSectionSet.create(-3, -4, -3, 3, 19, 3, true, true);
++
++        assertTrue(visited.mark(-3, -4, -3));
++        assertFalse(visited.mark(-3, -4, -3));
++        assertTrue(visited.mark(3, 19, 3));
++        assertFalse(visited.mark(3, 19, 3));
++    }
++
++    @Test
++    void fallsBackForDisabledUnboundedAndOversizedSearches() {
++        assertFalse(PoiVisitedSectionSet.create(-3, -4, -3, 3, 19, 3, true, false).usesBitSet());
++        assertFalse(PoiVisitedSectionSet.create(-3, -4, -3, 3, 19, 3, false, true).usesBitSet());
++        assertFalse(PoiVisitedSectionSet.create(-1_024, 0, -1_024, 1_024, 255, 1_024, true, true).usesBitSet());
++    }
++
++    @Test
++    void compactTraversalPreservesReferenceOrder() {
++        assertTraversalEquivalent(new Bounds(-3, -4, -3, 3, 19, 3), new SectionPosition(0, 4, 0));
++        assertTraversalEquivalent(new Bounds(10, 2, -8, 14, 7, -2), new SectionPosition(11, 6, -7));
++        assertTraversalEquivalent(new Bounds(5, 5, 5, 5, 5, 5), new SectionPosition(5, 5, 5));
++    }
++
++    private static void assertTraversalEquivalent(final Bounds bounds, final SectionPosition center) {
++        final List<SectionPosition> reference = referenceTraversal(bounds, center);
++        final List<SectionPosition> compact = compactTraversal(bounds, center);
++
++        assertEquals(reference, compact);
++        assertEquals(bounds.volume(), compact.size());
++    }
++
++    private static List<SectionPosition> referenceTraversal(final Bounds bounds, final SectionPosition center) {
++        final ArrayDeque<SectionPosition> queue = new ArrayDeque<>();
++        final Set<SectionPosition> seen = new HashSet<>();
++        final List<SectionPosition> order = new ArrayList<>();
++        seen.add(center);
++        queue.add(center);
++
++        while (!queue.isEmpty()) {
++            final SectionPosition current = queue.removeFirst();
++            order.add(current);
++            for (int dz = -1; dz <= 1; dz++) {
++                for (int dx = -1; dx <= 1; dx++) {
++                    for (int dy = -1; dy <= 1; dy++) {
++                        if ((dx & 1) + (dy & 1) + (dz & 1) != 1) {
++                            continue;
++                        }
++                        final SectionPosition neighbour = new SectionPosition(
++                            current.x + dx,
++                            current.y + dy,
++                            current.z + dz
++                        );
++                        if (bounds.contains(neighbour) && seen.add(neighbour)) {
++                            queue.addLast(neighbour);
++                        }
++                    }
++                }
++            }
++        }
++        return List.copyOf(order);
++    }
++
++    private static List<SectionPosition> compactTraversal(final Bounds bounds, final SectionPosition center) {
++        final PoiVisitedSectionSet seen = PoiVisitedSectionSet.create(
++            bounds.lowerX,
++            bounds.lowerY,
++            bounds.lowerZ,
++            bounds.upperX,
++            bounds.upperY,
++            bounds.upperZ,
++            true,
++            true
++        );
++        final ArrayDeque<SectionPosition> queue = new ArrayDeque<>();
++        final List<SectionPosition> order = new ArrayList<>();
++        seen.mark(center.x, center.y, center.z);
++        queue.add(center);
++
++        while (!queue.isEmpty()) {
++            final SectionPosition current = queue.removeFirst();
++            order.add(current);
++            enqueue(bounds, seen, queue, current.x, current.y, current.z - 1);
++            enqueue(bounds, seen, queue, current.x - 1, current.y, current.z);
++            enqueue(bounds, seen, queue, current.x, current.y - 1, current.z);
++            enqueue(bounds, seen, queue, current.x, current.y + 1, current.z);
++            enqueue(bounds, seen, queue, current.x + 1, current.y, current.z);
++            enqueue(bounds, seen, queue, current.x, current.y, current.z + 1);
++        }
++        return List.copyOf(order);
++    }
++
++    private static void enqueue(
++        final Bounds bounds,
++        final PoiVisitedSectionSet seen,
++        final ArrayDeque<SectionPosition> queue,
++        final int x,
++        final int y,
++        final int z
++    ) {
++        final SectionPosition position = new SectionPosition(x, y, z);
++        if (bounds.contains(position) && seen.mark(x, y, z)) {
++            queue.addLast(position);
++        }
++    }
++
++    private record Bounds(int lowerX, int lowerY, int lowerZ, int upperX, int upperY, int upperZ) {
++
++        private boolean contains(final SectionPosition position) {
++            return PoiSearchCapacity.contains(
++                position.x,
++                position.y,
++                position.z,
++                this.lowerX,
++                this.lowerY,
++                this.lowerZ,
++                this.upperX,
++                this.upperY,
++                this.upperZ
++            );
++        }
++
++        private int volume() {
++            return (this.upperX - this.lowerX + 1)
++                * (this.upperY - this.lowerY + 1)
++                * (this.upperZ - this.lowerZ + 1);
++        }
++    }
++
++    private record SectionPosition(int x, int y, int z) {
++    }
++}

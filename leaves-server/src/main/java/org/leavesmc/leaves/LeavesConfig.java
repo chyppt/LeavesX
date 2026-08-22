@@ -114,6 +114,8 @@ public final class LeavesConfig {
     public static void save() {
         try {
             config.save(LeavesConfig.configFile);
+            // LeavesX - document the final YAML text so defaults keep Leaves' normal field order.
+            org.leavesx.leavesx.config.migration.LeavesConfigDocumenter.document(configFile.toPath());
         } catch (final Exception ex) {
             LeavesLogger.LOGGER.error("Unable to save leaves config", ex);
         }
@@ -574,6 +576,15 @@ public final class LeavesConfig {
         private static class McTechnicalModeValidator extends BooleanConfigValidator {
             @Override
             public void verify(Boolean old, Boolean value) throws IllegalArgumentException {
+                if (value) {
+                    McTechnicalModeHelper.doMcTechnicalMode();
+                }
+            }
+
+            @Override
+            public void runAfterLoader(Boolean value, boolean reload) {
+                // The initial config load does not call verify with the previous value. Apply the locked technical
+                // settings explicitly so a fresh server starts with TNT/piston duplication enabled as documented.
                 if (value) {
                     McTechnicalModeHelper.doMcTechnicalMode();
                 }

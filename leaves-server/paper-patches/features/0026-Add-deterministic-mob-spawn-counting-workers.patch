@@ -1,0 +1,407 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 13 Aug 2026 09:24:38 +0800
+Subject: [PATCH] Add deterministic mob spawn counting workers
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index f6008749f29d0561efab2140e19a047332730dd4..f84588c84894b119124963c70d7a5a07bfd51eca 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -11,7 +11,10 @@ public record LeavesXConfig(
+     boolean optimizedVarInt,
+     boolean immutableCacheOptimizations,
+     boolean resourceIdentifierCache,
+-    boolean skipEmptyEvents
++    boolean skipEmptyEvents,
++    boolean parallelMobSpawnCounting,
++    int mobSpawnCountingWorkers,
++    int mobSpawnCountingMinimumEntities
+ ) {
+ 
+     public static final int CURRENT_CONFIG_VERSION = 1;
+@@ -21,6 +24,12 @@ public record LeavesXConfig(
+                 "LeavesX config-version must be " + CURRENT_CONFIG_VERSION + ", but was " + configVersion
+             );
+         }
++        if (mobSpawnCountingWorkers < 0 || mobSpawnCountingWorkers > 16) {
++            throw new IllegalArgumentException("parallelism.mob-spawning.workers must be between 0 and 16");
++        }
++        if (mobSpawnCountingMinimumEntities < 128) {
++            throw new IllegalArgumentException("parallelism.mob-spawning.minimum-entities must be at least 128");
++        }
+     }
+ 
+     /**
+@@ -34,7 +43,10 @@ public record LeavesXConfig(
+             true,
+             true,
+             true,
+-            true
++            true,
++            true,
++            0,
++            512
+         );
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 5b0805695236f3680cde65ed7ee6c680a3982c4f..d45a3e0c1a29972a344e3e98917dcd64555a71a8 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -23,6 +23,7 @@ public final class LeavesXConfigBootstrap {
+         final Path path = ((File) options.valueOf("leavesx-settings")).toPath();
+         final LeavesXConfig config = LeavesXConfigLoader.load(path);
+         LeavesXRuntime.publish(config);
++        org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(config.mobSpawnCountingWorkers());
+         LOGGER.info("LeavesX compatibility baseline: Leaves/Paper with standard Bukkit plugin loading semantics");
+         LOGGER.info(
+             "LeavesX behavior-equivalent optimizations: optimized VarInt {}, immutable cache hashes {}, resource identifier cache {}, skip empty events {}",
+@@ -31,5 +32,11 @@ public final class LeavesXConfigBootstrap {
+             config.resourceIdentifierCache(),
+             config.skipEmptyEvents()
+         );
++        LOGGER.info(
++            "LeavesX natural-spawn counting: {}, {} worker threads, parallel from {} entities",
++            config.parallelMobSpawnCounting() ? "enabled" : "disabled",
++            org.leavesx.leavesx.runtime.LeavesXComputeExecutor.workerCount(),
++            config.mobSpawnCountingMinimumEntities()
++        );
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 7965fe72700587a2e6c454b1ad8853f3587706ce..15dee3492e7a3440c9987458b54e18ebe31ead1d 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -76,7 +76,22 @@ public final class LeavesXConfigLoader {
+                     "performance.resource-identifier-cache",
+                     true
+                 ),
+-                readBoolean(node.node("performance", "skip-empty-events"), "performance.skip-empty-events", true)
++                readBoolean(node.node("performance", "skip-empty-events"), "performance.skip-empty-events", true),
++                readBoolean(
++                    node.node("parallelism", "mob-spawning", "enabled"),
++                    "parallelism.mob-spawning.enabled",
++                    true
++                ),
++                readInt(
++                    node.node("parallelism", "mob-spawning", "workers"),
++                    "parallelism.mob-spawning.workers",
++                    0
++                ),
++                readInt(
++                    node.node("parallelism", "mob-spawning", "minimum-entities"),
++                    "parallelism.mob-spawning.minimum-entities",
++                    512
++                )
+             );
+         } catch (final IllegalArgumentException ex) {
+             throw new LeavesXConfigException("Invalid LeavesX configuration at " + path + ": " + ex.getMessage(), ex);
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 2ff4fafb24c52b7f324784999523270bfbb42b96..a674e6ce85dac40b4d394bcc36f0266be40197a0 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -40,6 +40,15 @@ public final class LeavesXConfigWriter {
+         node.node("performance", "skip-empty-events")
+             .comment(COMMENTS.get("performance.skip-empty-events"))
+             .raw(config.skipEmptyEvents());
++        node.node("parallelism", "mob-spawning", "enabled")
++            .comment(COMMENTS.get("parallelism.mob-spawning.enabled"))
++            .raw(config.parallelMobSpawnCounting());
++        node.node("parallelism", "mob-spawning", "workers")
++            .comment(COMMENTS.get("parallelism.mob-spawning.workers"))
++            .raw(config.mobSpawnCountingWorkers());
++        node.node("parallelism", "mob-spawning", "minimum-entities")
++            .comment(COMMENTS.get("parallelism.mob-spawning.minimum-entities"))
++            .raw(config.mobSpawnCountingMinimumEntities());
+     }
+ 
+     /** Returns the same path-keyed comments used for emitted {@code leavesx.yml} files. */
+@@ -59,11 +68,14 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "用途：LeavesX 配置结构版本。默认值：1。兼容性：高于当前支持版本时拒绝启动，避免降级误写。实现状态：已实现。");
+-        comments.put("performance.optimized-varint", "用途：使用等价的定长分支写入 VarInt/VarLong，并缓存 VarLong 字节长度。默认值：true。兼容性：输出字节与原版完全一致，不改变协议或游戏逻辑。实现状态：已实现，可关闭回退原始循环。");
+-        comments.put("performance.immutable-cache-optimizations", "用途：缓存不可变碰撞形状键的 identity 哈希，减少重复计算。默认值：true。兼容性：只优化纯查询，不改变碰撞结果、顺序或 Bukkit API。实现状态：已实现，可关闭回退按需计算。");
+-        comments.put("performance.resource-identifier-cache", "用途：缓存不可变 Minecraft 资源标识符的字符串和哈希值，减少注册表、标签和数据包热点中的重复分配与计算。默认值：true。兼容性：返回字符串、哈希值和相等性与原版完全一致。实现状态：已实现，可关闭回退原始按需计算。");
+-        comments.put("performance.skip-empty-events", "用途：当对应 HandlerList 没有任何插件监听器时，跳过 GenericGameEvent 和自然刷怪 PreCreatureSpawnEvent 的对象创建与分发。默认值：true。兼容性：注册任意监听器后完整执行原始事件路径，不改变刷怪判定、RNG 或事件顺序。实现状态：已实现，可关闭强制执行原始事件路径。");
++        comments.put("config-version", "LeavesX 配置文件版本，请不要手动修改。默认：1。");
++        comments.put("performance.optimized-varint", "减少网络数据编码开销。不会改变发给客户端的数据；遇到问题可设为 false。默认：true。");
++        comments.put("performance.immutable-cache-optimizations", "缓存不会变化的碰撞计算结果，减少重复计算。不会改变碰撞结果；遇到问题可设为 false。默认：true。");
++        comments.put("performance.resource-identifier-cache", "缓存物品、方块和标签等资源名称，减少重复创建字符串。不会改变资源名称；遇到问题可设为 false。默认：true。");
++        comments.put("performance.skip-empty-events", "没有插件监听对应事件时，不创建无用的事件对象。有插件监听时仍会正常调用；遇到问题可设为 false。默认：true。");
++        comments.put("parallelism.mob-spawning.enabled", "使用多个线程计算自然刷怪数量。刷怪位置、随机数、事件和实体创建仍在主线程执行；遇到问题可设为 false。默认：true。");
++        comments.put("parallelism.mob-spawning.workers", "自然刷怪统计使用的线程数。0 表示自动选择，普通服务器建议保持 0。默认：0。");
++        comments.put("parallelism.mob-spawning.minimum-entities", "实体少于这个数量时直接在主线程计算，避免线程切换反而变慢。建议保持默认。默认：512。");
+         return Map.copyOf(comments);
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index f29ddfb87bf7b3ff7c3529e5d8dc38aa3b3ed025..b0e716ce147f3e017ba47490be70e6875ab66ee1 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -16,6 +16,8 @@ public final class LeavesXRuntime {
+     // Published during bootstrap before networking and world ticking start; these hot-path flags are not reloadable.
+     private static boolean resourceIdentifierCache = true;
+     private static boolean skipEmptyEvents = true;
++    private static boolean parallelMobSpawnCounting = true;
++    private static int mobSpawnCountingMinimumEntities = 512;
+ 
+     private LeavesXRuntime() {
+     }
+@@ -40,6 +42,8 @@ public final class LeavesXRuntime {
+         immutableCacheOptimizations = validated.immutableCacheOptimizations();
+         resourceIdentifierCache = validated.resourceIdentifierCache();
+         skipEmptyEvents = validated.skipEmptyEvents();
++        parallelMobSpawnCounting = validated.parallelMobSpawnCounting();
++        mobSpawnCountingMinimumEntities = validated.mobSpawnCountingMinimumEntities();
+         configuration = validated;
+     }
+ 
+@@ -73,4 +77,14 @@ public final class LeavesXRuntime {
+     public static boolean skipEmptyEvents() {
+         return skipEmptyEvents;
+     }
++
++    /** Returns whether frozen natural-spawn counting inputs may be processed by LeavesX workers. */
++    public static boolean parallelMobSpawnCounting() {
++        return parallelMobSpawnCounting;
++    }
++
++    /** Returns the entity threshold below which synchronous counting is faster. */
++    public static int mobSpawnCountingMinimumEntities() {
++        return mobSpawnCountingMinimumEntities;
++    }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..025ef20441d1b4b9a9efc5c8f8af1cd43574ac4b
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -0,0 +1,114 @@
++package org.leavesx.leavesx.runtime;
++
++import com.google.common.util.concurrent.ThreadFactoryBuilder;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.concurrent.ArrayBlockingQueue;
++import java.util.concurrent.Future;
++import java.util.concurrent.ThreadPoolExecutor;
++import java.util.concurrent.TimeUnit;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
++/** Runs LeavesX pure-computation work that never reads or writes live world state. */
++public final class LeavesXComputeExecutor {
++
++    private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXComputeExecutor.class);
++    private static final int MAX_QUEUED_TASKS = 128;
++    private static volatile ThreadPoolExecutor executor;
++    private static volatile int workerCount = 1;
++
++    private LeavesXComputeExecutor() {
++    }
++
++    /** Creates the bounded worker pool during bootstrap. A configured value of zero selects a conservative default. */
++    public static synchronized void configure(final int configuredWorkers) {
++        shutdown();
++        final int availableProcessors = Runtime.getRuntime().availableProcessors();
++        final int automaticWorkers = Math.max(1, Math.min(4, availableProcessors - 2));
++        workerCount = configuredWorkers == 0 ? automaticWorkers : configuredWorkers;
++        executor = new ThreadPoolExecutor(
++            workerCount,
++            workerCount,
++            30L,
++            TimeUnit.SECONDS,
++            new ArrayBlockingQueue<>(MAX_QUEUED_TASKS),
++            new ThreadFactoryBuilder()
++                .setDaemon(true)
++                .setNameFormat("LeavesX Compute Worker - %d")
++                .setUncaughtExceptionHandler((thread, throwable) ->
++                    LOGGER.error("Uncaught exception in {}", thread.getName(), throwable))
++                .build(),
++            new ThreadPoolExecutor.AbortPolicy()
++        );
++        executor.allowCoreThreadTimeOut(true);
++    }
++
++    public static int workerCount() {
++        return workerCount;
++    }
++
++    /**
++     * Processes contiguous ranges and waits for every range before returning.
++     *
++     * @return {@code false} when submission or execution failed, allowing the caller to recompute synchronously
++     */
++    public static boolean invokeRanges(final int size, final int minimumSize, final RangeTask task) {
++        final ThreadPoolExecutor current = executor;
++        if (current == null || workerCount <= 1 || size < minimumSize) {
++            return false;
++        }
++
++        final int taskCount = Math.min(workerCount, size);
++        final int rangeSize = (size + taskCount - 1) / taskCount;
++        final List<Future<?>> futures = new ArrayList<>(taskCount);
++        boolean succeeded = true;
++        try {
++            for (int start = 0; start < size; start += rangeSize) {
++                final int rangeStart = start;
++                final int rangeEnd = Math.min(size, start + rangeSize);
++                final int taskIndex = futures.size();
++                futures.add(current.submit(() -> task.run(taskIndex, rangeStart, rangeEnd)));
++            }
++        } catch (final RuntimeException submissionFailure) {
++            succeeded = false;
++            LOGGER.error("LeavesX parallel computation could not be submitted; recomputing on the main thread", submissionFailure);
++        }
++
++        boolean interrupted = false;
++        for (final Future<?> future : futures) {
++            boolean completed = false;
++            while (!completed) {
++                try {
++                    future.get();
++                    completed = true;
++                } catch (final InterruptedException interruption) {
++                    interrupted = true;
++                    succeeded = false;
++                } catch (final java.util.concurrent.ExecutionException executionFailure) {
++                    succeeded = false;
++                    completed = true;
++                    LOGGER.error("LeavesX parallel computation failed; recomputing on the main thread", executionFailure);
++                }
++            }
++        }
++        if (interrupted) {
++            Thread.currentThread().interrupt();
++        }
++        return succeeded && futures.size() == taskCount;
++    }
++
++    /** Stops all LeavesX computation workers during normal server shutdown. */
++    public static synchronized void shutdown() {
++        final ThreadPoolExecutor current = executor;
++        executor = null;
++        if (current != null) {
++            current.shutdownNow();
++        }
++    }
++
++    @FunctionalInterface
++    public interface RangeTask {
++        void run(int taskIndex, int startInclusive, int endExclusive);
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 090c223393399a37f338e35477ad69416e0ee99d..45bcf15e7685d16b6d1a80ec3592f8a4ac68a6d8 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -30,6 +30,7 @@ class LeavesXConfigLoaderTest {
+         assertEquals(created, reloaded);
+         final String generated = Files.readString(path);
+         assertTrue(generated.contains("performance:"));
++        assertTrue(generated.contains("mob-spawning:"));
+         assertFalse(generated.contains("threading:"));
+         assertFalse(generated.contains("folia"));
+         for (final String comment : LeavesXConfigWriter.comments().values()) {
+@@ -59,6 +60,11 @@ class LeavesXConfigLoaderTest {
+               immutable-cache-optimizations: false
+               resource-identifier-cache: false
+               skip-empty-events: false
++            parallelism:
++              mob-spawning:
++                enabled: false
++                workers: 3
++                minimum-entities: 768
+             """);
+ 
+         final LeavesXConfig config = LeavesXConfigLoader.load(path);
+@@ -67,6 +73,9 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.immutableCacheOptimizations());
+         assertFalse(config.resourceIdentifierCache());
+         assertFalse(config.skipEmptyEvents());
++        assertFalse(config.parallelMobSpawnCounting());
++        assertEquals(3, config.mobSpawnCountingWorkers());
++        assertEquals(768, config.mobSpawnCountingMinimumEntities());
+     }
+ 
+     @Test
+diff --git a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+index b5a55de385827bdd83c4c2e37a483e60c068573a..df2b06430bf24d1505b9f2368be2f5e5b772c3f2 100644
+--- a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+@@ -84,13 +84,14 @@ class LeavesConfigMigratorTest {
+         assertTrue(leavesX.node("performance", "immutable-cache-optimizations").getBoolean());
+         assertTrue(leavesX.node("performance", "resource-identifier-cache").getBoolean());
+         assertTrue(leavesX.node("performance", "skip-empty-events").getBoolean());
++        assertTrue(leavesX.node("parallelism", "mob-spawning", "enabled").getBoolean());
++        assertEquals(0, leavesX.node("parallelism", "mob-spawning", "workers").getInt());
++        assertEquals(512, leavesX.node("parallelism", "mob-spawning", "minimum-entities").getInt());
+         assertEquals(LeavesConfigMigrator.LEAVESX_CONFIG_VERSION, leavesX.node("config-version").getInt());
+         final String leavesXText = Files.readString(target);
+         for (final Map.Entry<String, String> comment : LeavesXConfigWriter.comments().entrySet()) {
+-            assertTrue(comment.getValue().contains("用途："), comment.getKey() + " must document its purpose");
+-            assertTrue(comment.getValue().contains("默认值："), comment.getKey() + " must document its default");
+-            assertTrue(comment.getValue().contains("兼容性："), comment.getKey() + " must document compatibility");
+-            assertTrue(comment.getValue().contains("实现状态："), comment.getKey() + " must document implementation status");
++            assertTrue(comment.getValue().contains("默认："), comment.getKey() + " must document its default");
++            assertTrue(comment.getValue().length() <= 100, comment.getKey() + " should stay easy to read");
+             assertCommentPresent(leavesXText, comment.getValue());
+         }
+         assertFalse(report.node("separation", "leaves-tree-copied-to-leavesx").getBoolean(true));
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..496e7c57e8d60ae7fae54bd502089f84687ea9ac
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -0,0 +1,48 @@
++package org.leavesx.leavesx.runtime;
++
++import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.util.concurrent.atomic.AtomicIntegerArray;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class LeavesXComputeExecutorTest {
++
++    @AfterEach
++    void shutdownExecutor() {
++        LeavesXComputeExecutor.shutdown();
++    }
++
++    @Test
++    void processesEveryIndexExactlyOnce() {
++        LeavesXComputeExecutor.configure(4);
++        final AtomicIntegerArray counts = new AtomicIntegerArray(1024);
++
++        final boolean parallel = LeavesXComputeExecutor.invokeRanges(1024, 128, (taskIndex, start, end) -> {
++            for (int index = start; index < end; index++) {
++                counts.incrementAndGet(index);
++            }
++        });
++
++        assertTrue(parallel);
++        final int[] actual = new int[1024];
++        final int[] expected = new int[1024];
++        for (int index = 0; index < actual.length; index++) {
++            actual[index] = counts.get(index);
++            expected[index] = 1;
++        }
++        assertArrayEquals(expected, actual);
++    }
++
++    @Test
++    void requestsSynchronousFallbackForSmallInputs() {
++        LeavesXComputeExecutor.configure(4);
++        assertFalse(LeavesXComputeExecutor.invokeRanges(127, 128, (taskIndex, start, end) -> {
++            throw new AssertionError("small input must not be submitted");
++        }));
++    }
++}

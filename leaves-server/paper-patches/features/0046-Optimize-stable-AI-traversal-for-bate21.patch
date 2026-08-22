@@ -1,0 +1,1097 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 15 Aug 2026 23:47:21 +0800
+Subject: [PATCH] Optimize stable AI traversal for bate21
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index c318e64039d7a9de0c686be8b4ea3486d433d1dd..4dff580e0c696aa51dab346e0fcec74d1cc53b0e 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -138,34 +138,13 @@ public final class LeavesXCommand extends Command {
+     }
+ 
+     private static void sendAll(final CommandSender sender, final String[] args) {
+-        final Selection selection = selectWorldsAndLimit(sender, args);
+-        if (selection == null) {
++        final Selection requestedSelection = selectWorldsAndLimit(sender, args);
++        if (requestedSelection == null) {
+             return;
+         }
+ 
+-        final long startedAt = System.nanoTime();
+-        // The complete report shares the expensive world scans instead of invoking every subcommand independently.
+-        final EntitySnapshot entities = collectEntities(selection.worlds());
+-        final BlockEntitySnapshot blockEntities = collectBlockEntities(selection.worlds());
+-
+-        sendStatus(sender);
+-        sendWorlds(sender, selection.worlds(), entities);
+-        sendActivity(sender, selection.worlds());
+-        sendEntities(sender, selection, entities);
+-        sendHotspots(sender, selection, entities);
+-        sendBlockEntities(sender, selection, blockEntities);
+-        sendBlockHotspots(sender, selection, blockEntities);
+-        sendTickets(sender, selection);
+-        sendPlugins(sender);
+-        sendMemory(sender);
+-        sendNetwork(sender);
+-        sendThreads(sender);
+-        sendSystem(sender);
+-        sendStalls(sender, Math.min(5, selection.limit()));
+-        sendConfig(sender);
+-
+-        final double elapsedMilliseconds = (System.nanoTime() - startedAt) / 1_000_000.0D;
+-        sender.sendMessage(line("诊断采样耗时", oneDecimal(elapsedMilliseconds) + " ms", msptColor(elapsedMilliseconds)));
++        final Selection selection = new Selection(List.copyOf(requestedSelection.worlds()), requestedSelection.limit());
++        new AllReport(sender, selection).start();
+     }
+ 
+     private static void sendStatus(final CommandSender sender) {
+@@ -760,6 +739,17 @@ public final class LeavesXCommand extends Command {
+                 + metrics.invocations() + " 总调用",
+             NamedTextColor.GRAY
+         ));
++        for (final LeavesXComputeExecutor.WorkloadMetrics workload : metrics.workloads()) {
++            if (workload.invocations() == 0L) {
++                continue;
++            }
++            sender.sendMessage(line(
++                workload.workload().displayName(),
++                workload.parallelInvocations() + " 并行 / " + workload.synchronousFallbacks() + " 同步 / "
++                    + workload.failedInvocations() + " 失败",
++                workload.failedInvocations() == 0L ? NamedTextColor.GRAY : NamedTextColor.RED
++            ));
++        }
+         sender.sendMessage(line(
+             "JVM 线程",
+             threads.getThreadCount() + " 当前 / " + threads.getPeakThreadCount() + " 峰值 / " + threads.getDaemonThreadCount() + " 守护",
+@@ -919,7 +909,12 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(line("动物空闲降频", onOff(config.animalIdleGoalThrottling()) + "，倍数 " + config.animalIdleGoalIntervalMultiplier(), config.animalIdleGoalThrottling() ? NamedTextColor.YELLOW : NamedTextColor.GREEN));
+         sender.sendMessage(line("刷怪优化", onOff(config.mobSpawningOptimizations()) + "，并行 " + onOff(config.parallelMobSpawnCounting()), NamedTextColor.AQUA));
+         sender.sendMessage(line("刷怪并行阈值", LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities() + " 实体", NamedTextColor.AQUA));
+-        sender.sendMessage(line("目标距离并行", onOff(config.parallelAiTargetSearch()) + "，阈值 " + config.aiTargetSearchMinimumCandidates(), NamedTextColor.AQUA));
++        sender.sendMessage(line(
++            "目标距离并行",
++            onOff(config.parallelAiTargetSearch()) + "，生效阈值 " + LeavesXRuntime.aiTargetSearchMinimumCandidates()
++                + "（配置 " + config.aiTargetSearchMinimumCandidates() + "）",
++            NamedTextColor.AQUA
++        ));
+         sender.sendMessage(line("区块卸载", onOff(config.adaptiveChunkUnloading()) + "，预算 " + config.chunkUnloadMinimumPerTick() + '-' + config.chunkUnloadMaximumPerTick(), NamedTextColor.AQUA));
+         sender.sendMessage(line("网络 flush 合并", onOff(config.networkFlushConsolidation()), NamedTextColor.AQUA));
+         sender.sendMessage(line("诊断窗口", config.diagnosticsRollingWindowSeconds() + " 秒", NamedTextColor.AQUA));
+@@ -1178,6 +1173,130 @@ public final class LeavesXCommand extends Command {
+         }
+     }
+ 
++    /** Runs one bounded diagnostic section per tick so console rendering cannot create a long tick. */
++    private static final class AllReport {
++
++        private final CommandSender sender;
++        private final Selection selection;
++        private final AllReportTiming timing = new AllReportTiming(System.nanoTime());
++        private EntitySnapshot entities;
++        private BlockEntitySnapshot blockEntities;
++
++        private AllReport(final CommandSender sender, final Selection selection) {
++            this.sender = sender;
++            this.selection = selection;
++        }
++
++        private void start() {
++            this.sender.sendMessage(Component.text("完整诊断分 12 个 Tick 采样，避免命令本身造成长 Tick。", NamedTextColor.GRAY));
++            this.runStage("世界与状态", () -> {
++                this.entities = collectEntities(this.selection.worlds());
++                sendStatus(this.sender);
++                sendWorlds(this.sender, this.selection.worlds(), this.entities);
++                sendActivity(this.sender, this.selection.worlds());
++            }, this::sendEntityDetails);
++        }
++
++        private void sendEntityDetails() {
++            this.runStage("实体明细", () -> {
++                sendEntities(this.sender, this.selection, this.entities);
++                sendHotspots(this.sender, this.selection, this.entities);
++                this.entities = null;
++            }, this::sendBlockEntityDetails);
++        }
++
++        private void sendBlockEntityDetails() {
++            this.runStage("方块实体统计", () -> {
++                this.blockEntities = collectBlockEntities(this.selection.worlds());
++                sendBlockEntities(this.sender, this.selection, this.blockEntities);
++            }, this::sendBlockEntityHotspots);
++        }
++
++        private void sendBlockEntityHotspots() {
++            this.runStage("方块实体热点", () -> {
++                sendBlockHotspots(this.sender, this.selection, this.blockEntities);
++                this.blockEntities = null;
++            }, this::sendTickets);
++        }
++
++        private void sendTickets() {
++            this.runStage("区块票据", () -> LeavesXCommand.sendTickets(this.sender, this.selection), this::sendPlugins);
++        }
++
++        private void sendPlugins() {
++            this.runStage("插件任务", () -> LeavesXCommand.sendPlugins(this.sender), this::sendMemory);
++        }
++
++        private void sendMemory() {
++            this.runStage("内存", () -> LeavesXCommand.sendMemory(this.sender), this::sendNetwork);
++        }
++
++        private void sendNetwork() {
++            this.runStage("网络", () -> LeavesXCommand.sendNetwork(this.sender), this::sendThreads);
++        }
++
++        private void sendThreads() {
++            this.runStage("线程", () -> LeavesXCommand.sendThreads(this.sender), this::sendSystem);
++        }
++
++        private void sendSystem() {
++            this.runStage("系统", () -> LeavesXCommand.sendSystem(this.sender), this::sendStalls);
++        }
++
++        private void sendStalls() {
++            this.runStage(
++                "慢 Tick",
++                () -> LeavesXCommand.sendStalls(this.sender, Math.min(5, this.selection.limit())),
++                this::finish
++            );
++        }
++
++        private void finish() {
++            final long stageStartedAt = System.nanoTime();
++            sendConfig(this.sender);
++            this.timing.finishStage("配置", stageStartedAt);
++
++            final double activeMilliseconds = this.timing.activeNanos / 1_000_000.0D;
++            final double maximumStageMilliseconds = this.timing.maximumStageNanos / 1_000_000.0D;
++            final double wallMilliseconds = (System.nanoTime() - this.timing.startedAtNanos) / 1_000_000.0D;
++            this.sender.sendMessage(line(
++                "诊断计算耗时",
++                oneDecimal(activeMilliseconds) + " ms / 最慢阶段 " + this.timing.maximumStageName + ' '
++                    + oneDecimal(maximumStageMilliseconds)
++                    + " ms / 总跨度 " + oneDecimal(wallMilliseconds) + " ms",
++                msptColor(maximumStageMilliseconds)
++            ));
++        }
++
++        private void runStage(final String stageName, final Runnable work, final Runnable nextStage) {
++            final long stageStartedAt = System.nanoTime();
++            work.run();
++            this.timing.finishStage(stageName, stageStartedAt);
++            MinecraftServer.getServer().scheduleOnMain(nextStage);
++        }
++    }
++
++    private static final class AllReportTiming {
++
++        private final long startedAtNanos;
++        private long activeNanos;
++        private long maximumStageNanos;
++        private String maximumStageName = "未知";
++
++        private AllReportTiming(final long startedAtNanos) {
++            this.startedAtNanos = startedAtNanos;
++        }
++
++        private void finishStage(final String stageName, final long stageStartedAtNanos) {
++            final long elapsedNanos = Math.max(0L, System.nanoTime() - stageStartedAtNanos);
++            this.activeNanos += elapsedNanos;
++            if (elapsedNanos > this.maximumStageNanos) {
++                this.maximumStageNanos = elapsedNanos;
++                this.maximumStageName = stageName;
++            }
++        }
++    }
++
+     private record Selection(List<World> worlds, int limit) {
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index a0bff86e3c3e86f346a7a72964f4f817e1a8d91b..8dab400391b07b08512ac61096503a60f8096cff 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -104,7 +104,7 @@ public record LeavesXConfig(
+             false,
+             2,
+             true,
+-            128,
++            262_144,
+             true,
+             0,
+             64,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index c81cdfcce9bbc31e6f374957efdc1f4a33dec414..9ab27eb7a95099ae7a1c977651a1d3972291cf94 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -86,8 +86,9 @@ public final class LeavesXConfigBootstrap {
+             config.mobSpawnCountingMinimumEntities()
+         );
+         LOGGER.info(
+-            "LeavesX AI target-distance workers: {}, parallel from {} candidates",
++            "LeavesX AI target-distance workers: {}, parallel from {} candidates (configured {})",
+             config.parallelAiTargetSearch() ? "enabled" : "disabled",
++            LeavesXRuntime.aiTargetSearchMinimumCandidates(),
+             config.aiTargetSearchMinimumCandidates()
+         );
+         LOGGER.info(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index b38d9dd3d2755dbe823e2b70aa251528cac4dd3f..89a2a43085fe9ec0a48b538bf5993cce8c411b21 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -141,7 +141,7 @@ public final class LeavesXConfigLoader {
+                 readInt(
+                     node.node("parallelism", "ai-target-search", "minimum-candidates"),
+                     "parallelism.ai-target-search.minimum-candidates",
+-                    128
++                    262_144
+                 ),
+                 readBoolean(
+                     node.node("parallelism", "mob-spawning", "enabled"),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index ef1ad2bf54264a185f7655969035e5968c009b02..2554e56800c72fda1b592f2d2094c2dafa6f5903 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -271,7 +271,7 @@ public final class LeavesXConfigWriter {
+         comments.put("parallelism.mob-spawning.enabled", "允许超大规模刷怪计数使用多线程。默认：true。");
+         comments.put("parallelism.mob-spawning.minimum-entities", "实体达到此数量才并行统计刷怪。默认：524288。");
+         comments.put("parallelism.ai-target-search.enabled", "多线程计算大量 AI 目标的距离。默认：true。");
+-        comments.put("parallelism.ai-target-search.minimum-candidates", "候选达到此数量才并行计算距离。默认：128。");
++        comments.put("parallelism.ai-target-search.minimum-candidates", "候选达到此数量才并行排序；较小列表在主线程更快。默认：262144。");
+         return Map.copyOf(comments);
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index a08db7574851b08b36897aa3ae89257304775601..f6e923cb594f26904d884ab20a5e8e169010ff09 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -10,6 +10,7 @@ import java.util.Objects;
+  */
+ public final class LeavesXRuntime {
+ 
++    private static final int AI_TARGET_SEARCH_PROFITABLE_FLOOR = 262_144;
+     private static final int MOB_SPAWN_COUNTING_PROFITABLE_FLOOR = 524_288;
+ 
+     private static volatile LeavesXConfig configuration = LeavesXConfig.safeDefaults();
+@@ -28,7 +29,7 @@ public final class LeavesXRuntime {
+     private static boolean animalIdleGoalThrottling;
+     private static int animalIdleGoalIntervalMultiplier = 2;
+     private static boolean parallelAiTargetSearch = true;
+-    private static int aiTargetSearchMinimumCandidates = 128;
++    private static int aiTargetSearchMinimumCandidates = AI_TARGET_SEARCH_PROFITABLE_FLOOR;
+     private static boolean itemMergeOptimizations = true;
+     private static boolean blockEntityTickerRemovalOptimization = true;
+     private static boolean chunkSpawnRangeOptimization = true;
+@@ -73,7 +74,11 @@ public final class LeavesXRuntime {
+         animalIdleGoalThrottling = validated.animalIdleGoalThrottling();
+         animalIdleGoalIntervalMultiplier = validated.animalIdleGoalIntervalMultiplier();
+         parallelAiTargetSearch = validated.parallelAiTargetSearch();
+-        aiTargetSearchMinimumCandidates = validated.aiTargetSearchMinimumCandidates();
++        // Older LeavesX files used 128, which benchmarks show is slower than the synchronous stable path.
++        aiTargetSearchMinimumCandidates = Math.max(
++            validated.aiTargetSearchMinimumCandidates(),
++            AI_TARGET_SEARCH_PROFITABLE_FLOOR
++        );
+         itemMergeOptimizations = validated.itemMergeOptimizations();
+         blockEntityTickerRemovalOptimization = validated.blockEntityTickerRemovalOptimization();
+         chunkSpawnRangeOptimization = validated.chunkSpawnRangeOptimization();
+@@ -172,7 +177,7 @@ public final class LeavesXRuntime {
+         return parallelAiTargetSearch;
+     }
+ 
+-    /** Returns the candidate threshold below which synchronous target-distance calculation is faster. */
++    /** Returns the benchmark-clamped threshold below which synchronous stable radix sorting is faster. */
+     public static int aiTargetSearchMinimumCandidates() {
+         return aiTargetSearchMinimumCandidates;
+     }
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+index 11ca1a907f41e25545b8003693cd989fea224471..8b2f2b5c46925b1aabc92b825a5c3a8c6813162f 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -1,32 +1,70 @@
+ package org.leavesx.leavesx.performance;
+ 
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.Entity;
+ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
+ 
+ /**
+- * Produces a stable index order for immutable coordinate snapshots.
++ * Stably orders immutable distance keys without exposing live entities to worker threads.
+  *
+- * <p>Worker threads only receive primitive arrays. Entity and world objects remain on the tick thread, which applies
+- * the returned order after all computation has completed.</p>
++ * <p>The tick thread snapshots every squared distance into primitive storage. Radix passes may then operate on those
++ * keys in parallel, after which the tick thread applies the stable permutation to the original list. Per-thread
++ * primitive workspaces remove the coordinate, merge-buffer, and boxed-index allocation churn from AI sensors.</p>
+  */
+ public final class StableDistanceSorter {
+ 
+-    private static final int INSERTION_SORT_THRESHOLD = 24;
++    /** Below this size the vanilla TimSort path is consistently competitive and avoids workspace setup. */
++    public static final int MINIMUM_OPTIMIZED_ENTITY_COUNT = 64;
++    private static final int RADIX_BUCKETS = 256;
++    private static final int INITIAL_WORKSPACE_CAPACITY = 64;
++    private static final ThreadLocal<Workspace> WORKSPACE = ThreadLocal.withInitial(() -> new Workspace(true));
+ 
+     private StableDistanceSorter() {
+     }
+ 
+     /**
+-     * Sorts snapshot indices by squared distance while preserving the input order of equal-distance entries.
++     * Sorts entities by squared distance while preserving the original order of equal-distance entries.
+      *
+-     * @param x snapshotted x coordinates
+-     * @param y snapshotted y coordinates
+-     * @param z snapshotted z coordinates
+-     * @param originX origin x coordinate
+-     * @param originY origin y coordinate
+-     * @param originZ origin z coordinate
+-     * @param parallel whether eligible inputs may use LeavesX compute workers
+-     * @param parallelThreshold minimum snapshot size for worker use
+-     * @return indices in the same order as a stable {@code Comparator.comparingDouble} sort
++     * <p>All entity coordinates are read exactly once on the calling thread. Worker threads only receive primitive
++     * key and index arrays, so Bukkit/Paper thread-affinity rules remain unchanged.</p>
++     */
++    public static <T extends Entity> void sortEntitiesByDistance(
++        final List<T> entities,
++        final Entity origin,
++        final boolean parallel,
++        final int parallelThreshold
++    ) {
++        final int size = entities.size();
++        if (size < 2) {
++            return;
++        }
++
++        final Workspace workspace = acquireWorkspace(size);
++        try {
++            final double originX = origin.getX();
++            final double originY = origin.getY();
++            final double originZ = origin.getZ();
++            for (int index = 0; index < size; index++) {
++                final Entity entity = entities.get(index);
++                workspace.keys[index] = sortableDistanceKey(
++                    squaredDistance(originX, originY, originZ, entity.getX(), entity.getY(), entity.getZ())
++                );
++                workspace.order[index] = index;
++            }
++
++            sortOrder(workspace, size, parallel, parallelThreshold);
++            applyPermutation(entities, workspace.order, size);
++        } finally {
++            releaseWorkspace(workspace);
++        }
++    }
++
++    /**
++     * Produces a stable index order for coordinate snapshots.
++     *
++     * <p>This compatibility entry point is retained for focused verification. Runtime AI sensors use
++     * {@link #sortEntitiesByDistance(List, Entity, boolean, int)} to avoid allocating coordinate snapshots.</p>
+      */
+     public static int[] sort(
+         final double[] x,
+@@ -40,123 +78,112 @@ public final class StableDistanceSorter {
+     ) {
+         requireMatchingLengths(x, y, z);
+         final int size = x.length;
+-        final int[] order = new int[size];
+         if (size == 0) {
+-            return order;
++            return new int[0];
+         }
+ 
+-        final double[] distances = new double[size];
+-        final int[] scratch = new int[size];
+-        final int completedTaskCount = parallel
++        final Workspace workspace = acquireWorkspace(size);
++        try {
++            for (int index = 0; index < size; index++) {
++                workspace.keys[index] = sortableDistanceKey(
++                    squaredDistance(originX, originY, originZ, x[index], y[index], z[index])
++                );
++                workspace.order[index] = index;
++            }
++            sortOrder(workspace, size, parallel, parallelThreshold);
++            return Arrays.copyOf(workspace.order, size);
++        } finally {
++            releaseWorkspace(workspace);
++        }
++    }
++
++    private static void sortOrder(
++        final Workspace workspace,
++        final int size,
++        final boolean parallel,
++        final int parallelThreshold
++    ) {
++        final boolean parallelEligible = parallel && size >= parallelThreshold;
++        final int completedPartitions = parallelEligible
+             ? LeavesXComputeExecutor.invokeRangesWithCount(
++                LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
+                 size,
+                 parallelThreshold,
+-                (taskIndex, start, end) -> {
+-                    computeDistancesAndInitializeOrder(x, y, z, originX, originY, originZ, distances, order, start, end);
+-                    stableSortRange(order, scratch, distances, start, end);
+-                }
++                (taskIndex, start, end) -> stableRadixRange(
++                    workspace.order,
++                    workspace.scratch,
++                    workspace.keys,
++                    start,
++                    end,
++                    workspace.laneOffsets,
++                    taskIndex * RADIX_BUCKETS
++                )
+             )
+             : 0;
+ 
+-        if (completedTaskCount == 0) {
+-            computeDistancesAndInitializeOrder(x, y, z, originX, originY, originZ, distances, order, 0, size);
+-            stableSortRange(order, scratch, distances, 0, size);
+-            return order;
++        if (completedPartitions == 0) {
++            if (parallelEligible) {
++                // A failed parallel attempt may have changed one or more ranges before fallback was requested.
++                initializeOrder(workspace.order, size);
++            }
++            stableRadixRange(workspace.order, workspace.scratch, workspace.keys, 0, size, workspace.offsets, 0);
++            return;
+         }
+ 
+-        // Each worker sorted one contiguous range. Merging on the tick thread is deterministic and keeps equal
+-        // distances in their original entity-query order.
+-        final int rangeSize = divideCeil(size, completedTaskCount);
++        final int rangeSize = divideCeil(size, completedPartitions);
+         for (int width = rangeSize; width < size; width = nextMergeWidth(width, size)) {
+             final int step = width >= size - width ? size : width << 1;
+             for (int start = 0; start < size - width; start += step) {
+                 final int middle = start + width;
+                 final int end = Math.min(size, start + step);
+-                merge(order, scratch, distances, start, middle, end);
++                mergeByKey(workspace.order, workspace.scratch, workspace.keys, start, middle, end);
+             }
+         }
+-        return order;
+-    }
+-
+-    private static void requireMatchingLengths(final double[] x, final double[] y, final double[] z) {
+-        if (x.length != y.length || x.length != z.length) {
+-            throw new IllegalArgumentException("Coordinate arrays must have matching lengths");
+-        }
+-    }
+-
+-    private static void computeDistancesAndInitializeOrder(
+-        final double[] x,
+-        final double[] y,
+-        final double[] z,
+-        final double originX,
+-        final double originY,
+-        final double originZ,
+-        final double[] distances,
+-        final int[] order,
+-        final int start,
+-        final int end
+-    ) {
+-        for (int index = start; index < end; index++) {
+-            final double deltaX = originX - x[index];
+-            final double deltaY = originY - y[index];
+-            final double deltaZ = originZ - z[index];
+-            distances[index] = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
+-            order[index] = index;
+-        }
+     }
+ 
+-    private static void stableSortRange(
+-        final int[] order,
+-        final int[] scratch,
+-        final double[] distances,
++    private static void stableRadixRange(
++        int[] order,
++        int[] scratch,
++        final long[] keys,
+         final int start,
+-        final int end
++        final int end,
++        final int[] offsets,
++        final int offsetBase
+     ) {
+-        final int length = end - start;
+-        if (length < 2) {
+-            return;
+-        }
+-        if (length <= INSERTION_SORT_THRESHOLD) {
+-            insertionSort(order, distances, start, end);
+-            return;
+-        }
+-
+-        for (int width = 1; width < length; width = nextMergeWidth(width, length)) {
+-            final int step = width >= length - width ? length : width << 1;
+-            for (int left = start; left < end - width; left += step) {
+-                final int middle = left + width;
+-                final int right = Math.min(end, left + step);
+-                merge(order, scratch, distances, left, middle, right);
++        for (int shift = 0; shift < Long.SIZE; shift += Byte.SIZE) {
++            Arrays.fill(offsets, offsetBase, offsetBase + RADIX_BUCKETS, 0);
++            for (int index = start; index < end; index++) {
++                offsets[offsetBase + bucket(keys[order[index]], shift)]++;
+             }
+-        }
+-    }
+ 
+-    private static void insertionSort(
+-        final int[] order,
+-        final double[] distances,
+-        final int start,
+-        final int end
+-    ) {
+-        for (int index = start + 1; index < end; index++) {
+-            final int candidate = order[index];
+-            int insertion = index;
+-            while (insertion > start && compare(candidate, order[insertion - 1], distances) < 0) {
+-                order[insertion] = order[insertion - 1];
+-                insertion--;
++            int next = start;
++            for (int bucket = 0; bucket < RADIX_BUCKETS; bucket++) {
++                final int offsetIndex = offsetBase + bucket;
++                final int count = offsets[offsetIndex];
++                offsets[offsetIndex] = next;
++                next += count;
++            }
++            for (int index = start; index < end; index++) {
++                final int value = order[index];
++                final int offsetIndex = offsetBase + bucket(keys[value], shift);
++                scratch[offsets[offsetIndex]++] = value;
+             }
+-            order[insertion] = candidate;
++
++            final int[] swap = order;
++            order = scratch;
++            scratch = swap;
+         }
+     }
+ 
+-    private static void merge(
++    private static void mergeByKey(
+         final int[] order,
+         final int[] scratch,
+-        final double[] distances,
++        final long[] keys,
+         final int start,
+         final int middle,
+         final int end
+     ) {
+-        if (compare(order[middle - 1], order[middle], distances) <= 0) {
++        if (Long.compareUnsigned(keys[order[middle - 1]], keys[order[middle]]) <= 0) {
+             return;
+         }
+ 
+@@ -164,7 +191,7 @@ public final class StableDistanceSorter {
+         int right = middle;
+         int output = start;
+         while (left < middle && right < end) {
+-            if (compare(order[left], order[right], distances) <= 0) {
++            if (Long.compareUnsigned(keys[order[left]], keys[order[right]]) <= 0) {
+                 scratch[output++] = order[left++];
+             } else {
+                 scratch[output++] = order[right++];
+@@ -179,15 +206,128 @@ public final class StableDistanceSorter {
+         System.arraycopy(scratch, start, order, start, end - start);
+     }
+ 
+-    private static int compare(final int left, final int right, final double[] distances) {
+-        return Double.compare(distances[left], distances[right]);
++    /** Applies destination-to-source indices in place and restores the index array to identity for reuse. */
++    private static <T> void applyPermutation(final List<T> values, final int[] order, final int size) {
++        for (int start = 0; start < size; start++) {
++            if (order[start] == start) {
++                continue;
++            }
++
++            final T displaced = values.get(start);
++            int destination = start;
++            while (true) {
++                final int source = order[destination];
++                order[destination] = destination;
++                if (source == start) {
++                    values.set(destination, displaced);
++                    break;
++                }
++                values.set(destination, values.get(source));
++                destination = source;
++            }
++        }
++    }
++
++    private static void initializeOrder(final int[] order, final int size) {
++        for (int index = 0; index < size; index++) {
++            order[index] = index;
++        }
++    }
++
++    private static int bucket(final long key, final int shift) {
++        return (int)(key >>> shift) & 0xFF;
++    }
++
++    private static long sortableDistanceKey(final double distance) {
++        final long bits = Double.doubleToLongBits(distance);
++        return bits < 0L ? ~bits : bits ^ Long.MIN_VALUE;
++    }
++
++    private static double squaredDistance(
++        final double originX,
++        final double originY,
++        final double originZ,
++        final double x,
++        final double y,
++        final double z
++    ) {
++        final double deltaX = originX - x;
++        final double deltaY = originY - y;
++        final double deltaZ = originZ - z;
++        return deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
++    }
++
++    private static void requireMatchingLengths(final double[] x, final double[] y, final double[] z) {
++        if (x.length != y.length || x.length != z.length) {
++            throw new IllegalArgumentException("Coordinate arrays must have matching lengths");
++        }
++    }
++
++    private static Workspace acquireWorkspace(final int size) {
++        final Workspace cached = WORKSPACE.get();
++        final Workspace workspace;
++        if (cached.inUse) {
++            // Sensor re-entry is not expected, but a private temporary workspace keeps that case behaviorally safe.
++            workspace = new Workspace(false);
++        } else {
++            cached.inUse = true;
++            workspace = cached;
++        }
++        workspace.ensureCapacity(size, LeavesXComputeExecutor.computeLaneCount());
++        return workspace;
++    }
++
++    private static void releaseWorkspace(final Workspace workspace) {
++        if (workspace.pooled) {
++            workspace.inUse = false;
++        }
+     }
+ 
+     private static int divideCeil(final int dividend, final int divisor) {
+-        return (dividend + divisor - 1) / divisor;
++        return dividend == 0 ? 0 : 1 + (dividend - 1) / divisor;
+     }
+ 
+     private static int nextMergeWidth(final int width, final int length) {
+         return width >= length - width ? length : width << 1;
+     }
++
++    private static int expandedCapacity(final int current, final int required) {
++        int capacity = Math.max(INITIAL_WORKSPACE_CAPACITY, current);
++        while (capacity < required) {
++            final int expanded = capacity + (capacity >>> 1);
++            if (expanded <= capacity) {
++                return required;
++            }
++            capacity = expanded;
++        }
++        return capacity;
++    }
++
++    private static final class Workspace {
++
++        private final boolean pooled;
++        private final int[] offsets = new int[RADIX_BUCKETS];
++        private long[] keys = new long[0];
++        private int[] order = new int[0];
++        private int[] scratch = new int[0];
++        private int[] laneOffsets = new int[0];
++        private boolean inUse;
++
++        private Workspace(final boolean pooled) {
++            this.pooled = pooled;
++        }
++
++        private void ensureCapacity(final int size, final int lanes) {
++            if (this.order.length < size) {
++                final int capacity = expandedCapacity(this.order.length, size);
++                this.keys = Arrays.copyOf(this.keys, capacity);
++                this.order = Arrays.copyOf(this.order, capacity);
++                this.scratch = Arrays.copyOf(this.scratch, capacity);
++            }
++            final int requiredLaneOffsets = Math.max(1, lanes) * RADIX_BUCKETS;
++            if (this.laneOffsets.length < requiredLaneOffsets) {
++                this.laneOffsets = new int[requiredLaneOffsets];
++            }
++        }
++    }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 19bdbcf36425274a55733f7f962a6c034d872550..203f2be81a48b4e651c6196cdb446649c883d637 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -27,6 +27,7 @@ public final class LeavesXComputeExecutor {
+     private static final AtomicLong insufficientPartitionFallbackCount = new AtomicLong();
+     private static final AtomicLong unavailableParallelismFallbackCount = new AtomicLong();
+     private static final AtomicLong failedInvocationCount = new AtomicLong();
++    private static final WorkloadCounters[] WORKLOAD_COUNTERS = createWorkloadCounters();
+ 
+     private LeavesXComputeExecutor() {
+     }
+@@ -49,6 +50,9 @@ public final class LeavesXComputeExecutor {
+         insufficientPartitionFallbackCount.set(0L);
+         unavailableParallelismFallbackCount.set(0L);
+         failedInvocationCount.set(0L);
++        for (final WorkloadCounters counters : WORKLOAD_COUNTERS) {
++            counters.reset();
++        }
+         executor = new ThreadPoolExecutor(
+             workerCount,
+             workerCount,
+@@ -90,7 +94,17 @@ public final class LeavesXComputeExecutor {
+      * @return {@code false} when submission or execution failed, allowing the caller to recompute synchronously
+      */
+     public static boolean invokeRanges(final int size, final int minimumSize, final RangeTask task) {
+-        return invokeRangesWithCount(size, minimumSize, task) > 0;
++        return invokeRanges(Workload.UNSPECIFIED, size, minimumSize, task);
++    }
++
++    /** Processes ranges while attributing the invocation to one diagnostic workload. */
++    public static boolean invokeRanges(
++        final Workload workload,
++        final int size,
++        final int minimumSize,
++        final RangeTask task
++    ) {
++        return invokeRangesWithCount(workload, size, minimumSize, task) > 0;
+     }
+ 
+     /**
+@@ -102,20 +116,35 @@ public final class LeavesXComputeExecutor {
+      * @return completed partition count, or {@code 0} when the caller must recompute synchronously
+      */
+     public static int invokeRangesWithCount(final int size, final int minimumSize, final RangeTask task) {
++        return invokeRangesWithCount(Workload.UNSPECIFIED, size, minimumSize, task);
++    }
++
++    /** Processes ranges and records why this specific workload ran in parallel or fell back. */
++    public static int invokeRangesWithCount(
++        final Workload workload,
++        final int size,
++        final int minimumSize,
++        final RangeTask task
++    ) {
++        final WorkloadCounters workloadCounters = WORKLOAD_COUNTERS[workload.ordinal()];
+         invocationCount.incrementAndGet();
++        workloadCounters.invocations.incrementAndGet();
+         final ThreadPoolExecutor current = executor;
+         if (current == null || workerCount <= 1) {
+             unavailableParallelismFallbackCount.incrementAndGet();
++            workloadCounters.unavailableParallelismFallbacks.incrementAndGet();
+             return 0;
+         }
+         if (size < minimumSize) {
+             belowFeatureThresholdFallbackCount.incrementAndGet();
++            workloadCounters.belowFeatureThresholdFallbacks.incrementAndGet();
+             return 0;
+         }
+ 
+         final int taskCount = taskCountFor(size, computeLaneCount(), minimumItemsPerWorker);
+         if (taskCount <= 1) {
+             insufficientPartitionFallbackCount.incrementAndGet();
++            workloadCounters.insufficientPartitionFallbacks.incrementAndGet();
+             return 0;
+         }
+         final int rangeSize = (size + taskCount - 1) / taskCount;
+@@ -173,8 +202,10 @@ public final class LeavesXComputeExecutor {
+         final boolean completed = succeeded && callerRangeCompleted && futures.size() + 1 == expectedTaskCount;
+         if (completed) {
+             parallelInvocationCount.incrementAndGet();
++            workloadCounters.parallelInvocations.incrementAndGet();
+         } else {
+             failedInvocationCount.incrementAndGet();
++            workloadCounters.failedInvocations.incrementAndGet();
+         }
+         return completed ? expectedTaskCount : 0;
+     }
+@@ -194,6 +225,13 @@ public final class LeavesXComputeExecutor {
+         final long belowFeatureThresholdFallbacks = belowFeatureThresholdFallbackCount.get();
+         final long insufficientPartitionFallbacks = insufficientPartitionFallbackCount.get();
+         final long unavailableParallelismFallbacks = unavailableParallelismFallbackCount.get();
++        final List<WorkloadMetrics> workloads = new ArrayList<>(Workload.values().length);
++        for (final Workload workload : Workload.values()) {
++            final WorkloadMetrics snapshot = WORKLOAD_COUNTERS[workload.ordinal()].snapshot(workload);
++            if (snapshot.invocations() > 0L || workload != Workload.UNSPECIFIED) {
++                workloads.add(snapshot);
++            }
++        }
+         return new Metrics(
+             workerCount,
+             current == null ? 0 : current.getActiveCount(),
+@@ -206,7 +244,8 @@ public final class LeavesXComputeExecutor {
+             belowFeatureThresholdFallbacks,
+             insufficientPartitionFallbacks,
+             unavailableParallelismFallbacks,
+-            failedInvocationCount.get()
++            failedInvocationCount.get(),
++            List.copyOf(workloads)
+         );
+     }
+ 
+@@ -224,6 +263,23 @@ public final class LeavesXComputeExecutor {
+         void run(int taskIndex, int startInclusive, int endExclusive);
+     }
+ 
++    /** Stable diagnostic categories for the shared pure-computation pool. */
++    public enum Workload {
++        UNSPECIFIED("其他计算"),
++        AI_TARGET_SORT("AI 目标排序"),
++        MOB_SPAWN_COUNTING("刷怪统计");
++
++        private final String displayName;
++
++        Workload(final String displayName) {
++            this.displayName = displayName;
++        }
++
++        public String displayName() {
++            return this.displayName;
++        }
++    }
++
+     /** Immutable diagnostic view of the shared pure-computation pool. */
+     public record Metrics(
+         int workers,
+@@ -237,7 +293,64 @@ public final class LeavesXComputeExecutor {
+         long belowFeatureThresholdFallbacks,
+         long insufficientPartitionFallbacks,
+         long unavailableParallelismFallbacks,
++        long failedInvocations,
++        List<WorkloadMetrics> workloads
++    ) {
++    }
++
++    /** Immutable counters for one compute workload. */
++    public record WorkloadMetrics(
++        Workload workload,
++        long invocations,
++        long parallelInvocations,
++        long synchronousFallbacks,
++        long belowFeatureThresholdFallbacks,
++        long insufficientPartitionFallbacks,
++        long unavailableParallelismFallbacks,
+         long failedInvocations
+     ) {
+     }
++
++    private static WorkloadCounters[] createWorkloadCounters() {
++        final WorkloadCounters[] counters = new WorkloadCounters[Workload.values().length];
++        for (int index = 0; index < counters.length; index++) {
++            counters[index] = new WorkloadCounters();
++        }
++        return counters;
++    }
++
++    private static final class WorkloadCounters {
++
++        private final AtomicLong invocations = new AtomicLong();
++        private final AtomicLong parallelInvocations = new AtomicLong();
++        private final AtomicLong belowFeatureThresholdFallbacks = new AtomicLong();
++        private final AtomicLong insufficientPartitionFallbacks = new AtomicLong();
++        private final AtomicLong unavailableParallelismFallbacks = new AtomicLong();
++        private final AtomicLong failedInvocations = new AtomicLong();
++
++        private void reset() {
++            this.invocations.set(0L);
++            this.parallelInvocations.set(0L);
++            this.belowFeatureThresholdFallbacks.set(0L);
++            this.insufficientPartitionFallbacks.set(0L);
++            this.unavailableParallelismFallbacks.set(0L);
++            this.failedInvocations.set(0L);
++        }
++
++        private WorkloadMetrics snapshot(final Workload workload) {
++            final long belowThreshold = this.belowFeatureThresholdFallbacks.get();
++            final long insufficientWork = this.insufficientPartitionFallbacks.get();
++            final long unavailable = this.unavailableParallelismFallbacks.get();
++            return new WorkloadMetrics(
++                workload,
++                this.invocations.get(),
++                this.parallelInvocations.get(),
++                belowThreshold + insufficientWork + unavailable,
++                belowThreshold,
++                insufficientWork,
++                unavailable,
++                this.failedInvocations.get()
++            );
++        }
++    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 0e2cdcbe31668b103a7f238e9d8f0905db21d5be..4f6d3c8bf43bcdefcd4c864ccb7ea019c0f9ba50 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -175,6 +175,7 @@ class LeavesXConfigLoaderTest {
+         try {
+             LeavesXRuntime.publish(config);
+             assertEquals(524_288, LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities());
++            assertEquals(262_144, LeavesXRuntime.aiTargetSearchMinimumCandidates());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BrainBehaviorTraversalTest.java b/src/test/java/org/leavesx/leavesx/performance/BrainBehaviorTraversalTest.java
+index 8749ef10deda2c7f81495ee24583c9a4a84f9112..69676792a706635c8d9b83b0e62af54630e1b8ff 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/BrainBehaviorTraversalTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/BrainBehaviorTraversalTest.java
+@@ -93,6 +93,63 @@ class BrainBehaviorTraversalTest {
+         assertEquals(List.of("start:first", "start:second", "tick:first", "tick:second"), calls);
+     }
+ 
++    @Test
++    void rebuildsTheActiveTraversalWhenTheActivityChanges() {
++        final List<String> calls = new ArrayList<>();
++        final RecordingBehavior core = RecordingBehavior.stopped("core", calls);
++        final RecordingBehavior idle = RecordingBehavior.stopped("idle", calls);
++        final RecordingBehavior work = RecordingBehavior.stopped("work", calls);
++        final Brain<LivingEntity> brain = new Brain<>();
++        brain.addActivity(Activity.CORE, ImmutableList.of(Pair.of(0, core)), Set.of(), Set.of());
++        brain.addActivity(Activity.IDLE, ImmutableList.of(Pair.of(1, idle)), Set.of(), Set.of());
++        brain.addActivity(Activity.WORK, ImmutableList.of(Pair.of(1, work)), Set.of(), Set.of());
++        brain.setDefaultActivity(Activity.IDLE);
++        brain.useDefaultActivity();
++        final ServerLevel level = levelAt(400L);
++        final LivingEntity body = mock(LivingEntity.class);
++
++        brain.tick(level, body);
++        assertEquals(List.of("start:core", "start:idle", "tick:core", "tick:idle"), calls);
++
++        calls.clear();
++        core.setStatus(Behavior.Status.STOPPED);
++        idle.setStatus(Behavior.Status.STOPPED);
++        work.setStatus(Behavior.Status.STOPPED);
++        brain.setDefaultActivity(Activity.WORK);
++        brain.useDefaultActivity();
++        brain.tick(level, body);
++
++        assertEquals(List.of("start:core", "start:work", "tick:core", "tick:work"), calls);
++    }
++
++    @Test
++    @SuppressWarnings("deprecation")
++    void observesExternalMutationsToTheExposedActiveActivitySet() {
++        final List<String> calls = new ArrayList<>();
++        final RecordingBehavior core = RecordingBehavior.stopped("core", calls);
++        final RecordingBehavior idle = RecordingBehavior.stopped("idle", calls);
++        final RecordingBehavior work = RecordingBehavior.stopped("work", calls);
++        final Brain<LivingEntity> brain = new Brain<>();
++        brain.addActivity(Activity.CORE, ImmutableList.of(Pair.of(0, core)), Set.of(), Set.of());
++        brain.addActivity(Activity.IDLE, ImmutableList.of(Pair.of(1, idle)), Set.of(), Set.of());
++        brain.addActivity(Activity.WORK, ImmutableList.of(Pair.of(2, work)), Set.of(), Set.of());
++        brain.setDefaultActivity(Activity.IDLE);
++        brain.useDefaultActivity();
++        final ServerLevel level = levelAt(500L);
++        final LivingEntity body = mock(LivingEntity.class);
++        brain.tick(level, body);
++
++        calls.clear();
++        core.setStatus(Behavior.Status.STOPPED);
++        idle.setStatus(Behavior.Status.STOPPED);
++        work.setStatus(Behavior.Status.STOPPED);
++        brain.getActiveActivities().clear();
++        brain.getActiveActivities().add(Activity.WORK);
++        brain.tick(level, body);
++
++        assertEquals(List.of("start:work", "tick:work"), calls);
++    }
++
+     private static ServerLevel levelAt(final long gameTime) {
+         final ServerLevel level = mock(ServerLevel.class);
+         when(level.getGameTime()).thenReturn(gameTime);
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+index 2275cd1705ba654c408450b72179e811895d9a7b..42ecf20323891ac583d1b48e1f6f3955140bc01d 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -1,11 +1,17 @@
+ package org.leavesx.leavesx.performance;
+ 
+ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertSame;
+ import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
+ 
++import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Comparator;
++import java.util.List;
+ import java.util.Random;
++import net.minecraft.world.entity.Entity;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.Test;
+@@ -78,6 +84,31 @@ class StableDistanceSorterTest {
+         );
+     }
+ 
++    @Test
++    void reordersEntitiesInPlaceAndKeepsEqualDistancesStable() {
++        final Entity farther = entityAt(3.0D, 0.0D, 0.0D);
++        final Entity equalFirst = entityAt(1.0D, 0.0D, 0.0D);
++        final Entity nearest = entityAt(0.0D, 0.0D, 0.0D);
++        final Entity equalSecond = entityAt(-1.0D, 0.0D, 0.0D);
++        final List<Entity> entities = new ArrayList<>(List.of(farther, equalFirst, nearest, equalSecond));
++        final Entity origin = entityAt(0.0D, 0.0D, 0.0D);
++
++        StableDistanceSorter.sortEntitiesByDistance(entities, origin, false, 64);
++
++        assertSame(nearest, entities.get(0));
++        assertSame(equalFirst, entities.get(1));
++        assertSame(equalSecond, entities.get(2));
++        assertSame(farther, entities.get(3));
++    }
++
++    private static Entity entityAt(final double x, final double y, final double z) {
++        final Entity entity = mock(Entity.class);
++        when(entity.getX()).thenReturn(x);
++        when(entity.getY()).thenReturn(y);
++        when(entity.getZ()).thenReturn(z);
++        return entity;
++    }
++
+     private static int[] referenceOrder(
+         final double[] x,
+         final double[] y,
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index 0ce7cb66bb7cad15cd40dff5633c193b4b2e9444..c0c87f60fe80dded3fc11aa14df08f6a02ec7c96 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -46,7 +46,7 @@ class LeavesXComputeExecutorTest {
+     @Test
+     void requestsSynchronousFallbackForSmallInputs() {
+         LeavesXComputeExecutor.configure(4);
+-        assertFalse(LeavesXComputeExecutor.invokeRanges(127, 128, (taskIndex, start, end) -> {
++        assertFalse(LeavesXComputeExecutor.invokeRanges(LeavesXComputeExecutor.Workload.AI_TARGET_SORT, 127, 128, (taskIndex, start, end) -> {
+             throw new AssertionError("small input must not be submitted");
+         }));
+ 
+@@ -55,6 +55,13 @@ class LeavesXComputeExecutorTest {
+         assertEquals(1, metrics.belowFeatureThresholdFallbacks());
+         assertEquals(0, metrics.insufficientPartitionFallbacks());
+         assertEquals(0, metrics.unavailableParallelismFallbacks());
++        final LeavesXComputeExecutor.WorkloadMetrics ai = metrics.workloads().stream()
++            .filter(workload -> workload.workload() == LeavesXComputeExecutor.Workload.AI_TARGET_SORT)
++            .findFirst()
++            .orElseThrow();
++        assertEquals(1, ai.invocations());
++        assertEquals(0, ai.parallelInvocations());
++        assertEquals(1, ai.belowFeatureThresholdFallbacks());
+     }
+ 
+     @Test

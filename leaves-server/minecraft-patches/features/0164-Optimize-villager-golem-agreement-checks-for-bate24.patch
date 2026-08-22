@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 01:44:04 +0800
+Subject: [PATCH] Optimize villager golem agreement checks for bate24
+
+
+diff --git a/net/minecraft/world/entity/npc/villager/Villager.java b/net/minecraft/world/entity/npc/villager/Villager.java
+index 5931a187dcffdbf8c3001ddaae3b7123bd2fac78..18b0024bfcfec10953c18a09b80594dfcf10d6b9 100644
+--- a/net/minecraft/world/entity/npc/villager/Villager.java
++++ b/net/minecraft/world/entity/npc/villager/Villager.java
+@@ -911,11 +911,19 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+         if (this.wantsToSpawnGolem(timestamp)) {
+             AABB villagerSearchBox = this.getBoundingBox().inflate(10.0, 10.0, 10.0);
+             List<Villager> nearbyVillagers = level.getEntitiesOfClass(Villager.class, villagerSearchBox);
+-            List<Villager> nearbyVillagersThatWantAGolem = nearbyVillagers.stream()
+-                .filter(villager -> villager.wantsToSpawnGolem(timestamp))
+-                .limit(5L)
+-                .toList();
+-            if (nearbyVillagersThatWantAGolem.size() >= villagersNeededToAgree) {
++            // LeavesX start - avoid a temporary stream pipeline on the configurable AI optimization path
++            final boolean enoughVillagersWantAGolem;
++            if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++                enoughVillagersWantAGolem = countVillagersWantingGolem(nearbyVillagers, timestamp) >= villagersNeededToAgree;
++            } else {
++                final List<Villager> nearbyVillagersThatWantAGolem = nearbyVillagers.stream()
++                    .filter(villager -> villager.wantsToSpawnGolem(timestamp))
++                    .limit(HOW_MANY_VILLAGERS_NEED_TO_AGREE_TO_SPAWN_A_GOLEM)
++                    .toList();
++                enoughVillagersWantAGolem = nearbyVillagersThatWantAGolem.size() >= villagersNeededToAgree;
++            }
++            // LeavesX end - avoid a temporary stream pipeline on the configurable AI optimization path
++            if (enoughVillagersWantAGolem) {
+                 if (SpawnUtil.trySpawnMob( // Paper - Set Golem Last Seen to stop it from spawning another one - switch to isPresent
+                         EntityType.IRON_GOLEM,
+                         EntitySpawnReason.MOB_SUMMONED,
+@@ -936,6 +944,19 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+         }
+     }
+ 
++    // LeavesX start - allocation-free equivalent of filter(...).limit(5).toList().size()
++    private static int countVillagersWantingGolem(final List<Villager> nearbyVillagers, final long timestamp) {
++        int agreements = 0;
++        for (final Villager villager : nearbyVillagers) {
++            if (villager.wantsToSpawnGolem(timestamp)
++                && ++agreements == HOW_MANY_VILLAGERS_NEED_TO_AGREE_TO_SPAWN_A_GOLEM) {
++                break;
++            }
++        }
++        return agreements;
++    }
++    // LeavesX end - allocation-free equivalent of filter(...).limit(5).toList().size()
++
+     public boolean wantsToSpawnGolem(final long timestamp) {
+         return this.golemSpawnConditionsMet(this.level().getGameTime()) && !this.brain.hasMemoryValue(MemoryModuleType.GOLEM_DETECTED_RECENTLY);
+     }

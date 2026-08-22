@@ -1,0 +1,304 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 13 Aug 2026 11:55:45 +0800
+Subject: [PATCH] Upgrade LeavesX configuration without replacing user settings
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 648599aeb2c4fa3a3689e90f7a2936cbf6355f58..b8d20b7b309d87247b5a2eb7acf77af2ed4d59a5 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -9,8 +9,10 @@ import java.nio.file.Path;
+ import java.nio.file.StandardOpenOption;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
++import org.spongepowered.configurate.CommentedConfigurationNode;
+ import org.spongepowered.configurate.ConfigurateException;
+ import org.spongepowered.configurate.ConfigurationNode;
++import org.spongepowered.configurate.loader.HeaderMode;
+ 
+ /** Loads and validates the LeavesX global configuration at bootstrap. */
+ public final class LeavesXConfigLoader {
+@@ -40,7 +42,17 @@ public final class LeavesXConfigLoader {
+             if (!Files.isRegularFile(normalized)) {
+                 throw new LeavesXConfigException("LeavesX configuration is not a regular file: " + normalized);
+             }
+-            return fromNode(ConfigurationLoaders.naturallySortedWithoutHeader(normalized).load(), normalized);
++            final CommentedConfigurationNode node = ConfigurationLoaders.naturallySorted()
++                .headerMode(HeaderMode.PRESERVE)
++                .path(normalized)
++                .build()
++                .load();
++            final LeavesXConfig config = fromNode(node, normalized);
++            if (LeavesXConfigWriter.writeMissing(node, config)) {
++                save(normalized, node, readOriginalFormatting(normalized));
++                LOGGER.info("Added newly supported LeavesX settings to {} without replacing existing values", normalized);
++            }
++            return config;
+         } catch (final LeavesXConfigException ex) {
+             throw ex;
+         } catch (final Exception ex) {
+@@ -104,6 +116,67 @@ public final class LeavesXConfigLoader {
+     }
+ 
+     private static void save(final Path path, final LeavesXConfig config) throws IOException, ConfigurateException {
++        save(path, LeavesXConfigWriter.render(config, HEADER));
++    }
++
++    private static void save(final Path path, final CommentedConfigurationNode node, final OriginalFormatting formatting)
++        throws IOException, ConfigurateException {
++        // Configurate does not retain every header layout, BOM, or source line ending when serializing a loaded node.
++        // Prefixing the original preamble keeps user documentation stable while the structured tree gains new keys.
++        final String body = ConfigurationLoaders.naturallySorted()
++            .headerMode(HeaderMode.NONE)
++            .buildAndSaveString(node);
++        final String yaml = formatting.preamble() + normalizeLineEndings(body, formatting.lineSeparator());
++        save(path, YamlCommentInjector.inject(yaml, LeavesXConfigWriter.comments()).text());
++    }
++
++    private static OriginalFormatting readOriginalFormatting(final Path path) throws IOException {
++        final String content = Files.readString(path, java.nio.charset.StandardCharsets.UTF_8);
++        final String lineSeparator = detectLineSeparator(content);
++        int lineStart = 0;
++        if (!content.isEmpty() && content.charAt(0) == '\uFEFF') {
++            lineStart = 1;
++        }
++        int preambleEnd = lineStart;
++        while (lineStart < content.length()) {
++            int lineEnd = content.indexOf('\n', lineStart);
++            if (lineEnd < 0) {
++                lineEnd = content.length();
++            }
++            int contentEnd = lineEnd;
++            if (contentEnd > lineStart && content.charAt(contentEnd - 1) == '\r') {
++                contentEnd--;
++            }
++
++            final String line = content.substring(lineStart, contentEnd).stripLeading();
++            if (!line.isEmpty() && !line.startsWith("#")) {
++                break;
++            }
++            preambleEnd = lineEnd < content.length() ? lineEnd + 1 : lineEnd;
++            lineStart = preambleEnd;
++        }
++        final int bomLength = !content.isEmpty() && content.charAt(0) == '\uFEFF' ? 1 : 0;
++        return new OriginalFormatting(content.substring(0, Math.max(preambleEnd, bomLength)), lineSeparator);
++    }
++
++    private static String detectLineSeparator(final String content) {
++        for (int index = 0; index < content.length(); index++) {
++            final char character = content.charAt(index);
++            if (character == '\r') {
++                return index + 1 < content.length() && content.charAt(index + 1) == '\n' ? "\r\n" : "\r";
++            }
++            if (character == '\n') {
++                return "\n";
++            }
++        }
++        return System.lineSeparator();
++    }
++
++    private static String normalizeLineEndings(final String content, final String lineSeparator) {
++        return content.replace("\r\n", "\n").replace('\r', '\n').replace("\n", lineSeparator);
++    }
++
++    private static void save(final Path path, final String content) throws IOException {
+         final Path parent = path.getParent();
+         if (parent != null) {
+             Files.createDirectories(parent);
+@@ -111,7 +184,7 @@ public final class LeavesXConfigLoader {
+         AtomicFiles.atomicWrite(path, temporary -> {
+             Files.writeString(
+                 temporary,
+-                LeavesXConfigWriter.render(config, HEADER),
++                content,
+                 java.nio.charset.StandardCharsets.UTF_8
+             );
+             try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
+@@ -155,4 +228,7 @@ public final class LeavesXConfigLoader {
+             path + " must be " + expected + ", but was " + (actual == null ? "null" : actual.getClass().getSimpleName())
+         );
+     }
++
++    private record OriginalFormatting(String preamble, String lineSeparator) {
++    }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 5d446d3f32c527ab846c36e95ed30b016275df11..afaaf27dff6999bacb8292a71806ae8c2777a2fb 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -25,33 +25,16 @@ public final class LeavesXConfigWriter {
+      * @param config validated runtime values
+      */
+     public static void write(final CommentedConfigurationNode node, final LeavesXConfig config) {
+-        node.node("config-version")
+-            .comment(COMMENTS.get("config-version"))
+-            .raw(config.configVersion());
+-        node.node("performance", "optimized-varint")
+-            .comment(COMMENTS.get("performance.optimized-varint"))
+-            .raw(config.optimizedVarInt());
+-        node.node("performance", "immutable-cache-optimizations")
+-            .comment(COMMENTS.get("performance.immutable-cache-optimizations"))
+-            .raw(config.immutableCacheOptimizations());
+-        node.node("performance", "resource-identifier-cache")
+-            .comment(COMMENTS.get("performance.resource-identifier-cache"))
+-            .raw(config.resourceIdentifierCache());
+-        node.node("performance", "skip-empty-events")
+-            .comment(COMMENTS.get("performance.skip-empty-events"))
+-            .raw(config.skipEmptyEvents());
+-        node.node("performance", "item-merge-optimizations")
+-            .comment(COMMENTS.get("performance.item-merge-optimizations"))
+-            .raw(config.itemMergeOptimizations());
+-        node.node("parallelism", "mob-spawning", "enabled")
+-            .comment(COMMENTS.get("parallelism.mob-spawning.enabled"))
+-            .raw(config.parallelMobSpawnCounting());
+-        node.node("parallelism", "mob-spawning", "workers")
+-            .comment(COMMENTS.get("parallelism.mob-spawning.workers"))
+-            .raw(config.mobSpawnCountingWorkers());
+-        node.node("parallelism", "mob-spawning", "minimum-entities")
+-            .comment(COMMENTS.get("parallelism.mob-spawning.minimum-entities"))
+-            .raw(config.mobSpawnCountingMinimumEntities());
++        writeSupportedKeys(node, config, false);
++    }
++
++    /**
++     * Adds newly supported keys without replacing user values or unknown extensions.
++     *
++     * @return {@code true} when the document was upgraded
++     */
++    public static boolean writeMissing(final CommentedConfigurationNode node, final LeavesXConfig config) {
++        return writeSupportedKeys(node, config, true);
+     }
+ 
+     /** Returns the same path-keyed comments used for emitted {@code leavesx.yml} files. */
+@@ -69,6 +52,77 @@ public final class LeavesXConfigWriter {
+         return YamlCommentInjector.injectGenerated(yaml, header, COMMENTS).text();
+     }
+ 
++    private static boolean writeSupportedKeys(
++        final CommentedConfigurationNode node,
++        final LeavesXConfig config,
++        final boolean missingOnly
++    ) {
++        boolean changed = false;
++        changed |= writeValue(node.node("config-version"), "config-version", config.configVersion(), missingOnly);
++        changed |= writeValue(
++            node.node("performance", "optimized-varint"),
++            "performance.optimized-varint",
++            config.optimizedVarInt(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "immutable-cache-optimizations"),
++            "performance.immutable-cache-optimizations",
++            config.immutableCacheOptimizations(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "resource-identifier-cache"),
++            "performance.resource-identifier-cache",
++            config.resourceIdentifierCache(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "skip-empty-events"),
++            "performance.skip-empty-events",
++            config.skipEmptyEvents(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "item-merge-optimizations"),
++            "performance.item-merge-optimizations",
++            config.itemMergeOptimizations(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("parallelism", "mob-spawning", "enabled"),
++            "parallelism.mob-spawning.enabled",
++            config.parallelMobSpawnCounting(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("parallelism", "mob-spawning", "workers"),
++            "parallelism.mob-spawning.workers",
++            config.mobSpawnCountingWorkers(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("parallelism", "mob-spawning", "minimum-entities"),
++            "parallelism.mob-spawning.minimum-entities",
++            config.mobSpawnCountingMinimumEntities(),
++            missingOnly
++        );
++        return changed;
++    }
++
++    private static boolean writeValue(
++        final CommentedConfigurationNode node,
++        final String path,
++        final Object value,
++        final boolean missingOnly
++    ) {
++        if (missingOnly && !node.virtual()) {
++            return false;
++        }
++        node.comment(COMMENTS.get(path)).raw(value);
++        return true;
++    }
++
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+         comments.put("config-version", "LeavesX 配置文件版本，请不要手动修改。默认：1。");
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 4275c35c71d27e847c8eb009c06919c07fafb5a7..0a21906ff9f39fc88c2c246aff7dd1363692a449 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -51,6 +51,48 @@ class LeavesXConfigLoaderTest {
+         assertEquals(LeavesXConfig.safeDefaults(), LeavesXConfigLoader.load(path));
+     }
+ 
++    @Test
++    void addsMissingSettingsWithoutReplacingExistingValuesOrExtensions() throws Exception {
++        final Path path = write("""
++            # User-managed LeavesX settings.
++            config-version: 1
++            performance:
++              optimized-varint: false
++            custom-extension:
++              retained: true
++            """);
++
++        final LeavesXConfig config = LeavesXConfigLoader.load(path);
++        final String upgraded = Files.readString(path);
++        final org.spongepowered.configurate.ConfigurationNode reloaded =
++            io.papermc.paper.configuration.ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
++
++        assertFalse(config.optimizedVarInt());
++        assertTrue(config.itemMergeOptimizations());
++        assertFalse(reloaded.node("performance", "optimized-varint").getBoolean());
++        assertTrue(reloaded.node("performance", "item-merge-optimizations").getBoolean());
++        assertTrue(reloaded.node("custom-extension", "retained").getBoolean());
++        assertTrue(upgraded.contains("# User-managed LeavesX settings."), upgraded);
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.item-merge-optimizations")));
++    }
++
++    @Test
++    void preservesLeadingHeaderByteOrderMarkAndLineEndingsDuringUpgrade() throws IOException {
++        final Path path = write("\uFEFF# First user header line.\r\n"
++            + "# Second user header line.\r\n"
++            + "config-version: 1\r\n"
++            + "performance:\r\n"
++            + "  optimized-varint: false\r\n");
++
++        LeavesXConfigLoader.load(path);
++
++        final String upgraded = Files.readString(path);
++        assertTrue(upgraded.startsWith("\uFEFF# First user header line.\r\n"), upgraded);
++        assertTrue(upgraded.contains("# Second user header line."), upgraded);
++        assertTrue(upgraded.contains("optimized-varint: false"), upgraded);
++        assertFalse(upgraded.replace("\r\n", "").contains("\n"), upgraded);
++    }
++
+     @Test
+     void loadsBehaviorEquivalentOptimizationSwitches() throws IOException {
+         final Path path = write("""

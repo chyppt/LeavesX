@@ -1,0 +1,105 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 19:19:31 +0800
+Subject: [PATCH] Add comparator unique query coverage for bate50
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ComparatorUniqueEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ComparatorUniqueEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3a3508ef0cb27c9ed73752d774be914e5afb623a
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ComparatorUniqueEntityQueryHotPathTest.java
+@@ -0,0 +1,93 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.level.Level;
++import net.minecraft.world.level.block.ComparatorBlock;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies comparator item-frame lookups stop after detecting a second matching frame. */
++@Normal
++class ComparatorUniqueEntityQueryHotPathTest {
++
++    @Test
++    void levelUsesTwoResultQueriesToProveUniqueness() throws IOException {
++        final ClassNode level = classNode(Level.class);
++        assertEquals("Ljava/lang/ThreadLocal;", field(level, "LEAVESX_UNIQUE_ENTITY_QUERY_BUFFER").desc);
++
++        final MethodNode unique = method(
++            level,
++            "leavesX$getSingleEntityOfClass",
++            "(Ljava/lang/Class;Lnet/minecraft/world/phys/AABB;Ljava/util/function/Predicate;)Lnet/minecraft/world/entity/Entity;"
++        );
++        assertTrue(hasInvocation(unique, "java/lang/ThreadLocal", "get"));
++        final List<MethodInsnNode> boundedQueries = invocations(unique).stream()
++            .filter(call -> call.owner.equals("ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup"))
++            .filter(call -> call.name.equals("getEntities") && call.desc.endsWith("I)V"))
++            .toList();
++        assertEquals(2, boundedQueries.size());
++        assertTrue(
++            boundedQueries.stream().allMatch(call -> call.getPrevious().getOpcode() == Opcodes.ICONST_2),
++            "Both shared and nested unique queries must stop after two matches"
++        );
++    }
++
++    @Test
++    void comparatorKeepsTheConfigurableFullListFallback() throws IOException {
++        final MethodNode itemFrame = method(classNode(ComparatorBlock.class), "getItemFrame");
++
++        assertTrue(hasInvocation(itemFrame, "org/leavesx/leavesx/config/LeavesXRuntime", "entityQueryOptimizations"));
++        assertTrue(hasInvocation(itemFrame, "net/minecraft/world/level/Level", "leavesX$getSingleEntityOfClass"));
++        assertTrue(hasInvocation(itemFrame, "net/minecraft/world/level/Level", "getEntitiesOfClass"));
++        assertTrue(hasInvocation(itemFrame, "java/util/List", "size"));
++    }
++
++    private static FieldNode field(final ClassNode owner, final String name) {
++        return owner.fields.stream()
++            .filter(field -> field.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing field " + owner.name + '#' + name));
++    }
++
++    private static boolean hasInvocation(final MethodNode method, final String owner, final String name) {
++        return invocations(method).stream().anyMatch(call -> call.owner.equals(owner) && call.name.equals(name));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName, final String descriptor) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName) && method.desc.equals(descriptor))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName + descriptor));
++    }
++}

@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 23:20:15 +0800
+Subject: [PATCH] Add chicken jockey query coverage for bate72
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ZombieChickenJockeyEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ZombieChickenJockeyEntityQueryHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..15a63509d7ffa9a0a0d686fc0fdc428753e9fb12
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ZombieChickenJockeyEntityQueryHotPathTest.java
+@@ -0,0 +1,62 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.List;
++import net.minecraft.world.entity.monster.zombie.Zombie;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++import org.objectweb.asm.tree.TypeInsnNode;
++
++/**
++ * Verifies chicken-jockey spawning bounds live-world chicken searches without changing world-generation queries.
++ */
++@Normal
++class ZombieChickenJockeyEntityQueryHotPathTest {
++
++    @Test
++    void finalizeSpawnKeepsBoundedAndVanillaChickenQueries() throws IOException {
++        final MethodNode finalizeSpawn = method(classNode(Zombie.class), "finalizeSpawn");
++        final List<MethodInsnNode> calls = invocations(finalizeSpawn);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("leavesX$getFirstEntityOfClass")));
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
++        assertTrue(hasLevelTypeGuard(finalizeSpawn));
++    }
++
++    private static boolean hasLevelTypeGuard(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(instruction -> instruction.getOpcode() == Opcodes.INSTANCEOF)
++            .filter(TypeInsnNode.class::isInstance)
++            .map(TypeInsnNode.class::cast)
++            .anyMatch(instruction -> instruction.desc.equals("net/minecraft/world/level/Level"));
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        return Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String methodName) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + methodName));
++    }
++}

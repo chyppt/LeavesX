@@ -1,0 +1,203 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 15 Aug 2026 23:47:21 +0800
+Subject: [PATCH] Optimize AI traversal and distance sorting for bate21
+
+
+diff --git a/net/minecraft/world/entity/ai/Brain.java b/net/minecraft/world/entity/ai/Brain.java
+index eb7d7c4e867d46f0b12f3589324b9fdcf3494abb..2b32d4d8111b33a265050d80c66390d063729bac 100644
+--- a/net/minecraft/world/entity/ai/Brain.java
++++ b/net/minecraft/world/entity/ai/Brain.java
+@@ -47,12 +47,15 @@ public class Brain<E extends LivingEntity> {
+     private final Set<Activity> activeActivities = Sets.newHashSet();
+     private Activity defaultActivity = Activity.IDLE;
+     private long lastScheduleUpdate = -9999L;
+-    // LeavesX start - retain immutable behavior order metadata and reuse the per-tick running snapshot
++    // LeavesX start - retain immutable behavior order metadata and reuse per-tick traversal snapshots
+     private final ObjectArrayList<Brain.BehaviorGroup<E>> leavesXBehaviorGroups = new ObjectArrayList<>();
++    private final ObjectArrayList<BehaviorControl<? super E>> leavesXActiveBehaviorTraversal = new ObjectArrayList<>();
+     private final ObjectArrayList<BehaviorControl<? super E>> leavesXRunningBehaviorSnapshot = new ObjectArrayList<>();
++    private final Set<Activity> leavesXCachedActiveActivities = Sets.newHashSet();
+     private boolean leavesXBehaviorGroupsDirty = true;
++    private boolean leavesXActiveBehaviorTraversalDirty = true;
+     private boolean leavesXRunningBehaviorSnapshotInUse;
+-    // LeavesX end - retain immutable behavior order metadata and reuse the per-tick running snapshot
++    // LeavesX end - retain immutable behavior order metadata and reuse per-tick traversal snapshots
+ 
+     public static <E extends LivingEntity> Brain.Provider<E> provider(final Collection<? extends SensorType<? extends Sensor<? super E>>> sensorTypes) {
+         return new Brain.Provider<>(ImmutableList.of(), sensorTypes, var0 -> List.of());
+@@ -367,7 +370,10 @@ public class Brain<E extends LivingEntity> {
+                 .computeIfAbsent(activity, key -> Sets.newLinkedHashSet())
+                 .add(behavior);
+         }
+-        this.leavesXBehaviorGroupsDirty = true; // LeavesX - rebuild the immutable-order cache after behavior changes
++        // LeavesX start - rebuild immutable-order caches after behavior changes
++        this.leavesXBehaviorGroupsDirty = true;
++        this.leavesXActiveBehaviorTraversalDirty = true;
++        // LeavesX end - rebuild immutable-order caches after behavior changes
+     }
+ 
+     @VisibleForTesting
+@@ -375,7 +381,10 @@ public class Brain<E extends LivingEntity> {
+         this.availableBehaviorsByPriority.clear();
+         // LeavesX start - release cached behavior references together with the authoritative map
+         this.leavesXBehaviorGroups.clear();
++        this.leavesXActiveBehaviorTraversal.clear();
++        this.leavesXCachedActiveActivities.clear();
+         this.leavesXBehaviorGroupsDirty = false;
++        this.leavesXActiveBehaviorTraversalDirty = true;
+         // LeavesX end - release cached behavior references together with the authoritative map
+     }
+ 
+@@ -411,26 +420,18 @@ public class Brain<E extends LivingEntity> {
+     private void startEachNonRunningBehavior(final ServerLevel level, final E body) {
+         long time = level.getGameTime();
+ 
+-        // LeavesX start - iterate a stable, allocation-free copy of the original priority/activity/set order
++        // LeavesX start - iterate only active groups in the original priority/activity/set order
+         if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
+-            final ObjectArrayList<Brain.BehaviorGroup<E>> behaviorGroups = this.leavesX$getBehaviorGroups();
+-            for (int groupIndex = 0, groupCount = behaviorGroups.size(); groupIndex < groupCount; groupIndex++) {
+-                final Brain.BehaviorGroup<E> behaviorGroup = behaviorGroups.get(groupIndex);
+-                if (!this.activeActivities.contains(behaviorGroup.activity)) {
+-                    continue;
+-                }
+-
+-                final ObjectArrayList<BehaviorControl<? super E>> behaviors = behaviorGroup.behaviors;
+-                for (int behaviorIndex = 0, behaviorCount = behaviors.size(); behaviorIndex < behaviorCount; behaviorIndex++) {
+-                    final BehaviorControl<? super E> behavior = behaviors.get(behaviorIndex);
+-                    if (behavior.getStatus() == Behavior.Status.STOPPED) {
+-                        behavior.tryStart(level, body, time);
+-                    }
++            final ObjectArrayList<BehaviorControl<? super E>> activeBehaviors = this.leavesX$getActiveBehaviorTraversal();
++            for (int index = 0, size = activeBehaviors.size(); index < size; index++) {
++                final BehaviorControl<? super E> behavior = activeBehaviors.get(index);
++                if (behavior.getStatus() == Behavior.Status.STOPPED) {
++                    behavior.tryStart(level, body, time);
+                 }
+             }
+             return;
+         }
+-        // LeavesX end - iterate a stable, allocation-free copy of the original priority/activity/set order
++        // LeavesX end - iterate only active groups in the original priority/activity/set order
+ 
+         for (Map<Activity, Set<BehaviorControl<? super E>>> behavioursByActivities : this.availableBehaviorsByPriority.values()) {
+             for (Entry<Activity, Set<BehaviorControl<? super E>>> behavioursForActivity : behavioursByActivities.entrySet()) {
+@@ -493,9 +494,31 @@ public class Brain<E extends LivingEntity> {
+             }
+         }
+         this.leavesXBehaviorGroupsDirty = false;
++        this.leavesXActiveBehaviorTraversalDirty = true;
+         return this.leavesXBehaviorGroups;
+     }
+ 
++    private ObjectArrayList<BehaviorControl<? super E>> leavesX$getActiveBehaviorTraversal() {
++        final ObjectArrayList<Brain.BehaviorGroup<E>> behaviorGroups = this.leavesX$getBehaviorGroups();
++        // getActiveActivities() exposes the mutable set for debugging, so equality protects compatibility with
++        // external mutations that bypass setActiveActivity(). The set normally contains only CORE plus one activity.
++        if (!this.leavesXActiveBehaviorTraversalDirty && this.leavesXCachedActiveActivities.equals(this.activeActivities)) {
++            return this.leavesXActiveBehaviorTraversal;
++        }
++
++        this.leavesXActiveBehaviorTraversal.clear();
++        for (int groupIndex = 0, groupCount = behaviorGroups.size(); groupIndex < groupCount; groupIndex++) {
++            final Brain.BehaviorGroup<E> behaviorGroup = behaviorGroups.get(groupIndex);
++            if (this.activeActivities.contains(behaviorGroup.activity)) {
++                this.leavesXActiveBehaviorTraversal.addAll(behaviorGroup.behaviors);
++            }
++        }
++        this.leavesXCachedActiveActivities.clear();
++        this.leavesXCachedActiveActivities.addAll(this.activeActivities);
++        this.leavesXActiveBehaviorTraversalDirty = false;
++        return this.leavesXActiveBehaviorTraversal;
++    }
++
+     private void leavesX$collectRunningBehaviors(final List<BehaviorControl<? super E>> destination) {
+         if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
+             final ObjectArrayList<Brain.BehaviorGroup<E>> behaviorGroups = this.leavesX$getBehaviorGroups();
+diff --git a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
+index 8aeea55380462421cde43afb4b2fb0ce44b65195..40ccfd64615926a3dc57eb5a7833aca71553c417 100644
+--- a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
+@@ -25,7 +25,19 @@ public class NearestItemSensor extends Sensor<Mob> {
+     protected void doTick(final ServerLevel level, final Mob body) {
+         Brain<?> brain = body.getBrain();
+         List<ItemEntity> items = level.getEntitiesOfClass(ItemEntity.class, body.getBoundingBox().inflate(32.0, 16.0, 32.0), item -> item.closerThan(body, MAX_DISTANCE_TO_WANTED_ITEM) && body.wantsToPickUp(level, item.getItem())); // Paper - Perf: Move predicate into getEntities
+-        items.sort(Comparator.comparingDouble(body::distanceToSqr));
++        // LeavesX start - use the same stable, allocation-reusing distance order as living-entity sensors
++        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()
++            && items.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
++            org.leavesx.leavesx.performance.StableDistanceSorter.sortEntitiesByDistance(
++                items,
++                body,
++                org.leavesx.leavesx.config.LeavesXRuntime.parallelAiTargetSearch(),
++                org.leavesx.leavesx.config.LeavesXRuntime.aiTargetSearchMinimumCandidates()
++            );
++        } else {
++            items.sort(Comparator.comparingDouble(body::distanceToSqr));
++        }
++        // LeavesX end - use the same stable, allocation-reusing distance order as living-entity sensors
+         // Paper start - Perf: remove streams from hot code
+         ItemEntity nearest = null;
+         for (final ItemEntity item : items) {
+diff --git a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
+index fe724c70f8ea95264f4ef5be60794da78494d3e7..53a0cb547c00a2dfa90c691a22b3edc1ca8a240c 100644
+--- a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
++++ b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
+@@ -18,37 +18,19 @@ public class NearestLivingEntitySensor<T extends LivingEntity> extends Sensor<T>
+         double followRange = body.getAttributeValue(Attributes.FOLLOW_RANGE);
+         AABB boundingBox = body.getBoundingBox().inflate(followRange, followRange, followRange);
+         List<LivingEntity> livingEntities = level.getEntitiesOfClass(LivingEntity.class, boundingBox, mob -> mob != body && mob.isAlive());
+-        // LeavesX start - cache target coordinates and isolate pure distance work from live entity state
+-        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations() && livingEntities.size() >= 32) {
+-            final int candidateCount = livingEntities.size();
+-            final LivingEntity[] snapshot = livingEntities.toArray(LivingEntity[]::new);
+-            final double[] x = new double[candidateCount];
+-            final double[] y = new double[candidateCount];
+-            final double[] z = new double[candidateCount];
+-            for (int index = 0; index < candidateCount; index++) {
+-                final LivingEntity candidate = snapshot[index];
+-                x[index] = candidate.getX();
+-                y[index] = candidate.getY();
+-                z[index] = candidate.getZ();
+-            }
+-
+-            final int[] order = org.leavesx.leavesx.performance.StableDistanceSorter.sort(
+-                x,
+-                y,
+-                z,
+-                body.getX(),
+-                body.getY(),
+-                body.getZ(),
++        // LeavesX start - snapshot distance keys on the tick thread, then stably reorder without per-sensor arrays
++        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()
++            && livingEntities.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
++            org.leavesx.leavesx.performance.StableDistanceSorter.sortEntitiesByDistance(
++                livingEntities,
++                body,
+                 org.leavesx.leavesx.config.LeavesXRuntime.parallelAiTargetSearch(),
+                 org.leavesx.leavesx.config.LeavesXRuntime.aiTargetSearchMinimumCandidates()
+             );
+-            for (int index = 0; index < candidateCount; index++) {
+-                livingEntities.set(index, snapshot[order[index]]);
+-            }
+         } else {
+             livingEntities.sort(Comparator.comparingDouble(body::distanceToSqr));
+         }
+-        // LeavesX end - cache target coordinates and isolate pure distance work from live entity state
++        // LeavesX end - snapshot distance keys on the tick thread, then stably reorder without per-sensor arrays
+         Brain<?> brain = body.getBrain();
+         brain.setMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES, livingEntities);
+         brain.setMemory(MemoryModuleType.NEAREST_VISIBLE_LIVING_ENTITIES, new NearestVisibleLivingEntities(level, body, livingEntities));
+diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+index 146fcfcb269d21042ab74fbc48b51bb4a1944f5a..0ae323a9d0a4afdc6eb27cbfd72a4568431f139a 100644
+--- a/net/minecraft/world/level/MobSpawnCountAccumulator.java
++++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+@@ -36,6 +36,7 @@ final class MobSpawnCountAccumulator {
+         @SuppressWarnings("unchecked") final Long2ObjectOpenHashMap<int[]>[] partialCounts =
+             new Long2ObjectOpenHashMap[org.leavesx.leavesx.runtime.LeavesXComputeExecutor.computeLaneCount()];
+         final int completedPartitions = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRangesWithCount(
++            org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.MOB_SPAWN_COUNTING,
+             inputs.size(),
+             minimumParallelSize,
+             (taskIndex, start, end) -> partialCounts[taskIndex] = countRange(inputs, start, end)

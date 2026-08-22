@@ -1,0 +1,182 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 21 Aug 2026 23:44:00 +0800
+Subject: [PATCH] Reuse hard-collision query storage for beta149
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java b/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
+index 3dcb3f7a4828b9cb74fa5f0c1c6dcc7371bb8fdc..dd052a2abf21ac323dc73be41a6d7ae9ad4d6ddd 100644
+--- a/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
++++ b/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
+@@ -2096,31 +2096,45 @@ public final class CollisionUtil {
+         // Vanilla for hard collisions has this backwards, and they expand by +epsilon but this causes terrible problems
+         // specifically with boat collisions.
+         aabb = aabb.inflate(-COLLISION_EPSILON, -COLLISION_EPSILON, -COLLISION_EPSILON);
+-        final List<Entity> entities;
+-        if (entity != null && ((ChunkSystemEntity)entity).moonrise$isHardColliding()) {
+-            entities = world.getEntities(entity, aabb, predicate);
+-        } else {
+-            entities = ((ChunkSystemEntityGetter)world).moonrise$getHardCollidingEntities(entity, aabb, predicate);
+-        }
++        final boolean reuseQueryBuffer = org.leavesx.leavesx.config.LeavesXRuntime.entityCollisionQueryBufferReuseOptimization();
++        final net.minecraft.world.level.Level.LeavesXEntityQueryBuffer queryBuffer = reuseQueryBuffer
++            ? net.minecraft.world.level.Level.leavesX$acquireEntityQueryBuffer()
++            : null;
++        try {
++            final List<Entity> entities;
++            if (entity != null && ((ChunkSystemEntity)entity).moonrise$isHardColliding()) {
++                entities = queryBuffer == null
++                    ? world.getEntities(entity, aabb, predicate)
++                    : queryBuffer.query(world, entity, aabb, predicate);
++            } else {
++                entities = queryBuffer == null
++                    ? ((ChunkSystemEntityGetter)world).moonrise$getHardCollidingEntities(entity, aabb, predicate)
++                    : queryBuffer.queryHardColliding(world, entity, aabb, predicate);
++            }
+ 
+-        for (int i = 0, len = entities.size(); i < len; ++i) {
+-            final Entity otherEntity = entities.get(i);
++            for (int i = 0, len = entities.size(); i < len; ++i) {
++                final Entity otherEntity = entities.get(i);
+ 
+-            if (otherEntity.isSpectator()) {
+-                continue;
+-            }
++                if (otherEntity.isSpectator()) {
++                    continue;
++                }
+ 
+-            if ((entity == null && otherEntity.canBeCollidedWith(entity)) || (entity != null && entity.canCollideWith(otherEntity))) {
+-                if (checkOnly) {
+-                    return true;
+-                } else {
+-                    into.add(otherEntity.getBoundingBox());
+-                    ret = true;
++                if ((entity == null && otherEntity.canBeCollidedWith(entity)) || (entity != null && entity.canCollideWith(otherEntity))) {
++                    if (checkOnly) {
++                        return true;
++                    } else {
++                        into.add(otherEntity.getBoundingBox());
++                        ret = true;
++                    }
+                 }
+             }
+-        }
+ 
+-        return ret;
++            return ret;
++        } finally {
++            if (queryBuffer != null) {
++                queryBuffer.close();
++            }
++        }
+     }
+ 
+     public static boolean getCollisions(final Level world, final Entity entity, final AABB aabb,
+diff --git a/net/minecraft/world/level/EntityGetter.java b/net/minecraft/world/level/EntityGetter.java
+index 85ee9caf3bc2ad31f715f941868e0c7ff2cfe146..23a477a9ab6ce9597b0497a6b800c090413403d3 100644
+--- a/net/minecraft/world/level/EntityGetter.java
++++ b/net/minecraft/world/level/EntityGetter.java
+@@ -87,28 +87,42 @@ public interface EntityGetter extends ca.spottedleaf.moonrise.patches.chunk_syst
+         // specifically with boat collisions.
+         testArea = testArea.inflate(-ca.spottedleaf.moonrise.patches.collisions.CollisionUtil.COLLISION_EPSILON, -ca.spottedleaf.moonrise.patches.collisions.CollisionUtil.COLLISION_EPSILON, -ca.spottedleaf.moonrise.patches.collisions.CollisionUtil.COLLISION_EPSILON);
+ 
+-        final List<Entity> entities;
+-        if (source != null && ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)source).moonrise$isHardColliding()) {
+-            entities = this.getEntities(source, testArea, null);
+-        } else {
+-            entities = ((ca.spottedleaf.moonrise.patches.chunk_system.world.ChunkSystemEntityGetter)this).moonrise$getHardCollidingEntities(source, testArea, null);
+-        }
++        final boolean reuseQueryBuffer = org.leavesx.leavesx.config.LeavesXRuntime.entityCollisionQueryBufferReuseOptimization();
++        final Level.LeavesXEntityQueryBuffer queryBuffer = reuseQueryBuffer && this instanceof Level
++            ? Level.leavesX$acquireEntityQueryBuffer()
++            : null;
++        try {
++            final List<Entity> entities;
++            if (source != null && ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)source).moonrise$isHardColliding()) {
++                entities = queryBuffer == null
++                    ? this.getEntities(source, testArea, null)
++                    : queryBuffer.query((Level)this, source, testArea, null);
++            } else {
++                entities = queryBuffer == null
++                    ? ((ca.spottedleaf.moonrise.patches.chunk_system.world.ChunkSystemEntityGetter)this).moonrise$getHardCollidingEntities(source, testArea, null)
++                    : queryBuffer.queryHardColliding((Level)this, source, testArea, null);
++            }
+ 
+-        final List<VoxelShape> ret = new java.util.ArrayList<>(Math.min(25, entities.size()));
++            final List<VoxelShape> ret = new java.util.ArrayList<>(Math.min(25, entities.size()));
+ 
+-        for (int i = 0, len = entities.size(); i < len; ++i) {
+-            final Entity otherEntity = entities.get(i);
++            for (int i = 0, len = entities.size(); i < len; ++i) {
++                final Entity otherEntity = entities.get(i);
+ 
+-            if (otherEntity.isSpectator()) {
+-                continue;
++                if (otherEntity.isSpectator()) {
++                    continue;
++                }
++
++                if ((source == null && otherEntity.canBeCollidedWith(source)) || (source != null && source.canCollideWith(otherEntity))) {
++                    ret.add(Shapes.create(otherEntity.getBoundingBox()));
++                }
+             }
+ 
+-            if ((source == null && otherEntity.canBeCollidedWith(source)) || (source != null && source.canCollideWith(otherEntity))) {
+-                ret.add(Shapes.create(otherEntity.getBoundingBox()));
++            return ret;
++        } finally {
++            if (queryBuffer != null) {
++                queryBuffer.close();
+             }
+         }
+-
+-        return ret;
+         // Paper end - optimise collisions
+     }
+ 
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index 46cb1fb7f086c26c98be16776a31d26eaadb687c..e9367b47aade862c6378063ac1f38d39d30c4943 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -432,6 +432,21 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         return ret;
+     }
+ 
++    /**
++     * Fills a caller-owned list with hard-colliding entities without changing the public query allocation contract.
++     * The caller must keep the list private until the collision calculation has completed.
++     */
++    public final void leavesX$getHardCollidingEntities(
++        final Entity entity,
++        final AABB box,
++        final Predicate<? super Entity> predicate,
++        final List<Entity> into
++    ) {
++        Profiler.get().incrementCounter("getEntities");
++        ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemLevel)this)
++            .moonrise$getEntityLookup().getHardCollidingEntities(entity, box, into, predicate);
++    }
++
+     @Override
+     public LevelChunk moonrise$getFullChunkIfLoaded(final int chunkX, final int chunkZ) {
+         return (LevelChunk)this.getChunkSource().getChunk(chunkX, chunkZ, ChunkStatus.FULL, false);
+@@ -2444,6 +2459,18 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+             return this.results;
+         }
+ 
++        /** Collects hard-colliding entities directly into the reusable storage. */
++        public List<Entity> queryHardColliding(
++            final Level level,
++            final @Nullable Entity except,
++            final AABB boundingBox,
++            final Predicate<? super Entity> predicate
++        ) {
++            this.results.clear();
++            level.leavesX$getHardCollidingEntities(except, boundingBox, predicate, this.results);
++            return this.results;
++        }
++
+         /** Collects one entity class into the reusable storage while preserving the typed Level query order. */
+         @SuppressWarnings({"rawtypes", "unchecked"})
+         public <T extends Entity> List<T> queryOfClass(

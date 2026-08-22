@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 17 Aug 2026 10:05:47 +0800
+Subject: [PATCH] Skip empty inside-block effect collector flushes for beta109
+
+
+diff --git a/net/minecraft/world/entity/InsideBlockEffectApplier.java b/net/minecraft/world/entity/InsideBlockEffectApplier.java
+index fc7cfc75e3e5c274f01498e4afd8693236b4e394..3ab552509e1858bc484c6afff00beee8e6a6af50 100644
+--- a/net/minecraft/world/entity/InsideBlockEffectApplier.java
++++ b/net/minecraft/world/entity/InsideBlockEffectApplier.java
+@@ -7,6 +7,7 @@ import java.util.Map;
+ import java.util.Set;
+ import java.util.function.Consumer;
+ import net.minecraft.util.Util;
++import org.leavesx.leavesx.config.LeavesXRuntime;
+ 
+ public interface InsideBlockEffectApplier {
+     InsideBlockEffectApplier NOOP = new InsideBlockEffectApplier() {
+@@ -41,6 +42,8 @@ public interface InsideBlockEffectApplier {
+         );
+         private final List<Consumer<Entity>> finalEffects = new ArrayList<>();
+         private int lastStep = -1;
++        // Most intersected blocks schedule no effect, so track whether the ordered containers can be skipped safely.
++        private boolean leavesX$hasPendingEffects;
+ 
+         public void advanceStep(final int step, net.minecraft.core.BlockPos pos) { // Paper - track position inside effect was triggered on
+             this.currentBlockPos = pos; // Paper - track position inside effect was triggered on
+@@ -66,6 +69,10 @@ public interface InsideBlockEffectApplier {
+         }
+ 
+         private void flushStep() {
++            if (LeavesXRuntime.insideBlockEffectCollectorOptimization() && !this.leavesX$hasPendingEffects) {
++                return;
++            }
++
+             for (InsideBlockEffectType type : APPLY_ORDER) {
+                 List<Consumer<Entity>> beforeEffects = this.beforeEffectsInStep.get(type);
+                 this.finalEffects.addAll(beforeEffects);
+@@ -78,21 +85,26 @@ public interface InsideBlockEffectApplier {
+                 this.finalEffects.addAll(afterEffects);
+                 afterEffects.clear();
+             }
++
++            this.leavesX$hasPendingEffects = false;
+         }
+ 
+         @Override
+         public void apply(final InsideBlockEffectType type) {
+             this.effectsInStep.put(type, recorded(type)); // Paper - track position inside effect was triggered on
++            this.leavesX$hasPendingEffects = true;
+         }
+ 
+         @Override
+         public void runBefore(final InsideBlockEffectType type, final Consumer<Entity> effect) {
+             this.beforeEffectsInStep.get(type).add(effect);
++            this.leavesX$hasPendingEffects = true;
+         }
+ 
+         @Override
+         public void runAfter(final InsideBlockEffectType type, final Consumer<Entity> effect) {
+             this.afterEffectsInStep.get(type).add(effect);
++            this.leavesX$hasPendingEffects = true;
+         }
+ 
+         // Paper start - track position inside effect was triggered on

@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 16 Aug 2026 15:23:33 +0800
+Subject: [PATCH] Decode section propagation center once
+
+
+diff --git a/net/minecraft/server/level/SectionTracker.java b/net/minecraft/server/level/SectionTracker.java
+index 117f2bc37d36bd8ca3d9a997c7e58d5b3b48df2e..90a5a832749d990bcf887ef166bbaf29ae607055 100644
+--- a/net/minecraft/server/level/SectionTracker.java
++++ b/net/minecraft/server/level/SectionTracker.java
+@@ -11,10 +11,14 @@ public abstract class SectionTracker extends DynamicGraphMinFixedPoint {
+     @Override
+     protected void checkNeighborsAfterUpdate(final long node, final int level, final boolean onlyDecrease) {
+         if (!onlyDecrease || level < this.levelCount - 2) {
++            // SectionPos.offset decodes the packed center on every call. Decode once because all 26 neighbors share it.
++            final int x = SectionPos.x(node);
++            final int y = SectionPos.y(node);
++            final int z = SectionPos.z(node);
+             for (int offsetX = -1; offsetX <= 1; offsetX++) {
+                 for (int offsetY = -1; offsetY <= 1; offsetY++) {
+                     for (int offsetZ = -1; offsetZ <= 1; offsetZ++) {
+-                        long neighbor = SectionPos.offset(node, offsetX, offsetY, offsetZ);
++                        long neighbor = SectionPos.asLong(x + offsetX, y + offsetY, z + offsetZ);
+                         if (neighbor != node) {
+                             this.checkNeighbor(node, neighbor, level, onlyDecrease);
+                         }
+@@ -27,11 +31,14 @@ public abstract class SectionTracker extends DynamicGraphMinFixedPoint {
+     @Override
+     protected int getComputedLevel(final long node, final long knownParent, final int knownLevelFromParent) {
+         int computedLevel = knownLevelFromParent;
++        final int x = SectionPos.x(node);
++        final int y = SectionPos.y(node);
++        final int z = SectionPos.z(node);
+ 
+         for (int offsetX = -1; offsetX <= 1; offsetX++) {
+             for (int offsetY = -1; offsetY <= 1; offsetY++) {
+                 for (int offsetZ = -1; offsetZ <= 1; offsetZ++) {
+-                    long neighbor = SectionPos.offset(node, offsetX, offsetY, offsetZ);
++                    long neighbor = SectionPos.asLong(x + offsetX, y + offsetY, z + offsetZ);
+                     if (neighbor == node) {
+                         neighbor = Long.MAX_VALUE;
+                     }
