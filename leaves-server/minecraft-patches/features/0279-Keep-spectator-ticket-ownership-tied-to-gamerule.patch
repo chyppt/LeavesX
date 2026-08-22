@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 22 Aug 2026 15:33:48 +0800
+Subject: [PATCH] Keep spectator ticket ownership tied to gamerule
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+index 4b95569b85ee333a46bc57b4ba58f1779b6e159a..44c9dccc00d1bdd8190f6442510a01f0eb0a1820 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+@@ -189,8 +189,7 @@ public final class RegionizedPlayerChunkLoader {
+         return canPlayerLoadChunks(
+             player.isSpectator(),
+             world.getGameRules().get(GameRules.SPECTATORS_GENERATE_CHUNKS),
+-            org.leavesmc.leaves.LeavesConfig.modify.elytraAeronautics.enableNoChunkLoad && player.elytraAeronauticsNoChunk,
+-            org.leavesx.leavesx.config.LeavesXRuntime.spectatorNoChunkLoading()
++            org.leavesmc.leaves.LeavesConfig.modify.elytraAeronautics.enableNoChunkLoad && player.elytraAeronauticsNoChunk
+         );
+     }
+ 
+@@ -199,18 +198,6 @@ public final class RegionizedPlayerChunkLoader {
+         final boolean spectatorsGenerateChunks,
+         final boolean explicitlySuppressChunkLoading
+     ) {
+-        return canPlayerLoadChunks(spectator, spectatorsGenerateChunks, explicitlySuppressChunkLoading, false);
+-    }
+-
+-    /** Applies the optional LeavesX policy without changing the three-argument Paper compatibility helper. */
+-    static boolean canPlayerLoadChunks(
+-        final boolean spectator,
+-        final boolean spectatorsGenerateChunks,
+-        final boolean explicitlySuppressChunkLoading,
+-        final boolean spectatorNoChunkLoading
+-    ) {
+-        // The gamerule already controls ownership of loading/simulation tickets. The optional LeavesX policy only
+-        // suppresses the observer-only loader below, so toggling it cannot grant a spectator new tickets.
+         return (!spectator || spectatorsGenerateChunks) && !explicitlySuppressChunkLoading;
+     }
+ 

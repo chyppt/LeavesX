@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 22 Aug 2026 15:33:48 +0800
+Subject: [PATCH] Keep spectator policy tests on Paper ticket semantics
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java b/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java
+index 526871b0a9c5c776160afec0915a8e70577c3baf..d8ff53782706a658fbf0262326e1ecb1ccdb5a8f 100644
+--- a/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java
++++ b/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java
+@@ -34,13 +34,11 @@ class SpectatorChunkLoadingPolicyTest {
+ 
+     @Test
+     void optionalNoChunkLoadingPolicySuppressesTheReadOnlyObserverOnlyWhenEnabled() throws ReflectiveOperationException {
+-        assertFalse(canPlayerLoadChunks(true, false, false, false));
+         assertTrue(shouldObserveLoadedChunks(true, false, false, false));
+-        assertFalse(canPlayerLoadChunks(true, false, false, true));
+         assertFalse(shouldObserveLoadedChunks(true, false, false, true));
+-        assertTrue(canPlayerLoadChunks(true, true, false, true));
++        assertTrue(canPlayerLoadChunks(true, true, false));
+         assertFalse(shouldObserveLoadedChunks(true, true, false, true));
+-        assertTrue(canPlayerLoadChunks(false, false, false, true));
++        assertTrue(canPlayerLoadChunks(false, false, false));
+         assertFalse(shouldObserveLoadedChunks(false, false, false, true));
+     }
+ 
+@@ -112,23 +110,6 @@ class SpectatorChunkLoadingPolicyTest {
+         return (boolean)policy.invoke(null, spectator, spectatorsGenerateChunks, explicitlySuppressChunkLoading);
+     }
+ 
+-    private static boolean canPlayerLoadChunks(
+-        final boolean spectator,
+-        final boolean spectatorsGenerateChunks,
+-        final boolean explicitlySuppressChunkLoading,
+-        final boolean spectatorNoChunkLoading
+-    ) throws ReflectiveOperationException {
+-        final Method policy = RegionizedPlayerChunkLoader.class.getDeclaredMethod(
+-            "canPlayerLoadChunks",
+-            boolean.class,
+-            boolean.class,
+-            boolean.class,
+-            boolean.class
+-        );
+-        policy.setAccessible(true);
+-        return (boolean)policy.invoke(null, spectator, spectatorsGenerateChunks, explicitlySuppressChunkLoading, spectatorNoChunkLoading);
+-    }
+-
+     private static boolean shouldObserveLoadedChunks(
+         final boolean spectator,
+         final boolean spectatorsGenerateChunks,
