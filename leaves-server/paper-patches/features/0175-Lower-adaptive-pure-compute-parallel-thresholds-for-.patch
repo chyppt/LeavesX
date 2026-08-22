@@ -1,0 +1,310 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 22 Aug 2026 16:35:58 +0800
+Subject: [PATCH] Lower adaptive pure-compute parallel thresholds for beta158
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index bf25bca1cb13653a694b86eb6d3bb016ff31f154..f27a3223591e26926e644cd884abf01e6509f4ab 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -52,7 +52,7 @@ public record LeavesXConfig(
+     boolean spectatorNoChunkLoading
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 62;
++    public static final int CURRENT_CONFIG_VERSION = 63;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -144,16 +144,16 @@ public record LeavesXConfig(
+             false,
+             2,
+             true,
+-            2_048,
+-            1_024,
++            512,
++            256,
+             true,
+-            65_536,
+             8_192,
++            1_024,
+             true,
+             0,
+             64,
+             true,
+-            524_288,
++            65_536,
+             true,
+             true,
+             true,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index ddcae3af01d3c3a97b1defb7c4760a1334f9c0c8..2432231d7a8dcec583f160f3a5688a064f895828 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -21,7 +21,12 @@ public final class LeavesXConfigLoader {
+     private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXConfigLoader.class);
+     private static final int AI_PARALLEL_DEFAULT_MIGRATION_VERSION = 59;
+     private static final int LEGACY_AI_PARALLEL_DEFAULT = 256;
+-    private static final int AI_PARALLEL_DEFAULT = 2_048;
++    private static final int AI_PARALLEL_DEFAULT = 512;
++    private static final int AI_PARALLEL_ITEMS_DEFAULT = 256;
++    private static final int ENTITY_ACTIVATION_DEFAULT = 8_192;
++    private static final int ENTITY_ACTIVATION_ITEMS_DEFAULT = 1_024;
++    private static final int MOB_SPAWN_DEFAULT = 65_536;
++    private static final int PARALLEL_THRESHOLD_MIGRATION_VERSION = 63;
+     private static final String HEADER = "LeavesX 性能配置。默认设置保持 Paper、Bukkit 和原版行为。";
+     // Schema-owned version comments may be replaced; all other leading user comments stay untouched.
+     private static final Pattern GENERATED_CONFIG_VERSION_COMMENT = Pattern.compile(
+@@ -58,6 +63,7 @@ public final class LeavesXConfigLoader {
+             LeavesXConfig config = fromNode(node, normalized);
+             final int sourceVersion = node.node("config-version").getInt(LeavesXConfig.CURRENT_CONFIG_VERSION);
+             boolean changed = migrateLegacyAiParallelDefault(node, sourceVersion);
++            changed |= migrateLegacyParallelDefaults(node, sourceVersion);
+             if (changed) {
+                 config = fromNode(node, normalized);
+             }
+@@ -184,7 +190,7 @@ public final class LeavesXConfigLoader {
+                 readInt(
+                     node.node("parallelism", "ai-target-search", "minimum-items-per-worker"),
+                     "parallelism.ai-target-search.minimum-items-per-worker",
+-                    1_024
++                    AI_PARALLEL_ITEMS_DEFAULT
+                 ),
+                 readBoolean(
+                     node.node("parallelism", "entity-activation", "enabled"),
+@@ -194,12 +200,12 @@ public final class LeavesXConfigLoader {
+                 readInt(
+                     node.node("parallelism", "entity-activation", "minimum-entities"),
+                     "parallelism.entity-activation.minimum-entities",
+-                    65_536
++                    ENTITY_ACTIVATION_DEFAULT
+                 ),
+                 readInt(
+                     node.node("parallelism", "entity-activation", "minimum-items-per-worker"),
+                     "parallelism.entity-activation.minimum-items-per-worker",
+-                    8_192
++                    ENTITY_ACTIVATION_ITEMS_DEFAULT
+                 ),
+                 readBoolean(
+                     node.node("parallelism", "mob-spawning", "enabled"),
+@@ -224,7 +230,7 @@ public final class LeavesXConfigLoader {
+                 readInt(
+                     node.node("parallelism", "mob-spawning", "minimum-entities"),
+                     "parallelism.mob-spawning.minimum-entities",
+-                    524_288
++                    MOB_SPAWN_DEFAULT
+                 ),
+                 readBoolean(
+                     node.node("performance", "item-merge-optimizations"),
+@@ -419,6 +425,37 @@ public final class LeavesXConfigLoader {
+         return true;
+     }
+ 
++    /** Upgrades only values that were generated by the previous conservative parallelism defaults. */
++    private static boolean migrateLegacyParallelDefaults(
++        final CommentedConfigurationNode node,
++        final int sourceVersion
++    ) {
++        if (sourceVersion >= PARALLEL_THRESHOLD_MIGRATION_VERSION) {
++            return false;
++        }
++        boolean changed = false;
++        changed |= migrateDefault(node.node("parallelism", "ai-target-search", "minimum-candidates"), 2_048, AI_PARALLEL_DEFAULT);
++        changed |= migrateDefault(node.node("parallelism", "ai-target-search", "minimum-items-per-worker"), 1_024, AI_PARALLEL_ITEMS_DEFAULT);
++        changed |= migrateDefault(node.node("parallelism", "entity-activation", "minimum-entities"), 65_536, ENTITY_ACTIVATION_DEFAULT);
++        changed |= migrateDefault(node.node("parallelism", "entity-activation", "minimum-items-per-worker"), 8_192, ENTITY_ACTIVATION_ITEMS_DEFAULT);
++        changed |= migrateDefault(node.node("parallelism", "mob-spawning", "minimum-entities"), 524_288, MOB_SPAWN_DEFAULT);
++        return changed;
++    }
++
++    private static boolean migrateDefault(
++        final CommentedConfigurationNode node,
++        final int legacyValue,
++        final int currentValue
++    ) {
++        final Object raw = node.rawScalar();
++        if ((raw instanceof Byte || raw instanceof Short || raw instanceof Integer || raw instanceof Long)
++            && ((Number)raw).intValue() == legacyValue) {
++            node.raw(currentValue);
++            return true;
++        }
++        return false;
++    }
++
+     private static boolean readBoolean(final ConfigurationNode node, final String path, final boolean defaultValue) {
+         if (node.virtual()) {
+             return defaultValue;
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 515b2490846af084b9dbc8bafb17d75dcdfe6352..1856bdcc48b72beec842b5319b9e328a55b437b5 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -330,7 +330,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：62。");
++        comments.put("config-version", "配置版本，请勿修改。默认：63。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -370,13 +370,13 @@ public final class LeavesXConfigWriter {
+         comments.put("parallelism.minimum-items-per-worker", "每个计算分片至少处理的项目数。默认：64。");
+         comments.put("parallelism.prestart-workers", "启动时预热计算线程，减少重启后第一次并行任务的延迟。默认：true。");
+         comments.put("parallelism.mob-spawning.enabled", "允许超大规模刷怪计数使用多线程。默认：true。");
+-        comments.put("parallelism.mob-spawning.minimum-entities", "实体达到此数量才并行统计刷怪。默认：524288。");
++        comments.put("parallelism.mob-spawning.minimum-entities", "实体达到此数量才并行统计刷怪。默认：65536。");
+         comments.put("parallelism.ai-target-search.enabled", "多线程计算大量 AI 目标的距离。默认：true。");
+-        comments.put("parallelism.ai-target-search.minimum-candidates", "AI 候选达到此数量才使用多线程。默认：2048。");
+-        comments.put("parallelism.ai-target-search.minimum-items-per-worker", "每个 AI 计算分片至少处理的候选数。默认：1024。");
++        comments.put("parallelism.ai-target-search.minimum-candidates", "AI 候选达到此数量才使用多线程。默认：512。");
++        comments.put("parallelism.ai-target-search.minimum-items-per-worker", "每个 AI 计算分片至少处理的候选数。默认：256。");
+         comments.put("parallelism.entity-activation.enabled", "允许超大实体激活批次使用多线程。默认：true。");
+-        comments.put("parallelism.entity-activation.minimum-entities", "激活实体达到此数量才使用多线程。默认：65536。");
+-        comments.put("parallelism.entity-activation.minimum-items-per-worker", "每个激活计算分片至少处理的实体数。默认：8192。");
++        comments.put("parallelism.entity-activation.minimum-entities", "激活实体达到此数量才使用多线程。默认：8192。");
++        comments.put("parallelism.entity-activation.minimum-items-per-worker", "每个激活计算分片至少处理的实体数。默认：1024。");
+         for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
+             comments.put(optimization.path(), optimization.comment());
+         }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index afea9072314ad7e50a2fc8debfedd4c4c4a7f9ca..edb495eba81d715879a38c39172397d1334c1509 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -21,17 +21,16 @@ public final class LeavesXRuntime {
+     /**
+      * Minimum candidate count at which a primitive AI computation can amortize worker dispatch.
+      *
+-     * <p>9950X measurements show that 128-256 candidates are several times slower when dispatched, while 2048
+-     * candidates become profitable with 1024-item partitions. Keeping both floors here prevents configuration from
+-     * turning ordinary per-mob scans into a scheduling regression.</p>
++     * <p>The adaptive beta158 baseline starts at 512 candidates with 256-item partitions. This keeps ordinary small
++     * scans synchronous while allowing dense farms to use more than the server thread.</p>
+      */
+-    private static final int AI_TARGET_SEARCH_PROFITABLE_FLOOR = 2_048;
+-    private static final int AI_TARGET_SEARCH_MINIMUM_ITEMS_FLOOR = 1_024;
++    private static final int AI_TARGET_SEARCH_PROFITABLE_FLOOR = 512;
++    private static final int AI_TARGET_SEARCH_MINIMUM_ITEMS_FLOOR = 256;
+     // AABB intersection is much cheaper than AI distance sorting. Measurements on the target 9950X host show that
+     // worker dispatch becomes worthwhile only for unusually large per-player candidate batches.
+-    private static final int ENTITY_ACTIVATION_PROFITABLE_FLOOR = 65_536;
+-    private static final int ENTITY_ACTIVATION_MINIMUM_ITEMS_FLOOR = 8_192;
+-    private static final int MOB_SPAWN_COUNTING_PROFITABLE_FLOOR = 524_288;
++    private static final int ENTITY_ACTIVATION_PROFITABLE_FLOOR = 8_192;
++    private static final int ENTITY_ACTIVATION_MINIMUM_ITEMS_FLOOR = 1_024;
++    private static final int MOB_SPAWN_COUNTING_PROFITABLE_FLOOR = 65_536;
+ 
+     private static volatile LeavesXConfig configuration = LeavesXConfig.safeDefaults();
+     private static volatile boolean diagnosticsCommandEnabled = true;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index afa453b5f47f0f526abbbc37edefe3c6cb45a3a0..e6fcbc09d457115359548484075fe68dfa92e52d 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -254,7 +254,7 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.villagerProfessionAssignmentOptimization());
+             assertFalse(LeavesXRuntime.longJumpCandidateOptimization());
+             assertFalse(LeavesXRuntime.ramPositionSelectionOptimization());
+-            assertEquals(524_288, LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities());
++            assertEquals(65_536, LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities());
+             assertEquals(4_096, LeavesXRuntime.aiTargetSearchMinimumCandidates());
+             assertEquals(2_048, LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker());
+             assertFalse(LeavesXRuntime.parallelEntityActivation());
+@@ -682,8 +682,8 @@ class LeavesXConfigLoaderTest {
+         final org.spongepowered.configurate.ConfigurationNode migratedNode =
+             io.papermc.paper.configuration.ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
+ 
+-        assertEquals(2_048, migrated.aiTargetSearchMinimumCandidates());
+-        assertEquals(2_048, migratedNode.node("parallelism", "ai-target-search", "minimum-candidates").getInt());
++        assertEquals(512, migrated.aiTargetSearchMinimumCandidates());
++        assertEquals(512, migratedNode.node("parallelism", "ai-target-search", "minimum-candidates").getInt());
+         assertEquals(LeavesXConfig.CURRENT_CONFIG_VERSION, migratedNode.node("config-version").getInt());
+ 
+         write("""
+@@ -713,12 +713,12 @@ class LeavesXConfigLoaderTest {
+ 
+         assertEquals(LeavesXConfig.CURRENT_CONFIG_VERSION, migratedNode.node("config-version").getInt());
+         assertTrue(migrated.parallelEntityActivation());
+-        assertEquals(65_536, migrated.entityActivationMinimumEntities());
+-        assertEquals(8_192, migrated.entityActivationMinimumItemsPerWorker());
++        assertEquals(8_192, migrated.entityActivationMinimumEntities());
++        assertEquals(1_024, migrated.entityActivationMinimumItemsPerWorker());
+         assertTrue(migratedNode.node("parallelism", "entity-activation", "enabled").getBoolean());
+-        assertEquals(65_536, migratedNode.node("parallelism", "entity-activation", "minimum-entities").getInt());
++        assertEquals(8_192, migratedNode.node("parallelism", "entity-activation", "minimum-entities").getInt());
+         assertEquals(
+-            8_192,
++            1_024,
+             migratedNode.node("parallelism", "entity-activation", "minimum-items-per-worker").getInt()
+         );
+         assertEquals(4_096, migratedNode.node("parallelism", "ai-target-search", "minimum-candidates").getInt());
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
+index d7049fcc5cae70bc096e401acfc62efcab684040..2c91951aa992d6951ac1364c9029b35b837d69a4 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
+@@ -64,8 +64,8 @@ class LeavesXReleaseCompatibilityTest {
+         assertTrue(defaults.pathfindingOptimizations());
+         assertTrue(defaults.mobSpawningOptimizations());
+         assertTrue(defaults.parallelEntityActivation());
+-        assertEquals(65_536, defaults.entityActivationMinimumEntities());
+-        assertEquals(8_192, defaults.entityActivationMinimumItemsPerWorker());
++        assertEquals(8_192, defaults.entityActivationMinimumEntities());
++        assertEquals(1_024, defaults.entityActivationMinimumItemsPerWorker());
+     }
+ 
+     @Test
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index 753f5ff8965952086fd0d95f09bad056df370f63..836ce5effcd336ecf65ddec29b6fc8acb3803312 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -138,16 +138,16 @@ class VillagerCompatibilityContextTest {
+             false,
+             2,
+             true,
+-            2_048,
+-            1_024,
++            512,
++            256,
+             true,
+-            65_536,
+             8_192,
++            1_024,
+             true,
+             0,
+             64,
+             true,
+-            524_288,
++            65_536,
+             true,
+             true,
+             true,
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+index a8016822b3f13bdfc60c0bf97548044cc357e3e4..edb8ae2fba402168e6cf5de0a635ab7853a0b05c 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -169,6 +169,26 @@ class StableDistanceSorterTest {
+         assertEquals(2_048L, ai.maximumItems());
+     }
+ 
++    @Test
++    void mediumDenseBatchUsesTheAdaptiveParallelThreshold() {
++        final int size = 512;
++        final double[] x = new double[size];
++        final double[] y = new double[size];
++        final double[] z = new double[size];
++        for (int index = 0; index < size; index++) {
++            x[index] = index & 31;
++            y[index] = (index >>> 5) & 15;
++            z[index] = index >>> 9;
++        }
++
++        LeavesXComputeExecutor.configure(4, 64);
++        StableDistanceSorter.sort(x, y, z, 0.0D, 0.0D, 0.0D, true, 512);
++
++        final LeavesXComputeExecutor.WorkloadMetrics ai = workload(LeavesXComputeExecutor.Workload.AI_TARGET_SORT);
++        assertEquals(1L, ai.parallelInvocations());
++        assertEquals(512L, ai.totalItems());
++    }
++
+     @Test
+     void keepsSmallCandidateSetsSynchronousAndReportsTheReason() {
+         LeavesXComputeExecutor.configure(4, 64);
