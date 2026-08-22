@@ -11,7 +11,10 @@ param(
 
     [switch]$WithoutLeavesXSettings,
 
-    [string]$SeedDirectory
+    [string]$SeedDirectory,
+
+    [ValidateSet('VANILLA', 'ALTERNATE_CURRENT', 'EIGENCRAFT')]
+    [string]$RedstoneImplementation = 'VANILLA'
 )
 
 Set-StrictMode -Version Latest
@@ -41,12 +44,23 @@ Copy-Item -LiteralPath $probeJar -Destination (Join-Path $instancePath 'plugins'
 
 if ($SeedDirectory) {
     $seedPath = (Resolve-Path -LiteralPath $SeedDirectory).Path
-    foreach ($directoryName in @('cache', 'libraries', 'versions')) {
+    foreach ($directoryName in @('cache', 'libraries', 'versions', 'config')) {
         $sourceDirectory = Join-Path $seedPath $directoryName
         if (Test-Path -LiteralPath $sourceDirectory -PathType Container) {
             Copy-Item -LiteralPath $sourceDirectory -Destination $instancePath -Recurse
         }
     }
+}
+
+$worldDefaultsPath = Join-Path $instancePath 'config\paper-world-defaults.yml'
+if (Test-Path -LiteralPath $worldDefaultsPath -PathType Leaf) {
+    $worldDefaults = [System.IO.File]::ReadAllText($worldDefaultsPath, $utf8)
+    $worldDefaults = [regex]::Replace(
+        $worldDefaults,
+        '(?m)^(\s*redstone-implementation:\s*).+$',
+        "`$1$RedstoneImplementation"
+    )
+    [System.IO.File]::WriteAllText($worldDefaultsPath, $worldDefaults, $utf8)
 }
 
 [System.IO.File]::WriteAllText((Join-Path $instancePath 'eula.txt'), "eula=true`r`n", $utf8)
@@ -96,6 +110,7 @@ $sawPass = $false
 $sawReload = $false
 $sawPistonDuplication = $false
 $sawStartupPistonDuplication = $false
+$sawStartupPistonSetting = $false
 $reachedDone = $false
 $deadline = [DateTime]::UtcNow.AddMinutes(3)
 
@@ -112,6 +127,9 @@ try {
         $consoleWriter.WriteLine($line)
         if (-not $reachedDone -and $line -match 'TNT/.+[:：].*') {
             $sawStartupPistonDuplication = $true
+        }
+        if (-not $reachedDone -and $line -match 'LX_PISTON_SETTING startup=true') {
+            $sawStartupPistonSetting = $true
         }
         if (-not $reachedDone -and $line -match 'Done \(.+\)! For help') {
             $reachedDone = $true
@@ -144,7 +162,7 @@ try {
     if ($process.ExitCode -ne 0) {
         throw "LeavesX exited with code $($process.ExitCode)."
     }
-    if (-not $reachedDone -or -not $normalStop -or -not $sawPass -or -not $sawReload -or -not $sawPistonDuplication -or -not $sawStartupPistonDuplication) {
+    if (-not $reachedDone -or -not $normalStop -or -not $sawPass -or -not $sawReload -or -not $sawPistonDuplication -or -not $sawStartupPistonDuplication -or -not $sawStartupPistonSetting) {
         throw 'The live TNT duplication fixture did not pass.'
     }
 

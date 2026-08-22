@@ -1,0 +1,20 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 22 Aug 2026 13:04:39 +0800
+Subject: [PATCH] Apply technical mode during dedicated server startup
+
+
+diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
+index a02d4f4c7241ebff526964035d7ae327cf4a7b0a..205d34267222ac85777f0376c6326fd69eb4bc4a 100644
+--- a/net/minecraft/server/dedicated/DedicatedServer.java
++++ b/net/minecraft/server/dedicated/DedicatedServer.java
+@@ -291,6 +291,9 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+         this.server.spark.registerCommandBeforePlugins(this.server); // Paper - spark
+ 
+         org.leavesmc.leaves.LeavesConfig.init((java.io.File) options.valueOf("leaves-settings")); // Leaves - Server Config
++        // Leaves - technical mode is loaded after Paper's global configuration; re-apply its locked exploit settings
++        // once during startup so a fresh server does not silently keep Paper's default piston-duplication protection.
++        org.leavesmc.leaves.util.McTechnicalModeHelper.doMcTechnicalModeIf();
+         this.getBotList().loadResumeBotInfo(); // Leaves - load resident bot info
+         org.leavesmc.leaves.util.ServerI18nUtil.init(); // Leaves I18n
+ 

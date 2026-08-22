@@ -64,6 +64,7 @@ public final class LeavesConfig {
 
     private static File configFile;
     public static YamlConfiguration config;
+    private static boolean initialized;
 
     public static void init(final @NotNull File file) {
         LeavesConfig.configFile = file;
@@ -92,6 +93,7 @@ public final class LeavesConfig {
         LeavesConfig.config.set("config-version", CURRENT_CONFIG_VERSION);
 
         GlobalConfigManager.init();
+        initialized = true;
 
         LeavesCommand.INSTANCE.register();
     }
@@ -109,6 +111,10 @@ public final class LeavesConfig {
         }
 
         GlobalConfigManager.reload();
+    }
+
+    public static boolean isInitialized() {
+        return initialized;
     }
 
     public static void save() {
