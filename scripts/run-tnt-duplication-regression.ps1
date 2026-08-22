@@ -50,6 +50,12 @@ if ($SeedDirectory) {
             Copy-Item -LiteralPath $sourceDirectory -Destination $instancePath -Recurse
         }
     }
+    foreach ($fileName in @('leaves.yml', 'leavesx.yml')) {
+        $sourceFile = Join-Path $seedPath $fileName
+        if (Test-Path -LiteralPath $sourceFile -PathType Leaf) {
+            Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $instancePath $fileName) -Force
+        }
+    }
 }
 
 $worldDefaultsPath = Join-Path $instancePath 'config\paper-world-defaults.yml'
@@ -130,6 +136,7 @@ try {
         }
         if (-not $reachedDone -and $line -match 'LX_PISTON_SETTING startup=true') {
             $sawStartupPistonSetting = $true
+            $sawStartupPistonDuplication = $true
         }
         if (-not $reachedDone -and $line -match 'Done \(.+\)! For help') {
             $reachedDone = $true

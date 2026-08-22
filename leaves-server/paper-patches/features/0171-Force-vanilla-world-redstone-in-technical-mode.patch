@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 22 Aug 2026 13:33:05 +0800
+Subject: [PATCH] Force vanilla world redstone in technical mode
+
+
+diff --git a/src/main/java/io/papermc/paper/configuration/PaperConfigurations.java b/src/main/java/io/papermc/paper/configuration/PaperConfigurations.java
+index 3f42c5bf7139708c4eb04aab87e3e6602a0f7683..e546a920f72b10b7e2bcd17261f57e21f0413377 100644
+--- a/src/main/java/io/papermc/paper/configuration/PaperConfigurations.java
++++ b/src/main/java/io/papermc/paper/configuration/PaperConfigurations.java
+@@ -318,7 +318,9 @@ public class PaperConfigurations extends Configurations<GlobalConfiguration, Wor
+     public WorldConfiguration createWorldConfig(final ContextMap contextMap) {
+         final String levelKey = contextMap.require(WORLD_KEY).toString();
+         try {
+-            return super.createWorldConfig(contextMap);
++            final WorldConfiguration configuration = super.createWorldConfig(contextMap);
++            org.leavesmc.leaves.util.McTechnicalModeHelper.onWorldConfigCreate(configuration);
++            return configuration;
+         } catch (IOException exception) {
+             throw new RuntimeException("Could not create world config for " + levelKey, exception);
+         }
+diff --git a/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java b/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java
+index 8739ec3c15e531bab4a872957eaa560eced05130..3aa495d3e8a55038288ba9241eef65ecf4a3b4b0 100644
+--- a/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java
+@@ -1,11 +1,22 @@
+ package org.leavesx.leavesx.config;
+ 
++import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.Test;
++import org.leavesmc.leaves.LeavesConfig;
++import org.leavesmc.leaves.util.McTechnicalModeHelper;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++import java.io.IOException;
++import java.util.Arrays;
+ 
+ /** Locks timing-sensitive TNT, piston and villager paths to their Paper implementations. */
+ @Normal
+@@ -38,4 +49,49 @@ class TechnicalMechanicsCompatibilityTest {
+         assertFalse(LeavesXRuntime.nearestEntityDistanceSortOptimization());
+         assertFalse(LeavesXRuntime.visibleEntityTargetCacheOptimization());
+     }
++
++    @Test
++    void technicalModeIsAppliedDuringInitialLeavesLoad() throws IOException {
++        final ClassNode validator = classNode("org.leavesmc.leaves.LeavesConfig$ModifyConfig$McTechnicalModeValidator");
++        final MethodNode afterLoader = validator.methods.stream()
++            .filter(method -> method.name.equals("runAfterLoader"))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing technical-mode startup validator"));
++        assertTrue(Arrays.stream(afterLoader.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals("org/leavesmc/leaves/util/McTechnicalModeHelper")
++                && call.name.equals("doMcTechnicalMode")));
++    }
++
++    @Test
++    void technicalModeResetsLegacyRedstoneOverrides() {
++        LeavesConfig.modify.noTNTPlaceUpdate = true;
++        LeavesConfig.modify.oldMC.updater.instantBlockUpdaterReintroduced = true;
++        LeavesConfig.modify.oldMC.updater.cceUpdateSuppression = true;
++        LeavesConfig.modify.oldMC.updater.soundUpdateSuppression = true;
++        LeavesConfig.modify.oldMC.updater.redstoneIgnoreUpwardsUpdate = true;
++        LeavesConfig.modify.oldMC.updater.oldBlockRemoveBehaviour = true;
++        LeavesConfig.performance.skipEntityMoveIfMovementIsZero = true;
++        LeavesConfig.performance.skipNegligiblePlanarMovementMultiplication = true;
++        LeavesConfig.fix.collisionBehavior = LeavesConfig.FixConfig.CollisionBehavior.PAPER;
++
++        McTechnicalModeHelper.doMcTechnicalMode();
++
++        assertFalse(LeavesConfig.modify.noTNTPlaceUpdate);
++        assertFalse(LeavesConfig.modify.oldMC.updater.instantBlockUpdaterReintroduced);
++        assertFalse(LeavesConfig.modify.oldMC.updater.cceUpdateSuppression);
++        assertFalse(LeavesConfig.modify.oldMC.updater.soundUpdateSuppression);
++        assertFalse(LeavesConfig.modify.oldMC.updater.redstoneIgnoreUpwardsUpdate);
++        assertFalse(LeavesConfig.modify.oldMC.updater.oldBlockRemoveBehaviour);
++        assertFalse(LeavesConfig.performance.skipEntityMoveIfMovementIsZero);
++        assertFalse(LeavesConfig.performance.skipNegligiblePlanarMovementMultiplication);
++        assertEquals(LeavesConfig.FixConfig.CollisionBehavior.VANILLA, LeavesConfig.fix.collisionBehavior);
++    }
++
++    private static ClassNode classNode(final String name) throws IOException {
++        final ClassNode node = new ClassNode(Opcodes.ASM9);
++        new ClassReader(name).accept(node, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return node;
++    }
+ }
