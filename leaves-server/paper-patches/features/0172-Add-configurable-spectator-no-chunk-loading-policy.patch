@@ -1,0 +1,265 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 22 Aug 2026 14:26:35 +0800
+Subject: [PATCH] Add configurable spectator no-chunk-loading policy
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index f20f229269445787eaeab498072b4305daf2e854..bf25bca1cb13653a694b86eb6d3bb016ff31f154 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -48,10 +48,11 @@ public record LeavesXConfig(
+     int chunkUnloadMaximumPerTick,
+     long fineGrainedOptimizationMaskLow,
+     long fineGrainedOptimizationMaskHigh,
+-    boolean villagerCompatibilityMode
++    boolean villagerCompatibilityMode,
++    boolean spectatorNoChunkLoading
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 61;
++    public static final int CURRENT_CONFIG_VERSION = 62;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -163,7 +164,8 @@ public record LeavesXConfig(
+             500,
+             LeavesXOptimization.allEnabledMaskLow(),
+             LeavesXOptimization.allEnabledMaskHigh(),
+-            true
++            true,
++            false
+         );
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 12a600062a84125cfdb6fca2c9a1e55e272a0d39..213e1de0e6d2d59b0878de7922f913070c1fcdd4 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -127,6 +127,10 @@ public final class LeavesXConfigBootstrap {
+             config.chunkUnloadMinimumPerTick(),
+             config.chunkUnloadMaximumPerTick()
+         );
++        LOGGER.info(
++            "LeavesX spectator no-chunk-loading: {} (requires spectators_generate_chunks=false)",
++            config.spectatorNoChunkLoading() ? "enabled" : "disabled"
++        );
+         LOGGER.info(
+             "LeavesX diagnostics: {} second rolling window, retain synchronous plugin tasks from {} ms",
+             config.diagnosticsRollingWindowSeconds(),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 55f28027efa06ef903e9b956c94d95d0fc1892eb..ddcae3af01d3c3a97b1defb7c4760a1334f9c0c8 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -272,6 +272,11 @@ public final class LeavesXConfigLoader {
+                     node.node("performance", "villager-compatibility-mode"),
+                     "performance.villager-compatibility-mode",
+                     true
++                ),
++                readBoolean(
++                    node.node("performance", "spectator-no-chunk-loading"),
++                    "performance.spectator-no-chunk-loading",
++                    false
+                 )
+             );
+         } catch (final IllegalArgumentException ex) {
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 0d18943868e9014bee7c917a8932cb1561c32568..515b2490846af084b9dbc8bafb17d75dcdfe6352 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -147,6 +147,12 @@ public final class LeavesXConfigWriter {
+             config.villagerCompatibilityMode(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "spectator-no-chunk-loading"),
++            "performance.spectator-no-chunk-loading",
++            config.spectatorNoChunkLoading(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "ai", "villager-profession-assignment"),
+             "performance.ai.villager-profession-assignment",
+@@ -324,7 +330,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：61。");
++        comments.put("config-version", "配置版本，请勿修改。默认：62。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -341,6 +347,10 @@ public final class LeavesXConfigWriter {
+             "performance.villager-compatibility-mode",
+             "村民 Tick 使用原版 AI、目标检测和寻路，保障恐慌与刷铁机行为。默认：true。"
+         );
++        comments.put(
++            "performance.spectator-no-chunk-loading",
++            "开启后，旁观者且 spectators_generate_chunks=false 时不加载或观察区块，按无玩家处理。默认：false。"
++        );
+         comments.put("performance.ai.villager-profession-assignment", "优化村民领取职业时的职业查找，关闭后使用原版查找。默认：true。");
+         comments.put("performance.ai.long-jump-candidates", "优化山羊和青蛙准备长跳时的候选位置构建，关闭后使用原版构建。默认：true。");
+         comments.put("performance.ai.ram-position-selection", "优化山羊蓄力冲撞时的起点排序与筛选，关闭后使用原版流程。默认：true。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index eb5bea13a3590f6d2c378c54a7e319712883ed70..afea9072314ad7e50a2fc8debfedd4c4c4a7f9ca 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -47,6 +47,7 @@ public final class LeavesXRuntime {
+     private static boolean entityQueryOptimizations = true;
+     private static boolean aiOptimizations = true;
+     private static volatile boolean villagerCompatibilityMode = true;
++    private static volatile boolean spectatorNoChunkLoading;
+     private static boolean villagerProfessionAssignmentOptimization = true;
+     private static boolean longJumpCandidateOptimization = true;
+     private static boolean ramPositionSelectionOptimization = true;
+@@ -128,6 +129,7 @@ public final class LeavesXRuntime {
+         entityQueryOptimizations = validated.entityQueryOptimizations();
+         aiOptimizations = validated.aiOptimizations();
+         villagerCompatibilityMode = validated.villagerCompatibilityMode();
++        spectatorNoChunkLoading = validated.spectatorNoChunkLoading();
+         villagerProfessionAssignmentOptimization = validated.villagerProfessionAssignmentOptimization();
+         longJumpCandidateOptimization = validated.longJumpCandidateOptimization();
+         ramPositionSelectionOptimization = validated.ramPositionSelectionOptimization();
+@@ -396,6 +398,11 @@ public final class LeavesXRuntime {
+         return villagerCompatibilityMode;
+     }
+ 
++    /** Returns whether gamerule-disabled spectators should be treated as having no player chunk loader. */
++    public static boolean spectatorNoChunkLoading() {
++        return spectatorNoChunkLoading;
++    }
++
+     /** Enters the per-thread vanilla compatibility context used while a villager is ticking. */
+     public static boolean enterVillagerCompatibilityContext() {
+         final int context = VILLAGER_OPTIMIZATION_CONTEXT.get();
+diff --git a/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java b/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java
+index c3544ad01aa72f7faaa9e6abb121d4582d754dde..526871b0a9c5c776160afec0915a8e70577c3baf 100644
+--- a/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java
++++ b/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java
+@@ -32,6 +32,18 @@ class SpectatorChunkLoadingPolicyTest {
+         assertFalse(shouldObserveLoadedChunks(true, false, true));
+     }
+ 
++    @Test
++    void optionalNoChunkLoadingPolicySuppressesTheReadOnlyObserverOnlyWhenEnabled() throws ReflectiveOperationException {
++        assertFalse(canPlayerLoadChunks(true, false, false, false));
++        assertTrue(shouldObserveLoadedChunks(true, false, false, false));
++        assertFalse(canPlayerLoadChunks(true, false, false, true));
++        assertFalse(shouldObserveLoadedChunks(true, false, false, true));
++        assertTrue(canPlayerLoadChunks(true, true, false, true));
++        assertFalse(shouldObserveLoadedChunks(true, true, false, true));
++        assertTrue(canPlayerLoadChunks(false, false, false, true));
++        assertFalse(shouldObserveLoadedChunks(false, false, false, true));
++    }
++
+     @Test
+     void loaderLifecycleReevaluatesThePolicy() throws IOException {
+         final ClassNode loader = classNode(RegionizedPlayerChunkLoader.class);
+@@ -100,6 +112,40 @@ class SpectatorChunkLoadingPolicyTest {
+         return (boolean)policy.invoke(null, spectator, spectatorsGenerateChunks, explicitlySuppressChunkLoading);
+     }
+ 
++    private static boolean canPlayerLoadChunks(
++        final boolean spectator,
++        final boolean spectatorsGenerateChunks,
++        final boolean explicitlySuppressChunkLoading,
++        final boolean spectatorNoChunkLoading
++    ) throws ReflectiveOperationException {
++        final Method policy = RegionizedPlayerChunkLoader.class.getDeclaredMethod(
++            "canPlayerLoadChunks",
++            boolean.class,
++            boolean.class,
++            boolean.class,
++            boolean.class
++        );
++        policy.setAccessible(true);
++        return (boolean)policy.invoke(null, spectator, spectatorsGenerateChunks, explicitlySuppressChunkLoading, spectatorNoChunkLoading);
++    }
++
++    private static boolean shouldObserveLoadedChunks(
++        final boolean spectator,
++        final boolean spectatorsGenerateChunks,
++        final boolean explicitlySuppressChunkLoading,
++        final boolean spectatorNoChunkLoading
++    ) throws ReflectiveOperationException {
++        final Method policy = RegionizedPlayerChunkLoader.class.getDeclaredMethod(
++            "shouldObserveLoadedChunks",
++            boolean.class,
++            boolean.class,
++            boolean.class,
++            boolean.class
++        );
++        policy.setAccessible(true);
++        return (boolean)policy.invoke(null, spectator, spectatorsGenerateChunks, explicitlySuppressChunkLoading, spectatorNoChunkLoading);
++    }
++
+     private static boolean hasPolicyCall(final MethodNode method) {
+         final String owner = RegionizedPlayerChunkLoader.class.getName().replace('.', '/');
+         return Arrays.stream(method.instructions.toArray())
+diff --git a/src/test/java/org/leavesx/leavesx/config/SpectatorNoChunkLoadingConfigTest.java b/src/test/java/org/leavesx/leavesx/config/SpectatorNoChunkLoadingConfigTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ac3b0ef13c454d9e6390e8b08bf8a024fdb365c
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/config/SpectatorNoChunkLoadingConfigTest.java
+@@ -0,0 +1,47 @@
++package org.leavesx.leavesx.config;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++
++/** Verifies the spectator no-chunk-loading option is explicit and disabled by default. */
++@Normal
++class SpectatorNoChunkLoadingConfigTest {
++
++    @TempDir
++    Path temporaryDirectory;
++
++    @AfterEach
++    void restoreDefaults() {
++        LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++    }
++
++    @Test
++    void safeDefaultsKeepPaperObserverSemantics() {
++        assertFalse(LeavesXConfig.safeDefaults().spectatorNoChunkLoading());
++        LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        assertFalse(LeavesXRuntime.spectatorNoChunkLoading());
++    }
++
++    @Test
++    void optionCanBeEnabledWithoutChangingTheGamerule() throws IOException {
++        final Path path = this.temporaryDirectory.resolve("leavesx.yml");
++        Files.writeString(path, """
++            config-version: 1
++            performance:
++              spectator-no-chunk-loading: true
++            """);
++
++        final LeavesXConfig config = LeavesXConfigLoader.load(path);
++        assertTrue(config.spectatorNoChunkLoading());
++        LeavesXRuntime.publish(config);
++        assertTrue(LeavesXRuntime.spectatorNoChunkLoading());
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index c054537259be03891804dcdd94e8b94ac3030e7f..753f5ff8965952086fd0d95f09bad056df370f63 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -158,7 +158,8 @@ class VillagerCompatibilityContextTest {
+             500,
+             LeavesXOptimization.allEnabledMaskLow(),
+             LeavesXOptimization.allEnabledMaskHigh(),
+-            enabled
++            enabled,
++            false
+         );
+     }
+ 

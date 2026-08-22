@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 22 Aug 2026 14:26:05 +0800
+Subject: [PATCH] Gate spectator observer loader behind LeavesX setting
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+index 6849e7db1d724b167aee6e2cab7960333ce8a3e8..4b95569b85ee333a46bc57b4ba58f1779b6e159a 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+@@ -189,7 +189,8 @@ public final class RegionizedPlayerChunkLoader {
+         return canPlayerLoadChunks(
+             player.isSpectator(),
+             world.getGameRules().get(GameRules.SPECTATORS_GENERATE_CHUNKS),
+-            org.leavesmc.leaves.LeavesConfig.modify.elytraAeronautics.enableNoChunkLoad && player.elytraAeronauticsNoChunk
++            org.leavesmc.leaves.LeavesConfig.modify.elytraAeronautics.enableNoChunkLoad && player.elytraAeronauticsNoChunk,
++            org.leavesx.leavesx.config.LeavesXRuntime.spectatorNoChunkLoading()
+         );
+     }
+ 
+@@ -198,6 +199,18 @@ public final class RegionizedPlayerChunkLoader {
+         final boolean spectatorsGenerateChunks,
+         final boolean explicitlySuppressChunkLoading
+     ) {
++        return canPlayerLoadChunks(spectator, spectatorsGenerateChunks, explicitlySuppressChunkLoading, false);
++    }
++
++    /** Applies the optional LeavesX policy without changing the three-argument Paper compatibility helper. */
++    static boolean canPlayerLoadChunks(
++        final boolean spectator,
++        final boolean spectatorsGenerateChunks,
++        final boolean explicitlySuppressChunkLoading,
++        final boolean spectatorNoChunkLoading
++    ) {
++        // The gamerule already controls ownership of loading/simulation tickets. The optional LeavesX policy only
++        // suppresses the observer-only loader below, so toggling it cannot grant a spectator new tickets.
+         return (!spectator || spectatorsGenerateChunks) && !explicitlySuppressChunkLoading;
+     }
+ 
+@@ -212,14 +225,25 @@ public final class RegionizedPlayerChunkLoader {
+         final boolean spectatorsGenerateChunks,
+         final boolean explicitlySuppressChunkLoading
+     ) {
+-        return spectator && !spectatorsGenerateChunks && !explicitlySuppressChunkLoading;
++        return shouldObserveLoadedChunks(spectator, spectatorsGenerateChunks, explicitlySuppressChunkLoading, false);
++    }
++
++    /** Suppresses the read-only observer loader when the operator explicitly requests no spectator chunk loading. */
++    static boolean shouldObserveLoadedChunks(
++        final boolean spectator,
++        final boolean spectatorsGenerateChunks,
++        final boolean explicitlySuppressChunkLoading,
++        final boolean spectatorNoChunkLoading
++    ) {
++        return spectator && !spectatorsGenerateChunks && !explicitlySuppressChunkLoading && !spectatorNoChunkLoading;
+     }
+ 
+     private static boolean shouldObserveLoadedChunks(final ServerLevel world, final ServerPlayer player) {
+         return shouldObserveLoadedChunks(
+             player.isSpectator(),
+             world.getGameRules().get(GameRules.SPECTATORS_GENERATE_CHUNKS),
+-            org.leavesmc.leaves.LeavesConfig.modify.elytraAeronautics.enableNoChunkLoad && player.elytraAeronauticsNoChunk
++            org.leavesmc.leaves.LeavesConfig.modify.elytraAeronautics.enableNoChunkLoad && player.elytraAeronauticsNoChunk,
++            org.leavesx.leavesx.config.LeavesXRuntime.spectatorNoChunkLoading()
+         );
+     }
+ 
