@@ -1,0 +1,2285 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 27 Aug 2026 13:51:29 +0800
+Subject: [PATCH] Complete safe compute fallback diagnostics
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index db4ef8194ad64bcf361f852b0d17001fc9f72d4c..48031144cc7bca174fb23dd90e851012aa9e7193 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -56,6 +56,7 @@ import org.bukkit.entity.Player;
+ import org.bukkit.plugin.Plugin;
+ import org.bukkit.util.StringUtil;
+ import org.leavesmc.leaves.LeavesConfig;
++import org.leavesx.leavesx.config.LeavesXConfigBootstrap;
+ import org.leavesx.leavesx.config.LeavesXConfig;
+ import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.leavesx.leavesx.diagnostics.LeavesXChunkDiagnostics;
+@@ -70,13 +71,13 @@ public final class LeavesXCommand extends Command {
+ 
+     private static final List<String> SUBCOMMANDS = List.of(
+         "status", "all", "gui", "worlds", "entities", "hotspots", "blockentities", "blockhotspots",
+-        "villagers", "activity", "tickets", "plugins", "memory", "network", "threads", "system", "stalls", "config", "help"
++        "villagers", "activity", "tickets", "plugins", "memory", "network", "threads", "parallel", "system", "stalls", "config", "reload", "help"
+     );
+ 
+     public LeavesXCommand(final String name) {
+         super(name);
+         this.description = "查看 LeavesX 服务器性能状态";
+-        this.usageMessage = "/leavesx <status|all|gui|worlds|activity|entities|hotspots|villagers|blockentities|blockhotspots|tickets|plugins|memory|network|threads|system|stalls|config>";
++        this.usageMessage = "/leavesx <status|all|gui|worlds|activity|entities|hotspots|villagers|blockentities|blockhotspots|tickets|plugins|memory|network|threads|parallel|system|stalls|config|reload>";
+         this.setPermission("leavesx.command.performance");
+     }
+ 
+@@ -103,9 +104,11 @@ public final class LeavesXCommand extends Command {
+             case "memory" -> sendMemory(sender);
+             case "network" -> sendNetwork(sender);
+             case "threads" -> sendThreads(sender);
++            case "parallel" -> sendParallel(sender, args);
+             case "system" -> sendSystem(sender);
+             case "stalls" -> sendStalls(sender, args);
+             case "config" -> sendConfig(sender);
++            case "reload" -> reloadConfiguration(sender);
+             case "help" -> sendHelp(sender);
+             default -> {
+                 sender.sendMessage(Component.text("未知子命令：" + subcommand, NamedTextColor.RED));
+@@ -128,6 +131,9 @@ public final class LeavesXCommand extends Command {
+         if (args.length == 2 && args[0].equalsIgnoreCase("stalls")) {
+             return StringUtil.copyPartialMatches(args[1], List.of("5", "10", "20", "clear"), new ArrayList<>());
+         }
++        if (args.length == 2 && args[0].equalsIgnoreCase("parallel")) {
++            return StringUtil.copyPartialMatches(args[1], List.of("10", "30", "60", "120", "300"), new ArrayList<>());
++        }
+         if ((args[0].equalsIgnoreCase("all")
+             || args[0].equalsIgnoreCase("entities")
+             || args[0].equalsIgnoreCase("hotspots")
+@@ -542,6 +548,200 @@ public final class LeavesXCommand extends Command {
+         return new BlockEntitySnapshot(counts, hotspots, total, ticking);
+     }
+ 
++    /**
++     * Collects one bounded, read-only snapshot for every GUI tooltip.
++     *
++     * <p>Entity and block-entity scans are shared by all icons so opening the inventory never repeats the expensive
++     * traversal for each item. Detailed command output remains separate and is only produced after a click.</p>
++     */
++    static Map<String, List<String>> collectGuiLore() {
++        final int limit = 3;
++        final List<World> worlds = Bukkit.getWorlds();
++        final EntitySnapshot entities = collectEntities(worlds);
++        final BlockEntitySnapshot blockEntities = collectBlockEntities(worlds);
++        final Map<String, List<String>> lore = new HashMap<>();
++
++        final List<String> worldLines = new ArrayList<>();
++        for (int index = 0; index < Math.min(limit, worlds.size()); index++) {
++            final World world = worlds.get(index);
++            final ServerLevel level = ((CraftWorld)world).getHandle();
++            worldLines.add(shortWorld(world.getKey().toString()) + "：区块 "
++                + level.getChunkSource().getFullChunksCount() + " / 实体 " + level.getEntityCount());
++        }
++        lore.put("worlds", List.copyOf(worldLines));
++
++        final List<Map.Entry<Identifier, MutableEntityCount>> entityTypes = new ArrayList<>(entities.counts().entrySet());
++        entityTypes.sort(Comparator.<Map.Entry<Identifier, MutableEntityCount>>comparingInt(entry -> entry.getValue().total)
++            .reversed().thenComparing(entry -> entry.getKey().toString()));
++        final List<String> entityLines = new ArrayList<>();
++        entityLines.add("总数 " + entities.total() + " / 活跃 " + entities.ticking());
++        for (int index = 0; index < Math.min(limit, entityTypes.size()); index++) {
++            final Map.Entry<Identifier, MutableEntityCount> entry = entityTypes.get(index);
++            entityLines.add((index + 1) + ". " + shortId(entry.getKey().toString()) + " " + entry.getValue().total
++                + "（活跃 " + entry.getValue().ticking + "）");
++        }
++        lore.put("entities", List.copyOf(entityLines));
++
++        final List<EntityHotspot> entityHotspots = new ArrayList<>(entities.hotspots());
++        entityHotspots.sort(Comparator.comparingInt(EntityHotspot::total).reversed()
++            .thenComparing(EntityHotspot::world).thenComparingInt(EntityHotspot::chunkX).thenComparingInt(EntityHotspot::chunkZ));
++        final List<String> hotspotLines = new ArrayList<>();
++        for (int index = 0; index < Math.min(limit, entityHotspots.size()); index++) {
++            final EntityHotspot hotspot = entityHotspots.get(index);
++            hotspotLines.add((index + 1) + ". " + shortWorld(hotspot.world()) + " 区块[" + hotspot.chunkX() + ','
++                + hotspot.chunkZ() + "] " + hotspot.total() + "（活跃 " + hotspot.ticking() + "）");
++        }
++        lore.put("hotspots", hotspotLines.isEmpty() ? List.of("当前没有实体热点") : List.copyOf(hotspotLines));
++
++        final List<Map.Entry<Identifier, MutableBlockEntityCount>> blockTypes = new ArrayList<>(blockEntities.counts().entrySet());
++        blockTypes.sort(Comparator.<Map.Entry<Identifier, MutableBlockEntityCount>>comparingInt(entry -> entry.getValue().total)
++            .reversed().thenComparing(entry -> entry.getKey().toString()));
++        final List<String> blockEntityLines = new ArrayList<>();
++        blockEntityLines.add("总数 " + blockEntities.total() + " / 更新 " + blockEntities.ticking());
++        for (int index = 0; index < Math.min(limit, blockTypes.size()); index++) {
++            final Map.Entry<Identifier, MutableBlockEntityCount> entry = blockTypes.get(index);
++            blockEntityLines.add((index + 1) + ". " + shortId(entry.getKey().toString()) + " " + entry.getValue().total
++                + "（更新 " + entry.getValue().ticking + "）");
++        }
++        lore.put("blockentities", List.copyOf(blockEntityLines));
++
++        final List<BlockEntityHotspot> blockHotspots = new ArrayList<>(blockEntities.hotspots());
++        blockHotspots.sort(Comparator.comparingInt(BlockEntityHotspot::total).reversed()
++            .thenComparing(BlockEntityHotspot::world)
++            .thenComparingInt(BlockEntityHotspot::chunkX)
++            .thenComparingInt(BlockEntityHotspot::chunkZ));
++        final List<String> blockHotspotLines = new ArrayList<>();
++        for (int index = 0; index < Math.min(limit, blockHotspots.size()); index++) {
++            final BlockEntityHotspot hotspot = blockHotspots.get(index);
++            blockHotspotLines.add((index + 1) + ". " + shortWorld(hotspot.world()) + " 区块[" + hotspot.chunkX() + ','
++                + hotspot.chunkZ() + "] " + hotspot.total() + "（更新 " + hotspot.ticking() + "）");
++        }
++        lore.put("blockhotspots", blockHotspotLines.isEmpty() ? List.of("当前没有方块实体热点") : List.copyOf(blockHotspotLines));
++
++        int loadedChunks = 0;
++        int holders = 0;
++        long pendingUnloads = 0L;
++        long ticketAdds = 0L;
++        long ticketRemoves = 0L;
++        final List<String> activityLines = new ArrayList<>();
++        for (final World world : worlds) {
++            final ServerLevel level = ((CraftWorld)world).getHandle();
++            final LeavesXChunkDiagnostics.Activity activity = chunkMetrics(level)
++                .activity(LeavesXRuntime.diagnosticsRollingWindowSeconds());
++            loadedChunks += level.getChunkSource().getFullChunksCount();
++            holders += level.getChunkSource().getLoadedChunksCount();
++            pendingUnloads += level.moonrise$getChunkTaskScheduler().chunkHolderManager.leavesX$getPendingUnloadCount();
++            ticketAdds += activity.ticketAdds();
++            ticketRemoves += activity.ticketRemoves();
++            if (activityLines.size() < limit) {
++                activityLines.add(shortWorld(world.getKey().toString()) + "：加载 " + activity.completedLoads()
++                    + " / 卸载 " + activity.completedUnloads());
++            }
++        }
++        lore.put("activity", List.copyOf(activityLines));
++        lore.put("tickets", List.of(
++            "持有器 " + holders + " / 已加载区块 " + loadedChunks,
++            "近窗票据操作 +" + ticketAdds + " / -" + ticketRemoves,
++            "待卸载 " + pendingUnloads
++        ));
++        lore.put("all", List.of(
++            "TPS " + oneDecimal(Math.min(20.0D, Bukkit.getTPS()[0])) + " / MSPT " + oneDecimal(Bukkit.getAverageTickTime()),
++            "区块 " + loadedChunks + " / 持有器 " + holders + " / 待卸载 " + pendingUnloads,
++            "实体 " + entities.total() + " / 方块实体 " + blockEntities.total()
++        ));
++
++        final MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
++        final LeavesXGcDiagnostics.Snapshot gc = LeavesXGcDiagnostics.snapshot(LeavesXRuntime.diagnosticsRollingWindowSeconds());
++        lore.put("memory", List.of(
++            "堆内存 " + formatUsage(heap),
++            "近窗 GC " + gc.windowCollections() + " 次 / STW " + gc.windowPauseCollections() + " 次",
++            "最长暂停 " + oneDecimal(gc.maximumPauseNanos() / 1_000_000.0D) + " ms"
++        ));
++
++        final List<LeavesXTickDiagnostics.SlowTick> slowTicks = LeavesXTickDiagnostics.recent(2);
++        final List<String> stallLines = new ArrayList<>();
++        stallLines.add("进程累计慢 Tick " + LeavesXTickDiagnostics.totalSlowTicks() + " 次");
++        for (int index = 0; index < slowTicks.size(); index++) {
++            final LeavesXTickDiagnostics.SlowTick slowTick = slowTicks.get(index);
++            stallLines.add((index + 1) + ". " + slowTick.type().displayName() + " "
++                + oneDecimal(slowTick.wallNanos() / 1_000_000.0D) + " ms");
++        }
++        lore.put("stalls", List.copyOf(stallLines));
++        lore.put("network", collectGuiNetworkLore());
++
++        final LeavesXSystemDiagnostics.Reading systemReading = LeavesXSystemDiagnostics.snapshot();
++        final LeavesXSystemDiagnostics.Snapshot system = systemReading.snapshot();
++        lore.put("system", List.of(
++            "JVM 可用处理器 " + system.jvmProcessors(),
++            "进程 CPU " + formatPercent(system.processCpuLoad()),
++            "系统 CPU " + formatPercent(system.systemCpuLoad())
++        ));
++
++        final LeavesXComputeExecutor.Metrics compute = LeavesXComputeExecutor.metrics();
++        final LeavesXComputeExecutor.WindowMetrics recent = LeavesXComputeExecutor.recentMetrics(60);
++        lore.put("threads", List.of(
++            "工作线程 " + compute.activeWorkers() + " 活跃 / " + compute.workers() + " 总数",
++            "近 60 秒并行 " + recent.parallelInvocations() + " / 仅主线程 " + recent.callerOnlyInvocations(),
++            "完整回退 " + recent.mainThreadFallbacks() + " / 异常 " + recent.failedInvocations()
++        ));
++
++        final LeavesXPluginTaskDiagnostics.Snapshot plugins = LeavesXPluginTaskDiagnostics.snapshot(
++            LeavesXRuntime.diagnosticsRollingWindowSeconds(),
++            limit
++        );
++        final List<String> pluginLines = new ArrayList<>();
++        pluginLines.add("近窗慢任务 " + plugins.retainedTasks() + " 个 / "
++            + oneDecimal(plugins.retainedNanos() / 1_000_000.0D) + " ms");
++        for (int index = 0; index < Math.min(limit, plugins.plugins().size()); index++) {
++            final LeavesXPluginTaskDiagnostics.PluginSummary plugin = plugins.plugins().get(index);
++            pluginLines.add((index + 1) + ". " + plugin.plugin() + " 最长 "
++                + oneDecimal(plugin.maximumNanos() / 1_000_000.0D) + " ms");
++        }
++        lore.put("plugins", List.copyOf(pluginLines));
++
++        final LeavesXConfig config = LeavesXRuntime.configuration();
++        lore.put("config", List.of(
++            "AI / 寻路 " + onOff(config.aiOptimizations()) + " / " + onOff(config.pathfindingOptimizations()),
++            "AI 目标并行 " + onOff(config.parallelAiTargetSearch()),
++            "实体激活并行 " + onOff(config.parallelEntityActivation()),
++            "计算线程 " + LeavesXComputeExecutor.workerCount()
++        ));
++        return Map.copyOf(lore);
++    }
++
++    private static List<String> collectGuiNetworkLore() {
++        final List<Connection> connections = MinecraftServer.getServer().getConnection().getConnections();
++        double inboundPackets = 0.0D;
++        double outboundPackets = 0.0D;
++        int pendingActions = 0;
++        int nonWritable = 0;
++        int connectionCount;
++        synchronized (connections) {
++            connectionCount = connections.size();
++            for (final Connection connection : connections) {
++                inboundPackets += connection.getAverageReceivedPackets();
++                outboundPackets += connection.getAverageSentPackets();
++                pendingActions += connection.leavesX$getPendingActionCount();
++                if (connection.channel != null && !connection.channel.isWritable()) {
++                    nonWritable++;
++                }
++            }
++        }
++        return List.of(
++            "连接 " + connectionCount + " / 玩家 " + Bukkit.getOnlinePlayers().size(),
++            "包/秒 收 " + oneDecimal(inboundPackets) + " / 发 " + oneDecimal(outboundPackets),
++            "发送待处理 " + pendingActions + " / 不可写 " + nonWritable
++        );
++    }
++
++    private static String shortWorld(final String id) {
++        return id.startsWith("minecraft:") ? id.substring("minecraft:".length()) : id;
++    }
++
++    private static String shortId(final String id) {
++        return id.startsWith("minecraft:") ? id.substring("minecraft:".length()) : id;
++    }
++
+     private static void sendTickets(final CommandSender sender, final String[] args) {
+         final Selection selection = selectWorldsAndLimit(sender, args);
+         if (selection == null) {
+@@ -769,8 +969,9 @@ public final class LeavesXCommand extends Command {
+         ));
+         sender.sendMessage(line(
+             "LeavesX 计算线程",
+-            metrics.activeWorkers() + " 活跃 / " + metrics.workers() + " 总数 / " + metrics.queuedTasks() + " 排队",
+-            metrics.queuedTasks() == 0 ? NamedTextColor.GREEN : NamedTextColor.YELLOW
++            metrics.activeWorkers() + " 活跃 / " + metrics.workers() + " 总数 / " + metrics.queuedTasks()
++                + " 排队 / " + metrics.reservedTasks() + " 预留",
++            metrics.queuedTasks() == 0 && metrics.reservedTasks() == 0 ? NamedTextColor.GREEN : NamedTextColor.YELLOW
+         ));
+         sender.sendMessage(line(
+             "并行调用",
+@@ -785,6 +986,28 @@ public final class LeavesXCommand extends Command {
+                 + " / 并行不可用 " + metrics.unavailableParallelismFallbacks(),
+             NamedTextColor.GRAY
+         ));
++        sender.sendMessage(line(
++            "线程争用",
++            "槽位预留不足 " + metrics.slotReservationShortages()
++                + " / 队列拥堵回退 " + metrics.queueContentionFallbacks()
++                + " / 队列峰值 " + metrics.maximumQueuedTasks()
++                + " / 拒绝 " + metrics.rejectedTasks()
++                + " / 短等待 " + metrics.timedWorkerWaits(),
++            NamedTextColor.GRAY
++        ));
++        sender.sendMessage(line(
++            "完整主线程回退",
++            metrics.fullRecomputationRequests() + " 次请求 / 仅主线程执行 " + metrics.callerOnlyInvocations()
++                + " 次 / 提交回退 " + metrics.submissionFallbackInvocations(),
++            metrics.fullRecomputationRequests() == 0L ? NamedTextColor.GREEN : NamedTextColor.YELLOW
++        ));
++        sender.sendMessage(line(
++            "最近回退",
++            metrics.lastFallbackReason() + (metrics.lastFallbackWorkload() == null
++                ? ""
++                : "（" + metrics.lastFallbackWorkload().displayName() + "，" + metrics.lastFallbackAgeMillis() + " ms 前）"),
++            metrics.lastFallbackReason().equals("无") ? NamedTextColor.GREEN : NamedTextColor.YELLOW
++        ));
+         sender.sendMessage(line(
+             "计算任务",
+             metrics.completedTasks() + " 已完成 / " + metrics.largestPoolSize() + " 线程池峰值 / "
+@@ -800,7 +1023,9 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(line(
+             "分片负载",
+             "主线程 " + metrics.callerItems() + " 项 / 工作线程 " + metrics.workerItems()
+-                + " 项 / 工作线程并发峰值 " + metrics.maximumConcurrentWorkers(),
++                + " 项 / 主线程帮助 " + metrics.callerHelpRanges()
++                + " / 工作线程批次 " + metrics.workerBatches()
++                + " / 并发峰值 " + metrics.maximumConcurrentWorkers(),
+             NamedTextColor.GRAY
+         ));
+         for (final LeavesXComputeExecutor.WorkloadMetrics workload : metrics.workloads()) {
+@@ -811,7 +1036,8 @@ public final class LeavesXCommand extends Command {
+                 workload.workload().displayName(),
+                 workload.invocations() + " 调用 / " + workload.parallelInvocations() + " 并行 / "
+                     + workload.synchronousFallbacks() + " 同步 / " + workload.failedInvocations() + " 失败 / "
+-                    + workload.totalItems() + " 项目（最大 " + workload.maximumItems() + "）",
++                    + workload.totalItems() + " 项目（最大 " + workload.maximumItems() + "）/ 工作批次 "
++                    + workload.workerBatches(),
+                 workload.failedInvocations() == 0L ? NamedTextColor.GRAY : NamedTextColor.RED
+             ));
+             sender.sendMessage(line(
+@@ -836,6 +1062,98 @@ public final class LeavesXCommand extends Command {
+         ));
+     }
+ 
++    /** Prints bounded recent-window counters for diagnosing unexpected single-thread execution. */
++    private static void sendParallel(final CommandSender sender, final String[] args) {
++        int requestedSeconds = 60;
++        if (args.length >= 2) {
++            try {
++                requestedSeconds = Math.clamp(Integer.parseInt(args[1]), 10, 300);
++            } catch (final NumberFormatException exception) {
++                sender.sendMessage(Component.text("时间必须是 10 到 300 秒的整数。", NamedTextColor.RED));
++                return;
++            }
++        }
++
++        final LeavesXComputeExecutor.WindowMetrics window = LeavesXComputeExecutor.recentMetrics(requestedSeconds);
++        sendHeader(sender, "LeavesX 并行回退诊断");
++        sender.sendMessage(Component.text(
++            "窗口 " + oneDecimal(window.elapsedNanos() / 1_000_000_000.0D) + " 秒（约 " + requestedSeconds + " 秒）",
++            NamedTextColor.GRAY
++        ));
++        sender.sendMessage(line(
++            "总体调用",
++            window.invocations() + " 次 / 并行 " + window.parallelInvocations() + " 次 / 主线程完整回退 "
++                + window.mainThreadFallbacks() + " 次 / 仅主线程执行 " + window.callerOnlyInvocations() + " 次",
++            window.mainThreadFallbacks() == 0L ? NamedTextColor.GREEN : NamedTextColor.YELLOW
++        ));
++        sender.sendMessage(line(
++            "正常未并行",
++            "低于阈值 " + window.belowThresholdFallbacks() + " / 分区不足 "
++                + window.insufficientPartitionFallbacks() + " / 线程池不可用 " + window.unavailableParallelismFallbacks(),
++            NamedTextColor.GRAY
++        ));
++        sender.sendMessage(line(
++            "异常与提交",
++            "计算异常 " + window.failedInvocations() + " / 提交回退 " + window.submissionFallbacks()
++                + " / 队列拥堵 " + window.queueContentionFallbacks() + " / 拒绝任务 " + window.rejectedTasks(),
++            window.failedInvocations() == 0L && window.submissionFallbacks() == 0L
++                ? NamedTextColor.GREEN
++                : NamedTextColor.RED
++        ));
++        sender.sendMessage(line(
++            "工作量分布",
++            "主线程 " + window.callerItems() + " 项 / 工作线程 " + window.workerItems() + " 项",
++            window.workerItems() == 0L && window.invocations() > 0L ? NamedTextColor.YELLOW : NamedTextColor.AQUA
++        ));
++        for (final LeavesXComputeExecutor.WorkloadWindowMetrics workload : window.workloads()) {
++            sender.sendMessage(line(
++                workload.workload().displayName(),
++                workload.invocations() + " 调用 / 并行 " + workload.parallelInvocations()
++                    + " / 主线程回退 " + workload.mainThreadFallbacks()
++                    + " / 仅主线程 " + workload.callerOnlyInvocations()
++                    + " / 异常 " + workload.failedInvocations()
++                    + " / 工作量 主 " + workload.callerItems() + "、工 " + workload.workerItems(),
++                workload.failedInvocations() == 0L ? NamedTextColor.GRAY : NamedTextColor.RED
++            ));
++        }
++        final LeavesXComputeExecutor.Metrics lifetime = LeavesXComputeExecutor.metrics();
++        sender.sendMessage(Component.text(
++            "最近一次原因：" + lifetime.lastFallbackReason()
++                + (lifetime.lastFallbackWorkload() == null ? "" : " / " + lifetime.lastFallbackWorkload().displayName()),
++            NamedTextColor.GRAY
++        ));
++        sender.sendMessage(Component.text(
++            "说明：阈值回退表示任务太小；完整主线程回退才表示一次并行尝试没有使用工作线程或需要重算。",
++            NamedTextColor.DARK_GRAY
++        ));
++    }
++
++    private static void reloadConfiguration(final CommandSender sender) {
++        if (!sender.isOp() && !sender.hasPermission("leavesx.command.reload")) {
++            sender.sendMessage(Component.text("你没有权限重载 LeavesX 配置。", NamedTextColor.RED));
++            return;
++        }
++        try {
++            final LeavesXConfigBootstrap.ReloadResult result = LeavesXConfigBootstrap.reloadWithStatus();
++            sender.sendMessage(Component.text("LeavesX 配置重载完成。", NamedTextColor.GREEN));
++            if (result.restartRequired()) {
++                sender.sendMessage(Component.text(
++                    "以下配置需要重启服务器才会完全生效：" + String.join("、", result.restartRequiredChanges()),
++                    NamedTextColor.YELLOW
++                ));
++            } else {
++                sender.sendMessage(Component.text("本次修改无需重启。", NamedTextColor.GRAY));
++            }
++            Bukkit.getOnlinePlayers().stream()
++                .filter(player -> player.hasPermission("leaves.command.config.notify") && player != sender)
++                .forEach(player -> player.sendMessage(Component.text("LeavesX 配置已重载。", NamedTextColor.GREEN)));
++        } catch (final RuntimeException exception) {
++            org.slf4j.LoggerFactory.getLogger(LeavesXCommand.class)
++                .error("Failed to reload LeavesX configuration", exception);
++            sender.sendMessage(Component.text("LeavesX 配置重载失败，请查看控制台日志。", NamedTextColor.RED));
++        }
++    }
++
+     private static void sendSystem(final CommandSender sender) {
+         final LeavesXSystemDiagnostics.Reading reading = LeavesXSystemDiagnostics.snapshot();
+         final LeavesXSystemDiagnostics.Snapshot snapshot = reading.snapshot();
+@@ -1076,6 +1394,8 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(Component.text("/leavesx tickets [世界] [数量] - 区块票据和插件强制区块", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx plugins - 最近较慢的 Bukkit 同步任务", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx stalls [数量|clear] - 最近慢 Tick 的 CPU、等待和调用栈", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx parallel [10-300秒] - 最近并行、回退、拒绝和异常", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx reload - 只重载 leavesx.yml，并提示需重启的配置", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx memory|network|threads|system|config - 对应详细状态", NamedTextColor.GRAY));
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java b/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java
+index aaae558e4f69e5f85d82b526e6cb2adcc7e7c2c4..2e985910691b94acbab4949d4a180bf985df6c75 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java
+@@ -22,7 +22,6 @@ import org.bukkit.inventory.Inventory;
+ import org.bukkit.inventory.InventoryHolder;
+ import org.bukkit.inventory.ItemStack;
+ import org.leavesmc.leaves.plugin.MinecraftInternalPlugin;
+-import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
+ 
+ /** Read-only inventory entry point for LeavesX diagnostics. */
+ final class LeavesXDiagnosticsGui implements Listener {
+@@ -81,6 +80,7 @@ final class LeavesXDiagnosticsGui implements Listener {
+ 
+     private static void populate(final Inventory inventory) {
+         final Overview overview = collectOverview();
++        final Map<String, List<String>> details = LeavesXCommand.collectGuiLore();
+         final ItemStack filler = item(Material.GRAY_STAINED_GLASS_PANE, " ", NamedTextColor.DARK_GRAY, List.of());
+         for (int slot = 0; slot < inventory.getSize(); slot++) {
+             inventory.setItem(slot, filler);
+@@ -97,30 +97,21 @@ final class LeavesXDiagnosticsGui implements Listener {
+                 "堆内存 " + oneDecimal(overview.usedHeapGiB()) + " / " + oneDecimal(overview.maximumHeapGiB()) + " GiB"
+             )
+         ));
+-        inventory.setItem(10, actionItem(Material.FILLED_MAP, "世界负载", "区块、持有器、实体和卸载队列", overview));
+-        inventory.setItem(11, actionItem(Material.ZOMBIE_HEAD, "实体类型", "查看实体数量和活跃数量", overview));
+-        inventory.setItem(12, actionItem(Material.SPYGLASS, "实体热点", "查看实体密集区块坐标", overview));
+-        inventory.setItem(13, actionItem(Material.HOPPER, "方块实体", "查看方块实体类型和更新数量", overview));
+-        inventory.setItem(14, actionItem(Material.OBSERVER, "方块实体热点", "查看方块实体密集区块", overview));
+-        inventory.setItem(15, actionItem(Material.NAME_TAG, "区块票据", "查看区块加载来源和插件票据", overview));
+-        inventory.setItem(16, actionItem(Material.NETHER_STAR, "完整诊断", "一次输出全部诊断信息", overview));
+-        inventory.setItem(27, actionItem(Material.REPEATER, "区块活动", "查看最近加载、卸载和票据变化", overview));
+-        inventory.setItem(28, actionItem(Material.REDSTONE_BLOCK, "内存", "堆、堆外、直接缓冲区和 GC", overview));
+-        inventory.setItem(29, actionItem(Material.LIGHTNING_ROD, "慢 Tick", "查看计算、等待和现场调用栈", overview));
+-        inventory.setItem(30, actionItem(Material.COMPARATOR, "网络", "连接、数据包、延迟和发送队列", overview));
+-        inventory.setItem(31, actionItem(Material.COMPASS, "系统配额", "查看 CPU、cgroup、内存和节流", overview));
+-        inventory.setItem(32, item(
+-            Material.REDSTONE_TORCH,
+-            "线程",
+-            NamedTextColor.AQUA,
+-            List.of(
+-                "JVM 可用处理器 " + Runtime.getRuntime().availableProcessors(),
+-                "LeavesX 工作线程 " + LeavesXComputeExecutor.workerCount(),
+-                "点击输出完整线程状态"
+-            )
+-        ));
+-        inventory.setItem(33, actionItem(Material.COMMAND_BLOCK, "插件任务", "查看较慢的 Bukkit 同步任务", overview));
+-        inventory.setItem(34, actionItem(Material.WRITABLE_BOOK, "配置状态", "查看当前生效的 LeavesX 设置", overview));
++        inventory.setItem(10, actionItem(Material.FILLED_MAP, "世界负载", details.get("worlds")));
++        inventory.setItem(11, actionItem(Material.ZOMBIE_HEAD, "实体类型", details.get("entities")));
++        inventory.setItem(12, actionItem(Material.SPYGLASS, "实体热点", details.get("hotspots")));
++        inventory.setItem(13, actionItem(Material.HOPPER, "方块实体", details.get("blockentities")));
++        inventory.setItem(14, actionItem(Material.OBSERVER, "方块实体热点", details.get("blockhotspots")));
++        inventory.setItem(15, actionItem(Material.NAME_TAG, "区块票据", details.get("tickets")));
++        inventory.setItem(16, actionItem(Material.NETHER_STAR, "完整诊断", details.get("all")));
++        inventory.setItem(27, actionItem(Material.REPEATER, "区块活动", details.get("activity")));
++        inventory.setItem(28, actionItem(Material.REDSTONE_BLOCK, "内存", details.get("memory")));
++        inventory.setItem(29, actionItem(Material.LIGHTNING_ROD, "慢 Tick", details.get("stalls")));
++        inventory.setItem(30, actionItem(Material.COMPARATOR, "网络", details.get("network")));
++        inventory.setItem(31, actionItem(Material.COMPASS, "系统配额", details.get("system")));
++        inventory.setItem(32, actionItem(Material.REDSTONE_TORCH, "线程", details.get("threads")));
++        inventory.setItem(33, actionItem(Material.COMMAND_BLOCK, "插件任务", details.get("plugins")));
++        inventory.setItem(34, actionItem(Material.WRITABLE_BOOK, "配置状态", details.get("config")));
+         inventory.setItem(40, item(Material.RECOVERY_COMPASS, "刷新", NamedTextColor.GREEN, List.of("重新读取当前状态")));
+         inventory.setItem(44, item(Material.BARRIER, "关闭", NamedTextColor.RED, List.of()));
+     }
+@@ -152,24 +143,14 @@ final class LeavesXDiagnosticsGui implements Listener {
+         );
+     }
+ 
+-    private static ItemStack actionItem(
+-        final Material material,
+-        final String name,
+-        final String description,
+-        final Overview overview
+-    ) {
++    private static ItemStack actionItem(final Material material, final String name, final List<String> detailLines) {
+         // Inventory lore is rendered by the client as the item tooltip. Keep the current snapshot here so operators
+         // can inspect the important values by hovering, without running a command or mutating server state.
+         return item(
+             material,
+             name,
+             NamedTextColor.AQUA,
+-            List.of(
+-                description,
+-                "TPS " + oneDecimal(overview.tps()) + " / MSPT " + oneDecimal(overview.mspt()),
+-                "区块 " + overview.chunks() + " / 待卸载 " + overview.pendingUnloads(),
+-                "实体 " + overview.entities() + " / 方块实体 " + overview.blockEntities()
+-            )
++            detailLines == null || detailLines.isEmpty() ? List.of("暂无数据") : detailLines
+         );
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index cc69c60838d11c8e036f60050046704893d1abfa..ea71de82f0390928a6d7de37a504d415a99cc156 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -46,6 +46,11 @@ public final class LeavesXConfigBootstrap {
+      * @return newly published configuration
+      */
+     public static synchronized LeavesXConfig reload() {
++        return reloadWithStatus().configuration();
++    }
++
++    /** Reloads LeavesX and reports settings that are intentionally startup-only. */
++    public static synchronized ReloadResult reloadWithStatus() {
+         final Path path = configuredPath;
+         if (path == null) {
+             throw new LeavesXConfigException("LeavesX configuration path is not initialized");
+@@ -68,7 +73,43 @@ public final class LeavesXConfigBootstrap {
+             server.getBotList().refreshLeavesXPresentation();
+         }
+         LOGGER.info("Reloaded LeavesX configuration from {}", path);
+-        return next;
++        return new ReloadResult(next, restartRequiredChanges(previous, next));
++    }
++
++    private static java.util.List<String> restartRequiredChanges(
++        final LeavesXConfig previous,
++        final LeavesXConfig next
++    ) {
++        final java.util.ArrayList<String> changed = new java.util.ArrayList<>();
++        if (previous.diagnosticsCommandEnabled() != next.diagnosticsCommandEnabled()) {
++            changed.add("diagnostics.command-enabled");
++        }
++        if (previous.startupResidentBots() != next.startupResidentBots()
++            || previous.startupResidentBotsPerTick() != next.startupResidentBotsPerTick()) {
++            changed.add("performance.startup-resident-bots");
++        }
++        if (previous.startupAiStaggering() != next.startupAiStaggering()
++            || previous.startupAiWarmupTicks() != next.startupAiWarmupTicks()
++            || previous.startupAiEntitiesPerTick() != next.startupAiEntitiesPerTick()) {
++            changed.add("performance.startup-ai");
++        }
++        if (previous.showRootAdminWarning() != next.showRootAdminWarning()) {
++            changed.add("console-messages.show-root-admin-warning");
++        }
++        if (previous.showOfflineModeWarning() != next.showOfflineModeWarning()) {
++            changed.add("console-messages.show-offline-mode-warning");
++        }
++        if (previous.showCollisionConversionWarning() != next.showCollisionConversionWarning()) {
++            changed.add("console-messages.show-collision-conversion-warning");
++        }
++        return java.util.List.copyOf(changed);
++    }
++
++    public record ReloadResult(LeavesXConfig configuration, java.util.List<String> restartRequiredChanges) {
++
++        public boolean restartRequired() {
++            return !this.restartRequiredChanges.isEmpty();
++        }
+     }
+ 
+     private static void logConfiguration(final LeavesXConfig config) {
+diff --git a/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java b/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java
+index 05eb61fabacc700e04a209e9dc2ad390276e0809..fc95c00801fdb7deb1c63262d418d53bee50f75c 100644
+--- a/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java
++++ b/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java
+@@ -242,6 +242,7 @@ public final class LeavesXTickDiagnostics {
+         if (tick % WORLD_SAMPLE_INTERVAL_TICKS != 0L) {
+             return;
+         }
++        org.leavesx.leavesx.runtime.LeavesXComputeExecutor.sampleMetrics(capturedNanos);
+         for (final ServerLevel level : server.getAllLevels()) {
+             final var manager = level.moonrise$getChunkTaskScheduler().chunkHolderManager;
+             manager.leavesX$getDiagnostics().sample(
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+index 7602a763e9a6ccaeb539cba1f660797542cb9e8d..e75bf62a051f670eaddc395b66cfe8ebcd27214a 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -49,12 +49,20 @@ public final class StableDistanceSorter {
+             final double originX = origin.getX();
+             final double originY = origin.getY();
+             final double originZ = origin.getZ();
+-            if (parallel && size >= parallelThreshold) {
++            // Admit medium snapshots when the compute pool is idle. The snapshot keeps all live-entity reads on the
++            // caller, while the executor decides whether enough idle workers exist to amortize dispatch overhead.
++            final boolean parallelEligible = parallel
++                && LeavesXComputeExecutor.shouldAttempt(
++                    LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++                    size,
++                    parallelThreshold
++                );
++            if (parallelEligible) {
+                 snapshotEntityCoordinates(entities, workspace, size);
+                 sortCoordinateSnapshot(workspace, size, originX, originY, originZ, true, parallelThreshold);
+             } else {
+                 snapshotEntityDistanceKeys(entities, workspace, size, originX, originY, originZ);
+-                sortPreparedKeys(workspace, size, parallel, parallelThreshold);
++                sortPreparedKeys(workspace, size, parallelEligible, parallelThreshold);
+             }
+             applyPermutation(entities, workspace.order, size);
+         } finally {
+@@ -87,29 +95,35 @@ public final class StableDistanceSorter {
+             final double originX = origin.getX();
+             final double originY = origin.getY();
+             final double originZ = origin.getZ();
+-            final boolean useCoordinateSnapshot = parallel && size >= parallelThreshold;
++            final boolean useCoordinateSnapshot = parallel
++                && LeavesXComputeExecutor.shouldAttempt(
++                    LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
++                    size,
++                    parallelThreshold
++                );
+             if (useCoordinateSnapshot) {
+                 snapshotEntityCoordinates(entities, workspace, size);
+             } else {
+                 snapshotEntityDistanceKeys(entities, workspace, size, originX, originY, originZ);
+             }
+ 
+-            final int completedPartitions = parallel
++            // Do not enter the shared scheduler for a small list. The coordinate snapshot is intentionally only
++            // enabled at the configured threshold; calling the executor and immediately falling back would still
++            // pay atomic counters on every ordinary AI sensor query.
++            final int completedPartitions = useCoordinateSnapshot
+                 ? LeavesXComputeExecutor.invokeRangesWithCount(
+                     LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
+                     size,
+                     parallelThreshold,
+                     LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker(),
+-                    (taskIndex, start, end) -> workspace.nearestByPartition[taskIndex] = useCoordinateSnapshot
+-                        ? computeDistanceKeysAndFindNearest(
+-                            workspace,
+-                            start,
+-                            end,
+-                            originX,
+-                            originY,
+-                            originZ
+-                        )
+-                        : nearestInRange(workspace.keys, start, end)
++                    (taskIndex, start, end) -> workspace.nearestByPartition[taskIndex] = computeDistanceKeysAndFindNearest(
++                        workspace,
++                        start,
++                        end,
++                        originX,
++                        originY,
++                        originZ
++                    )
+                 )
+                 : 0;
+             if (completedPartitions == 0) {
+@@ -164,7 +178,13 @@ public final class StableDistanceSorter {
+             System.arraycopy(x, 0, workspace.x, 0, size);
+             System.arraycopy(y, 0, workspace.y, 0, size);
+             System.arraycopy(z, 0, workspace.z, 0, size);
+-            sortCoordinateSnapshot(workspace, size, originX, originY, originZ, parallel, parallelThreshold);
++            final boolean parallelEligible = parallel
++                && LeavesXComputeExecutor.shouldAttempt(
++                    LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++                    size,
++                    parallelThreshold
++                );
++            sortCoordinateSnapshot(workspace, size, originX, originY, originZ, parallelEligible, parallelThreshold);
+             return Arrays.copyOf(workspace.order, size);
+         } finally {
+             releaseWorkspace(workspace);
+@@ -179,7 +199,7 @@ public final class StableDistanceSorter {
+         final int parallelThreshold
+     ) {
+         final boolean parallelEligible = parallel && size >= parallelThreshold;
+-        final int completedPartitions = parallel
++        final int completedPartitions = parallelEligible
+             ? LeavesXComputeExecutor.invokeRangesWithCount(
+                 LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
+                 size,
+@@ -222,10 +242,12 @@ public final class StableDistanceSorter {
+         final double originX,
+         final double originY,
+         final double originZ,
+-        final boolean parallel,
++        final boolean parallelEligible,
+         final int parallelThreshold
+     ) {
+-        final int completedPartitions = parallel
++        // The caller performs the admission probe once before taking the coordinate snapshot. The executor still
++        // owns the final backpressure decision, so a busy pool safely returns zero and the caller recomputes here.
++        final int completedPartitions = parallelEligible
+             ? LeavesXComputeExecutor.invokeRangesWithCount(
+                 LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
+                 size,
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 9dc8509a7a0b6d2dff3988f2607c04251b84e7d2..37780a2cbddb59ea76faf3acf7bbbff0297e667a 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -1,8 +1,10 @@
+ package org.leavesx.leavesx.runtime;
+ 
+ import com.google.common.util.concurrent.ThreadFactoryBuilder;
++import java.util.ArrayDeque;
+ import java.util.ArrayList;
+ import java.util.List;
++import java.util.Objects;
+ import java.util.concurrent.ArrayBlockingQueue;
+ import java.util.concurrent.CancellationException;
+ import java.util.concurrent.CountDownLatch;
+@@ -11,6 +13,7 @@ import java.util.concurrent.ThreadPoolExecutor;
+ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.atomic.AtomicInteger;
+ import java.util.concurrent.atomic.AtomicLong;
++import java.util.concurrent.atomic.AtomicReference;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+@@ -21,12 +24,22 @@ public final class LeavesXComputeExecutor {
+     private static final int MAX_QUEUED_TASKS = 128;
+     /** Keep two scheduler lanes per worker so a slow range cannot strand the rest of the pool. */
+     private static final int PARTITIONS_PER_LANE = 2;
+-    /** Claim the overflow cursor in small contiguous blocks to reduce atomic cursor traffic. */
+-    private static final int RANGES_PER_CLAIM = 2;
++    /** Maximum overflow ranges claimed by one worker at a time. */
++    private static final int MAX_RANGES_PER_CLAIM = 4;
+     private static final int MAX_PARTITIONS = 64;
+-    private static final int MAX_AUTOMATIC_WORKERS = 16;
++    /** Cap automatic pure-compute workers while leaving headroom for the tick, network and GC threads. */
++    private static final int MAX_AUTOMATIC_WORKERS = 24;
+     /** Do not create ranges smaller than this when an idle pool is deliberately over-partitioned. */
+     private static final int MIN_ADAPTIVE_ITEMS_PER_TASK = 32;
++    /** Hard safety cap for callers that use the runtime API directly instead of the validated YAML config. */
++    private static final int MAX_RUNTIME_WORKERS = 64;
++    /** A short spin closes the common sub-millisecond tail without parking the server thread. */
++    private static final int WAIT_SPIN_LIMIT = 32;
++    /** Timed latch waits are deliberately shorter than one tick so a worker tail cannot add a full millisecond. */
++    private static final long WAIT_PARK_NANOS = TimeUnit.MICROSECONDS.toNanos(250L);
++    private static final int MAX_WINDOW_SAMPLES = 301;
++    private static final Object WINDOW_SAMPLE_LOCK = new Object();
++    private static final ArrayDeque<CounterSample> WINDOW_SAMPLES = new ArrayDeque<>(MAX_WINDOW_SAMPLES);
+     private static volatile ComputeThreadPoolExecutor executor;
+     private static volatile int workerCount = 1;
+     private static volatile int minimumItemsPerWorker = 64;
+@@ -38,12 +51,31 @@ public final class LeavesXComputeExecutor {
+     private static final AtomicLong unavailableParallelismFallbackCount = new AtomicLong();
+     private static final AtomicLong failedInvocationCount = new AtomicLong();
+     private static final AtomicLong backpressureCallerRunCount = new AtomicLong();
++    /** Invocations that requested more worker slots than could be reserved atomically. */
++    private static final AtomicLong slotReservationShortageCount = new AtomicLong();
++    /** Invocations forced to the caller because the shared queue was already occupied. */
++    private static final AtomicLong queueContentionFallbackCount = new AtomicLong();
++    /** Highest number of accepted-but-not-started batches observed in the bounded queue. */
++    private static final AtomicLong maximumQueuedTaskCount = new AtomicLong();
++    /** Number of worker submissions rejected by shutdown or queue saturation. */
++    private static final AtomicLong rejectedTaskCount = new AtomicLong();
++    /** Number of timed waits used while the caller helped a worker tail. */
++    private static final AtomicLong timedWorkerWaitCount = new AtomicLong();
++    /** Invocations completed entirely on the caller because no compute worker was immediately available. */
++    private static final AtomicLong callerOnlyInvocationCount = new AtomicLong();
++    /** Failed or skipped attempts that explicitly requested one clean full caller-thread recomputation. */
++    private static final AtomicLong fullRecomputationRequestCount = new AtomicLong();
++    /** Invocations whose reserved worker submission raced shutdown or bounded-queue rejection. */
++    private static final AtomicLong submissionFallbackInvocationCount = new AtomicLong();
++    private static final AtomicReference<FallbackEvent> lastFallbackEvent = new AtomicReference<>();
+     // These counters describe where immutable ranges actually ran. They make a short-lived worker burst visible in
+     // /leavesx threads even after the pool has gone idle again.
+     private static final AtomicLong callerRangeCount = new AtomicLong();
+     private static final AtomicLong workerRangeCount = new AtomicLong();
+     private static final AtomicLong callerItemCount = new AtomicLong();
++    private static final AtomicLong callerHelpRangeCount = new AtomicLong();
+     private static final AtomicLong workerItemCount = new AtomicLong();
++    private static final AtomicLong workerBatchCount = new AtomicLong();
+     private static final AtomicLong maximumConcurrentWorkerCount = new AtomicLong();
+     private static final AtomicLong adaptiveAdmissionCount = new AtomicLong();
+     private static final AtomicLong adaptivePartitionInvocationCount = new AtomicLong();
+@@ -79,7 +111,7 @@ public final class LeavesXComputeExecutor {
+         shutdown();
+         final int availableProcessors = Runtime.getRuntime().availableProcessors();
+         final int automaticWorkers = automaticWorkerCount(availableProcessors);
+-        workerCount = configuredWorkers == 0 ? automaticWorkers : configuredWorkers;
++        workerCount = normalizeWorkerCount(configuredWorkers, automaticWorkers);
+         minimumItemsPerWorker = Math.max(16, configuredMinimumItemsPerWorker);
+         prestartWorkers = configuredPrestartWorkers;
+         invocationCount.set(0L);
+@@ -89,10 +121,21 @@ public final class LeavesXComputeExecutor {
+         unavailableParallelismFallbackCount.set(0L);
+         failedInvocationCount.set(0L);
+         backpressureCallerRunCount.set(0L);
++        slotReservationShortageCount.set(0L);
++        queueContentionFallbackCount.set(0L);
++        maximumQueuedTaskCount.set(0L);
++        rejectedTaskCount.set(0L);
++        timedWorkerWaitCount.set(0L);
++        callerOnlyInvocationCount.set(0L);
++        fullRecomputationRequestCount.set(0L);
++        submissionFallbackInvocationCount.set(0L);
++        lastFallbackEvent.set(null);
+         callerRangeCount.set(0L);
+         workerRangeCount.set(0L);
+         callerItemCount.set(0L);
++        callerHelpRangeCount.set(0L);
+         workerItemCount.set(0L);
++        workerBatchCount.set(0L);
+         maximumConcurrentWorkerCount.set(0L);
+         adaptiveAdmissionCount.set(0L);
+         adaptivePartitionInvocationCount.set(0L);
+@@ -100,6 +143,10 @@ public final class LeavesXComputeExecutor {
+         for (final WorkloadCounters counters : WORKLOAD_COUNTERS) {
+             counters.reset();
+         }
++        synchronized (WINDOW_SAMPLE_LOCK) {
++            WINDOW_SAMPLES.clear();
++            WINDOW_SAMPLES.addLast(captureCounterSample(System.nanoTime()));
++        }
+         executor = new ComputeThreadPoolExecutor(workerCount);
+         // Keep started workers alive between sparse jobs; this avoids repeatedly paying thread startup latency.
+         executor.allowCoreThreadTimeOut(false);
+@@ -125,6 +172,17 @@ public final class LeavesXComputeExecutor {
+         return Math.max(1, Math.min(MAX_AUTOMATIC_WORKERS, availableProcessors - 2));
+     }
+ 
++    /**
++     * Clamps direct API input to a usable fixed-pool size. YAML validation normally catches bad values first, but this
++     * guard keeps reload hooks and embedded callers from creating a negative or unbounded executor.
++     */
++    static int normalizeWorkerCount(final int configuredWorkers, final int automaticWorkers) {
++        if (configuredWorkers <= 0) {
++            return Math.max(1, Math.min(MAX_RUNTIME_WORKERS, automaticWorkers));
++        }
++        return Math.max(1, Math.min(MAX_RUNTIME_WORKERS, configuredWorkers));
++    }
++
+     /**
+      * Returns the maximum number of ranges that can make progress concurrently.
+      *
+@@ -226,6 +284,11 @@ public final class LeavesXComputeExecutor {
+         final int minimumItemsPerTask,
+         final RangeTask task
+     ) {
++        Objects.requireNonNull(workload, "workload");
++        Objects.requireNonNull(task, "task");
++        if (size <= 0) {
++            return 0;
++        }
+         final WorkloadCounters workloadCounters = WORKLOAD_COUNTERS[workload.ordinal()];
+         invocationCount.incrementAndGet();
+         workloadCounters.recordInvocation(size);
+@@ -233,6 +296,7 @@ public final class LeavesXComputeExecutor {
+         if (current == null || workerCount <= 1) {
+             unavailableParallelismFallbackCount.incrementAndGet();
+             workloadCounters.unavailableParallelismFallbacks.incrementAndGet();
++            recordFallback(workload, FallbackReason.POOL_UNAVAILABLE, size);
+             return 0;
+         }
+         final boolean belowConfiguredThreshold = size < minimumSize;
+@@ -277,14 +341,27 @@ public final class LeavesXComputeExecutor {
+         // nested ranges on the current worker instead. The data contract is unchanged because the callback is still
+         // pure and receives only its caller-owned snapshot.
+         if (isComputeWorkerThread()) {
+-            return invokeInlineOnWorker(workloadCounters, task, size, taskCount);
++            return invokeInlineOnWorker(workload, workloadCounters, task, size, taskCount);
+         }
+-        final int rangeSize = (size + taskCount - 1) / taskCount;
+-        final int expectedTaskCount = (size + rangeSize - 1) / rangeSize;
+-        // Medium batches admitted below their normal threshold only use slots that can start immediately. Larger
+-        // established workloads retain their validated full partition strategy, including their merge contracts.
+-        final int availableWorkerTasks = adaptivelyAdmitted ? current.availableWorkerSlotCount() : workerCount;
+-        final int workerTaskCount = Math.min(availableWorkerTasks, expectedTaskCount - 1);
++        // Use overflow-safe ceiling division: a diagnostic or plugin can legally pass a near-maximal primitive array
++        // size, and adding taskCount to that value would otherwise wrap into a negative range.
++        final int rangeSize = divideCeil(size, taskCount);
++        final int expectedTaskCount = divideCeil(size, rangeSize);
++        // Never submit more batches than the pool can start immediately. A busy compute pool is shared by all
++        // immutable workloads; queuing a second batch here makes the calling tick wait behind unrelated work and
++        // is the main source of sudden MSPT spikes. The caller still owns the final range, so a fully occupied pool
++        // makes progress synchronously without adding queue pressure.
++        final int requestedWorkerTasks = Math.min(current.availableWorkerSlotCount(), expectedTaskCount - 1);
++        // Reserve the observed slots before submitting. Multiple snapshot producers can arrive concurrently; without
++        // a reservation both would observe the same idle workers and the later invocation would enqueue behind them.
++        final int workerTaskCount = current.reserveWorkerSlots(requestedWorkerTasks);
++        if (workerTaskCount < requestedWorkerTasks) {
++            slotReservationShortageCount.incrementAndGet();
++        }
++        if (workerTaskCount == 0 && expectedTaskCount > 1 && current.queuedTaskCount() > 0) {
++            queueContentionFallbackCount.incrementAndGet();
++        }
++        final int rangesPerClaim = rangesPerClaim(expectedTaskCount, workerTaskCount);
+         // The latch counts logical worker-owned ranges, not queue entries. One submitted batch may claim several
+         // overflow ranges, all of which must finish before a caller can merge their private results.
+         final RangeInvocation invocation = new RangeInvocation(task, workloadCounters, expectedTaskCount - 1, workerTaskCount);
+@@ -294,12 +371,16 @@ public final class LeavesXComputeExecutor {
+             // in /leavesx threads without waiting for a busy worker pool.
+             unavailableParallelismFallbackCount.incrementAndGet();
+             workloadCounters.unavailableParallelismFallbacks.incrementAndGet();
++            callerOnlyInvocationCount.incrementAndGet();
++            workloadCounters.callerOnlyInvocations.incrementAndGet();
++            recordFallback(workload, FallbackReason.POOL_BUSY_CALLER_ONLY, size);
+             invocation.runAllOnCaller(rangeSize, expectedTaskCount, size);
+             invocation.recordLoad();
+             if (invocation.failure != null) {
+                 LOGGER.error("LeavesX synchronous backpressure computation failed", invocation.failure);
+                 failedInvocationCount.incrementAndGet();
+                 workloadCounters.failedInvocations.incrementAndGet();
++                recordFullRecomputation(workload, workloadCounters, FallbackReason.COMPUTATION_FAILED, size);
+                 return 0;
+             }
+             return expectedTaskCount;
+@@ -308,28 +389,44 @@ public final class LeavesXComputeExecutor {
+         // first thread that wakes up. The shared cursor starts after those guaranteed ranges and balances only the
+         // remaining overflow work.
+         final AtomicInteger nextTask = new AtomicInteger(workerTaskCount);
++        boolean submissionFellBack = false;
+         for (int workerIndex = 0; workerIndex < workerTaskCount; workerIndex++) {
+             try {
+-                current.execute(new RangeBatchRunnable(
++                current.executeReserved(new RangeBatchRunnable(
+                     invocation,
+                     workerIndex,
+                     nextTask,
+                     rangeSize,
+                     expectedTaskCount,
+-                    size
++                    size,
++                    rangesPerClaim
+                 ));
+             } catch (final RejectedExecutionException rejection) {
++                if (!submissionFellBack) {
++                    submissionFellBack = true;
++                    submissionFallbackInvocationCount.incrementAndGet();
++                    workloadCounters.submissionFallbackInvocations.incrementAndGet();
++                    recordFallback(workload, FallbackReason.SUBMISSION_REJECTED, size);
++                }
+                 invocation.runInitialRangesOnCaller(workerIndex, workerTaskCount, rangeSize, size, true);
+                 invocation.runRemainingOnCaller(nextTask, rangeSize, expectedTaskCount - 1, size, true);
++                current.releaseWorkerSlotReservations(workerTaskCount - workerIndex - 1);
+                 invocation.cancelWorkerBatches(workerTaskCount - workerIndex);
+                 break;
+             } catch (final RuntimeException submissionFailure) {
++                if (!submissionFellBack) {
++                    submissionFellBack = true;
++                    submissionFallbackInvocationCount.incrementAndGet();
++                    workloadCounters.submissionFallbackInvocations.incrementAndGet();
++                    recordFallback(workload, FallbackReason.SUBMISSION_FAILED, size);
++                }
+                 LOGGER.error(
+                     "LeavesX parallel computation could not be submitted; running remaining ranges on the main thread",
+                     submissionFailure
+                 );
+                 invocation.runInitialRangesOnCaller(workerIndex, workerTaskCount, rangeSize, size, true);
+                 invocation.runRemainingOnCaller(nextTask, rangeSize, expectedTaskCount - 1, size, true);
++                current.releaseWorkerSlotReservations(workerTaskCount - workerIndex - 1);
+                 invocation.cancelWorkerBatches(workerTaskCount - workerIndex);
+                 break;
+             }
+@@ -340,7 +437,9 @@ public final class LeavesXComputeExecutor {
+         // before newly submitted workers start running.
+         final int callerTaskIndex = expectedTaskCount - 1;
+         invocation.runOnCaller(callerTaskIndex, callerTaskIndex * rangeSize, size, false);
+-        invocation.awaitWorkers();
++        // The tick thread helps with unclaimed immutable ranges while workers finish. This keeps the caller useful
++        // during a slow or uneven batch without moving any live-world operation off the server thread.
++        invocation.awaitWorkersWithHelping(nextTask, rangeSize, expectedTaskCount - 1, size, rangesPerClaim);
+         invocation.recordLoad();
+         final Throwable failure = invocation.failure;
+         if (failure != null) {
+@@ -353,10 +452,40 @@ public final class LeavesXComputeExecutor {
+         } else {
+             failedInvocationCount.incrementAndGet();
+             workloadCounters.failedInvocations.incrementAndGet();
++            recordFullRecomputation(workload, workloadCounters, FallbackReason.COMPUTATION_FAILED, size);
+         }
+         return completed ? expectedTaskCount : 0;
+     }
+ 
++    /**
++     * Selects a small claim width for the shared overflow cursor.
++     *
++     * <p>When a batch has only a few more ranges than workers, claiming one range at a time keeps the tail
++     * distributed instead of allowing the first worker to consume the whole remainder. Larger batches use two ranges
++     * per atomic claim to reduce contention on the cursor.</p>
++     */
++    static int rangesPerClaim(final int taskCount, final int workerTaskCount) {
++        if (taskCount <= 0 || workerTaskCount <= 0) {
++            return 1;
++        }
++        final int overflowRanges = Math.max(0, taskCount - workerTaskCount - 1);
++        if (overflowRanges <= workerTaskCount) {
++            return 1;
++        }
++        // Very large snapshots benefit from fewer cursor updates. Keep short and medium batches at two ranges so
++        // their tail remains fine-grained; only batches with a substantial overflow use four.
++        return overflowRanges >= workerTaskCount * 8 ? MAX_RANGES_PER_CLAIM : 2;
++    }
++
++    /** Shrinks the last claim so a worker cannot strand a tiny tail while another worker is still running. */
++    static int claimWidthFor(final int remainingRanges, final int maximumClaim) {
++        if (remainingRanges <= 0) {
++            return 1;
++        }
++        final int boundedMaximum = Math.max(1, Math.min(MAX_RANGES_PER_CLAIM, maximumClaim));
++        return remainingRanges <= boundedMaximum * 2 ? 1 : boundedMaximum;
++    }
++
+     static int taskCountFor(final int size, final int availableLanes, final int minimumItems) {
+         if (size <= 0 || availableLanes <= 1) {
+             return 1;
+@@ -366,6 +495,17 @@ public final class LeavesXComputeExecutor {
+         return Math.min(availableLanes, usefulLanes);
+     }
+ 
++    /** Returns {@code ceil(dividend / divisor)} without overflowing the dividend during addition. */
++    static int divideCeil(final int dividend, final int divisor) {
++        if (dividend <= 0) {
++            return 0;
++        }
++        if (divisor <= 0) {
++            throw new IllegalArgumentException("divisor must be positive");
++        }
++        return 1 + (dividend - 1) / divisor;
++    }
++
+     /**
+      * Chooses a bounded number of deterministic ranges for one invocation.
+      *
+@@ -408,11 +548,21 @@ public final class LeavesXComputeExecutor {
+ 
+         // AI distance and AABB work benefit from shorter ranges on large hosts. Spawn counting deliberately retains
+         // its baseline range size because every range owns a hash table that must later be merged.
+-        final int divisor = workerCount >= 4 ? 4 : 2;
+-        final int adaptiveMinimum = Math.max(MIN_ADAPTIVE_ITEMS_PER_TASK, Math.max(1, minimumItems / divisor));
++        final int adaptiveMinimum = adaptiveMinimumItemsForWorkerCount(minimumItems, workerCount);
+         return Math.max(baseline, partitionCountFor(size, availableLanes, adaptiveMinimum));
+     }
+ 
++    /**
++     * Makes coarse idle snapshots finer on high-core hosts while keeping small hosts at the proven granularity.
++     *
++     * <p>This only affects audited primitive workloads during an idle-pool admission. It never changes callback
++     * order, range boundaries after partitioning, or any live-world operation.</p>
++     */
++    static int adaptiveMinimumItemsForWorkerCount(final int minimumItems, final int workers) {
++        final int divisor = workers >= 16 ? 8 : workers >= 8 ? 6 : workers >= 4 ? 4 : 2;
++        return Math.max(MIN_ADAPTIVE_ITEMS_PER_TASK, Math.max(1, minimumItems / divisor));
++    }
++
+     /** Returns true when enough workers are free to benefit from finer ranges without queueing behind another batch. */
+     private static boolean isIdleForAdaptiveDispatch(final ComputeThreadPoolExecutor current) {
+         return current == executor
+@@ -442,6 +592,7 @@ public final class LeavesXComputeExecutor {
+ 
+     /** Executes all partitions inline on a worker when a nested invocation would otherwise self-block the pool. */
+     private static int invokeInlineOnWorker(
++        final Workload workload,
+         final WorkloadCounters workloadCounters,
+         final RangeTask task,
+         final int size,
+@@ -460,6 +611,7 @@ public final class LeavesXComputeExecutor {
+             LOGGER.error("LeavesX nested pure computation failed; requesting synchronous recomputation", failure);
+             failedInvocationCount.incrementAndGet();
+             workloadCounters.failedInvocations.incrementAndGet();
++            recordFullRecomputation(workload, workloadCounters, FallbackReason.NESTED_COMPUTATION_FAILED, size);
+             return 0;
+         }
+         parallelInvocationCount.incrementAndGet();
+@@ -468,15 +620,159 @@ public final class LeavesXComputeExecutor {
+     }
+ 
+     private static void recordMaximumConcurrentWorkers(final int count) {
+-        long current = maximumConcurrentWorkerCount.get();
+-        while (count > current && !maximumConcurrentWorkerCount.compareAndSet(current, count)) {
+-            current = maximumConcurrentWorkerCount.get();
++        recordMaximum(maximumConcurrentWorkerCount, count);
++    }
++
++    /** Updates a monotonic diagnostic maximum without introducing a lock on the server tick path. */
++    private static void recordMaximum(final AtomicLong maximum, final long count) {
++        long current = maximum.get();
++        while (count > current && !maximum.compareAndSet(current, count)) {
++            current = maximum.get();
++        }
++    }
++
++    private static void recordFullRecomputation(
++        final Workload workload,
++        final WorkloadCounters counters,
++        final FallbackReason reason,
++        final int size
++    ) {
++        fullRecomputationRequestCount.incrementAndGet();
++        counters.mainThreadFallbacks.incrementAndGet();
++        recordFallback(workload, reason, size);
++    }
++
++    private static void recordFallback(final Workload workload, final FallbackReason reason, final int size) {
++        lastFallbackEvent.set(new FallbackEvent(System.nanoTime(), workload, reason, Math.max(0, size)));
++    }
++
++    /** Captures one bounded rolling counter sample; called once per second by the tick diagnostics. */
++    public static void sampleMetrics(final long capturedNanos) {
++        synchronized (WINDOW_SAMPLE_LOCK) {
++            final CounterSample previous = WINDOW_SAMPLES.peekLast();
++            if (previous != null && capturedNanos <= previous.capturedNanos()) {
++                return;
++            }
++            if (WINDOW_SAMPLES.size() == MAX_WINDOW_SAMPLES) {
++                WINDOW_SAMPLES.removeFirst();
++            }
++            WINDOW_SAMPLES.addLast(captureCounterSample(capturedNanos));
++        }
++    }
++
++    /** Returns counter deltas for the requested recent window without resetting lifetime diagnostics. */
++    public static WindowMetrics recentMetrics(final int requestedSeconds) {
++        final int windowSeconds = Math.clamp(requestedSeconds, 10, 300);
++        final CounterSample latest = captureCounterSample(System.nanoTime());
++        final CounterSample baseline;
++        synchronized (WINDOW_SAMPLE_LOCK) {
++            CounterSample candidate = WINDOW_SAMPLES.peekFirst();
++            final long cutoff = latest.capturedNanos() - TimeUnit.SECONDS.toNanos(windowSeconds);
++            for (final CounterSample sample : WINDOW_SAMPLES) {
++                if (sample.capturedNanos() > cutoff) {
++                    break;
++                }
++                candidate = sample;
++            }
++            baseline = candidate == null ? latest : candidate;
+         }
++
++        final List<WorkloadWindowMetrics> workloads = new ArrayList<>(Workload.values().length);
++        for (final Workload workload : Workload.values()) {
++            final int index = workload.ordinal();
++            final WorkloadWindowMetrics metrics = new WorkloadWindowMetrics(
++                workload,
++                delta(latest.workloadInvocations()[index], baseline.workloadInvocations()[index]),
++                delta(latest.workloadParallelInvocations()[index], baseline.workloadParallelInvocations()[index]),
++                delta(latest.workloadMainThreadFallbacks()[index], baseline.workloadMainThreadFallbacks()[index]),
++                delta(latest.workloadCallerOnlyInvocations()[index], baseline.workloadCallerOnlyInvocations()[index]),
++                delta(latest.workloadFailedInvocations()[index], baseline.workloadFailedInvocations()[index]),
++                delta(latest.workloadSubmissionFallbacks()[index], baseline.workloadSubmissionFallbacks()[index]),
++                delta(latest.workloadBackpressureRuns()[index], baseline.workloadBackpressureRuns()[index]),
++                delta(latest.workloadCallerItems()[index], baseline.workloadCallerItems()[index]),
++                delta(latest.workloadWorkerItems()[index], baseline.workloadWorkerItems()[index])
++            );
++            if (metrics.invocations() > 0L) {
++                workloads.add(metrics);
++            }
++        }
++        return new WindowMetrics(
++            Math.max(0L, latest.capturedNanos() - baseline.capturedNanos()),
++            delta(latest.invocations(), baseline.invocations()),
++            delta(latest.parallelInvocations(), baseline.parallelInvocations()),
++            delta(latest.belowThresholdFallbacks(), baseline.belowThresholdFallbacks()),
++            delta(latest.insufficientPartitionFallbacks(), baseline.insufficientPartitionFallbacks()),
++            delta(latest.unavailableParallelismFallbacks(), baseline.unavailableParallelismFallbacks()),
++            delta(latest.mainThreadFallbacks(), baseline.mainThreadFallbacks()),
++            delta(latest.callerOnlyInvocations(), baseline.callerOnlyInvocations()),
++            delta(latest.failedInvocations(), baseline.failedInvocations()),
++            delta(latest.submissionFallbacks(), baseline.submissionFallbacks()),
++            delta(latest.queueContentionFallbacks(), baseline.queueContentionFallbacks()),
++            delta(latest.rejectedTasks(), baseline.rejectedTasks()),
++            delta(latest.callerItems(), baseline.callerItems()),
++            delta(latest.workerItems(), baseline.workerItems()),
++            List.copyOf(workloads)
++        );
++    }
++
++    private static CounterSample captureCounterSample(final long capturedNanos) {
++        final int workloadCount = Workload.values().length;
++        final long[] workloadInvocations = new long[workloadCount];
++        final long[] workloadParallelInvocations = new long[workloadCount];
++        final long[] workloadMainThreadFallbacks = new long[workloadCount];
++        final long[] workloadCallerOnlyInvocations = new long[workloadCount];
++        final long[] workloadFailedInvocations = new long[workloadCount];
++        final long[] workloadSubmissionFallbacks = new long[workloadCount];
++        final long[] workloadBackpressureRuns = new long[workloadCount];
++        final long[] workloadCallerItems = new long[workloadCount];
++        final long[] workloadWorkerItems = new long[workloadCount];
++        for (int index = 0; index < workloadCount; index++) {
++            final WorkloadCounters counters = WORKLOAD_COUNTERS[index];
++            workloadInvocations[index] = counters.invocations.get();
++            workloadParallelInvocations[index] = counters.parallelInvocations.get();
++            workloadMainThreadFallbacks[index] = counters.mainThreadFallbacks.get();
++            workloadCallerOnlyInvocations[index] = counters.callerOnlyInvocations.get();
++            workloadFailedInvocations[index] = counters.failedInvocations.get();
++            workloadSubmissionFallbacks[index] = counters.submissionFallbackInvocations.get();
++            workloadBackpressureRuns[index] = counters.backpressureCallerRuns.get();
++            workloadCallerItems[index] = counters.callerItems.get();
++            workloadWorkerItems[index] = counters.workerItems.get();
++        }
++        return new CounterSample(
++            capturedNanos,
++            invocationCount.get(),
++            parallelInvocationCount.get(),
++            belowFeatureThresholdFallbackCount.get(),
++            insufficientPartitionFallbackCount.get(),
++            unavailableParallelismFallbackCount.get(),
++            fullRecomputationRequestCount.get(),
++            callerOnlyInvocationCount.get(),
++            failedInvocationCount.get(),
++            submissionFallbackInvocationCount.get(),
++            queueContentionFallbackCount.get(),
++            rejectedTaskCount.get(),
++            callerItemCount.get(),
++            workerItemCount.get(),
++            workloadInvocations,
++            workloadParallelInvocations,
++            workloadMainThreadFallbacks,
++            workloadCallerOnlyInvocations,
++            workloadFailedInvocations,
++            workloadSubmissionFallbacks,
++            workloadBackpressureRuns,
++            workloadCallerItems,
++            workloadWorkerItems
++        );
++    }
++
++    private static long delta(final long latest, final long baseline) {
++        return Math.max(0L, latest - baseline);
+     }
+ 
+     /** Returns a lock-free snapshot used by the diagnostic command. */
+     public static Metrics metrics() {
+         final ComputeThreadPoolExecutor current = executor;
++        final FallbackEvent fallback = lastFallbackEvent.get();
+         final long belowFeatureThresholdFallbacks = belowFeatureThresholdFallbackCount.get();
+         final long insufficientPartitionFallbacks = insufficientPartitionFallbackCount.get();
+         final long unavailableParallelismFallbacks = unavailableParallelismFallbackCount.get();
+@@ -491,6 +787,7 @@ public final class LeavesXComputeExecutor {
+             workerCount,
+             current == null ? 0 : current.executingTaskCount(),
+             current == null ? 0 : current.queuedTaskCount(),
++            current == null ? 0 : current.reservedTaskCount(),
+             current == null ? 0 : current.getLargestPoolSize(),
+             current == null ? 0L : current.getCompletedTaskCount(),
+             invocationCount.get(),
+@@ -501,14 +798,27 @@ public final class LeavesXComputeExecutor {
+             unavailableParallelismFallbacks,
+             failedInvocationCount.get(),
+             backpressureCallerRunCount.get(),
++            slotReservationShortageCount.get(),
++            queueContentionFallbackCount.get(),
++            maximumQueuedTaskCount.get(),
++            rejectedTaskCount.get(),
++            timedWorkerWaitCount.get(),
++            callerOnlyInvocationCount.get(),
++            fullRecomputationRequestCount.get(),
++            submissionFallbackInvocationCount.get(),
++            fallback == null ? "无" : fallback.reason().displayName(),
++            fallback == null ? null : fallback.workload(),
++            fallback == null ? -1L : Math.max(0L, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - fallback.capturedNanos())),
+             callerRangeCount.get(),
+             workerRangeCount.get(),
+             callerItemCount.get(),
++            callerHelpRangeCount.get(),
+             workerItemCount.get(),
+             (int)Math.min(Integer.MAX_VALUE, maximumConcurrentWorkerCount.get()),
+             adaptiveAdmissionCount.get(),
+             adaptivePartitionInvocationCount.get(),
+             adaptivePartitionCount.get(),
++            workerBatchCount.get(),
+             List.copyOf(workloads)
+         );
+     }
+@@ -556,6 +866,7 @@ public final class LeavesXComputeExecutor {
+         int workers,
+         int activeWorkers,
+         int queuedTasks,
++        int reservedTasks,
+         int largestPoolSize,
+         long completedTasks,
+         long invocations,
+@@ -566,14 +877,27 @@ public final class LeavesXComputeExecutor {
+         long unavailableParallelismFallbacks,
+         long failedInvocations,
+         long backpressureCallerRuns,
++        long slotReservationShortages,
++        long queueContentionFallbacks,
++        long maximumQueuedTasks,
++        long rejectedTasks,
++        long timedWorkerWaits,
++        long callerOnlyInvocations,
++        long fullRecomputationRequests,
++        long submissionFallbackInvocations,
++        String lastFallbackReason,
++        Workload lastFallbackWorkload,
++        long lastFallbackAgeMillis,
+         long callerRanges,
+         long workerRanges,
+         long callerItems,
++        long callerHelpRanges,
+         long workerItems,
+         int maximumConcurrentWorkers,
+         long adaptiveAdmissions,
+         long adaptivePartitionInvocations,
+         long adaptivePartitions,
++        long workerBatches,
+         List<WorkloadMetrics> workloads
+     ) {
+     }
+@@ -589,13 +913,103 @@ public final class LeavesXComputeExecutor {
+         long unavailableParallelismFallbacks,
+         long failedInvocations,
+         long backpressureCallerRuns,
++        long mainThreadFallbacks,
++        long callerOnlyInvocations,
++        long submissionFallbackInvocations,
+         long totalItems,
+         long maximumItems,
+         long callerRanges,
+         long workerRanges,
+         long callerItems,
+         long workerItems,
+-        int maximumConcurrentWorkers
++        int maximumConcurrentWorkers,
++        long workerBatches
++    ) {
++    }
++
++    /** Immutable deltas for one recent diagnostic window. */
++    public record WindowMetrics(
++        long elapsedNanos,
++        long invocations,
++        long parallelInvocations,
++        long belowThresholdFallbacks,
++        long insufficientPartitionFallbacks,
++        long unavailableParallelismFallbacks,
++        long mainThreadFallbacks,
++        long callerOnlyInvocations,
++        long failedInvocations,
++        long submissionFallbacks,
++        long queueContentionFallbacks,
++        long rejectedTasks,
++        long callerItems,
++        long workerItems,
++        List<WorkloadWindowMetrics> workloads
++    ) {
++    }
++
++    /** Per-workload deltas for the recent diagnostic window. */
++    public record WorkloadWindowMetrics(
++        Workload workload,
++        long invocations,
++        long parallelInvocations,
++        long mainThreadFallbacks,
++        long callerOnlyInvocations,
++        long failedInvocations,
++        long submissionFallbacks,
++        long backpressureRuns,
++        long callerItems,
++        long workerItems
++    ) {
++    }
++
++    public enum FallbackReason {
++        POOL_UNAVAILABLE("线程池不可用或工作线程数不足"),
++        BELOW_THRESHOLD("任务规模低于并行阈值"),
++        INSUFFICIENT_PARTITIONS("可用分区不足"),
++        POOL_BUSY_CALLER_ONLY("线程池繁忙，完整任务由主线程执行"),
++        SUBMISSION_REJECTED("工作任务提交被拒绝"),
++        SUBMISSION_FAILED("工作任务提交异常"),
++        COMPUTATION_FAILED("工作线程计算异常，已请求完整主线程重算"),
++        NESTED_COMPUTATION_FAILED("嵌套计算异常，已请求完整主线程重算");
++
++        private final String displayName;
++
++        FallbackReason(final String displayName) {
++            this.displayName = displayName;
++        }
++
++        public String displayName() {
++            return this.displayName;
++        }
++    }
++
++    private record FallbackEvent(long capturedNanos, Workload workload, FallbackReason reason, int inputSize) {
++    }
++
++    private record CounterSample(
++        long capturedNanos,
++        long invocations,
++        long parallelInvocations,
++        long belowThresholdFallbacks,
++        long insufficientPartitionFallbacks,
++        long unavailableParallelismFallbacks,
++        long mainThreadFallbacks,
++        long callerOnlyInvocations,
++        long failedInvocations,
++        long submissionFallbacks,
++        long queueContentionFallbacks,
++        long rejectedTasks,
++        long callerItems,
++        long workerItems,
++        long[] workloadInvocations,
++        long[] workloadParallelInvocations,
++        long[] workloadMainThreadFallbacks,
++        long[] workloadCallerOnlyInvocations,
++        long[] workloadFailedInvocations,
++        long[] workloadSubmissionFallbacks,
++        long[] workloadBackpressureRuns,
++        long[] workloadCallerItems,
++        long[] workloadWorkerItems
+     ) {
+     }
+ 
+@@ -616,6 +1030,9 @@ public final class LeavesXComputeExecutor {
+         private final AtomicLong unavailableParallelismFallbacks = new AtomicLong();
+         private final AtomicLong failedInvocations = new AtomicLong();
+         private final AtomicLong backpressureCallerRuns = new AtomicLong();
++        private final AtomicLong mainThreadFallbacks = new AtomicLong();
++        private final AtomicLong callerOnlyInvocations = new AtomicLong();
++        private final AtomicLong submissionFallbackInvocations = new AtomicLong();
+         private final AtomicLong totalItems = new AtomicLong();
+         private final AtomicLong maximumItems = new AtomicLong();
+         private final AtomicLong callerRanges = new AtomicLong();
+@@ -623,6 +1040,7 @@ public final class LeavesXComputeExecutor {
+         private final AtomicLong callerItems = new AtomicLong();
+         private final AtomicLong workerItems = new AtomicLong();
+         private final AtomicLong maximumConcurrentWorkers = new AtomicLong();
++        private final AtomicLong workerBatches = new AtomicLong();
+ 
+         private void recordInvocation(final int size) {
+             this.invocations.incrementAndGet();
+@@ -643,6 +1061,9 @@ public final class LeavesXComputeExecutor {
+             this.unavailableParallelismFallbacks.set(0L);
+             this.failedInvocations.set(0L);
+             this.backpressureCallerRuns.set(0L);
++            this.mainThreadFallbacks.set(0L);
++            this.callerOnlyInvocations.set(0L);
++            this.submissionFallbackInvocations.set(0L);
+             this.totalItems.set(0L);
+             this.maximumItems.set(0L);
+             this.callerRanges.set(0L);
+@@ -650,6 +1071,7 @@ public final class LeavesXComputeExecutor {
+             this.callerItems.set(0L);
+             this.workerItems.set(0L);
+             this.maximumConcurrentWorkers.set(0L);
++            this.workerBatches.set(0L);
+         }
+ 
+         private WorkloadMetrics snapshot(final Workload workload) {
+@@ -666,13 +1088,17 @@ public final class LeavesXComputeExecutor {
+                 unavailable,
+                 this.failedInvocations.get(),
+                 this.backpressureCallerRuns.get(),
++                this.mainThreadFallbacks.get(),
++                this.callerOnlyInvocations.get(),
++                this.submissionFallbackInvocations.get(),
+                 this.totalItems.get(),
+                 this.maximumItems.get(),
+                 this.callerRanges.get(),
+                 this.workerRanges.get(),
+                 this.callerItems.get(),
+                 this.workerItems.get(),
+-                (int)Math.min(Integer.MAX_VALUE, this.maximumConcurrentWorkers.get())
++                (int)Math.min(Integer.MAX_VALUE, this.maximumConcurrentWorkers.get()),
++                this.workerBatches.get()
+             );
+         }
+ 
+@@ -681,12 +1107,14 @@ public final class LeavesXComputeExecutor {
+             final long workerRangeCount,
+             final long callerItemCount,
+             final long workerItemCount,
+-            final int maximumConcurrentWorkerCount
++            final int maximumConcurrentWorkerCount,
++            final long workerBatchCount
+         ) {
+             this.callerRanges.addAndGet(callerRangeCount);
+             this.workerRanges.addAndGet(workerRangeCount);
+             this.callerItems.addAndGet(callerItemCount);
+             this.workerItems.addAndGet(workerItemCount);
++            this.workerBatches.addAndGet(workerBatchCount);
+             long current = this.maximumConcurrentWorkers.get();
+             while (maximumConcurrentWorkerCount > current
+                 && !this.maximumConcurrentWorkers.compareAndSet(current, maximumConcurrentWorkerCount)) {
+@@ -705,8 +1133,10 @@ public final class LeavesXComputeExecutor {
+         private final AtomicInteger activeWorkers = new AtomicInteger();
+         private final AtomicLong workerRanges = new AtomicLong();
+         private final AtomicLong workerItems = new AtomicLong();
++        private final AtomicLong workerBatches = new AtomicLong();
+         private long callerRanges;
+         private long callerItems;
++        private long callerHelpRanges;
+         private final AtomicInteger maximumConcurrentWorkers = new AtomicInteger();
+         private volatile Throwable failure;
+ 
+@@ -734,12 +1164,14 @@ public final class LeavesXComputeExecutor {
+             final AtomicInteger nextTask,
+             final int rangeSize,
+             final int taskCount,
+-            final int inputSize
++            final int inputSize,
++            final int rangesPerClaim
+         ) {
+             final int active = (int)this.activeWorkers.incrementAndGet();
+             long ranges = 0L;
+             long items = 0L;
+             this.maximumConcurrentWorkers.accumulateAndGet(active, Math::max);
++            this.workerBatches.incrementAndGet();
+             try {
+                 int taskIndex = initialTaskIndex;
+                 final int initialStart = taskIndex * rangeSize;
+@@ -759,9 +1191,12 @@ public final class LeavesXComputeExecutor {
+ 
+                 // Initial ranges are reserved one-per-submission before workers start. Only claim from the shared
+                 // cursor after that reservation; otherwise a fast worker could execute another worker's first range.
+-                taskIndex = nextTask.getAndAdd(RANGES_PER_CLAIM);
++                taskIndex = nextTask.getAndAdd(claimWidthFor(taskCount - 1 - nextTask.get(), rangesPerClaim));
+                 while (taskIndex < taskCount - 1) {
+-                    final int claimEnd = Math.min(taskCount - 1, taskIndex + RANGES_PER_CLAIM);
++                    final int claimEnd = Math.min(
++                        taskCount - 1,
++                        taskIndex + claimWidthFor(taskCount - 1 - taskIndex, rangesPerClaim)
++                    );
+                     while (taskIndex < claimEnd) {
+                         final int start = taskIndex * rangeSize;
+                         final int end = Math.min(inputSize, start + rangeSize);
+@@ -776,7 +1211,8 @@ public final class LeavesXComputeExecutor {
+                         }
+                         taskIndex++;
+                     }
+-                    taskIndex = nextTask.getAndAdd(RANGES_PER_CLAIM);
++                    final int remainingRanges = Math.max(0, taskCount - 1 - nextTask.get());
++                    taskIndex = nextTask.getAndAdd(claimWidthFor(remainingRanges, rangesPerClaim));
+                 }
+             } finally {
+                 this.activeWorkers.decrementAndGet();
+@@ -825,6 +1261,25 @@ public final class LeavesXComputeExecutor {
+             }
+         }
+ 
++        /** Executes one worker-owned range on the calling thread without classifying it as queue backpressure. */
++        private void runHelpOnCaller(
++            final int taskIndex,
++            final int startInclusive,
++            final int endExclusive
++        ) {
++            final int itemCount = endExclusive - startInclusive;
++            this.callerRanges++;
++            this.callerItems += Math.max(0, itemCount);
++            this.callerHelpRanges++;
++            try {
++                this.task.run(taskIndex, startInclusive, endExclusive);
++            } catch (final Throwable computationFailure) {
++                this.recordFailure(computationFailure);
++            } finally {
++                this.workersDone.countDown();
++            }
++        }
++
+         /** Claims every range that workers have not claimed and executes it on the calling thread. */
+         private void runRemainingOnCaller(
+             final AtomicInteger nextTask,
+@@ -882,6 +1337,68 @@ public final class LeavesXComputeExecutor {
+             }
+         }
+ 
++        /**
++         * Waits for worker ranges while claiming unstarted overflow ranges on the caller.
++         *
++         * <p>Workers and the caller use the same atomic cursor, so each range remains owned by exactly one thread.
++         * The caller only helps ranges that were not part of the initial one-per-worker reservation.</p>
++         */
++        private void awaitWorkersWithHelping(
++            final AtomicInteger nextTask,
++            final int rangeSize,
++            final int workerRangeLimit,
++            final int inputSize,
++            final int rangesPerClaim
++        ) {
++            boolean interrupted = false;
++            int idleSpins = 0;
++            while (this.workersDone.getCount() > 0L) {
++                // Avoid an atomic update when all overflow ranges have already been claimed by workers.
++                final int availableTask = nextTask.get();
++                if (availableTask >= workerRangeLimit) {
++                    if (idleSpins++ < WAIT_SPIN_LIMIT) {
++                        Thread.onSpinWait();
++                        continue;
++                    }
++                    idleSpins = 0;
++                    try {
++                        timedWorkerWaitCount.incrementAndGet();
++                        this.workersDone.await(WAIT_PARK_NANOS, TimeUnit.NANOSECONDS);
++                    } catch (final InterruptedException interruption) {
++                        interrupted = true;
++                        this.recordFailure(interruption);
++                    }
++                    continue;
++                }
++                final int helpClaimWidth = claimWidthFor(workerRangeLimit - availableTask, rangesPerClaim);
++                final int taskIndex = nextTask.getAndAdd(helpClaimWidth);
++                if (taskIndex < workerRangeLimit) {
++                    idleSpins = 0;
++                    final int claimEnd = Math.min(workerRangeLimit, taskIndex + helpClaimWidth);
++                    for (int claimedTask = taskIndex; claimedTask < claimEnd; claimedTask++) {
++                        final int start = claimedTask * rangeSize;
++                        this.runHelpOnCaller(claimedTask, start, Math.min(inputSize, start + rangeSize));
++                    }
++                    continue;
++                }
++                if (idleSpins++ < WAIT_SPIN_LIMIT) {
++                    Thread.onSpinWait();
++                    continue;
++                }
++                idleSpins = 0;
++                try {
++                    timedWorkerWaitCount.incrementAndGet();
++                    this.workersDone.await(WAIT_PARK_NANOS, TimeUnit.NANOSECONDS);
++                } catch (final InterruptedException interruption) {
++                    interrupted = true;
++                    this.recordFailure(interruption);
++                }
++            }
++            if (interrupted) {
++                Thread.currentThread().interrupt();
++            }
++        }
++
+         private void cancelWorker() {
+             this.recordFailure(new CancellationException("LeavesX compute range cancelled"));
+             this.workersDone.countDown();
+@@ -904,9 +1421,12 @@ public final class LeavesXComputeExecutor {
+             final long workerRangeTotal = this.workerRanges.get();
+             final long workerItemTotal = this.workerItems.get();
+             callerRangeCount.addAndGet(this.callerRanges);
++            callerHelpRangeCount.addAndGet(this.callerHelpRanges);
+             workerRangeCount.addAndGet(workerRangeTotal);
+             callerItemCount.addAndGet(this.callerItems);
+             workerItemCount.addAndGet(workerItemTotal);
++            final long workerBatchTotal = this.workerBatches.get();
++            workerBatchCount.addAndGet(workerBatchTotal);
+             final int maximumWorkers = this.maximumConcurrentWorkers.get();
+             recordMaximumConcurrentWorkers(maximumWorkers);
+             this.workloadCounters.recordLoad(
+@@ -914,7 +1434,8 @@ public final class LeavesXComputeExecutor {
+                 workerRangeTotal,
+                 this.callerItems,
+                 workerItemTotal,
+-                maximumWorkers
++                maximumWorkers,
++                workerBatchTotal
+             );
+         }
+ 
+@@ -948,6 +1469,8 @@ public final class LeavesXComputeExecutor {
+         private final AtomicInteger executingTasks = new AtomicInteger();
+         /** Number of tasks accepted by execute but not handed to beforeExecute yet. */
+         private final AtomicInteger queuedTasks = new AtomicInteger();
++        /** Reservations made by concurrent invocations before their queue entries are handed to workers. */
++        private final AtomicInteger reservedTasks = new AtomicInteger();
+ 
+         private ComputeThreadPoolExecutor(final int workers) {
+             super(
+@@ -968,12 +1491,14 @@ public final class LeavesXComputeExecutor {
+ 
+         @Override
+         public void execute(final Runnable command) {
+-            this.queuedTasks.incrementAndGet();
++            final int acceptedDepth = this.queuedTasks.incrementAndGet();
++            recordMaximum(maximumQueuedTaskCount, acceptedDepth);
+             try {
+                 super.execute(command);
+             } catch (final RuntimeException | Error failure) {
+                 // AbortPolicy and shutdown races must not leave adaptive admission permanently disabled.
+                 this.queuedTasks.decrementAndGet();
++                rejectedTaskCount.incrementAndGet();
+                 throw failure;
+             }
+         }
+@@ -981,8 +1506,10 @@ public final class LeavesXComputeExecutor {
+         @Override
+         protected void beforeExecute(final Thread thread, final Runnable task) {
+             super.beforeExecute(thread, task);
+-            this.queuedTasks.decrementAndGet();
++            // Publish the execution state before removing the queue entry. This avoids a transient false idle slot
++            // that could let a concurrent invocation over-admit another batch between the two counter updates.
+             this.executingTasks.incrementAndGet();
++            this.queuedTasks.decrementAndGet();
+             COMPUTE_WORKER_CONTEXT.set(Boolean.TRUE);
+         }
+ 
+@@ -1004,9 +1531,56 @@ public final class LeavesXComputeExecutor {
+             return Math.max(0, this.queuedTasks.get());
+         }
+ 
+-        /** Returns worker slots that are not executing or already reserved by an accepted task. */
++        private int reservedTaskCount() {
++            return Math.max(0, this.reservedTasks.get());
++        }
++
++        /** Returns worker slots that are not executing, queued, or reserved by another invocation. */
+         private int availableWorkerSlotCount() {
+-            return Math.max(0, this.getCorePoolSize() - this.executingTaskCount() - this.queuedTaskCount());
++            return Math.max(
++                0,
++                this.getCorePoolSize() - this.executingTaskCount() - this.queuedTaskCount() - this.reservedTasks.get()
++            );
++        }
++
++        /** Atomically reserves worker slots for one invocation, preventing concurrent callers from over-admitting. */
++        private int reserveWorkerSlots(final int requested) {
++            if (requested <= 0) {
++                return 0;
++            }
++            while (true) {
++                final int currentReservations = this.reservedTasks.get();
++                final int available = Math.max(
++                    0,
++                    this.getCorePoolSize() - this.executingTaskCount() - this.queuedTaskCount() - currentReservations
++                );
++                final int granted = Math.min(requested, available);
++                if (granted == 0) {
++                    return 0;
++                }
++                if (this.reservedTasks.compareAndSet(currentReservations, currentReservations + granted)) {
++                    return granted;
++                }
++            }
++        }
++
++        private void releaseWorkerSlotReservation() {
++            this.reservedTasks.decrementAndGet();
++        }
++
++        private void releaseWorkerSlotReservations(final int count) {
++            if (count > 0) {
++                this.reservedTasks.addAndGet(-count);
++            }
++        }
++
++        /** Submits a previously reserved task and releases its reservation even when shutdown races the submit. */
++        private void executeReserved(final Runnable command) {
++            try {
++                this.execute(command);
++            } finally {
++                this.releaseWorkerSlotReservation();
++            }
+         }
+     }
+ 
+@@ -1019,6 +1593,7 @@ public final class LeavesXComputeExecutor {
+         private final int rangeSize;
+         private final int taskCount;
+         private final int inputSize;
++        private final int rangesPerClaim;
+ 
+         private RangeBatchRunnable(
+             final RangeInvocation invocation,
+@@ -1026,7 +1601,8 @@ public final class LeavesXComputeExecutor {
+             final AtomicInteger nextTask,
+             final int rangeSize,
+             final int taskCount,
+-            final int inputSize
++            final int inputSize,
++            final int rangesPerClaim
+         ) {
+             this.invocation = invocation;
+             this.initialTaskIndex = initialTaskIndex;
+@@ -1034,6 +1610,7 @@ public final class LeavesXComputeExecutor {
+             this.rangeSize = rangeSize;
+             this.taskCount = taskCount;
+             this.inputSize = inputSize;
++            this.rangesPerClaim = rangesPerClaim;
+         }
+ 
+         @Override
+@@ -1043,7 +1620,8 @@ public final class LeavesXComputeExecutor {
+                 this.nextTask,
+                 this.rangeSize,
+                 this.taskCount,
+-                this.inputSize
++                this.inputSize,
++                this.rangesPerClaim
+             );
+         }
+ 
+@@ -1054,11 +1632,11 @@ public final class LeavesXComputeExecutor {
+                 // Cancellation must reserve the same contiguous claim width as active workers. Mixing getAndIncrement
+                 // with a worker's getAndAdd can steal the second range of a block already reserved by that worker.
+                 while (true) {
+-                    final int taskIndex = this.nextTask.getAndAdd(RANGES_PER_CLAIM);
++                    final int taskIndex = this.nextTask.getAndAdd(this.rangesPerClaim);
+                     if (taskIndex >= this.taskCount - 1) {
+                         return;
+                     }
+-                    final int claimEnd = Math.min(this.taskCount - 1, taskIndex + RANGES_PER_CLAIM);
++                    final int claimEnd = Math.min(this.taskCount - 1, taskIndex + this.rangesPerClaim);
+                     for (int claimedTask = taskIndex; claimedTask < claimEnd; claimedTask++) {
+                         this.invocation.cancelWorker();
+                     }
+diff --git a/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java b/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java
+index 60fcc484fe29076dcd9dbebbeeb3786777f433bd..16fd25716343c1485eaedbd80b24fce48765c5d4 100644
+--- a/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java
++++ b/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java
+@@ -100,4 +100,24 @@ public final class MobSpawnCountAccumulatorTest {
+             assertArrayEquals(entry.getValue(), streaming.get(entry.getLongKey()));
+         }
+     }
++
++    @Test
++    void smallParallelRequestsStayOnTheDirectCountingPath() {
++        final long[] chunkKeys = new long[64];
++        final byte[] categories = new byte[chunkKeys.length];
++        for (int index = 0; index < chunkKeys.length; index++) {
++            chunkKeys[index] = ChunkPos.pack(index, 0);
++            categories[index] = (byte)(index % MobCategory.values().length);
++        }
++
++        LeavesXComputeExecutor.configure(4, 64);
++        final MobSpawnCountAccumulator.Inputs inputs = new MobSpawnCountAccumulator.Inputs(
++            chunkKeys,
++            categories,
++            chunkKeys.length
++        );
++        MobSpawnCountAccumulator.count(inputs, true, 2_048);
++
++        assertEquals(0L, LeavesXComputeExecutor.metrics().invocations());
++    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java b/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java
+index dbcf8e9ef5ef76ab991be7056590978f574d7b75..b5f84b41c871b107c39765c5646e0fa1a0d56766 100644
+--- a/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java
++++ b/src/test/java/org/leavesx/leavesx/command/LeavesXCommandSafetyTest.java
+@@ -61,6 +61,8 @@ class LeavesXCommandSafetyTest {
+         @SuppressWarnings("unchecked")
+         final List<String> subcommands = (List<String>)subcommandsField.get(null);
+         assertTrue(subcommands.contains("villagers"));
++        assertTrue(subcommands.contains("parallel"));
++        assertTrue(subcommands.contains("reload"));
+ 
+         final MethodNode snapshot = method(classNode(LeavesXVillagerDiagnostics.class.getName()), "snapshot");
+         assertFalse(Arrays.stream(snapshot.instructions.toArray())
+@@ -75,6 +77,19 @@ class LeavesXCommandSafetyTest {
+                 && call.name.equals("getMemory")));
+     }
+ 
++    @Test
++    void guiCollectsOneSharedTooltipSnapshot() throws IOException {
++        final MethodNode populate = method(classNode(LeavesXDiagnosticsGui.class.getName()), "populate");
++        final long snapshotCalls = Arrays.stream(populate.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .filter(call -> call.owner.equals("org/leavesx/leavesx/command/LeavesXCommand")
++                && call.name.equals("collectGuiLore"))
++            .count();
++
++        assertEquals(1L, snapshotCalls, "every tooltip must reuse one bounded GUI snapshot");
++    }
++
+     @Test
+     void hotspotLocationsExposeAWorldAwareTeleportAction() {
+         final Component component = LeavesXCommand.teleportablePosition(
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+index edb8ae2fba402168e6cf5de0a635ab7853a0b05c..e7cd5f74a4e7ff8bf638fa4823737f4af7ebdbf2 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -113,6 +113,30 @@ class StableDistanceSorterTest {
+         );
+     }
+ 
++    @Test
++    void skipsParallelAdmissionForSmallLists() {
++        LeavesXComputeExecutor.configure(4, 64);
++        final double[] coordinates = new double[16];
++        StableDistanceSorter.sort(
++            coordinates,
++            new double[16],
++            new double[16],
++            0.0D,
++            0.0D,
++            0.0D,
++            true,
++            64
++        );
++        assertEquals(0L, LeavesXComputeExecutor.metrics().invocations());
++
++        final List<Entity> entities = new ArrayList<>();
++        for (int index = 0; index < 16; index++) {
++            entities.add(entityAt(index, 0.0D, 0.0D));
++        }
++        assertEquals(0, StableDistanceSorter.findNearestIndex(entities, entities.get(0), true, 64));
++        assertEquals(0L, LeavesXComputeExecutor.metrics().invocations());
++    }
++
+     @Test
+     void reordersEntitiesInPlaceAndKeepsEqualDistancesStable() {
+         final Entity farther = entityAt(3.0D, 0.0D, 0.0D);
+@@ -190,17 +214,37 @@ class StableDistanceSorterTest {
+     }
+ 
+     @Test
+-    void keepsSmallCandidateSetsSynchronousAndReportsTheReason() {
++    void mediumDistanceSnapshotUsesIdleWorkersBelowConfiguredThreshold() {
++        final int size = 1_024;
++        final double[] x = new double[size];
++        final double[] y = new double[size];
++        final double[] z = new double[size];
++        for (int index = 0; index < size; index++) {
++            x[index] = index & 63;
++            y[index] = (index >>> 6) & 15;
++            z[index] = index >>> 9;
++        }
++
++        LeavesXComputeExecutor.configure(4, 64);
++        StableDistanceSorter.sort(x, y, z, 0.0D, 0.0D, 0.0D, true, 2_048);
++
++        final LeavesXComputeExecutor.WorkloadMetrics ai = workload(LeavesXComputeExecutor.Workload.AI_TARGET_SORT);
++        assertEquals(1L, ai.parallelInvocations());
++        assertEquals(1_024L, ai.totalItems());
++    }
++
++    @Test
++    void keepsSmallCandidateSetsSynchronousWithoutEnteringTheScheduler() {
+         LeavesXComputeExecutor.configure(4, 64);
+         StableDistanceSorter.sort(new double[128], new double[128], new double[128], 0.0D, 0.0D, 0.0D, true, 2_048);
+         StableDistanceSorter.sort(new double[256], new double[256], new double[256], 0.0D, 0.0D, 0.0D, true, 2_048);
+ 
+         final LeavesXComputeExecutor.WorkloadMetrics ai = workload(LeavesXComputeExecutor.Workload.AI_TARGET_SORT);
+-        assertEquals(2L, ai.invocations());
++        assertEquals(0L, ai.invocations());
+         assertEquals(0L, ai.parallelInvocations());
+-        assertEquals(2L, ai.belowFeatureThresholdFallbacks());
+-        assertEquals(384L, ai.totalItems());
+-        assertEquals(256L, ai.maximumItems());
++        assertEquals(0L, ai.belowFeatureThresholdFallbacks());
++        assertEquals(0L, ai.totalItems());
++        assertEquals(0L, ai.maximumItems());
+     }
+ 
+     @Test
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index f34f5630f099738b98a655b9e2db7b6396a12f66..c33f57f2ad7788e568a259164f9fc8f6605aa70c 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -3,12 +3,14 @@ package org.leavesx.leavesx.runtime;
+ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertThrows;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import java.util.concurrent.CountDownLatch;
+ import java.util.concurrent.ExecutorService;
+ import java.util.concurrent.Executors;
+ import java.util.concurrent.Future;
++import java.util.concurrent.RejectedExecutionException;
+ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.TimeoutException;
+ import java.util.concurrent.ThreadPoolExecutor;
+@@ -48,6 +50,32 @@ public class LeavesXComputeExecutorTest {
+         assertArrayEquals(expected, actual);
+     }
+ 
++    @Test
++    void skipsEmptyRangesBeforeTouchingTheExecutor() {
++        LeavesXComputeExecutor.configure(4);
++        assertEquals(
++            0,
++            LeavesXComputeExecutor.invokeRangesWithCount(
++                LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++                0,
++                1,
++                1,
++                (taskIndex, start, end) -> { throw new AssertionError("empty input must not invoke a callback"); }
++            )
++        );
++        assertEquals(0L, LeavesXComputeExecutor.metrics().invocations());
++        assertThrows(
++            NullPointerException.class,
++            () -> LeavesXComputeExecutor.invokeRangesWithCount(
++                LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++                1,
++                1,
++                1,
++                null
++            )
++        );
++    }
++
+     @Test
+     void claimsUnevenOverflowRangesWithoutDuplicatingWork() {
+         LeavesXComputeExecutor.configure(4, 64);
+@@ -175,7 +203,48 @@ public class LeavesXComputeExecutorTest {
+     void automaticWorkerSelectionLeavesHeadroomAndUsesLargeMachines() {
+         assertEquals(1, LeavesXComputeExecutor.automaticWorkerCount(2));
+         assertEquals(6, LeavesXComputeExecutor.automaticWorkerCount(8));
+-        assertEquals(16, LeavesXComputeExecutor.automaticWorkerCount(32));
++        assertEquals(24, LeavesXComputeExecutor.automaticWorkerCount(32));
++    }
++
++    @Test
++    void normalizesDirectWorkerConfigurationToSafeBounds() {
++        assertEquals(1, LeavesXComputeExecutor.normalizeWorkerCount(-4, 0));
++        assertEquals(24, LeavesXComputeExecutor.normalizeWorkerCount(0, 24));
++        assertEquals(64, LeavesXComputeExecutor.normalizeWorkerCount(128, 24));
++        assertEquals(1, LeavesXComputeExecutor.normalizeWorkerCount(1, 24));
++    }
++
++    @Test
++    void usesOverflowSafeCeilingDivision() {
++        assertEquals(0, LeavesXComputeExecutor.divideCeil(0, 4));
++        assertEquals(1, LeavesXComputeExecutor.divideCeil(1, Integer.MAX_VALUE));
++        assertEquals(33_554_432, LeavesXComputeExecutor.divideCeil(Integer.MAX_VALUE, 64));
++        assertThrows(IllegalArgumentException.class, () -> LeavesXComputeExecutor.divideCeil(1, 0));
++    }
++
++    @Test
++    void usesSingleRangeClaimsForShortTailsAndBatchedClaimsForLargeWorkloads() {
++        assertEquals(1, LeavesXComputeExecutor.rangesPerClaim(8, 4));
++        assertEquals(1, LeavesXComputeExecutor.rangesPerClaim(9, 4));
++        assertEquals(2, LeavesXComputeExecutor.rangesPerClaim(16, 4));
++        assertEquals(4, LeavesXComputeExecutor.rangesPerClaim(40, 2));
++        assertEquals(1, LeavesXComputeExecutor.rangesPerClaim(1, 0));
++    }
++
++    @Test
++    void shrinksClaimsNearTheTail() {
++        assertEquals(1, LeavesXComputeExecutor.claimWidthFor(0, 4));
++        assertEquals(1, LeavesXComputeExecutor.claimWidthFor(2, 4));
++        assertEquals(1, LeavesXComputeExecutor.claimWidthFor(8, 4));
++        assertEquals(4, LeavesXComputeExecutor.claimWidthFor(9, 4));
++    }
++
++    @Test
++    void increasesIdleSnapshotGranularityOnlyOnLargeWorkerPools() {
++        assertEquals(64, LeavesXComputeExecutor.adaptiveMinimumItemsForWorkerCount(128, 2));
++        assertEquals(32, LeavesXComputeExecutor.adaptiveMinimumItemsForWorkerCount(128, 4));
++        assertEquals(64, LeavesXComputeExecutor.adaptiveMinimumItemsForWorkerCount(512, 16));
++        assertEquals(64, LeavesXComputeExecutor.adaptiveMinimumItemsForWorkerCount(512, 24));
+     }
+ 
+     @Test
+@@ -234,9 +303,130 @@ public class LeavesXComputeExecutorTest {
+         final AtomicInteger queued = (AtomicInteger)queuedField.get(executor);
+         assertEquals(1, queued.get(), "a waiting task must be visible to adaptive admission");
+         assertEquals(1, LeavesXComputeExecutor.metrics().queuedTasks());
++        assertTrue(LeavesXComputeExecutor.metrics().maximumQueuedTasks() >= 1L);
++        release.countDown();
++    }
++
++    @Test
++    void recordsRejectedWorkerSubmissionsWithoutLeakingQueueState() throws Exception {
++        LeavesXComputeExecutor.configure(1, 64, true);
++        final ThreadPoolExecutor computePool = executor();
++        final CountDownLatch release = new CountDownLatch(1);
++        final CountDownLatch started = new CountDownLatch(1);
++        final Runnable blocker = () -> {
++            started.countDown();
++            try {
++                release.await();
++            } catch (final InterruptedException interruption) {
++                Thread.currentThread().interrupt();
++            }
++        };
++        computePool.execute(blocker);
++        assertTrue(started.await(2L, TimeUnit.SECONDS));
++        for (int index = 0; index < 128; index++) {
++            computePool.execute(blocker);
++        }
++        assertThrows(RejectedExecutionException.class, () -> computePool.execute(blocker));
++        assertTrue(LeavesXComputeExecutor.metrics().rejectedTasks() > 0L);
+         release.countDown();
+     }
+ 
++    @Test
++    void limitsAContendedBatchToImmediatelyAvailableWorkers() throws Exception {
++        LeavesXComputeExecutor.configure(2, 64, true);
++        final ThreadPoolExecutor computePool = executor();
++        final CountDownLatch blockerStarted = new CountDownLatch(1);
++        final CountDownLatch blockerRelease = new CountDownLatch(1);
++        computePool.execute(() -> {
++            blockerStarted.countDown();
++            try {
++                blockerRelease.await();
++            } catch (final InterruptedException interruption) {
++                Thread.currentThread().interrupt();
++            }
++        });
++        assertTrue(blockerStarted.await(2L, TimeUnit.SECONDS));
++
++        final CountDownLatch workerStarted = new CountDownLatch(1);
++        final CountDownLatch workerRelease = new CountDownLatch(1);
++        final ExecutorService caller = Executors.newSingleThreadExecutor();
++        try {
++            final Future<Boolean> result = caller.submit(() -> LeavesXComputeExecutor.invokeRanges(
++                LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++                1_024,
++                64,
++                (taskIndex, start, end) -> {
++                    if (Thread.currentThread().getName().startsWith("LeavesX Compute Worker")) {
++                        workerStarted.countDown();
++                        try {
++                            workerRelease.await();
++                        } catch (final InterruptedException interruption) {
++                            Thread.currentThread().interrupt();
++                        }
++                    }
++                }
++            ));
++
++            assertTrue(workerStarted.await(2L, TimeUnit.SECONDS), "the idle worker must receive one range");
++            assertEquals(
++                0,
++                LeavesXComputeExecutor.metrics().queuedTasks(),
++                "a contended batch must not queue behind the occupied worker"
++            );
++            workerRelease.countDown();
++            blockerRelease.countDown();
++            assertTrue(result.get(2L, TimeUnit.SECONDS));
++        } finally {
++            workerRelease.countDown();
++            blockerRelease.countDown();
++            caller.shutdownNow();
++        }
++    }
++
++    @Test
++    void reservesSlotsAcrossConcurrentInvocations() throws Exception {
++        LeavesXComputeExecutor.configure(2, 64, true);
++        final CountDownLatch workersStarted = new CountDownLatch(2);
++        final CountDownLatch releaseWorkers = new CountDownLatch(1);
++        final ExecutorService callers = Executors.newFixedThreadPool(2);
++        try {
++            final Future<Boolean> first = callers.submit(() -> LeavesXComputeExecutor.invokeRanges(
++                LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++                1_024,
++                64,
++                (taskIndex, start, end) -> {
++                    if (Thread.currentThread().getName().startsWith("LeavesX Compute Worker")) {
++                        workersStarted.countDown();
++                        try {
++                            releaseWorkers.await();
++                        } catch (final InterruptedException interruption) {
++                            Thread.currentThread().interrupt();
++                        }
++                    }
++                }
++            ));
++            assertTrue(workersStarted.await(2L, TimeUnit.SECONDS));
++
++            final Future<Boolean> second = callers.submit(() -> LeavesXComputeExecutor.invokeRanges(
++                LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
++                1_024,
++                64,
++                (taskIndex, start, end) -> { }
++            ));
++            assertTrue(second.get(2L, TimeUnit.SECONDS));
++            assertEquals(
++                0,
++                LeavesXComputeExecutor.metrics().queuedTasks(),
++                "a concurrent invocation must fall back to its caller instead of queueing"
++            );
++            releaseWorkers.countDown();
++            assertTrue(first.get(2L, TimeUnit.SECONDS));
++        } finally {
++            releaseWorkers.countDown();
++            callers.shutdownNow();
++        }
++    }
++
+     @Test
+     void takesOnlyRejectedPartitionsOnTheCallingThreadDuringBackpressure() throws Exception {
+         LeavesXComputeExecutor.configure(2, 64);
+@@ -271,6 +461,9 @@ public class LeavesXComputeExecutorTest {
+             assertEquals(1, counts.get(index), "backpressure must not duplicate index " + index);
+         }
+         assertTrue(LeavesXComputeExecutor.metrics().backpressureCallerRuns() > 0L);
++        assertTrue(LeavesXComputeExecutor.metrics().queueContentionFallbacks() > 0L);
++        assertTrue(LeavesXComputeExecutor.metrics().callerOnlyInvocations() > 0L);
++        assertTrue(LeavesXComputeExecutor.recentMetrics(60).callerOnlyInvocations() > 0L);
+         final LeavesXComputeExecutor.WorkloadMetrics unspecified = LeavesXComputeExecutor.metrics().workloads().stream()
+             .filter(workload -> workload.workload() == LeavesXComputeExecutor.Workload.UNSPECIFIED)
+             .findFirst()
+@@ -279,6 +472,37 @@ public class LeavesXComputeExecutorTest {
+         release.countDown();
+     }
+ 
++    @Test
++    void reportsRecentFullRecomputationAfterWorkerFailure() {
++        LeavesXComputeExecutor.configure(2, 16, true);
++
++        final int partitions = LeavesXComputeExecutor.invokeRangesWithCount(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
++            256,
++            1,
++            16,
++            (taskIndex, start, end) -> {
++                if (taskIndex == 0) {
++                    throw new IllegalStateException("synthetic diagnostic failure");
++                }
++            }
++        );
++
++        assertEquals(0, partitions);
++        final LeavesXComputeExecutor.Metrics lifetime = LeavesXComputeExecutor.metrics();
++        assertEquals(1L, lifetime.fullRecomputationRequests());
++        assertEquals(LeavesXComputeExecutor.Workload.AI_TARGET_SELECT, lifetime.lastFallbackWorkload());
++        assertTrue(lifetime.lastFallbackReason().contains("完整主线程重算"));
++
++        final LeavesXComputeExecutor.WindowMetrics recent = LeavesXComputeExecutor.recentMetrics(60);
++        assertEquals(1L, recent.mainThreadFallbacks());
++        assertEquals(1L, recent.failedInvocations());
++        assertTrue(recent.workloads().stream().anyMatch(workload ->
++            workload.workload() == LeavesXComputeExecutor.Workload.AI_TARGET_SELECT
++                && workload.mainThreadFallbacks() == 1L
++                && workload.failedInvocations() == 1L));
++    }
++
+     private static ThreadPoolExecutor executor() throws ReflectiveOperationException {
+         final var field = LeavesXComputeExecutor.class.getDeclaredField("executor");
+         field.setAccessible(true);
+@@ -301,14 +525,14 @@ public class LeavesXComputeExecutorTest {
+         });
+ 
+         assertTrue(parallel);
+-        assertEquals(1, callerRanges.get(), "the tick thread should compute exactly one partition instead of only waiting");
++        assertTrue(callerRanges.get() >= 1, "the tick thread must retain at least one partition");
+         assertTrue(workerRanges.get() > 0, "at least one partition should still execute on a worker");
+ 
+         final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
+-        assertEquals(1L, metrics.callerRanges());
++        assertTrue(metrics.callerRanges() >= 1L, "the caller may help more than one partition during an uneven tail");
+         assertEquals(
+-            LeavesXComputeExecutor.partitionCountFor(1_024, LeavesXComputeExecutor.computeLaneCount(), 64) - 1L,
+-            metrics.workerRanges()
++            LeavesXComputeExecutor.partitionCountFor(1_024, LeavesXComputeExecutor.computeLaneCount(), 64),
++            metrics.callerRanges() + metrics.workerRanges()
+         );
+         assertEquals(1_024L, metrics.callerItems() + metrics.workerItems());
+         assertTrue(metrics.maximumConcurrentWorkers() > 0);
+@@ -353,6 +577,40 @@ public class LeavesXComputeExecutorTest {
+         assertTrue(totals.adaptivePartitions() > 0L);
+     }
+ 
++    @Test
++    void callerHelpsWithUnclaimedRangesWhileWorkersAreBusy() throws Exception {
++        LeavesXComputeExecutor.configure(2, 64, true);
++        final CountDownLatch workersStarted = new CountDownLatch(2);
++        final CountDownLatch releaseWorkers = new CountDownLatch(1);
++        final AtomicInteger callerRanges = new AtomicInteger();
++        try {
++            final boolean parallel = LeavesXComputeExecutor.invokeRanges(
++                LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++                1_024,
++                64,
++                (taskIndex, start, end) -> {
++                    if (Thread.currentThread().getName().startsWith("LeavesX Compute Worker")) {
++                        workersStarted.countDown();
++                        try {
++                            releaseWorkers.await();
++                        } catch (final InterruptedException interruption) {
++                            Thread.currentThread().interrupt();
++                        }
++                    } else {
++                        if (callerRanges.incrementAndGet() > 1) {
++                            releaseWorkers.countDown();
++                        }
++                    }
++                }
++            );
++            assertTrue(parallel);
++            assertTrue(callerRanges.get() > 1, "the caller should help with overflow ranges");
++            assertTrue(workersStarted.await(2L, TimeUnit.SECONDS));
++        } finally {
++            releaseWorkers.countDown();
++        }
++    }
++
+     /**
+      * Ensures medium immutable work can use idle cores without queueing behind the occupied half of the pool.
+      * This models overlapping safe snapshot batches while preserving one complete deterministic pass.
