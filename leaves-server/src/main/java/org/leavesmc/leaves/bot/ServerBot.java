@@ -474,9 +474,15 @@ public class ServerBot extends ServerPlayer {
         this.adventure$displayName = configured;
         this.displayName = null;
         this.listName = PaperAdventure.asVanilla(configured);
-        // Player profile names remain unchanged; customName only controls the overhead label rendered above the bot.
-        this.setCustomName(PaperAdventure.asVanilla(configured));
-        this.setCustomNameVisible(true);
+        // Player profile names remain unchanged; customName only controls the optional overhead label rendered above
+        // the bot. Keep the original no-label behavior when both display features are disabled.
+        final boolean showOverheadLabel = !org.leavesx.leavesx.config.LeavesXRuntime.fakeplayerDisplayPrefix().isEmpty()
+            || (org.leavesx.leavesx.config.LeavesXRuntime.fakeplayerRoleEnabled()
+                && this.createState != null
+                && this.createState.role() != null
+                && !this.createState.role().isEmpty());
+        this.setCustomName(showOverheadLabel ? PaperAdventure.asVanilla(configured) : null);
+        this.setCustomNameVisible(showOverheadLabel);
     }
 
     /** Reapplies display settings and updates every connected real player's TAB entry. */
