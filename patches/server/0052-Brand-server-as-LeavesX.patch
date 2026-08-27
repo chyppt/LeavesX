@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 27 Aug 2026 22:51:18 +0800
+Subject: [PATCH] Brand server as LeavesX
+
+
+diff --git a/build.gradle.kts b/build.gradle.kts
+index abca7e9e3b26b0f4086b6ace2f35b87d58393575..d54e6e68340bfd22caaff54124d44ecd8510c86c 100644
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -66,7 +66,7 @@ tasks.jar {
+         attributes(
+             "Main-Class" to "org.bukkit.craftbukkit.Main",
+             "Implementation-Title" to "CraftBukkit",
+-            "Implementation-Version" to "git-Leaves-$implementationVersion",
++            "Implementation-Version" to "git-LeavesX-$implementationVersion",
+             "Implementation-Vendor" to date, // Paper
+             "Specification-Title" to "Bukkit",
+             "Specification-Version" to project.version,
+diff --git a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
+index 895eac4479d27915566147d2f328e116ab1adbc9..65b7d040893bac950f5b9f065812f80c65b81e49 100644
+--- a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
++++ b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
+@@ -18,8 +18,8 @@ import java.util.stream.StreamSupport;
+ 
+ public class PaperVersionFetcher implements VersionFetcher {
+     private static final java.util.regex.Pattern VER_PATTERN = java.util.regex.Pattern.compile("^([0-9\\.]*)\\-.*R"); // R is an anchor, will always give '-R' at end
+-    private static final String GITHUB_BRANCH_NAME = "master";
+-    private static final String DOWNLOAD_PAGE = "https://papermc.io/downloads";
++    private static final String GITHUB_BRANCH_NAME = "leavesx/1.19.2";
++    private static final String DOWNLOAD_PAGE = "https://github.com/chyppt/LeavesX/releases";
+     private static @Nullable String mcVer;
+ 
+     @Override
+@@ -31,8 +31,8 @@ public class PaperVersionFetcher implements VersionFetcher {
+     @Override
+     public Component getVersionMessage(@Nonnull String serverVersion) {
+         // Leaves start - we dont have jenkins setup
+-        String[] parts = serverVersion.substring("git-Leaves-".length()).split("[-\\s]");
+-        final Component updateMessage = getUpdateStatusMessage("LeavesMC/Leaves", GITHUB_BRANCH_NAME, parts[0]);
++        String[] parts = serverVersion.substring("git-LeavesX-".length()).split("[-\\s]");
++        final Component updateMessage = getUpdateStatusMessage("chyppt/LeavesX", GITHUB_BRANCH_NAME, parts[0]);
+         // Leaves end - we dont have jenkins setup
+         final Component history = getHistory();
+ 
+diff --git a/src/main/java/net/minecraft/server/MinecraftServer.java b/src/main/java/net/minecraft/server/MinecraftServer.java
+index fd71694e3c21926851d91b2f1a5a9be577add443..26aa7307b431474e7db03e74932e1413b92e9729 100644
+--- a/src/main/java/net/minecraft/server/MinecraftServer.java
++++ b/src/main/java/net/minecraft/server/MinecraftServer.java
+@@ -1663,7 +1663,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+ 
+     @DontObfuscate
+     public String getServerModName() {
+-        return "Leaves"; // Leaves - Leaves > //Paper - Paper > // Spigot - Spigot > // CraftBukkit - cb > vanilla!
++        return "LeavesX"; // LeavesX - Leaves > Paper > Spigot > CraftBukkit > vanilla
+     }
+ 
+     public SystemReport fillSystemReport(SystemReport details) {
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+index b104432053cca743e02cbf74abbbc0ae9a6df3d2..ef92cacf317e2614f316d7994bdd58e52a786851 100644
+--- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+@@ -248,7 +248,7 @@ import javax.annotation.Nullable; // Paper
+ import javax.annotation.Nonnull; // Paper
+ 
+ public final class CraftServer implements Server {
+-    private final String serverName = "Leaves"; // Leaves // Paper
++    private final String serverName = "LeavesX"; // LeavesX // Leaves // Paper
+     private final String serverVersion;
+     private final String bukkitVersion = Versioning.getBukkitVersion();
+     private final Logger logger = Logger.getLogger("Minecraft");
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index ed6a0e62e57fe31d2317127c85fbaafdd73736c9..8f779c1c0a0aa95b4a582fe762d57d2bdc8ccf4d 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -286,7 +286,7 @@ public class Main {
+                     if (buildDate.before(deadline.getTime())) {
+                         // Paper start - This is some stupid bullshit
+                         System.err.println("*** Warning, you've not updated in a while! ***");
+-                        System.err.println("*** Please download a new build as per instructions from https://github.com/LeavesMC/Leaves/releases ***"); // Leaves
++                        System.err.println("*** Please download a new build from https://github.com/chyppt/LeavesX/releases ***"); // LeavesX
+                         //System.err.println("*** Server will start in 20 seconds ***");
+                         //Thread.sleep(TimeUnit.SECONDS.toMillis(20));
+                         // Paper End
