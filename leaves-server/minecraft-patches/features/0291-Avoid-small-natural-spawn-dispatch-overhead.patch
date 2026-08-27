@@ -8,7 +8,7 @@ diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minec
 index 0000000000000000000000000000000000000000..1111111111111111111111111111111111111111 100644
 --- a/net/minecraft/world/level/MobSpawnCountAccumulator.java
 +++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
-@@ -29,7 +29,10 @@ final class MobSpawnCountAccumulator {
+@@ -29,7 +29,9 @@ final class MobSpawnCountAccumulator {
          if (inputs.size() == 0) {
              return new Long2ObjectOpenHashMap<>(0);
          }
