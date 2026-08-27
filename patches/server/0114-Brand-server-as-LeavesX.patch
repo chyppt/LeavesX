@@ -1,0 +1,110 @@
+From 20a16bf2bac02b04e8948927e4f58d3b9fa530f0 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <leavesx-build@local>
+Date: Fri, 28 Aug 2026 00:50:20 +0800
+Subject: [PATCH] Brand server as LeavesX
+
+---
+ build.gradle.kts                                          | 2 +-
+ src/main/java/com/destroystokyo/paper/Metrics.java        | 4 ++--
+ .../java/com/destroystokyo/paper/PaperVersionFetcher.java | 8 ++++----
+ src/main/java/net/minecraft/server/MinecraftServer.java   | 2 +-
+ src/main/java/org/bukkit/craftbukkit/CraftServer.java     | 2 +-
+ src/main/java/org/bukkit/craftbukkit/Main.java            | 2 +-
+ 6 files changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/build.gradle.kts b/build.gradle.kts
+index 254bd925a..fe96a45c4 100644
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -87,7 +87,7 @@ tasks.jar {
+         attributes(
+             "Main-Class" to "org.bukkit.craftbukkit.Main",
+             "Implementation-Title" to "CraftBukkit",
+-            "Implementation-Version" to "git-Leaves-$implementationVersion",
++            "Implementation-Version" to "git-LeavesX-$implementationVersion",
+             "Implementation-Vendor" to date, // Paper
+             "Specification-Title" to "Bukkit",
+             "Specification-Version" to project.version,
+diff --git a/src/main/java/com/destroystokyo/paper/Metrics.java b/src/main/java/com/destroystokyo/paper/Metrics.java
+index a2e968813..449671900 100644
+--- a/src/main/java/com/destroystokyo/paper/Metrics.java
++++ b/src/main/java/com/destroystokyo/paper/Metrics.java
+@@ -607,8 +607,8 @@ public class Metrics {
+                 metrics.addCustomChart(new Metrics.SimplePie("leaves_version", () -> {
+                     String serverVersion = Bukkit.getVersion();
+                     if (!serverVersion.startsWith("null")) {
+-                        String gitHash = serverVersion.substring("git-Leaves-".length()).split("[-\\s]")[0].replaceAll("\"", "");
+-                        return "git-Leaves-" + Bukkit.getMinecraftVersion() + "-" + gitHash;
++                        String gitHash = serverVersion.substring("git-LeavesX-".length()).split("[-\\s]")[0].replaceAll("\"", "");
++                        return "git-LeavesX-" + Bukkit.getMinecraftVersion() + "-" + gitHash;
+                     }
+                     return "unknown";
+                 }));
+diff --git a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
+index 902a4a71f..e70b664d8 100644
+--- a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
++++ b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
+@@ -19,8 +19,8 @@ import java.util.stream.StreamSupport;
+ 
+ public class PaperVersionFetcher implements VersionFetcher {
+     private static final java.util.regex.Pattern VER_PATTERN = java.util.regex.Pattern.compile("^([0-9\\.]*)\\-.*R"); // R is an anchor, will always give '-R' at end
+-    private static final String GITHUB_BRANCH_NAME = "master";
+-    private static final String DOWNLOAD_PAGE = "https://github.com/LeavesMC/Leaves/releases"; // Leaves - change
++    private static final String GITHUB_BRANCH_NAME = "leavesx/1.20.1";
++    private static final String DOWNLOAD_PAGE = "https://github.com/chyppt/LeavesX/releases"; // LeavesX
+     private static @Nullable String mcVer;
+ 
+     @Override
+@@ -32,8 +32,8 @@ public class PaperVersionFetcher implements VersionFetcher {
+     @Override
+     public Component getVersionMessage(@Nonnull String serverVersion) {
+         // Leaves start - we dont have jenkins setup
+-        String[] parts = serverVersion.substring("git-Leaves-".length()).split("[-\\s]");
+-        final Component updateMessage = getUpdateStatusMessage("LeavesMC/Leaves", GITHUB_BRANCH_NAME, parts[0]);
++        String[] parts = serverVersion.substring("git-LeavesX-".length()).split("[-\\s]");
++        final Component updateMessage = getUpdateStatusMessage("chyppt/LeavesX", GITHUB_BRANCH_NAME, parts[0]);
+         // Leaves end - we dont have jenkins setup
+         final Component history = getHistory();
+ 
+diff --git a/src/main/java/net/minecraft/server/MinecraftServer.java b/src/main/java/net/minecraft/server/MinecraftServer.java
+index 9bd10bf68..0b16e4504 100644
+--- a/src/main/java/net/minecraft/server/MinecraftServer.java
++++ b/src/main/java/net/minecraft/server/MinecraftServer.java
+@@ -1709,7 +1709,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+ 
+     @DontObfuscate
+     public String getServerModName() {
+-        return "Leaves"; // Leaves - Leaves > //Paper - Paper > // Spigot - Spigot > // CraftBukkit - cb > vanilla!
++        return "LeavesX"; // LeavesX - Leaves > Paper > Spigot > CraftBukkit > vanilla
+     }
+ 
+     public SystemReport fillSystemReport(SystemReport details) {
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+index 75c4b20c1..19f60b576 100644
+--- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+@@ -265,7 +265,7 @@ import javax.annotation.Nullable; // Paper
+ import javax.annotation.Nonnull; // Paper
+ 
+ public final class CraftServer implements Server {
+-    private final String serverName = "Leaves"; // Leaves // Paper
++    private final String serverName = "LeavesX"; // LeavesX // Leaves // Paper
+     private final String serverVersion;
+     private final String bukkitVersion = Versioning.getBukkitVersion();
+     private final Logger logger = Logger.getLogger("Minecraft");
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index d73482fb1..3936e16cc 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -300,7 +300,7 @@ public class Main {
+                     if (buildDate.before(deadline.getTime())) {
+                         // Paper start - This is some stupid bullshit
+                         System.err.println("*** Warning, you've not updated in a while! ***");
+-                        System.err.println("*** Please download a new build as per instructions from https://github.com/LeavesMC/Leaves/releases ***"); //Paper // Leaves
++                        System.err.println("*** Please download a new build from https://github.com/chyppt/LeavesX/releases ***"); // LeavesX
+                         //System.err.println("*** Server will start in 20 seconds ***");
+                         //Thread.sleep(TimeUnit.SECONDS.toMillis(20));
+                         // Paper End
+-- 
+2.52.0.windows.1
+
