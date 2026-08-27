@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 27 Aug 2026 18:15:00 +0800
+Subject: [PATCH] Add explicit player name placeholders to lifecycle messages
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index d5e92401b..e14be57ea 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -454,8 +454,8 @@ public final class LeavesXConfigWriter {
+         comments.put("fakeplayer.role.wrapper.enabled", "是否在作用外显示包裹符号。默认：true。");
+         comments.put("fakeplayer.role.wrapper.left", "作用左侧包裹符号。默认：[。");
+         comments.put("fakeplayer.role.wrapper.right", "作用右侧包裹符号。默认：]。");
+-        comments.put("messages.join", "自定义进入提示，可用 <name> 和 <display_name>，支持 MiniMessage 和 &/§ 颜色代码，空字符串保持默认。默认：空。");
+-        comments.put("messages.quit", "自定义退出提示，可用 <name> 和 <display_name>，支持 MiniMessage 和 &/§ 颜色代码，空字符串保持默认。默认：空。");
++        comments.put("messages.join", "自定义进入提示；<player> 是玩家名，<name> 保持兼容，<display_name> 是显示名，也支持 %player_name% 和 &/§ 颜色代码。空字符串保持默认。默认：空。");
++        comments.put("messages.quit", "自定义退出提示；<player> 是玩家名，<name> 保持兼容，<display_name> 是显示名，也支持 %player_name% 和 &/§ 颜色代码。空字符串保持默认。默认：空。");
+         comments.put("messages.core-prefix", "服务端核心提示的统一前缀，例如假人创建成功或配置重载提示；支持 MiniMessage 和 &/§ 颜色代码。默认：空。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+diff --git a/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java b/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
+index 2d5ae4361..1423d1ccd 100644
+--- a/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
++++ b/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
+@@ -89,12 +89,21 @@ public final class LeavesXPlayerPresentation {
+             return paperDefault;
+         }
+         return deserializeConfigured(
+-            template,
++            normalizePlayerPlaceholders(template),
+             Placeholder.unparsed("name", accountName),
++            // <player> is the explicit public placeholder; <name> remains for compatibility with earlier builds.
++            Placeholder.unparsed("player", accountName),
+             Placeholder.component("display_name", displayName)
+         );
+     }
+ 
++    /** Accepts the percent form commonly used in server configuration files. */
++    private static String normalizePlayerPlaceholders(final String template) {
++        return template
++            .replace("%player%", "<player>")
++            .replace("%player_name%", "<player>");
++    }
++
+     /**
+      * Parses both the documented MiniMessage syntax and legacy Minecraft color codes.
+      *
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+index 661415868..5b1ca41bf 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import net.kyori.adventure.text.Component;
+ import net.kyori.adventure.text.format.NamedTextColor;
+ import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
++import java.util.List;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.Test;
+@@ -54,6 +55,15 @@ final class LeavesXPlayerPresentationTest {
+         ));
+     }
+ 
++    @Test
++    void exposesExplicitPlayerPlaceholderAndPercentAlias() {
++        publishConfig("", "玩家=<player> / 旧变量=<name> / 百分号=%player_name%", "");
++
++        assertEquals("玩家=Alice / 旧变量=Alice / 百分号=Alice", LEGACY.serialize(
++            LeavesXPlayerPresentation.joinMessage("Alice", Component.text("Alice"), Component.text("default"))
++        ));
++    }
++
+     @Test
+     void defaultLifecycleMessagesExcludeTheDisplayOnlyPrefix() {
+         publishConfig("&a[假人]", "", "");
