@@ -1,0 +1,115 @@
+From cdb06d4d0912b978102eb4cb837b30cb21215962 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <leavesx-build@local>
+Date: Fri, 28 Aug 2026 01:11:45 +0800
+Subject: [PATCH] Brand server as LeavesX
+
+---
+ build.gradle.kts                                       | 10 +++++-----
+ .../java/io/papermc/paper/ServerBuildInfoImpl.java     |  2 +-
+ .../java/net/minecraft/server/MinecraftServer.java     |  2 +-
+ src/main/java/org/bukkit/craftbukkit/Main.java         |  2 +-
+ src/main/java/org/leavesmc/leaves/LeavesConfig.java    |  2 +-
+ .../org/leavesmc/leaves/util/LeavesVersionFetcher.java |  4 ++--
+ 6 files changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/build.gradle.kts b/build.gradle.kts
+index de18503a9..2e88400a5 100644
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -94,14 +94,14 @@ tasks.jar {
+         val gitBranch = git("rev-parse", "--abbrev-ref", "HEAD").getText().trim() // Paper
+         attributes(
+             "Main-Class" to "org.bukkit.craftbukkit.Main",
+-            "Implementation-Title" to "Leaves", // Leaves
++            "Implementation-Title" to "LeavesX", // LeavesX
+             "Implementation-Version" to implementationVersion,
+             "Implementation-Vendor" to date, // Paper
+-            "Specification-Title" to "Leaves", // Leaves
++            "Specification-Title" to "LeavesX", // LeavesX
+             "Specification-Version" to project.version,
+-            "Specification-Vendor" to "Leaves Team", // Leaves
+-            "Brand-Id" to "leavesmc:leaves", // Leaves
+-            "Brand-Name" to "Leaves", // Leaves
++            "Specification-Vendor" to "LeavesX Team", // LeavesX
++            "Brand-Id" to "leavesx:leavesx", // LeavesX
++            "Brand-Name" to "LeavesX", // LeavesX
+             "Build-Number" to (build ?: ""),
+             "Build-Time" to Instant.now().toString(),
+             "Git-Branch" to gitBranch, // Paper
+diff --git a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+index c060857cb..b304579d0 100644
+--- a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
++++ b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+@@ -30,7 +30,7 @@ public record ServerBuildInfoImpl(
+     private static final String ATTRIBUTE_GIT_BRANCH = "Git-Branch";
+     private static final String ATTRIBUTE_GIT_COMMIT = "Git-Commit";
+ 
+-    private static final String BRAND_PAPER_NAME = "Leaves"; // Leaves - Paper -> Leaves
++    private static final String BRAND_PAPER_NAME = "LeavesX"; // LeavesX - Paper -> Leaves
+ 
+     private static final String BUILD_DEV = "DEV";
+ 
+diff --git a/src/main/java/net/minecraft/server/MinecraftServer.java b/src/main/java/net/minecraft/server/MinecraftServer.java
+index 0e2ebd433..d4cab07ac 100644
+--- a/src/main/java/net/minecraft/server/MinecraftServer.java
++++ b/src/main/java/net/minecraft/server/MinecraftServer.java
+@@ -1905,7 +1905,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+ 
+     @DontObfuscate
+     public String getServerModName() {
+-        return org.leavesmc.leaves.LeavesConfig.serverModName; // Leaves - Custom // Paper
++        return org.leavesmc.leaves.LeavesConfig.serverModName; // LeavesX - Custom // Paper
+     }
+ 
+     public SystemReport fillSystemReport(SystemReport details) {
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index aee7266a0..e21108d40 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -311,7 +311,7 @@ public class Main {
+                     if (buildDate.before(deadline.getTime())) {
+                         // Paper start - This is some stupid bullshit
+                         System.err.println("*** Warning, you've not updated in a while! ***");
+-                        System.err.println("*** Please download a new build as per instructions from https://leavesmc.org/downloads/leaves ***"); //Paper // Leaves
++                        System.err.println("*** Please download a new build from https://github.com/chyppt/LeavesX/releases ***"); // LeavesX
+                         //System.err.println("*** Server will start in 20 seconds ***");
+                         //Thread.sleep(TimeUnit.SECONDS.toMillis(20));
+                         // Paper end
+diff --git a/src/main/java/org/leavesmc/leaves/LeavesConfig.java b/src/main/java/org/leavesmc/leaves/LeavesConfig.java
+index f74e84d68..e0cdcb2d6 100644
+--- a/src/main/java/org/leavesmc/leaves/LeavesConfig.java
++++ b/src/main/java/org/leavesmc/leaves/LeavesConfig.java
+@@ -847,7 +847,7 @@ public final class LeavesConfig {
+     }
+ 
+     @GlobalConfig(name = "server-mod-name", category = "misc", verify = ConfigVerify.StringConfigVerify.class)
+-    public static String serverModName = "Leaves";
++    public static String serverModName = "LeavesX";
+ 
+     @GlobalConfig(name = "bstats-privacy-mode", category = "misc")
+     public static boolean bstatsPrivacyMode = false;
+diff --git a/src/main/java/org/leavesmc/leaves/util/LeavesVersionFetcher.java b/src/main/java/org/leavesmc/leaves/util/LeavesVersionFetcher.java
+index b102e2f5c..cce089843 100644
+--- a/src/main/java/org/leavesmc/leaves/util/LeavesVersionFetcher.java
++++ b/src/main/java/org/leavesmc/leaves/util/LeavesVersionFetcher.java
+@@ -33,7 +33,7 @@ public class LeavesVersionFetcher extends PaperVersionFetcher {
+ 
+     private static final int DISTANCE_ERROR = -1;
+     private static final int DISTANCE_UNKNOWN = -2;
+-    private static final String DOWNLOAD_PAGE = "https://leavesmc.org/downloads/leaves";
++    private static final String DOWNLOAD_PAGE = "https://github.com/chyppt/LeavesX/releases";
+ 
+     @NotNull
+     @Override
+@@ -43,7 +43,7 @@ public class LeavesVersionFetcher extends PaperVersionFetcher {
+         if (build.buildNumber().isEmpty() && build.gitCommit().isEmpty()) {
+             updateMessage = text("You are running a development version without access to version information", color(0xFF5300));
+         } else {
+-            updateMessage = getUpdateStatusMessage("LeavesMC/Leaves", build);
++            updateMessage = getUpdateStatusMessage("chyppt/LeavesX", build);
+         }
+         final @Nullable Component history = this.getHistory();
+ 
+-- 
+2.52.0.windows.1
+
