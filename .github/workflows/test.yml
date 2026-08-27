@@ -11,9 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Get repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Get JDK 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: "25"
           distribution: "zulu"
@@ -32,12 +32,22 @@ jobs:
         run: ./gradlew createLeavesclipJar
       - name: Move Jar
         run: |
+          set -euo pipefail
           prop() {
             awk -F= -v key="$1" '$1 == key { val = $2; sub(/[[:space:]]*#.*$/, "", val); gsub(/^[[:space:]]+|[[:space:]]+$/, "", val); print val }' gradle.properties
           }
-          
-          jarName="leaves-$(prop mcVersion).jar"
-          mv leaves-server/build/libs/leaves-leavesclip-"$(prop version)".jar "$jarName"
+
+          jarName="leavesx-$(prop mcVersion).jar"
+          sourceJar="$(find leaves-server/build/libs -maxdepth 1 -type f -name 'leavesx-*.jar' -print -quit)"
+          if [[ -z "$sourceJar" ]]; then
+            # Keep compatibility with older CreateLeavesclipJar output names.
+            sourceJar="$(find leaves-server/build/libs -maxdepth 1 -type f -name '*leavesclip*.jar' -print -quit)"
+          fi
+          if [[ -z "$sourceJar" ]]; then
+            echo "No LeavesX distributable jar found in leaves-server/build/libs" >&2
+            exit 1
+          fi
+          cp "$sourceJar" "$jarName"
           echo "jar=$jarName" >> "$GITHUB_ENV"
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
