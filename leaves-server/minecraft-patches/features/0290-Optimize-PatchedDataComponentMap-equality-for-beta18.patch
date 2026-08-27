@@ -46,7 +46,7 @@ diff --git a/net/minecraft/world/item/enchantment/Enchantment.java b/net/minecra
              if (filteredEffect.matches(context)) {
                  return true;
              }
-@@ -412,9 +416,13 @@ public record Enchantment(Component description, Enchantment.EnchantmentDefiniti
+@@ -412,8 +416,12 @@ public record Enchantment(Component description, Enchantment.EnchantmentDefiniti
      }
  
      public void tick(final ServerLevel serverLevel, final int enchantmentLevel, final EnchantedItemInUse item, final Entity entity) {
