@@ -1,0 +1,435 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 27 Aug 2026 15:29:13 +0800
+Subject: [PATCH] Add configurable fakeplayer roles and core message prefix
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 48031144cc7bca174fb23dd90e851012aa9e7193..724988a96b4ee206dab74997e6abbeac389b8402 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1130,27 +1130,39 @@ public final class LeavesXCommand extends Command {
+ 
+     private static void reloadConfiguration(final CommandSender sender) {
+         if (!sender.isOp() && !sender.hasPermission("leavesx.command.reload")) {
+-            sender.sendMessage(Component.text("你没有权限重载 LeavesX 配置。", NamedTextColor.RED));
++            sender.sendMessage(org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.withCorePrefix(
++                Component.text("你没有权限重载 LeavesX 配置。", NamedTextColor.RED)
++            ));
+             return;
+         }
+         try {
+             final LeavesXConfigBootstrap.ReloadResult result = LeavesXConfigBootstrap.reloadWithStatus();
+-            sender.sendMessage(Component.text("LeavesX 配置重载完成。", NamedTextColor.GREEN));
++            sender.sendMessage(org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.withCorePrefix(
++                Component.text("LeavesX 配置重载完成。", NamedTextColor.GREEN)
++            ));
+             if (result.restartRequired()) {
+-                sender.sendMessage(Component.text(
+-                    "以下配置需要重启服务器才会完全生效：" + String.join("、", result.restartRequiredChanges()),
+-                    NamedTextColor.YELLOW
++                sender.sendMessage(org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.withCorePrefix(
++                    Component.text(
++                        "以下配置需要重启服务器才会完全生效：" + String.join("、", result.restartRequiredChanges()),
++                        NamedTextColor.YELLOW
++                    )
+                 ));
+             } else {
+-                sender.sendMessage(Component.text("本次修改无需重启。", NamedTextColor.GRAY));
++                sender.sendMessage(org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.withCorePrefix(
++                    Component.text("本次修改无需重启。", NamedTextColor.GRAY)
++                ));
+             }
+             Bukkit.getOnlinePlayers().stream()
+                 .filter(player -> player.hasPermission("leaves.command.config.notify") && player != sender)
+-                .forEach(player -> player.sendMessage(Component.text("LeavesX 配置已重载。", NamedTextColor.GREEN)));
++                .forEach(player -> player.sendMessage(org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.withCorePrefix(
++                    Component.text("LeavesX 配置已重载。", NamedTextColor.GREEN)
++                )));
+         } catch (final RuntimeException exception) {
+             org.slf4j.LoggerFactory.getLogger(LeavesXCommand.class)
+                 .error("Failed to reload LeavesX configuration", exception);
+-            sender.sendMessage(Component.text("LeavesX 配置重载失败，请查看控制台日志。", NamedTextColor.RED));
++            sender.sendMessage(org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.withCorePrefix(
++                Component.text("LeavesX 配置重载失败，请查看控制台日志。", NamedTextColor.RED)
++            ));
+         }
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 2b99c63724687412565017dfade473c9cd6301ae..e305fe811b17d023cedd142d31c33ee501d2a572 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -70,11 +70,21 @@ public record LeavesXConfig(
+     boolean cleanInvalidResidentBots,
+     String fakeplayerDisplayPrefix,
+     List<String> fakeplayerForbiddenNameContains,
++    boolean fakeplayerRoleEnabled,
++    boolean fakeplayerRoleRequired,
++    boolean fakeplayerRoleLengthLimited,
++    int fakeplayerRoleMaxLength,
++    boolean fakeplayerRoleChineseOnly,
++    boolean fakeplayerRoleColorCodes,
++    boolean fakeplayerRoleWrapperEnabled,
++    String fakeplayerRoleWrapperLeft,
++    String fakeplayerRoleWrapperRight,
+     String joinMessage,
+-    String quitMessage
++    String quitMessage,
++    String coreMessagePrefix
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 71;
++    public static final int CURRENT_CONFIG_VERSION = 72;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -157,14 +167,20 @@ public record LeavesXConfig(
+         if (startupAiEntitiesPerTick < 1 || startupAiEntitiesPerTick > 512) {
+             throw new IllegalArgumentException("performance.startup-ai.entities-per-tick must be between 1 and 512");
+         }
++        if (fakeplayerRoleMaxLength < 1 || fakeplayerRoleMaxLength > 32) {
++            throw new IllegalArgumentException("fakeplayer.role.max-length must be between 1 and 32");
++        }
+         fakeplayerDisplayPrefix = requireBoundedText(
+             fakeplayerDisplayPrefix,
+             "fakeplayer.display-prefix",
+             256
+         );
+         fakeplayerForbiddenNameContains = normalizeForbiddenNameFragments(fakeplayerForbiddenNameContains);
++        fakeplayerRoleWrapperLeft = requireBoundedText(fakeplayerRoleWrapperLeft, "fakeplayer.role.wrapper.left", 32);
++        fakeplayerRoleWrapperRight = requireBoundedText(fakeplayerRoleWrapperRight, "fakeplayer.role.wrapper.right", 32);
+         joinMessage = requireBoundedText(joinMessage, "messages.join", 2_048);
+         quitMessage = requireBoundedText(quitMessage, "messages.quit", 2_048);
++        coreMessagePrefix = requireBoundedText(coreMessagePrefix, "messages.core-prefix", 256);
+     }
+ 
+     /**
+@@ -233,6 +249,16 @@ public record LeavesXConfig(
+             true,
+             "[假人]",
+             List.of(),
++            false,
++            false,
++            true,
++            4,
++            false,
++            true,
++            true,
++            "[",
++            "]",
++            "",
+             "",
+             ""
+         );
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 1b252aa26c8958a09049867fa1ac4de767e4568a..3985e76f0a855ef6513c2eca34708d9ad7009bf0 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -364,8 +364,54 @@ public final class LeavesXConfigLoader {
+                     "fakeplayer.forbidden-name-contains",
+                     java.util.List.of()
+                 ),
++                readBoolean(
++                    node.node("fakeplayer", "role", "enabled"),
++                    "fakeplayer.role.enabled",
++                    false
++                ),
++                readBoolean(
++                    node.node("fakeplayer", "role", "required"),
++                    "fakeplayer.role.required",
++                    false
++                ),
++                readBoolean(
++                    node.node("fakeplayer", "role", "length-limited"),
++                    "fakeplayer.role.length-limited",
++                    true
++                ),
++                readInt(
++                    node.node("fakeplayer", "role", "max-length"),
++                    "fakeplayer.role.max-length",
++                    4
++                ),
++                readBoolean(
++                    node.node("fakeplayer", "role", "chinese-only"),
++                    "fakeplayer.role.chinese-only",
++                    false
++                ),
++                readBoolean(
++                    node.node("fakeplayer", "role", "color-codes"),
++                    "fakeplayer.role.color-codes",
++                    true
++                ),
++                readBoolean(
++                    node.node("fakeplayer", "role", "wrapper", "enabled"),
++                    "fakeplayer.role.wrapper.enabled",
++                    true
++                ),
++                readString(
++                    node.node("fakeplayer", "role", "wrapper", "left"),
++                    "fakeplayer.role.wrapper.left",
++                    "["
++                ),
++                readString(
++                    node.node("fakeplayer", "role", "wrapper", "right"),
++                    "fakeplayer.role.wrapper.right",
++                    "]"
++                ),
+                 readString(node.node("messages", "join"), "messages.join", ""),
+-                readString(node.node("messages", "quit"), "messages.quit", "")
++                readString(node.node("messages", "quit"), "messages.quit", ""),
++                readString(node.node("messages", "core-prefix"), "messages.core-prefix", "")
+             );
+         } catch (final IllegalArgumentException ex) {
+             throw new LeavesXConfigException("Invalid LeavesX configuration at " + path + ": " + ex.getMessage(), ex);
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index fb6dee138557c38f6c148a1178c7e8cca0841d7d..d5e92401bd638f679d79c1dd7d1119e0a0273526 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -105,8 +105,18 @@ public final class LeavesXConfigWriter {
+             config.fakeplayerForbiddenNameContains(),
+             missingOnly
+         );
++        changed |= writeValue(node.node("fakeplayer", "role", "enabled"), "fakeplayer.role.enabled", config.fakeplayerRoleEnabled(), missingOnly);
++        changed |= writeValue(node.node("fakeplayer", "role", "required"), "fakeplayer.role.required", config.fakeplayerRoleRequired(), missingOnly);
++        changed |= writeValue(node.node("fakeplayer", "role", "length-limited"), "fakeplayer.role.length-limited", config.fakeplayerRoleLengthLimited(), missingOnly);
++        changed |= writeValue(node.node("fakeplayer", "role", "max-length"), "fakeplayer.role.max-length", config.fakeplayerRoleMaxLength(), missingOnly);
++        changed |= writeValue(node.node("fakeplayer", "role", "chinese-only"), "fakeplayer.role.chinese-only", config.fakeplayerRoleChineseOnly(), missingOnly);
++        changed |= writeValue(node.node("fakeplayer", "role", "color-codes"), "fakeplayer.role.color-codes", config.fakeplayerRoleColorCodes(), missingOnly);
++        changed |= writeValue(node.node("fakeplayer", "role", "wrapper", "enabled"), "fakeplayer.role.wrapper.enabled", config.fakeplayerRoleWrapperEnabled(), missingOnly);
++        changed |= writeValue(node.node("fakeplayer", "role", "wrapper", "left"), "fakeplayer.role.wrapper.left", config.fakeplayerRoleWrapperLeft(), missingOnly);
++        changed |= writeValue(node.node("fakeplayer", "role", "wrapper", "right"), "fakeplayer.role.wrapper.right", config.fakeplayerRoleWrapperRight(), missingOnly);
+         changed |= writeValue(node.node("messages", "join"), "messages.join", config.joinMessage(), missingOnly);
+         changed |= writeValue(node.node("messages", "quit"), "messages.quit", config.quitMessage(), missingOnly);
++        changed |= writeValue(node.node("messages", "core-prefix"), "messages.core-prefix", config.coreMessagePrefix(), missingOnly);
+         changed |= writeValue(
+             node.node("diagnostics", "command-enabled"),
+             "diagnostics.command-enabled",
+@@ -428,15 +438,25 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：71。");
++        comments.put("config-version", "配置版本，请勿修改。默认：72。");
+         comments.put("console-messages.show-root-admin-warning", "是否显示使用 root 或管理员启动的警告。默认：false。");
+         comments.put("console-messages.show-offline-mode-warning", "是否显示离线模式安全警告。默认：false。");
+         comments.put("console-messages.show-collision-conversion-warning", "是否显示碰撞模式自动转换提示。默认：false。");
+         comments.put("fakeplayer.clean-invalid-resident-bots", "只清理压缩 NBT 已确认损坏的假人登记；缺世界、世界未加载或缺文件都会保留。默认：true。");
+         comments.put("fakeplayer.display-prefix", "假人头顶和 TAB 显示前缀；默认加入退出提示不带前缀。支持 MiniMessage 和 &/§ 颜色代码。默认：[假人]。");
+         comments.put("fakeplayer.forbidden-name-contains", "假人用户名包含这些文字时禁止创建，大小写不敏感；空列表不限制。默认：[]。");
++        comments.put("fakeplayer.role.enabled", "是否启用假人作用显示。作用只显示在头顶和 TAB，不改变真实用户名。默认：false。");
++        comments.put("fakeplayer.role.required", "是否强制创建假人时填写作用；仅在作用显示开启时生效。默认：false。");
++        comments.put("fakeplayer.role.length-limited", "是否限制作用长度。默认：true。");
++        comments.put("fakeplayer.role.max-length", "作用允许的最大字符数。默认：4。");
++        comments.put("fakeplayer.role.chinese-only", "是否只允许中文作用；关闭后允许普通文字。默认：false。");
++        comments.put("fakeplayer.role.color-codes", "作用是否支持 & 或 § 颜色代码；颜色代码不计入长度。默认：true。");
++        comments.put("fakeplayer.role.wrapper.enabled", "是否在作用外显示包裹符号。默认：true。");
++        comments.put("fakeplayer.role.wrapper.left", "作用左侧包裹符号。默认：[。");
++        comments.put("fakeplayer.role.wrapper.right", "作用右侧包裹符号。默认：]。");
+         comments.put("messages.join", "自定义进入提示，可用 <name> 和 <display_name>，支持 MiniMessage 和 &/§ 颜色代码，空字符串保持默认。默认：空。");
+         comments.put("messages.quit", "自定义退出提示，可用 <name> 和 <display_name>，支持 MiniMessage 和 &/§ 颜色代码，空字符串保持默认。默认：空。");
++        comments.put("messages.core-prefix", "服务端核心提示的统一前缀，例如假人创建成功或配置重载提示；支持 MiniMessage 和 &/§ 颜色代码。默认：空。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 4d8a023203ed6581144f2e0759d38cc142858652..9994baf945d8b6c4f63086025302f4169f7ff941 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -61,8 +61,18 @@ public final class LeavesXRuntime {
+     private static volatile boolean cleanInvalidResidentBots = true;
+     private static volatile String fakeplayerDisplayPrefix = "[假人]";
+     private static volatile List<String> forbiddenFakeplayerNameContains = List.of();
++    private static volatile boolean fakeplayerRoleEnabled;
++    private static volatile boolean fakeplayerRoleRequired;
++    private static volatile boolean fakeplayerRoleLengthLimited = true;
++    private static volatile int fakeplayerRoleMaxLength = 4;
++    private static volatile boolean fakeplayerRoleChineseOnly;
++    private static volatile boolean fakeplayerRoleColorCodes = true;
++    private static volatile boolean fakeplayerRoleWrapperEnabled = true;
++    private static volatile String fakeplayerRoleWrapperLeft = "[";
++    private static volatile String fakeplayerRoleWrapperRight = "]";
+     private static volatile String joinMessage = "";
+     private static volatile String quitMessage = "";
++    private static volatile String coreMessagePrefix = "";
+     private static final StartupAiBudget STARTUP_AI_BUDGET = new StartupAiBudget();
+     private static boolean villagerProfessionAssignmentOptimization = true;
+     private static boolean longJumpCandidateOptimization = true;
+@@ -169,8 +179,18 @@ public final class LeavesXRuntime {
+         cleanInvalidResidentBots = validated.cleanInvalidResidentBots();
+         fakeplayerDisplayPrefix = validated.fakeplayerDisplayPrefix();
+         forbiddenFakeplayerNameContains = validated.fakeplayerForbiddenNameContains();
++        fakeplayerRoleEnabled = validated.fakeplayerRoleEnabled();
++        fakeplayerRoleRequired = validated.fakeplayerRoleRequired();
++        fakeplayerRoleLengthLimited = validated.fakeplayerRoleLengthLimited();
++        fakeplayerRoleMaxLength = validated.fakeplayerRoleMaxLength();
++        fakeplayerRoleChineseOnly = validated.fakeplayerRoleChineseOnly();
++        fakeplayerRoleColorCodes = validated.fakeplayerRoleColorCodes();
++        fakeplayerRoleWrapperEnabled = validated.fakeplayerRoleWrapperEnabled();
++        fakeplayerRoleWrapperLeft = validated.fakeplayerRoleWrapperLeft();
++        fakeplayerRoleWrapperRight = validated.fakeplayerRoleWrapperRight();
+         joinMessage = validated.joinMessage();
+         quitMessage = validated.quitMessage();
++        coreMessagePrefix = validated.coreMessagePrefix();
+         STARTUP_AI_BUDGET.reset(startupAiEntitiesPerTick);
+         villagerProfessionAssignmentOptimization = validated.villagerProfessionAssignmentOptimization();
+         longJumpCandidateOptimization = validated.longJumpCandidateOptimization();
+@@ -318,6 +338,42 @@ public final class LeavesXRuntime {
+         return forbiddenFakeplayerNameContains;
+     }
+ 
++    public static boolean fakeplayerRoleEnabled() {
++        return fakeplayerRoleEnabled;
++    }
++
++    public static boolean fakeplayerRoleRequired() {
++        return fakeplayerRoleRequired;
++    }
++
++    public static boolean fakeplayerRoleLengthLimited() {
++        return fakeplayerRoleLengthLimited;
++    }
++
++    public static int fakeplayerRoleMaxLength() {
++        return fakeplayerRoleMaxLength;
++    }
++
++    public static boolean fakeplayerRoleChineseOnly() {
++        return fakeplayerRoleChineseOnly;
++    }
++
++    public static boolean fakeplayerRoleColorCodes() {
++        return fakeplayerRoleColorCodes;
++    }
++
++    public static boolean fakeplayerRoleWrapperEnabled() {
++        return fakeplayerRoleWrapperEnabled;
++    }
++
++    public static String fakeplayerRoleWrapperLeft() {
++        return fakeplayerRoleWrapperLeft;
++    }
++
++    public static String fakeplayerRoleWrapperRight() {
++        return fakeplayerRoleWrapperRight;
++    }
++
+     /** Checks the LeavesX substring blacklist without applying the display prefix. */
+     public static boolean isForbiddenFakeplayerName(final String name) {
+         if (name == null || name.isEmpty()) {
+@@ -337,6 +393,11 @@ public final class LeavesXRuntime {
+         return quitMessage;
+     }
+ 
++    /** Returns the optional prefix used by LeavesX-originated core messages. */
++    public static String coreMessagePrefix() {
++        return coreMessagePrefix;
++    }
++
+     /**
+      * Claims one startup AI slot for an ordinary mob.
+      *
+diff --git a/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java b/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
+index 8f8528c00e13c6e4c9c1c2833f24376ab0c93ca3..2d5ae43610f6309b012e53aca899b68f8cb1c941 100644
+--- a/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
++++ b/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
+@@ -23,11 +23,24 @@ public final class LeavesXPlayerPresentation {
+      * @return configured prefix followed by the literal account name
+      */
+     public static Component fakeplayerDisplayName(final String accountName) {
++        return fakeplayerDisplayName(accountName, "");
++    }
++
++    /** Builds the display identity with an optional role while keeping the account name unchanged. */
++    public static Component fakeplayerDisplayName(final String accountName, final String role) {
+         final String prefix = LeavesXRuntime.fakeplayerDisplayPrefix();
+-        if (prefix.isEmpty()) {
+-            return Component.text(accountName);
++        Component display = prefix.isEmpty() ? Component.empty() : deserializeConfigured(prefix);
++        if (LeavesXRuntime.fakeplayerRoleEnabled() && role != null && !role.isEmpty()) {
++            final String left = LeavesXRuntime.fakeplayerRoleWrapperEnabled()
++                ? LeavesXRuntime.fakeplayerRoleWrapperLeft() : "";
++            final String right = LeavesXRuntime.fakeplayerRoleWrapperEnabled()
++                ? LeavesXRuntime.fakeplayerRoleWrapperRight() : "";
++            final String roleText = left + role + right;
++            display = display.append(LeavesXRuntime.fakeplayerRoleColorCodes()
++                ? deserializeConfigured(roleText)
++                : Component.text(roleText));
+         }
+-        return deserializeConfigured(prefix).append(Component.text(accountName));
++        return display.append(Component.text(accountName));
+     }
+ 
+     /** Builds the default fakeplayer join message from the account name, excluding the display-only prefix. */
+@@ -60,6 +73,12 @@ public final class LeavesXPlayerPresentation {
+         return render(LeavesXRuntime.quitMessage(), accountName, displayName, paperDefault);
+     }
+ 
++    /** Adds the configured core prefix to a message emitted by a LeavesX command or lifecycle hook. */
++    public static Component withCorePrefix(final Component message) {
++        final String prefix = LeavesXRuntime.coreMessagePrefix();
++        return prefix.isEmpty() ? message : deserializeConfigured(prefix).append(message);
++    }
++
+     private static Component render(
+         final String template,
+         final String accountName,
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+index d9d22b363ab185ca1652f1fd31be20356402aefd..661415868724dfde40a9ce841bf83c4542925eb2 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+@@ -68,12 +68,32 @@ final class LeavesXPlayerPresentationTest {
+         );
+     }
+ 
++    @Test
++    void appendsOptionalRoleAfterPrefixWithoutChangingAccountName() {
++        publishConfig("&a[假人]", "", "");
++        LeavesXRuntime.publish(new LeavesXConfig(
++            LeavesXConfig.CURRENT_CONFIG_VERSION,
++            true, 10, 60, 2,
++            true, true, true, true, true, true, true, true,
++            true, true, true, true, true, false, 2, false, 8, 32, 20, 4,
++            true, 256, 128, true, 2_048, 512, true, 0, 64, true, 2_048,
++            true, true, true, true, true, 1_000, 100, 500,
++            LeavesXOptimization.allEnabledMaskLow(), LeavesXOptimization.allEnabledMaskHigh(),
++            true, false, false, 1, true, 40, 16,
++            false, false, false, true, "&a[假人]", List.of(),
++            true, false, true, 4, false, true, true, "[", "]", "", "", ""
++        ));
++        assertEquals("\u00A7a[假人]\u00A7b[建筑]bot", LEGACY.serialize(
++            LeavesXPlayerPresentation.fakeplayerDisplayName("bot", "&b建筑")
++        ));
++    }
++
+     private static void publishConfig(final String prefix, final String join, final String quit) {
+         final java.nio.file.Path path;
+         try {
+             path = java.nio.file.Files.createTempFile("leavesx-presentation-", ".yml");
+             java.nio.file.Files.writeString(path, """
+-                config-version: 71
++                config-version: 72
+                 fakeplayer:
+                   display-prefix: '%s'
+                 messages:
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index ba8eb443f1bdc445cda1fd5862391ac99333e9f4..9618e49dbf936b169efb9c46ff0af40a54c387da 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -231,6 +231,16 @@ class VillagerCompatibilityContextTest {
+             true,
+             "[假人]",
+             List.of(),
++            false,
++            false,
++            true,
++            4,
++            false,
++            true,
++            true,
++            "[",
++            "]",
++            "",
+             "",
+             ""
+         );

@@ -28,14 +28,20 @@ public class ReloadCommand extends LeavesSubcommand {
             McTechnicalModeHelper.doMcTechnicalModeIf();
         } catch (final RuntimeException exception) {
             LeavesLogger.LOGGER.error("Failed to reload Leaves configuration", exception);
-            sender.sendMessage(text("Leaves 配置重载失败，请查看控制台日志。", RED));
+            sender.sendMessage(org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.withCorePrefix(
+                text("Leaves 配置重载失败，请查看控制台日志。", RED)
+            ));
             return false;
         }
 
-        sender.sendMessage(text("Leaves 配置重载完成（LeavesX 请使用 /leavesx reload）", GREEN));
+        sender.sendMessage(org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.withCorePrefix(
+            text("Leaves 配置重载完成（LeavesX 请使用 /leavesx reload）", GREEN)
+        ));
         Bukkit.getOnlinePlayers().stream()
             .filter(player -> player.hasPermission("leaves.command.config.notify") && player != sender)
-            .forEach(player -> player.sendMessage(text("Leaves 配置已重载", GREEN)));
+            .forEach(player -> player.sendMessage(org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.withCorePrefix(
+                text("Leaves 配置已重载", GREEN)
+            )));
         return true;
     }
 }

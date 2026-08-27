@@ -27,6 +27,15 @@ public interface Bot extends Player {
     @NotNull String getRawName();
 
     /**
+     * Gets the optional display-only role configured for this fakeplayer.
+     *
+     * @return role text, or an empty string when no role is configured
+     */
+    default @NotNull String getRole() {
+        return "";
+    }
+
+    /**
      * Gets the creator's UUID of the fakeplayer
      *
      * @return creator's UUID

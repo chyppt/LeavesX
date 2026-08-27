@@ -16,6 +16,19 @@ public interface BotCreator {
 
     BotCreator name(String name);
 
+    /**
+     * Sets an optional display-only role for the fakeplayer.
+     *
+     * <p>This default method keeps existing plugins source- and binary-compatible. Older creators simply ignore
+     * the optional role when running against a server that does not implement it.</p>
+     *
+     * @param role display role, or {@code null} to clear it
+     * @return this creator
+     */
+    default BotCreator role(@Nullable String role) {
+        return this;
+    }
+
     BotCreator skinName(String skinName);
 
     BotCreator skin(String[] skin);

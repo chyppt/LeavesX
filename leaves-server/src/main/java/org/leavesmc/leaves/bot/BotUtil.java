@@ -133,4 +133,58 @@ public class BotUtil {
         return org.leavesx.leavesx.config.LeavesXRuntime.forbiddenFakeplayerNameContains().stream()
             .anyMatch(fragment -> !fragment.isEmpty() && normalizedName.contains(fragment));
     }
+
+    /** Validates the optional role without changing the account name or command identity. */
+    public static boolean isRoleLegal(@NotNull String role) {
+        if (role.isEmpty()) {
+            return !org.leavesx.leavesx.config.LeavesXRuntime.fakeplayerRoleEnabled()
+                || !org.leavesx.leavesx.config.LeavesXRuntime.fakeplayerRoleRequired();
+        }
+        final String content = stripLegacyColorCodes(role);
+        if (org.leavesx.leavesx.config.LeavesXRuntime.fakeplayerRoleLengthLimited()
+            && content.codePointCount(0, content.length()) > org.leavesx.leavesx.config.LeavesXRuntime.fakeplayerRoleMaxLength()) {
+            return false;
+        }
+        if (org.leavesx.leavesx.config.LeavesXRuntime.fakeplayerRoleChineseOnly()) {
+            for (int offset = 0; offset < content.length();) {
+                final int codePoint = content.codePointAt(offset);
+                final Character.UnicodeScript script = Character.UnicodeScript.of(codePoint);
+                if (script != Character.UnicodeScript.HAN) {
+                    return false;
+                }
+                offset += Character.charCount(codePoint);
+            }
+        }
+        return true;
+    }
+
+    private static String stripLegacyColorCodes(final String input) {
+        final StringBuilder result = new StringBuilder(input.length());
+        for (int index = 0; index < input.length(); index++) {
+            final char character = input.charAt(index);
+            if ((character == '&' || character == '\u00A7') && index + 1 < input.length()) {
+                final char code = input.charAt(index + 1);
+                if ("0123456789AaBbCcDdEeFfKkLlMmNnOoRr".indexOf(code) >= 0) {
+                    index++;
+                    continue;
+                }
+                if (code == '#' && index + 7 < input.length()) {
+                    boolean hex = true;
+                    for (int hexIndex = index + 2; hexIndex <= index + 7; hexIndex++) {
+                        final char digit = input.charAt(hexIndex);
+                        if (Character.digit(digit, 16) < 0) {
+                            hex = false;
+                            break;
+                        }
+                    }
+                    if (hex) {
+                        index += 7;
+                        continue;
+                    }
+                }
+            }
+            result.append(character);
+        }
+        return result.toString();
+    }
 }

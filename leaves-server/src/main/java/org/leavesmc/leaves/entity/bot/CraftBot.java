@@ -34,6 +34,11 @@ public class CraftBot extends CraftPlayer implements Bot {
     }
 
     @Override
+    public @NotNull String getRole() {
+        return this.getHandle().createState.role();
+    }
+
+    @Override
     public @Nullable UUID getCreatePlayerUUID() {
         return this.getHandle().createPlayer;
     }

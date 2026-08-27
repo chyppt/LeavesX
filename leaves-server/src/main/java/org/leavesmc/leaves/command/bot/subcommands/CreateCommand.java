@@ -20,6 +20,7 @@ import org.leavesmc.leaves.bot.BotList;
 import org.leavesmc.leaves.bot.BotUtil;
 import org.leavesmc.leaves.command.ArgumentNode;
 import org.leavesmc.leaves.command.CommandContext;
+import org.leavesmc.leaves.command.LiteralNode;
 import org.leavesmc.leaves.command.bot.BotSubcommand;
 import org.leavesmc.leaves.event.bot.BotCreateEvent;
 
@@ -42,6 +43,14 @@ public class CreateCommand extends BotSubcommand {
             return false;
         }
         String skinName = context.getArgumentOrDefault(SkinNameArgument.class, rawName); // Use raw name for correct skin
+        String role = context.getArgumentOrDefault(RoleValueArgument.class, "");
+        if (!BotUtil.isRoleLegal(role)) {
+            sender.sendMessage(text(message(
+                "The fakeplayer role is invalid for the current LeavesX configuration.",
+                "假人作用不符合当前 LeavesX 配置。"
+            ), NamedTextColor.RED));
+            return false;
+        }
 
         World world;
         try {
@@ -66,12 +75,18 @@ public class CreateCommand extends BotSubcommand {
             location = entity.getLocation();
         }
 
-        BotCreateState
+        BotCreateState.Builder builder = BotCreateState
             .builder(rawName, location)
             .createReason(BotCreateEvent.CreateReason.COMMAND)
             .skinName(skinName)
             .creator(sender)
-            .spawnWithSkin(null);
+            .role(role);
+        builder.spawnWithSkin(bot -> sender.sendMessage(
+            org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.withCorePrefix(text(message(
+                "Successfully created bot ",
+                "已成功创建假人 "
+            )).append(bot.displayName()))
+        ));
 
         return true;
     }
@@ -110,6 +125,26 @@ public class CreateCommand extends BotSubcommand {
     private static class NameArgument extends ArgumentNode<String> {
         private NameArgument() {
             super("name", StringArgumentType.word());
+            children(SkinNameArgument::new, RoleLiteral::new);
+        }
+
+        @Override
+        protected boolean execute(CommandContext context) throws CommandSyntaxException {
+            return handleCreateCommand(context);
+        }
+    }
+
+    /** Optional explicit branch keeps the existing second argument as a skin name for old scripts. */
+    private static class RoleLiteral extends LiteralNode {
+        private RoleLiteral() {
+            super("role");
+            children(RoleValueArgument::new);
+        }
+    }
+
+    private static class RoleValueArgument extends ArgumentNode<String> {
+        private RoleValueArgument() {
+            super("role_value", StringArgumentType.word());
             children(SkinNameArgument::new);
         }
 

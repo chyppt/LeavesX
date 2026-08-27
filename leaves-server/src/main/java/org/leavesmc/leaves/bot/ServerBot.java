@@ -376,6 +376,9 @@ public class ServerBot extends ServerPlayer {
         CompoundTag createNbt = new CompoundTag();
         createNbt.putString("rawName", this.createState.rawName());
         createNbt.putString("name", this.createState.fullName());
+        if (!this.createState.role().isEmpty()) {
+            createNbt.putString("role", this.createState.role());
+        }
 
         createNbt.putString("skinName", this.createState.skinName());
         if (this.createState.skin() != null) {
@@ -414,6 +417,7 @@ public class ServerBot extends ServerPlayer {
                 .orElseGet(() -> createNbt.getString("realName")
                     .orElseThrow()), null) // Convert from legacy version, consider to use ca.spottedleaf.dataconverter.minecraft.MCDataConverter instead for release version
             .name(createNbt.getString("name").orElseThrow());
+        createBuilder.role(createNbt.getStringOr("role", ""));
 
         String[] skin = null;
         if (createNbt.contains("skin")) {
@@ -463,10 +467,16 @@ public class ServerBot extends ServerPlayer {
     /** Applies a display-only prefix without changing the game profile, command name, UUID, or saved-data key. */
     public void applyLeavesXPresentation() {
         final net.kyori.adventure.text.Component configured =
-            org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.fakeplayerDisplayName(this.getScoreboardName());
+            org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.fakeplayerDisplayName(
+                this.getScoreboardName(),
+                this.createState == null || this.createState.role() == null ? "" : this.createState.role()
+            );
         this.adventure$displayName = configured;
         this.displayName = null;
         this.listName = PaperAdventure.asVanilla(configured);
+        // Player profile names remain unchanged; customName only controls the overhead label rendered above the bot.
+        this.setCustomName(PaperAdventure.asVanilla(configured));
+        this.setCustomNameVisible(true);
     }
 
     /** Reapplies display settings and updates every connected real player's TAB entry. */

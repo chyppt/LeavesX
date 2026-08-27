@@ -15,9 +15,26 @@ import org.leavesmc.leaves.plugin.MinecraftInternalPlugin;
 import java.util.Objects;
 import java.util.function.Consumer;
 
-public record BotCreateState(String rawName, String fullName, String skinName, String[] skin, Location location, BotCreateEvent.CreateReason createReason, CommandSender creator) {
+public record BotCreateState(String rawName, String fullName, String skinName, String[] skin, Location location, BotCreateEvent.CreateReason createReason, CommandSender creator, String role) {
+
+    public BotCreateState {
+        role = role == null ? "" : role;
+    }
 
     private static final MinecraftServer server = MinecraftServer.getServer();
+
+    /** Compatibility constructor retained for plugins compiled against the original Leaves API. */
+    public BotCreateState(
+        String rawName,
+        String fullName,
+        String skinName,
+        String[] skin,
+        Location location,
+        BotCreateEvent.CreateReason createReason,
+        CommandSender creator
+    ) {
+        this(rawName, fullName, skinName, skin, location, createReason, creator, "");
+    }
 
     public ServerBot createNow() {
         return server.getBotList().createNewBot(this);
@@ -40,6 +57,7 @@ public record BotCreateState(String rawName, String fullName, String skinName, S
 
         private BotCreateEvent.CreateReason createReason;
         private CommandSender creator;
+        private String role;
 
         private Builder(@NotNull String rawName, @Nullable Location location) {
             Objects.requireNonNull(rawName);
@@ -52,11 +70,18 @@ public record BotCreateState(String rawName, String fullName, String skinName, S
             this.skin = null;
             this.createReason = BotCreateEvent.CreateReason.UNKNOWN;
             this.creator = null;
+            this.role = "";
         }
 
         public Builder name(@NotNull String name) {
             Objects.requireNonNull(name);
             this.fullName = name;
+            return this;
+        }
+
+        @Override
+        public Builder role(@Nullable String role) {
+            this.role = role == null ? "" : role;
             return this;
         }
 
@@ -94,7 +119,7 @@ public record BotCreateState(String rawName, String fullName, String skinName, S
         }
 
         public BotCreateState build() {
-            return new BotCreateState(rawName, fullName, skinName, skin, location, createReason, creator);
+            return new BotCreateState(rawName, fullName, skinName, skin, location, createReason, creator, role);
         }
 
         public void spawnWithSkin(Consumer<Bot> consumer) {

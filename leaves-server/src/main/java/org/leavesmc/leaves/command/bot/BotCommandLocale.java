@@ -17,6 +17,10 @@ public final class BotCommandLocale {
      */
     public static String message(final String english, final String chinese) {
         final String language = LeavesConfig.mics.serverLang;
-        return language != null && language.toLowerCase(Locale.ROOT).startsWith("zh_") ? chinese : english;
+        if (language == null) {
+            return english;
+        }
+        final String normalized = language.toLowerCase(Locale.ROOT).replace('-', '_');
+        return (normalized.equals("zh") || normalized.startsWith("zh_")) ? chinese : english;
     }
 }
