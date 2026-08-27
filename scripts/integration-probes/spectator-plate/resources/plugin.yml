@@ -1,0 +1,5 @@
+name: LeavesXSpectatorPlateProbe
+version: 1.0.0
+main: org.leavesx.probe.LeavesXSpectatorPlateProbe
+api-version: '1.21'
+description: Live spectator pressure-plate compatibility probe for LeavesX.

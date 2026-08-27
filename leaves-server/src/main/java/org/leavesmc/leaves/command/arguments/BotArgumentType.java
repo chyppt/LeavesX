@@ -14,6 +14,8 @@ import org.leavesmc.leaves.bot.ServerBot;
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
 
+import static org.leavesmc.leaves.command.bot.BotCommandLocale.message;
+
 public class BotArgumentType implements CustomArgumentType.Converted<@NotNull ServerBot, @NotNull String> {
 
     private BotArgumentType() {
@@ -28,7 +30,12 @@ public class BotArgumentType implements CustomArgumentType.Converted<@NotNull Se
         Collection<ServerBot> bots = BotList.INSTANCE.bots;
         if (bots.isEmpty()) {
             return builder
-                .suggest("<NO BOT EXISTS>", net.minecraft.network.chat.Component.literal("There are no bots in the server, create one first."))
+                .suggest(
+                    message("<NO BOT EXISTS>", "<服务器中没有假人>"),
+                    net.minecraft.network.chat.Component.literal(
+                        message("There are no bots in the server, create one first.", "服务器中没有假人，请先创建一个。")
+                    )
+                )
                 .buildFuture();
         }
         bots.stream().map(ServerBot::getScoreboardName).forEach(builder::suggest);
@@ -41,7 +48,10 @@ public class BotArgumentType implements CustomArgumentType.Converted<@NotNull Se
         if (bot == null) {
             throw new CommandSyntaxException(
                 CommandSyntaxException.BUILT_IN_EXCEPTIONS.dispatcherUnknownArgument(),
-                Component.literal("Bot with name '" + nativeType + "' does not exist")
+                Component.literal(message(
+                    "Bot with name '" + nativeType + "' does not exist",
+                    "名为 '" + nativeType + "' 的假人不存在"
+                ))
             );
         }
         return bot;

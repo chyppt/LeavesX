@@ -1,0 +1,21 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 26 Aug 2026 23:00:00 +0800
+Subject: [PATCH] Avoid small natural-spawn dispatch overhead
+
+
+diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+index 0000000000000000000000000000000000000000..1111111111111111111111111111111111111111 100644
+--- a/net/minecraft/world/level/MobSpawnCountAccumulator.java
++++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+@@ -29,7 +29,10 @@ final class MobSpawnCountAccumulator {
+         if (inputs.size() == 0) {
+             return new Long2ObjectOpenHashMap<>(0);
+         }
+-        if (!parallel) {
++        // Direct callers may request parallel counting below the profitable threshold. Keep that case on the
++        // allocation-free synchronous path instead of entering the shared executor only to fall back immediately.
++        if (!parallel || inputs.size() < minimumParallelSize) {
+             return countRange(inputs, 0, inputs.size());
+         }
+ 

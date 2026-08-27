@@ -1,0 +1,20 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 25 Aug 2026 17:49:52 +0800
+Subject: [PATCH] Keep targeted mobs responsive during startup AI staggering
+
+
+diff --git a/net/minecraft/world/entity/Mob.java b/net/minecraft/world/entity/Mob.java
+index 28b1f22862cd1c0e65e9cedcb467098e2c9fc2ed..a087eb1f3918d051687cc7917c9b0f713ab0ff2f 100644
+--- a/net/minecraft/world/entity/Mob.java
++++ b/net/minecraft/world/entity/Mob.java
+@@ -854,7 +854,8 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+         // LeavesX start - spread the first AI/pathfinding burst after a restart across a few ticks.
+         // Sensing remains on its vanilla schedule; only the expensive goal/navigation/brain phases are deferred.
+         if (!org.leavesx.leavesx.config.LeavesXRuntime.allowStartupAiStep(
+-            this instanceof net.minecraft.world.entity.npc.villager.Villager
++            this instanceof net.minecraft.world.entity.npc.villager.Villager,
++            this.getTarget() != null
+         )) {
+             return;
+         }

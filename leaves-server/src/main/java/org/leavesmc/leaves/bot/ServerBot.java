@@ -460,6 +460,24 @@ public class ServerBot extends ServerPlayer {
         player.connection.send(new ClientboundPlayerInfoUpdatePacket(EnumSet.of(ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER, ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LISTED, ClientboundPlayerInfoUpdatePacket.Action.UPDATE_DISPLAY_NAME), List.of(this)));
     }
 
+    /** Applies a display-only prefix without changing the game profile, command name, UUID, or saved-data key. */
+    public void applyLeavesXPresentation() {
+        final net.kyori.adventure.text.Component configured =
+            org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.fakeplayerDisplayName(this.getScoreboardName());
+        this.adventure$displayName = configured;
+        this.displayName = null;
+        this.listName = PaperAdventure.asVanilla(configured);
+    }
+
+    /** Reapplies display settings and updates every connected real player's TAB entry. */
+    public void refreshLeavesXPresentation() {
+        this.applyLeavesXPresentation();
+        this.sendPacket(new ClientboundPlayerInfoUpdatePacket(
+            ClientboundPlayerInfoUpdatePacket.Action.UPDATE_DISPLAY_NAME,
+            this
+        ));
+    }
+
     public boolean needSendFakeData(ServerPlayer player) {
         return this.getConfigValue(Configs.ALWAYS_SEND_DATA) && (player.level() == this.level() && player.position().distanceToSqr(this.position()) > this.tracingRange);
     }

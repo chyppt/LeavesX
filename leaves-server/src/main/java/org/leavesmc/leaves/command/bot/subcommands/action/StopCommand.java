@@ -26,6 +26,7 @@ import static net.kyori.adventure.text.Component.text;
 import static net.kyori.adventure.text.JoinConfiguration.spaces;
 import static net.kyori.adventure.text.event.HoverEvent.showText;
 import static net.kyori.adventure.text.format.NamedTextColor.*;
+import static org.leavesmc.leaves.command.bot.BotCommandLocale.message;
 
 public class StopCommand extends LiteralNode {
 
@@ -76,13 +77,13 @@ public class StopCommand extends LiteralNode {
                 action.stop(bot, BotActionStopEvent.Reason.COMMAND);
                 bot.getBotActions().remove(index);
                 sender.sendMessage(join(spaces(),
-                    text("Already stopped", GRAY),
-                    asAdventure(bot.getDisplayName()).append(text("'s", GRAY)),
-                    text("action", GRAY),
+                    text(message("Already stopped", "已停止"), GRAY),
+                    asAdventure(bot.getDisplayName()).append(text(message("'s", "的"), GRAY)),
+                    text(message("action", "动作"), GRAY),
                     text(action.getName(), AQUA).hoverEvent(showText(text(action.getActionDataString())))
                 ));
             } else {
-                sender.sendMessage(text("Action stop cancelled by a plugin", RED));
+                sender.sendMessage(text(message("Action stop cancelled by a plugin", "插件取消了动作停止"), RED));
             }
             return true;
         }
@@ -101,7 +102,7 @@ public class StopCommand extends LiteralNode {
             List<AbstractBotAction<?>> actions = bot.getBotActions();
             CommandSender sender = context.getSender();
             if (actions.isEmpty()) {
-                sender.sendMessage(text("This bot has no active actions", GRAY));
+                sender.sendMessage(text(message("This bot has no active actions", "该假人没有正在执行的动作"), GRAY));
                 return true;
             }
 
@@ -123,14 +124,17 @@ public class StopCommand extends LiteralNode {
 
             if (canceled.isEmpty()) {
                 sender.sendMessage(join(spaces(),
-                    asAdventure(bot.getDisplayName()).append(text("'s", GRAY)),
-                    text("action list cleared", GRAY)
+                    asAdventure(bot.getDisplayName()).append(text(message("'s", "的"), GRAY)),
+                    text(message("action list cleared", "动作列表已清空"), GRAY)
                 ));
             } else {
                 sender.sendMessage(join(spaces(),
-                    text("Tried to clear", GRAY),
-                    asAdventure(bot.getDisplayName()).append(text("'s", GRAY)),
-                    text("action list, but following actions' stop was canceled by plugin:", GRAY)
+                    text(message("Tried to clear", "尝试清空"), GRAY),
+                    asAdventure(bot.getDisplayName()).append(text(message("'s", "的"), GRAY)),
+                    text(message(
+                        "action list, but following actions' stop was canceled by plugin:",
+                        "动作列表，但以下动作被插件取消停止："
+                    ), GRAY)
                 ));
                 for (AbstractBotAction<?> action : canceled) {
                     context.getSender().sendMessage(

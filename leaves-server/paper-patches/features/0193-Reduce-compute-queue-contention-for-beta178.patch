@@ -1,0 +1,619 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 26 Aug 2026 14:03:04 +0800
+Subject: [PATCH] Reduce compute queue contention for beta178
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 52a1f8c9ea6c06298d74490c490142fee68cb89d..2b99c63724687412565017dfade473c9cd6301ae 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -1,5 +1,9 @@
+ package org.leavesx.leavesx.config;
+ 
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Locale;
++
+ /**
+  * Immutable LeavesX runtime configuration.
+  *
+@@ -65,11 +69,12 @@ public record LeavesXConfig(
+     boolean showCollisionConversionWarning,
+     boolean cleanInvalidResidentBots,
+     String fakeplayerDisplayPrefix,
++    List<String> fakeplayerForbiddenNameContains,
+     String joinMessage,
+     String quitMessage
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 70;
++    public static final int CURRENT_CONFIG_VERSION = 71;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -157,6 +162,7 @@ public record LeavesXConfig(
+             "fakeplayer.display-prefix",
+             256
+         );
++        fakeplayerForbiddenNameContains = normalizeForbiddenNameFragments(fakeplayerForbiddenNameContains);
+         joinMessage = requireBoundedText(joinMessage, "messages.join", 2_048);
+         quitMessage = requireBoundedText(quitMessage, "messages.quit", 2_048);
+     }
+@@ -226,6 +232,7 @@ public record LeavesXConfig(
+             false,
+             true,
+             "[假人]",
++            List.of(),
+             "",
+             ""
+         );
+@@ -241,6 +248,31 @@ public record LeavesXConfig(
+         return value;
+     }
+ 
++    private static List<String> normalizeForbiddenNameFragments(final List<String> values) {
++        if (values == null) {
++            throw new IllegalArgumentException("fakeplayer.forbidden-name-contains must not be null");
++        }
++        if (values.size() > 64) {
++            throw new IllegalArgumentException("fakeplayer.forbidden-name-contains must contain at most 64 entries");
++        }
++        final List<String> normalized = new ArrayList<>(values.size());
++        for (final String value : values) {
++            if (value == null) {
++                throw new IllegalArgumentException("fakeplayer.forbidden-name-contains must not contain null entries");
++            }
++            final String fragment = value.trim().toLowerCase(Locale.ROOT);
++            if (fragment.length() > 64) {
++                throw new IllegalArgumentException(
++                    "fakeplayer.forbidden-name-contains entries must not exceed 64 characters"
++                );
++            }
++            if (!fragment.isEmpty() && !normalized.contains(fragment)) {
++                normalized.add(fragment);
++            }
++        }
++        return List.copyOf(normalized);
++    }
++
+     /** Returns whether one independently configurable optimization is enabled. */
+     boolean optimizationEnabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(this.fineGrainedOptimizationMaskLow, this.fineGrainedOptimizationMaskHigh);
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 9afb281ec08bc1b8c312a38ef600cedcff40d280..1b252aa26c8958a09049867fa1ac4de767e4568a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -359,6 +359,11 @@ public final class LeavesXConfigLoader {
+                     "fakeplayer.display-prefix",
+                     "[假人]"
+                 ),
++                readStringList(
++                    node.node("fakeplayer", "forbidden-name-contains"),
++                    "fakeplayer.forbidden-name-contains",
++                    java.util.List.of()
++                ),
+                 readString(node.node("messages", "join"), "messages.join", ""),
+                 readString(node.node("messages", "quit"), "messages.quit", "")
+             );
+@@ -565,6 +570,28 @@ public final class LeavesXConfigLoader {
+         throw invalidType(path, "a string", raw);
+     }
+ 
++    private static java.util.List<String> readStringList(
++        final ConfigurationNode node,
++        final String path,
++        final java.util.List<String> defaultValue
++    ) {
++        if (node.virtual()) {
++            return defaultValue;
++        }
++        if (!node.isList()) {
++            throw invalidType(path, "a list of strings", node.raw());
++        }
++        final java.util.ArrayList<String> values = new java.util.ArrayList<>();
++        for (final ConfigurationNode child : node.childrenList()) {
++            final Object raw = child.rawScalar();
++            if (!(raw instanceof String value)) {
++                throw invalidType(path, "a list of strings", raw);
++            }
++            values.add(value);
++        }
++        return java.util.List.copyOf(values);
++    }
++
+     private static IllegalArgumentException invalidType(
+         final String path,
+         final String expected,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 7e658231173e24d267f5f707ae91b49db76006a3..909b2772b17a8eb6fa051506e213b621fea0b73d 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -99,6 +99,12 @@ public final class LeavesXConfigWriter {
+             config.fakeplayerDisplayPrefix(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("fakeplayer", "forbidden-name-contains"),
++            "fakeplayer.forbidden-name-contains",
++            config.fakeplayerForbiddenNameContains(),
++            missingOnly
++        );
+         changed |= writeValue(node.node("messages", "join"), "messages.join", config.joinMessage(), missingOnly);
+         changed |= writeValue(node.node("messages", "quit"), "messages.quit", config.quitMessage(), missingOnly);
+         changed |= writeValue(
+@@ -422,12 +428,13 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：70。");
++        comments.put("config-version", "配置版本，请勿修改。默认：71。");
+         comments.put("console-messages.show-root-admin-warning", "是否显示使用 root 或管理员启动的警告。默认：false。");
+         comments.put("console-messages.show-offline-mode-warning", "是否显示离线模式安全警告。默认：false。");
+         comments.put("console-messages.show-collision-conversion-warning", "是否显示碰撞模式自动转换提示。默认：false。");
+-        comments.put("fakeplayer.clean-invalid-resident-bots", "自动清理缺少世界信息且无法恢复的假人记录。默认：true。");
++        comments.put("fakeplayer.clean-invalid-resident-bots", "只清理压缩 NBT 已确认损坏的假人登记；缺世界、世界未加载或缺文件都会保留。默认：true。");
+         comments.put("fakeplayer.display-prefix", "假人显示名前缀，支持 MiniMessage，空字符串关闭。默认：[假人]。");
++        comments.put("fakeplayer.forbidden-name-contains", "假人用户名包含这些文字时禁止创建，大小写不敏感；空列表不限制。默认：[]。");
+         comments.put("messages.join", "自定义进入提示，可用 <name> 和 <display_name>，空字符串保持默认。默认：空。");
+         comments.put("messages.quit", "自定义退出提示，可用 <name> 和 <display_name>，空字符串保持默认。默认：空。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index fac7442aa762f1a61d75fa9fa2f539fa846a48d2..9298f1af70c1e768fb4cebb9a4c74d20b21fe88a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -2,6 +2,7 @@ package org.leavesx.leavesx.config;
+ 
+ import net.minecraft.server.MinecraftServer;
+ 
++import java.util.List;
+ import java.util.Objects;
+ 
+ /**
+@@ -59,6 +60,7 @@ public final class LeavesXRuntime {
+     private static volatile boolean showCollisionConversionWarning;
+     private static volatile boolean cleanInvalidResidentBots = true;
+     private static volatile String fakeplayerDisplayPrefix = "[假人]";
++    private static volatile List<String> forbiddenFakeplayerNameContains = List.of();
+     private static volatile String joinMessage = "";
+     private static volatile String quitMessage = "";
+     private static final StartupAiBudget STARTUP_AI_BUDGET = new StartupAiBudget();
+@@ -166,6 +168,7 @@ public final class LeavesXRuntime {
+         showCollisionConversionWarning = validated.showCollisionConversionWarning();
+         cleanInvalidResidentBots = validated.cleanInvalidResidentBots();
+         fakeplayerDisplayPrefix = validated.fakeplayerDisplayPrefix();
++        forbiddenFakeplayerNameContains = validated.fakeplayerForbiddenNameContains();
+         joinMessage = validated.joinMessage();
+         quitMessage = validated.quitMessage();
+         STARTUP_AI_BUDGET.reset(startupAiEntitiesPerTick);
+@@ -310,6 +313,20 @@ public final class LeavesXRuntime {
+         return fakeplayerDisplayPrefix;
+     }
+ 
++    /** Returns normalized, case-insensitive fragments that are forbidden in raw fakeplayer names. */
++    public static List<String> forbiddenFakeplayerNameContains() {
++        return forbiddenFakeplayerNameContains;
++    }
++
++    /** Checks the LeavesX substring blacklist without applying the display prefix. */
++    public static boolean isForbiddenFakeplayerName(final String name) {
++        if (name == null || name.isEmpty()) {
++            return false;
++        }
++        final String normalized = name.toLowerCase(java.util.Locale.ROOT);
++        return forbiddenFakeplayerNameContains.stream().anyMatch(normalized::contains);
++    }
++
+     /** Returns the optional MiniMessage player-join template. */
+     public static String joinMessage() {
+         return joinMessage;
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 5f27a4a6c9a0926f40d4049fb78dea3c48564e6b..ea63e6c83bd7c2feb33cc306991de544c6a40e75 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -279,28 +279,45 @@ public final class LeavesXComputeExecutor {
+         }
+         final int rangeSize = (size + taskCount - 1) / taskCount;
+         final int expectedTaskCount = (size + rangeSize - 1) / rangeSize;
+-        final int callerTaskIndex = expectedTaskCount - 1;
+-        final RangeInvocation invocation = new RangeInvocation(task, workloadCounters, callerTaskIndex);
+-        for (int taskIndex = 0; taskIndex < callerTaskIndex; taskIndex++) {
+-            final int rangeStart = taskIndex * rangeSize;
+-            final int rangeEnd = Math.min(size, rangeStart + rangeSize);
++        final RangeInvocation invocation = new RangeInvocation(task, workloadCounters, expectedTaskCount - 1);
++        // Submit one bounded worker task per physical worker. Each task claims the next contiguous range from an
++        // atomic cursor, reducing executor queue operations and allowing a fast worker to pick up later ranges from a
++        // slow worker without changing deterministic range contents or merge order.
++        final int workerTaskCount = Math.min(workerCount, expectedTaskCount - 1);
++        // Reserve one initial range for every submitted worker so very fast ranges cannot all be consumed by the
++        // first thread that wakes up. The shared cursor starts after those guaranteed ranges and balances only the
++        // remaining overflow work.
++        final AtomicInteger nextTask = new AtomicInteger(workerTaskCount);
++        for (int workerIndex = 0; workerIndex < workerTaskCount; workerIndex++) {
+             try {
+-                current.execute(new RangeRunnable(invocation, taskIndex, rangeStart, rangeEnd));
++                current.execute(new RangeBatchRunnable(
++                    invocation,
++                    workerIndex,
++                    nextTask,
++                    rangeSize,
++                    expectedTaskCount,
++                    size
++                ));
+             } catch (final RejectedExecutionException rejection) {
+-                // Surrender only the rejected partition to the tick thread; recomputing the complete snapshot would
+-                // duplicate already completed work and create a larger single-tick latency spike.
+-                invocation.runOnCaller(taskIndex, rangeStart, rangeEnd, true);
++                invocation.runInitialRangesOnCaller(workerIndex, workerTaskCount, rangeSize, size, true);
++                invocation.runRemainingOnCaller(nextTask, rangeSize, expectedTaskCount - 1, size, true);
++                break;
+             } catch (final RuntimeException submissionFailure) {
+                 LOGGER.error(
+-                    "LeavesX parallel computation could not be submitted; running the rejected range on the main thread",
++                    "LeavesX parallel computation could not be submitted; running remaining ranges on the main thread",
+                     submissionFailure
+                 );
+-                invocation.runOnCaller(taskIndex, rangeStart, rangeEnd, true);
++                invocation.runInitialRangesOnCaller(workerIndex, workerTaskCount, rangeSize, size, true);
++                invocation.runRemainingOnCaller(nextTask, rangeSize, expectedTaskCount - 1, size, true);
++                break;
+             }
+         }
+ 
+-        final int callerRangeStart = callerTaskIndex * rangeSize;
+-        invocation.runOnCaller(callerTaskIndex, callerRangeStart, size, false);
++        // The calling tick thread remains productive by owning the final range. Workers claim every earlier range
++        // from the shared cursor; this avoids a caller/worker race that could otherwise let the caller steal all work
++        // before newly submitted workers start running.
++        final int callerTaskIndex = expectedTaskCount - 1;
++        invocation.runOnCaller(callerTaskIndex, callerTaskIndex * rangeSize, size, false);
+         invocation.awaitWorkers();
+         invocation.recordLoad();
+         final Throwable failure = invocation.failure;
+@@ -376,7 +393,11 @@ public final class LeavesXComputeExecutor {
+ 
+     /** Returns true when enough workers are idle to admit finer-grained work without queueing behind another batch. */
+     private static boolean isIdleForAdaptiveDispatch(final ComputeThreadPoolExecutor current) {
+-        return current == executor && current.executingTaskCount() <= Math.max(1, workerCount / 4);
++        return current == executor
++            // ArrayBlockingQueue.isEmpty() takes the queue lock. Admission checks run on the server tick hot path,
++            // so use the executor-owned counter instead; it does not expose a mutable task to the callback.
++            && current.queuedTaskCount() == 0
++            && current.executingTaskCount() <= Math.max(1, workerCount / 4);
+     }
+ 
+     private static boolean supportsAdaptiveScheduling(final Workload workload) {
+@@ -447,7 +468,7 @@ public final class LeavesXComputeExecutor {
+         return new Metrics(
+             workerCount,
+             current == null ? 0 : current.executingTaskCount(),
+-            current == null ? 0 : current.getQueue().size(),
++            current == null ? 0 : current.queuedTaskCount(),
+             current == null ? 0 : current.getLargestPoolSize(),
+             current == null ? 0L : current.getCompletedTaskCount(),
+             invocationCount.get(),
+@@ -476,7 +497,7 @@ public final class LeavesXComputeExecutor {
+         executor = null;
+         if (current != null) {
+             for (final Runnable pending : current.shutdownNow()) {
+-                if (pending instanceof RangeRunnable range) {
++                if (pending instanceof RangeBatchRunnable range) {
+                     range.cancel();
+                 }
+             }
+@@ -731,6 +752,39 @@ public final class LeavesXComputeExecutor {
+             }
+         }
+ 
++        /** Claims every range that workers have not claimed and executes it on the calling thread. */
++        private void runRemainingOnCaller(
++            final AtomicInteger nextTask,
++            final int rangeSize,
++            final int workerTaskCount,
++            final int inputSize,
++            final boolean backpressure
++        ) {
++            while (true) {
++                final int taskIndex = nextTask.getAndIncrement();
++                if (taskIndex >= workerTaskCount) {
++                    return;
++                }
++                final int start = taskIndex * rangeSize;
++                final int end = Math.min(inputSize, start + rangeSize);
++                this.runOnCaller(taskIndex, start, end, backpressure);
++            }
++        }
++
++        /** Executes guaranteed initial ranges whose worker submissions were rejected. */
++        private void runInitialRangesOnCaller(
++            final int startTask,
++            final int endTask,
++            final int rangeSize,
++            final int inputSize,
++            final boolean backpressure
++        ) {
++            for (int taskIndex = startTask; taskIndex < endTask; taskIndex++) {
++                final int start = taskIndex * rangeSize;
++                this.runOnCaller(taskIndex, start, Math.min(inputSize, start + rangeSize), backpressure);
++            }
++        }
++
+         private void awaitWorkers() {
+             boolean interrupted = false;
+             while (true) {
+@@ -782,6 +836,8 @@ public final class LeavesXComputeExecutor {
+     private static final class ComputeThreadPoolExecutor extends ThreadPoolExecutor {
+ 
+         private final AtomicInteger executingTasks = new AtomicInteger();
++        /** Number of tasks accepted by execute but not handed to beforeExecute yet. */
++        private final AtomicInteger queuedTasks = new AtomicInteger();
+ 
+         private ComputeThreadPoolExecutor(final int workers) {
+             super(
+@@ -800,9 +856,22 @@ public final class LeavesXComputeExecutor {
+             );
+         }
+ 
++        @Override
++        public void execute(final Runnable command) {
++            this.queuedTasks.incrementAndGet();
++            try {
++                super.execute(command);
++            } catch (final RuntimeException | Error failure) {
++                // AbortPolicy and shutdown races must not leave adaptive admission permanently disabled.
++                this.queuedTasks.decrementAndGet();
++                throw failure;
++            }
++        }
++
+         @Override
+         protected void beforeExecute(final Thread thread, final Runnable task) {
+             super.beforeExecute(thread, task);
++            this.queuedTasks.decrementAndGet();
+             this.executingTasks.incrementAndGet();
+             COMPUTE_WORKER_CONTEXT.set(Boolean.TRUE);
+         }
+@@ -820,35 +889,67 @@ public final class LeavesXComputeExecutor {
+         private int executingTaskCount() {
+             return this.executingTasks.get();
+         }
++
++        private int queuedTaskCount() {
++            return Math.max(0, this.queuedTasks.get());
++        }
+     }
+ 
+-    /** Runnable wrapper used by the bounded executor queue. */
+-    private static final class RangeRunnable implements Runnable {
++    /** Runs multiple contiguous ranges from one queue entry, reducing queue/lock pressure for large snapshots. */
++    private static final class RangeBatchRunnable implements Runnable {
+ 
+         private final RangeInvocation invocation;
+-        private final int taskIndex;
+-        private final int startInclusive;
+-        private final int endExclusive;
++        private final int initialTaskIndex;
++        private final AtomicInteger nextTask;
++        private final int rangeSize;
++        private final int taskCount;
++        private final int inputSize;
+ 
+-        private RangeRunnable(
++        private RangeBatchRunnable(
+             final RangeInvocation invocation,
+-            final int taskIndex,
+-            final int startInclusive,
+-            final int endExclusive
++            final int initialTaskIndex,
++            final AtomicInteger nextTask,
++            final int rangeSize,
++            final int taskCount,
++            final int inputSize
+         ) {
+             this.invocation = invocation;
+-            this.taskIndex = taskIndex;
+-            this.startInclusive = startInclusive;
+-            this.endExclusive = endExclusive;
++            this.initialTaskIndex = initialTaskIndex;
++            this.nextTask = nextTask;
++            this.rangeSize = rangeSize;
++            this.taskCount = taskCount;
++            this.inputSize = inputSize;
+         }
+ 
+         @Override
+         public void run() {
+-            this.invocation.runWorker(this.taskIndex, this.startInclusive, this.endExclusive);
++            final int initialStart = this.initialTaskIndex * this.rangeSize;
++            this.invocation.runWorker(
++                this.initialTaskIndex,
++                initialStart,
++                Math.min(this.inputSize, initialStart + this.rangeSize)
++            );
++            while (true) {
++                final int taskIndex = this.nextTask.getAndIncrement();
++                if (taskIndex >= this.taskCount - 1) {
++                    return;
++                }
++                final int start = taskIndex * this.rangeSize;
++                final int end = Math.min(this.inputSize, start + this.rangeSize);
++                this.invocation.runWorker(taskIndex, start, end);
++            }
+         }
+ 
++        /** Counts every unclaimed worker range down when a queued batch is cancelled during shutdown. */
+         private void cancel() {
+             this.invocation.cancelWorker();
++            while (true) {
++                final int taskIndex = this.nextTask.getAndIncrement();
++                if (taskIndex >= this.taskCount - 1) {
++                    return;
++                }
++                this.invocation.cancelWorker();
++            }
+         }
+     }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 38b3be7fdc6b189fc0b75ddce16d9d511a96c26c..580056c8c7566b95a11debd45f8af6fcf59230ff 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -14,6 +14,8 @@ import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.io.TempDir;
++import org.leavesmc.leaves.LeavesConfig;
++import org.leavesmc.leaves.bot.BotUtil;
+ import org.leavesx.leavesx.presentation.LeavesXPlayerPresentation;
+ 
+ @Normal
+@@ -36,12 +38,14 @@ class LeavesXConfigLoaderTest {
+         assertFalse(created.showCollisionConversionWarning());
+         assertTrue(created.cleanInvalidResidentBots());
+         assertEquals("[假人]", created.fakeplayerDisplayPrefix());
++        assertTrue(created.fakeplayerForbiddenNameContains().isEmpty());
+         final String generated = Files.readString(path);
+         assertTrue(generated.contains("performance:"));
+         assertTrue(generated.contains("console-messages:"));
+         assertTrue(generated.contains("fakeplayer:"));
+         assertTrue(generated.contains("messages:"));
+         assertTrue(generated.contains("display-prefix:"));
++        assertTrue(generated.contains("forbidden-name-contains:"));
+         assertTrue(generated.contains("mob-spawning:"));
+         assertTrue(generated.contains("diagnostics:"));
+         assertTrue(generated.contains("rolling-window-seconds:"));
+@@ -791,6 +795,55 @@ class LeavesXConfigLoaderTest {
+         }
+     }
+ 
++    @Test
++    void normalizesAndPublishesForbiddenFakeplayerNameFragments() throws IOException {
++        final Path path = write("""
++            config-version: 70
++            fakeplayer:
++              forbidden-name-contains:
++                - ' Admin '
++                - BOT
++                - admin
++                - ''
++            """);
++
++        final LeavesXConfig config = LeavesXConfigLoader.load(path);
++        assertEquals(java.util.List.of("admin", "bot"), config.fakeplayerForbiddenNameContains());
++
++        final String previousPrefix = LeavesConfig.modify.fakeplayer.prefix;
++        final String previousSuffix = LeavesConfig.modify.fakeplayer.suffix;
++        try {
++            LeavesXRuntime.publish(config);
++            assertTrue(LeavesXRuntime.isForbiddenFakeplayerName("MyAdminAccount"));
++            assertTrue(LeavesXRuntime.isForbiddenFakeplayerName("build_BOT_1"));
++            assertFalse(LeavesXRuntime.isForbiddenFakeplayerName("worker_1"));
++
++            LeavesConfig.modify.fakeplayer.prefix = "admin_";
++            LeavesConfig.modify.fakeplayer.suffix = "_bot";
++            assertFalse(BotUtil.isNameForbidden("admin_worker_1_bot"), "username decorations must not trigger the rule");
++            assertTrue(BotUtil.isNameForbidden("admin_worker_admin_bot"));
++        } finally {
++            LeavesConfig.modify.fakeplayer.prefix = previousPrefix;
++            LeavesConfig.modify.fakeplayer.suffix = previousSuffix;
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
++    @Test
++    void rejectsNonListForbiddenFakeplayerNameFragments() throws IOException {
++        final Path path = write("""
++            config-version: 70
++            fakeplayer:
++              forbidden-name-contains: admin
++            """);
++
++        final LeavesXConfigException exception = assertThrows(
++            LeavesXConfigException.class,
++            () -> LeavesXConfigLoader.load(path)
++        );
++        assertTrue(exception.getMessage().contains("fakeplayer.forbidden-name-contains"));
++    }
++
+     @Test
+     void rejectsWrongScalarTypeWithConfigurationPath() throws IOException {
+         final Path path = write("""
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index b44c9a9bdba69aae65db65696254c0258a58a679..39eccaf197c2fdcb337fbbc5f1875f0fc0243d14 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -215,6 +215,7 @@ class VillagerCompatibilityContextTest {
+             false,
+             true,
+             "[假人]",
++            List.of(),
+             "",
+             ""
+         );
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index e00d4a06550388cb45a20637474b1183cacebe37..9e1bc90cdcbb1c9f5838f502d52670d8e094a151 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -20,7 +20,7 @@ import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.Test;
+ 
+ @Normal
+-class LeavesXComputeExecutorTest {
++public class LeavesXComputeExecutorTest {
+ 
+     @AfterEach
+     void shutdownExecutor() {
+@@ -188,6 +188,31 @@ class LeavesXComputeExecutorTest {
+         assertEquals(0, executor().getPoolSize());
+     }
+ 
++    @Test
++    void tracksAcceptedTasksBeforeWorkerHandoff() throws Exception {
++        LeavesXComputeExecutor.configure(1, 64, true);
++        final ThreadPoolExecutor executor = executor();
++        final CountDownLatch release = new CountDownLatch(1);
++        final CountDownLatch started = new CountDownLatch(1);
++        executor.execute(() -> {
++            started.countDown();
++            try {
++                release.await();
++            } catch (final InterruptedException interruption) {
++                Thread.currentThread().interrupt();
++            }
++        });
++        assertTrue(started.await(2L, TimeUnit.SECONDS));
++        executor.execute(() -> { });
++
++        final var queuedField = executor.getClass().getDeclaredField("queuedTasks");
++        queuedField.setAccessible(true);
++        final AtomicInteger queued = (AtomicInteger)queuedField.get(executor);
++        assertEquals(1, queued.get(), "a waiting task must be visible to adaptive admission");
++        assertEquals(1, LeavesXComputeExecutor.metrics().queuedTasks());
++        release.countDown();
++    }
++
+     @Test
+     void takesOnlyRejectedPartitionsOnTheCallingThreadDuringBackpressure() throws Exception {
+         LeavesXComputeExecutor.configure(2, 64);
+diff --git a/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java b/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java
+index cee6ef481af4bf8231769d2a658cb37fec833c73..fba8476a0a7c5e6a93afc57fd82202dc37e4e454 100644
+--- a/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java
++++ b/src/test/java/org/leavesx/leavesx/support/LeavesXTestSuite.java
+@@ -5,6 +5,7 @@ import io.papermc.paper.entity.activation.ActivationRangeSnapshotTest;
+ import net.minecraft.world.level.MobSpawnCountAccumulatorTest;
+ import net.minecraft.world.level.NaturalSpawnPositionHotPathTest;
+ import net.minecraft.world.level.PotentialCalculatorTest;
++import org.leavesx.leavesx.runtime.LeavesXComputeExecutorTest;
+ import org.junit.platform.suite.api.ConfigurationParameter;
+ import org.junit.platform.suite.api.IncludeTags;
+ import org.junit.platform.suite.api.SelectClasses;
+@@ -26,7 +27,8 @@ import org.junit.platform.suite.api.SuiteDisplayName;
+     ActivationRangeSnapshotTest.class,
+     MobSpawnCountAccumulatorTest.class,
+     NaturalSpawnPositionHotPathTest.class,
+-    PotentialCalculatorTest.class
++    PotentialCalculatorTest.class,
++    LeavesXComputeExecutorTest.class
+ })
+ @ConfigurationParameter(key = "TestSuite", value = "Normal")
+ public final class LeavesXTestSuite {

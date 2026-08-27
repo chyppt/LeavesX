@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 25 Aug 2026 22:35:51 +0800
+Subject: [PATCH] Harden adaptive admission and partitioning
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 49a205bbc25b12517558370841f0fbb36ab06314..8515337e417c3ebca0ce5a3f091d83256ca13513 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -177,7 +177,8 @@ public final class LeavesXComputeExecutor {
+         if (size >= minimumSize) {
+             return true;
+         }
+-        return isIdleForAdaptiveDispatch(current)
++        return minimumSize >= 256
++            && isIdleForAdaptiveDispatch(current)
+             && size >= Math.max(MIN_ADAPTIVE_ITEMS_PER_TASK, (minimumSize + 1) / 2);
+     }
+ 
+@@ -246,6 +247,7 @@ public final class LeavesXComputeExecutor {
+         }
+         final boolean belowConfiguredThreshold = size < minimumSize;
+         final boolean adaptivelyAdmitted = belowConfiguredThreshold
++            && minimumSize >= 256
+             && isIdleForAdaptiveDispatch(current)
+             && size >= Math.max(MIN_ADAPTIVE_ITEMS_PER_TASK, (minimumSize + 1) / 2);
+         if (belowConfiguredThreshold && !adaptivelyAdmitted) {
+@@ -261,7 +263,14 @@ public final class LeavesXComputeExecutor {
+         // deterministic, but give the executor enough work units to keep all workers busy when one range is slower.
+         final int lanes = computeLaneCount();
+         final int baselineTaskCount = partitionCountFor(size, lanes, minimumItemsPerTask);
+-        final int taskCount = adaptivePartitionCountFor(current, workload, size, lanes, minimumItemsPerTask);
++        final int taskCount = adaptivePartitionCountFor(
++            current,
++            workload,
++            size,
++            lanes,
++            minimumItemsPerTask,
++            adaptivelyAdmitted || minimumSize >= 256
++        );
+         if (taskCount <= 1) {
+             insufficientPartitionFallbackCount.incrementAndGet();
+             workloadCounters.insufficientPartitionFallbacks.incrementAndGet();
+@@ -359,10 +368,11 @@ public final class LeavesXComputeExecutor {
+         final Workload workload,
+         final int size,
+         final int availableLanes,
+-        final int minimumItems
++        final int minimumItems,
++        final boolean allowAdaptivePartitioning
+     ) {
+         final int baseline = partitionCountFor(size, availableLanes, minimumItems);
+-        if (baseline <= 1 || !isIdleForAdaptiveDispatch(current)) {
++        if (!allowAdaptivePartitioning || !isIdleForAdaptiveDispatch(current)) {
+             return baseline;
+         }
+ 

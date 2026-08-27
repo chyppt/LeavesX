@@ -1,0 +1,155 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 25 Aug 2026 21:12:41 +0800
+Subject: [PATCH] Improve pure-compute partition scheduling for beta173
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+index e6e4eb2214caff8b9ad83295e2f52ffc77475043..b8a80bcfe6b7bfdab8b2e97ce07c63217be62fdd 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -540,7 +540,9 @@ public final class StableDistanceSorter {
+             cached.inUse = true;
+             workspace = cached;
+         }
+-        workspace.ensureCapacity(size, LeavesXComputeExecutor.computeLaneCount());
++        // The scheduler may use two deterministic ranges per physical lane. Reserve one private histogram slice for
++        // every possible range so workers never contend for offsets or write outside the workspace.
++        workspace.ensureCapacity(size, LeavesXComputeExecutor.computePartitionCapacity());
+         return workspace;
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 62cc312370824d8d1fd25ce42f4a813c9849e77a..af1765027bfadbdfa3634037341fc079860c39d5 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -19,7 +19,10 @@ public final class LeavesXComputeExecutor {
+ 
+     private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXComputeExecutor.class);
+     private static final int MAX_QUEUED_TASKS = 128;
+-    private static final int MAX_AUTOMATIC_WORKERS = 12;
++    /** Keep two scheduler lanes per worker so a slow range cannot strand the rest of the pool. */
++    private static final int PARTITIONS_PER_LANE = 2;
++    private static final int MAX_PARTITIONS = 64;
++    private static final int MAX_AUTOMATIC_WORKERS = 16;
+     private static volatile ThreadPoolExecutor executor;
+     private static volatile int workerCount = 1;
+     private static volatile int minimumItemsPerWorker = 64;
+@@ -133,6 +136,21 @@ public final class LeavesXComputeExecutor {
+         return executor != null && workerCount > 1 ? workerCount + 1 : 1;
+     }
+ 
++    /**
++     * Returns the maximum number of deterministic partition slots a pure-computation caller may need.
++     *
++     * <p>Most callers keep one scratch slice per partition (for example, one radix histogram per AI range). Keeping
++     * this capacity calculation beside the scheduler prevents those callers from assuming that one task always maps
++     * to one physical worker.</p>
++     */
++    public static int computePartitionCapacity() {
++        final int lanes = computeLaneCount();
++        if (lanes <= 1) {
++            return 1;
++        }
++        return Math.min(MAX_PARTITIONS, lanes * PARTITIONS_PER_LANE);
++    }
++
+     /**
+      * Processes contiguous ranges and waits for every range before returning.
+      *
+@@ -202,7 +220,9 @@ public final class LeavesXComputeExecutor {
+             return 0;
+         }
+ 
+-        final int taskCount = taskCountFor(size, computeLaneCount(), minimumItemsPerTask);
++        // Use a bounded amount of over-partitioning for large batches. The extra ranges are still contiguous and
++        // deterministic, but give the executor enough work units to keep all workers busy when one range is slower.
++        final int taskCount = partitionCountFor(size, computeLaneCount(), minimumItemsPerTask);
+         if (taskCount <= 1) {
+             insufficientPartitionFallbackCount.incrementAndGet();
+             workloadCounters.insufficientPartitionFallbacks.incrementAndGet();
+@@ -258,6 +278,27 @@ public final class LeavesXComputeExecutor {
+         return Math.min(availableLanes, usefulLanes);
+     }
+ 
++    /**
++     * Chooses a bounded number of deterministic ranges for one invocation.
++     *
++     * <p>{@link #taskCountFor(int, int, int)} describes the physical lane count and remains useful for diagnostics
++     * and compatibility tests. Runtime scheduling deliberately allows two ranges per lane, but never creates more
++     * ranges than the input can fill with the requested minimum work.</p>
++     */
++    static int partitionCountFor(final int size, final int availableLanes, final int minimumItems) {
++        if (size <= 0 || availableLanes <= 1) {
++            return 1;
++        }
++        final int boundedMinimumItems = Math.max(1, minimumItems);
++        final int usefulPartitions = Math.max(1, size / boundedMinimumItems);
++        final int boundedLanes = Math.min(MAX_PARTITIONS, availableLanes);
++        final int partitionBudget = Math.min(
++            MAX_PARTITIONS,
++            boundedLanes * PARTITIONS_PER_LANE
++        );
++        return Math.min(partitionBudget, usefulPartitions);
++    }
++
+     private static void recordMaximumConcurrentWorkers(final int count) {
+         long current = maximumConcurrentWorkerCount.get();
+         while (count > current && !maximumConcurrentWorkerCount.compareAndSet(current, count)) {
+diff --git a/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java b/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
+index e2c12a7497cc1bc9033fd16d947fd48ec6bb87f7..59921a0735442e7d1a89421cc13f019f5cd45eac 100644
+--- a/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
++++ b/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
+@@ -77,7 +77,7 @@ public class ActivationRangeSnapshotTest {
+         );
+ 
+         assertArrayEquals(expected, actual);
+-        assertEquals(5, partitions, "four workers plus the calling thread should process this deterministic batch");
++        assertEquals(8, partitions, "the bounded scheduler should use every profitable deterministic partition");
+         final LeavesXComputeExecutor.WorkloadMetrics metrics = workload();
+         assertEquals(1L, metrics.parallelInvocations());
+         assertEquals(size, metrics.totalItems());
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index b2eff1841eadf663778f56863eb84c511638c716..4ab16d1581c46ec1e108f7f89be2a1e5e45f8769 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -147,7 +147,26 @@ class LeavesXComputeExecutorTest {
+     void automaticWorkerSelectionLeavesHeadroomAndUsesLargeMachines() {
+         assertEquals(1, LeavesXComputeExecutor.automaticWorkerCount(2));
+         assertEquals(6, LeavesXComputeExecutor.automaticWorkerCount(8));
+-        assertEquals(12, LeavesXComputeExecutor.automaticWorkerCount(32));
++        assertEquals(16, LeavesXComputeExecutor.automaticWorkerCount(32));
++    }
++
++    @Test
++    void overPartitionsOnlyWhenTheInputCanFillTheExtraRanges() {
++        assertEquals(1, LeavesXComputeExecutor.partitionCountFor(127, 8, 64));
++        assertEquals(2, LeavesXComputeExecutor.partitionCountFor(128, 8, 64));
++        assertEquals(8, LeavesXComputeExecutor.partitionCountFor(512, 8, 64));
++        assertEquals(16, LeavesXComputeExecutor.partitionCountFor(1_024, 8, 64));
++        assertEquals(16, LeavesXComputeExecutor.partitionCountFor(8_192, 8, 64));
++        assertEquals(1, LeavesXComputeExecutor.partitionCountFor(1_024, 1, 64));
++    }
++
++    @Test
++    void exposesEnoughResultSlotsForOverPartitionedCallers() {
++        LeavesXComputeExecutor.configure(4, 64);
++        assertEquals(10, LeavesXComputeExecutor.computePartitionCapacity());
++
++        LeavesXComputeExecutor.configure(1, 64);
++        assertEquals(1, LeavesXComputeExecutor.computePartitionCapacity());
+     }
+ 
+     @Test
+@@ -234,7 +253,10 @@ class LeavesXComputeExecutorTest {
+ 
+         final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
+         assertEquals(1L, metrics.callerRanges());
+-        assertEquals(4L, metrics.workerRanges());
++        assertEquals(
++            LeavesXComputeExecutor.partitionCountFor(1_024, LeavesXComputeExecutor.computeLaneCount(), 64) - 1L,
++            metrics.workerRanges()
++        );
+         assertEquals(1_024L, metrics.callerItems() + metrics.workerItems());
+         assertTrue(metrics.maximumConcurrentWorkers() > 0);
+ 

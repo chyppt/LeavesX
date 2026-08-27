@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 27 Aug 2026 00:16:30 +0800
+Subject: [PATCH] Correct fakeplayer presentation color test expectations
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+index 124f2bf16866e9d4e7ead4576f2beee6a4680d67..d8b626b763ccc7e6db38246a36d7393bfbd52ac5 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+@@ -34,10 +34,10 @@ final class LeavesXPlayerPresentationTest {
+         publishConfig("[假人]", "&6<name> &7joined as <display_name>", "\u00A7c<display_name> left");
+         final Component displayName = LeavesXPlayerPresentation.fakeplayerDisplayName("bot");
+ 
+-        assertEquals("\u00A76bot \u00A77joined as [假人]", LEGACY.serialize(
++        assertEquals("\u00A76bot \u00A77joined as [假人]bot", LEGACY.serialize(
+             LeavesXPlayerPresentation.joinMessage("bot", displayName, Component.text("default"))
+         ));
+-        assertEquals("\u00A7c[假人] left", LEGACY.serialize(
++        assertEquals("\u00A7c[假人]bot left", LEGACY.serialize(
+             LeavesXPlayerPresentation.quitMessage("bot", displayName, Component.text("default"))
+         ));
+     }

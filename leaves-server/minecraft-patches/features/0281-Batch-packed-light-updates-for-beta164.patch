@@ -1,0 +1,105 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 23 Aug 2026 21:27:30 +0800
+Subject: [PATCH] Batch packed light updates for beta164
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/starlight/light/StarLightEngine.java b/ca/spottedleaf/moonrise/patches/starlight/light/StarLightEngine.java
+index d5eb47f26039220456d271d2f6d00be645e06616..3f9d39323e3e93d4d4fcbaccf0562e28dc5f2a78 100644
+--- a/ca/spottedleaf/moonrise/patches/starlight/light/StarLightEngine.java
++++ b/ca/spottedleaf/moonrise/patches/starlight/light/StarLightEngine.java
+@@ -277,7 +277,10 @@ public abstract class StarLightEngine {
+             final int ySections = this.maxSection - this.minSection + 1;
+             final int chunkY = ((index / (5*5)) % (ySections + 2 + 2)) - this.chunkOffsetY;
+             if ((nibble != null && nibble.updateVisible()) || this.notifyUpdateCache[index]) {
+-                lightAccess.onLightUpdate(this.skylightPropagator ? LightLayer.SKY : LightLayer.BLOCK, SectionPos.of(chunkX, chunkY, chunkZ));
++                lightAccess.onLightUpdate(
++                    this.skylightPropagator ? LightLayer.SKY : LightLayer.BLOCK,
++                    SectionPos.asLong(chunkX, chunkY, chunkZ)
++                );
+             }
+         }
+     }
+@@ -1032,7 +1035,10 @@ public abstract class StarLightEngine {
+             this.setNibbles(chunk, nibbles);
+ 
+             for (int y = this.minLightSection; y <= this.maxLightSection; ++y) {
+-                lightAccess.onLightUpdate(this.skylightPropagator ? LightLayer.SKY : LightLayer.BLOCK, SectionPos.of(chunkX, y, chunkZ));
++                lightAccess.onLightUpdate(
++                    this.skylightPropagator ? LightLayer.SKY : LightLayer.BLOCK,
++                    SectionPos.asLong(chunkX, y, chunkZ)
++                );
+             }
+ 
+             // now do callback
+diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
+index b0bc3533345c9e6f56e5a092c0a04551b3abcc63..889e871e02305c495bc8327bf66f277e0098ace3 100644
+--- a/net/minecraft/server/level/ServerChunkCache.java
++++ b/net/minecraft/server/level/ServerChunkCache.java
+@@ -714,6 +714,19 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+         });
+     }
+ 
++    /** Handles the light-worker callback without constructing a SectionPos on the worker thread. */
++    @Override
++    public void onLightUpdate(final LightLayer layer, final long sectionNode) {
++        final long chunkKey = ChunkPos.pack(SectionPos.x(sectionNode), SectionPos.z(sectionNode));
++        final int sectionY = SectionPos.y(sectionNode);
++        this.mainThreadProcessor.execute(() -> {
++            final ChunkHolder chunk = this.getVisibleChunkIfPresent(chunkKey);
++            if (chunk != null && chunk.sectionLightChanged(layer, sectionY)) {
++                this.chunkHoldersToBroadcast.add(chunk);
++            }
++        });
++    }
++
+     public boolean hasActiveTickets() {
+         return this.ticketStorage.shouldKeepDimensionActive();
+     }
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index 46cb1fb7f086c26c98be16776a31d26eaadb687c..d83207ebefa9b51a4bf7446477ded2c6bb2d4e88 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -2416,7 +2416,10 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+     /** Reusable full-query storage with an isolated fallback for nested scans on the same thread. */
+     public static final class LeavesXEntityQueryBuffer implements AutoCloseable {
+ 
+-        private final List<Entity> results = new java.util.ArrayList<>();
++        // Dense activation scans commonly return hundreds of entities. Retain a modest baseline capacity so normal
++        // farms avoid the first resize while larger scans grow once and reuse that storage on later ticks.
++        private static final int INITIAL_CAPACITY = 256;
++        private final List<Entity> results = new java.util.ArrayList<>(INITIAL_CAPACITY);
+         private final boolean pooled;
+         private boolean inUse;
+ 
+diff --git a/net/minecraft/world/level/chunk/LightChunkGetter.java b/net/minecraft/world/level/chunk/LightChunkGetter.java
+index 4c44663b97580d470656cbceef2885f9de8394da..03da8d1abf1d9a711c333bc5d2c490e18a97ceea 100644
+--- a/net/minecraft/world/level/chunk/LightChunkGetter.java
++++ b/net/minecraft/world/level/chunk/LightChunkGetter.java
+@@ -11,5 +11,13 @@ public interface LightChunkGetter {
+     default void onLightUpdate(final LightLayer layer, final SectionPos pos) {
+     }
+ 
++    /**
++     * Receives a packed section coordinate without allocating a temporary {@link SectionPos}.
++     * The object overload remains the compatibility boundary for third-party light providers.
++     */
++    default void onLightUpdate(final LightLayer layer, final long sectionNode) {
++        this.onLightUpdate(layer, SectionPos.of(sectionNode));
++    }
++
+     BlockGetter getLevel();
+ }
+diff --git a/net/minecraft/world/level/lighting/LayerLightSectionStorage.java b/net/minecraft/world/level/lighting/LayerLightSectionStorage.java
+index 2342c9527207e623cd4835dcd49e87f3d1605df2..dac91cb7dbc032f9e82ca374fd9f833ced01c61e 100644
+--- a/net/minecraft/world/level/lighting/LayerLightSectionStorage.java
++++ b/net/minecraft/world/level/lighting/LayerLightSectionStorage.java
+@@ -273,7 +273,7 @@ public abstract class LayerLightSectionStorage<M extends DataLayerStorageMap<M>>
+ 
+             while (iterator.hasNext()) {
+                 long sectionNode = iterator.nextLong();
+-                this.chunkSource.onLightUpdate(this.layer, SectionPos.of(sectionNode));
++                this.chunkSource.onLightUpdate(this.layer, sectionNode);
+             }
+ 
+             this.sectionsAffectedByLightUpdates.clear();

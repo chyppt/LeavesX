@@ -126,10 +126,10 @@ index c31c44de1cbc1af7c01ad0a531683e7828a74efc..7a1ec3c1e699d50336d61ddd8f197caa
          double nearestDistance = 0.0;
          for (final Player player : players) {
 diff --git a/net/minecraft/world/entity/npc/villager/Villager.java b/net/minecraft/world/entity/npc/villager/Villager.java
-index 4c86271413f2fed00d48e1fea8d8095c620ebafc..5317b39559a3163767c0e88be4c2ccfdd475a3f1 100644
+index a93392ed880b3410fc26e27823f263ca26f6283d..dc85983aff8e5d17f23e18a68c283913b3fedd56 100644
 --- a/net/minecraft/world/entity/npc/villager/Villager.java
 +++ b/net/minecraft/world/entity/npc/villager/Villager.java
-@@ -277,7 +277,18 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+@@ -279,7 +279,18 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
          // Paper end - EAR 2
          ProfilerFiller profiler = Profiler.get();
          profiler.push("villagerBrain");

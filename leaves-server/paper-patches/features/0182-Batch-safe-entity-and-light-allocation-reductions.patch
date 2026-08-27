@@ -1,0 +1,168 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 23 Aug 2026 20:45:57 +0800
+Subject: [PATCH] Batch safe entity and light allocation reductions
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index ab72e26c4ed58ea72ef5d655bec8726c14967fc3..22f4ab2f1c3df56668df3eb3cd896835253040a3 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -305,7 +305,9 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether entity activation may reuse its per-thread full-query result buffer. */
+     public static boolean entityActivationQueryBufferReuseOptimization() {
+-        return false;
++        // This only reuses the private list owned by ActivationRange. It does not change entity order, predicates,
++        // activation timing, or any technical-mechanics callback, so strict mechanics compatibility remains intact.
++        return entityQueryOptimizations && enabled(LeavesXOptimization.ENTITY_ACTIVATION_BUFFER_REUSE);
+     }
+ 
+     /** Returns whether Moonrise entity lookup may map chunk visibility without the generic enum helper. */
+diff --git a/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java b/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java
+index 60c1d93f1e71db6fbc7dda835cede9f1e3cf2068..f7373eec6de52b7e4b407a0aa8ddc6a81f96edd7 100644
+--- a/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java
+@@ -24,9 +24,9 @@ class EntityActivationQueryBufferConfigTest {
+     }
+ 
+     @Test
+-    void technicalCompatibilityOverridesTheDedicatedSwitch() throws IOException {
++    void dedicatedSwitchRespectsTheEntityQueryMasterSwitch() throws IOException {
+         LeavesXRuntime.publish(this.configuration(true, true, "enabled.yml"));
+-        assertFalse(LeavesXRuntime.entityActivationQueryBufferReuseOptimization());
++        assertTrue(LeavesXRuntime.entityActivationQueryBufferReuseOptimization());
+ 
+         LeavesXRuntime.publish(this.configuration(true, false, "disabled.yml"));
+         assertFalse(LeavesXRuntime.entityActivationQueryBufferReuseOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java b/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java
+index 39c1f0d970e219ae855e4f7a9de0ddd8270aa0d9..29c8fb186c8652726000f3353924f9a1be152788 100644
+--- a/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java
+@@ -33,7 +33,7 @@ class TechnicalMechanicsCompatibilityTest {
+ 
+         assertTrue(LeavesXRuntime.strictTechnicalMechanicsCompatibility());
+         assertTrue(LeavesXRuntime.parallelEntityActivation());
+-        assertFalse(LeavesXRuntime.entityActivationQueryBufferReuseOptimization());
++        assertTrue(LeavesXRuntime.entityActivationQueryBufferReuseOptimization());
+         assertFalse(LeavesXRuntime.pressurePlateEntityScansOptimization());
+         assertFalse(LeavesXRuntime.tripWireEntityScansOptimization());
+         assertFalse(LeavesXRuntime.detectorRailEntityQueriesOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java
+index a10f137fc3dcc51dba3b891facae2e552dff5cca..b5fd2fc548334dad93c05176d5c99be83f852317 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ActivationRangeHotPathTest.java
+@@ -2,6 +2,7 @@ package org.leavesx.leavesx.performance;
+ 
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import io.papermc.paper.entity.activation.ActivationRange;
+ import java.io.IOException;
+@@ -13,6 +14,7 @@ import org.objectweb.asm.Opcodes;
+ import org.objectweb.asm.tree.ClassNode;
+ import org.objectweb.asm.tree.MethodInsnNode;
+ import org.objectweb.asm.tree.MethodNode;
++import org.objectweb.asm.tree.TypeInsnNode;
+ 
+ @Normal
+ class ActivationRangeHotPathTest {
+@@ -61,6 +63,35 @@ class ActivationRangeHotPathTest {
+         );
+     }
+ 
++    @Test
++    void activationQueryBufferReservesAStableDenseScanCapacity() throws IOException {
++        final ClassNode buffer = classNode(net.minecraft.world.level.Level.LeavesXEntityQueryBuffer.class);
++        final MethodNode constructor = buffer.methods.stream()
++            .filter(method -> method.name.equals("<init>"))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing entity query buffer constructor"));
++        assertTrue(
++            Arrays.stream(constructor.instructions.toArray())
++                .filter(TypeInsnNode.class::isInstance)
++                .map(TypeInsnNode.class::cast)
++                .anyMatch(instruction -> instruction.desc.equals("java/util/ArrayList")),
++            "The reusable query buffer must keep an owned ArrayList"
++        );
++        assertTrue(
++            Arrays.stream(constructor.instructions.toArray())
++                .anyMatch(instruction -> instruction.getOpcode() == Opcodes.BIPUSH
++                    || instruction.getOpcode() == Opcodes.SIPUSH
++                    || instruction.getOpcode() == Opcodes.LDC),
++            "The query buffer should pass an explicit baseline capacity"
++        );
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode;
++    }
++
+     private static MethodNode methodNode(final Class<?> owner, final String methodName) throws IOException {
+         final ClassNode classNode = new ClassNode(Opcodes.ASM9);
+         new ClassReader(owner.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+diff --git a/src/test/java/org/leavesx/leavesx/performance/LightUpdateCallbackHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/LightUpdateCallbackHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..7aaa1191830c6bad63de99ad99b6819bfcc61973
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/LightUpdateCallbackHotPathTest.java
+@@ -0,0 +1,56 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import ca.spottedleaf.moonrise.patches.starlight.light.StarLightEngine;
++import java.io.IOException;
++import net.minecraft.server.level.ServerChunkCache;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies light-worker callbacks keep section coordinates primitive until the main-thread handoff. */
++@Normal
++class LightUpdateCallbackHotPathTest {
++
++    private static final String OBJECT_CALLBACK = "(Lnet/minecraft/world/level/LightLayer;Lnet/minecraft/core/SectionPos;)V";
++    private static final String PACKED_CALLBACK = "(Lnet/minecraft/world/level/LightLayer;J)V";
++
++    @Test
++    void starlightUsesPackedCallbacksForBothVisibleUpdateLoops() throws IOException {
++        final ClassNode owner = classNode(StarLightEngine.class);
++        for (final MethodNode method : owner.methods) {
++            if (!method.name.equals("updateVisible") && !method.name.equals("blocksChangedInChunk")) {
++                continue;
++            }
++            final var callbacks = java.util.Arrays.stream(method.instructions.toArray())
++                .filter(MethodInsnNode.class::isInstance)
++                .map(MethodInsnNode.class::cast)
++                .filter(call -> call.name.equals("onLightUpdate"))
++                .toList();
++            if (callbacks.isEmpty()) {
++                continue;
++            }
++            assertTrue(callbacks.stream().anyMatch(call -> call.desc.equals(PACKED_CALLBACK)));
++            assertFalse(callbacks.stream().anyMatch(call -> call.desc.equals(OBJECT_CALLBACK)));
++        }
++    }
++
++    @Test
++    void serverChunkCacheExposesPackedLightCallback() throws IOException {
++        final ClassNode owner = classNode(ServerChunkCache.class);
++        assertTrue(owner.methods.stream().anyMatch(method -> method.name.equals("onLightUpdate")
++            && method.desc.equals(PACKED_CALLBACK)));
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode node = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(node, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return node;
++    }
++}

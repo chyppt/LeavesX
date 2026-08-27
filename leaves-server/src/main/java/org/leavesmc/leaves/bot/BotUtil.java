@@ -9,6 +9,7 @@ import org.bukkit.Bukkit;
 import org.jetbrains.annotations.NotNull;
 import org.leavesmc.leaves.LeavesConfig;
 
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -76,7 +77,9 @@ public class BotUtil {
     }
 
     public static UUID getBotLevel(@NotNull String fullName, BotDataStorage botDataStorage) {
-        UUID uuid = getBotUUID(fullName);
+        // The list file is authoritative. Older bots may use a UUID that no longer matches the current name-derived
+        // algorithm or configured username prefix, so deriving it first can incorrectly classify valid data as stale.
+        UUID uuid = botDataStorage.findUUID(fullName).orElseGet(() -> getBotUUID(fullName));
         Optional<CompoundTag> tagOptional = botDataStorage.read(uuid.toString());
         if (tagOptional.isEmpty()) {
             return null;
@@ -103,10 +106,31 @@ public class BotUtil {
             return false;
         }
 
-        if (LeavesConfig.modify.fakeplayer.unableNames.contains(name)) {
+        if (isNameForbidden(name)) {
             return false;
         }
 
         return BotList.INSTANCE.bots.size() < LeavesConfig.modify.fakeplayer.limit;
+    }
+
+    /** Returns whether a raw or full fakeplayer name matches either Leaves' exact list or LeavesX fragments. */
+    public static boolean isNameForbidden(@NotNull String name) {
+        if (LeavesConfig.modify.fakeplayer.unableNames.contains(name)) {
+            return true;
+        }
+        // This is an opt-in extension of Leaves' exact-name blacklist. Keep the comparison independent from the
+        // configured display prefix and normalize once so mixed-case input cannot bypass an operator rule.
+        String candidate = name;
+        final String configuredPrefix = LeavesConfig.modify.fakeplayer.prefix;
+        final String configuredSuffix = LeavesConfig.modify.fakeplayer.suffix;
+        if (!configuredPrefix.isEmpty() && candidate.startsWith(configuredPrefix)) {
+            candidate = candidate.substring(configuredPrefix.length());
+        }
+        if (!configuredSuffix.isEmpty() && candidate.endsWith(configuredSuffix)) {
+            candidate = candidate.substring(0, candidate.length() - configuredSuffix.length());
+        }
+        final String normalizedName = candidate.toLowerCase(Locale.ROOT);
+        return org.leavesx.leavesx.config.LeavesXRuntime.forbiddenFakeplayerNameContains().stream()
+            .anyMatch(fragment -> !fragment.isEmpty() && normalizedName.contains(fragment));
     }
 }

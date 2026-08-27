@@ -1,0 +1,32 @@
+--- /dev/null
++++ b/src/test/java/org/leavesmc/leaves/command/bot/BotCommandLocaleTest.java
+@@ -1,0 +_,29 @@
++package org.leavesmc.leaves.command.bot;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.leavesmc.leaves.LeavesConfig;
++
++/** Verifies that built-in bot command output follows Leaves' server language setting. */
++@Normal
++public final class BotCommandLocaleTest {
++
++    @Test
++    void selectsChineseForEveryChineseMinecraftLocale() {
++        final String previous = LeavesConfig.mics.serverLang;
++        try {
++            LeavesConfig.mics.serverLang = "zh_cn";
++            assertEquals("中文", BotCommandLocale.message("English", "中文"));
++
++            LeavesConfig.mics.serverLang = "zh_tw";
++            assertEquals("中文", BotCommandLocale.message("English", "中文"));
++
++            LeavesConfig.mics.serverLang = "en_us";
++            assertEquals("English", BotCommandLocale.message("English", "中文"));
++        } finally {
++            LeavesConfig.mics.serverLang = previous;
++        }
++    }
++}

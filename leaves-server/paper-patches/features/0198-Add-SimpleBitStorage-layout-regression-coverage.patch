@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 26 Aug 2026 17:42:04 +0800
+Subject: [PATCH] Add SimpleBitStorage layout regression coverage
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/SimpleBitStorageLayoutTest.java b/src/test/java/org/leavesx/leavesx/performance/SimpleBitStorageLayoutTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..51551d76560fd7940606645b5b5c85062d8e18f2
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/SimpleBitStorageLayoutTest.java
+@@ -0,0 +1,67 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++
++import java.util.Random;
++import net.minecraft.util.BitStorage;
++import net.minecraft.util.SimpleBitStorage;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Verifies the compact palette backing storage keeps its data contract after layout-only changes.
++ */
++@Normal
++class SimpleBitStorageLayoutTest {
++
++    private static final int SIZE = 4096;
++
++    @Test
++    void storageDoesNotRetainLegacyUnsignedDivisionFields() {
++        assertThrows(NoSuchFieldException.class, () -> SimpleBitStorage.class.getDeclaredField("MAGIC"));
++        assertThrows(NoSuchFieldException.class, () -> SimpleBitStorage.class.getDeclaredField("divideMulUnsigned"));
++        assertThrows(NoSuchFieldException.class, () -> SimpleBitStorage.class.getDeclaredField("divideAddUnsigned"));
++    }
++
++    @Test
++    void readWriteCopyAndUnpackRemainLosslessAcrossPaletteWidths() {
++        final Random random = new Random(0x51EAF5L);
++
++        for (final int bits : new int[] {1, 2, 3, 4, 5, 6, 8, 12, 16}) {
++            final SimpleBitStorage storage = new SimpleBitStorage(bits, SIZE);
++            final int[] expected = new int[SIZE];
++            final int valueBound = 1 << bits;
++
++            for (int index = 0; index < SIZE; index++) {
++                final int value = random.nextInt(valueBound);
++                storage.set(index, value);
++                expected[index] = value;
++            }
++
++            for (int index = 0; index < SIZE; index += 37) {
++                final int replacement = random.nextInt(valueBound);
++                assertEquals(expected[index], storage.getAndSet(index, replacement));
++                expected[index] = replacement;
++            }
++
++            final int[] unpacked = new int[SIZE];
++            storage.unpack(unpacked);
++            assertArrayEquals(expected, unpacked, "bits=" + bits);
++
++            final BitStorage copy = storage.copy();
++            assertStorageEquals(expected, copy, bits);
++
++            final int replacement = (expected[0] + 1) % valueBound;
++            storage.set(0, replacement);
++            assertEquals(expected[0], copy.get(0), "copy must not share mutable packed data");
++        }
++    }
++
++    private static void assertStorageEquals(final int[] expected, final BitStorage storage, final int bits) {
++        for (int index = 0; index < expected.length; index++) {
++            assertEquals(expected[index], storage.get(index), "bits=" + bits + ", index=" + index);
++        }
++    }
++}

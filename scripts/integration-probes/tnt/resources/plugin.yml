@@ -1,0 +1,5 @@
+name: LeavesXTntDuplicationProbe
+version: 1.0.0
+main: org.leavesx.probe.LeavesXTntDuplicationProbe
+api-version: '1.21'
+description: Live TNT duplication compatibility probe for LeavesX.

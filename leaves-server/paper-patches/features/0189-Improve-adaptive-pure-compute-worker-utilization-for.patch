@@ -1,0 +1,365 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 25 Aug 2026 22:18:38 +0800
+Subject: [PATCH] Improve adaptive pure-compute worker utilization for beta174
+
+
+diff --git a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+index 600efb2a81f84a716fa8acf2c9952d9166149d44..6d915ac2c0e59f187a2297156f1b4561fdc4f890 100644
+--- a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
++++ b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+@@ -40,7 +40,11 @@ final class ActivationRangeSnapshot {
+         final int size = entities.size();
+         final int minimumCandidates = LeavesXRuntime.entityActivationMinimumEntities();
+         if (!LeavesXRuntime.parallelEntityActivation()
+-            || size < minimumCandidates
++            || !LeavesXComputeExecutor.shouldAttempt(
++                LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION,
++                size,
++                minimumCandidates
++            )
+             || LeavesXComputeExecutor.computeLaneCount() <= 1) {
+             return false;
+         }
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index d535d8ebaee8546ac8f671c34839e413209b3888..db4ef8194ad64bcf361f852b0d17001fc9f72d4c 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -791,6 +791,12 @@ public final class LeavesXCommand extends Command {
+                 + metrics.invocations() + " 总调用",
+             NamedTextColor.GRAY
+         ));
++        sender.sendMessage(line(
++            "自适应调度",
++            metrics.adaptiveAdmissions() + " 次提前准入 / " + metrics.adaptivePartitionInvocations()
++                + " 次细分 / 额外 " + metrics.adaptivePartitions() + " 个分片",
++            NamedTextColor.GRAY
++        ));
+         sender.sendMessage(line(
+             "分片负载",
+             "主线程 " + metrics.callerItems() + " 项 / 工作线程 " + metrics.workerItems()
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index af1765027bfadbdfa3634037341fc079860c39d5..49a205bbc25b12517558370841f0fbb36ab06314 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -23,6 +23,8 @@ public final class LeavesXComputeExecutor {
+     private static final int PARTITIONS_PER_LANE = 2;
+     private static final int MAX_PARTITIONS = 64;
+     private static final int MAX_AUTOMATIC_WORKERS = 16;
++    /** Do not create ranges smaller than this when an idle pool is deliberately over-partitioned. */
++    private static final int MIN_ADAPTIVE_ITEMS_PER_TASK = 32;
+     private static volatile ThreadPoolExecutor executor;
+     private static volatile int workerCount = 1;
+     private static volatile int minimumItemsPerWorker = 64;
+@@ -41,6 +43,11 @@ public final class LeavesXComputeExecutor {
+     private static final AtomicLong callerItemCount = new AtomicLong();
+     private static final AtomicLong workerItemCount = new AtomicLong();
+     private static final AtomicLong maximumConcurrentWorkerCount = new AtomicLong();
++    private static final AtomicLong adaptiveAdmissionCount = new AtomicLong();
++    private static final AtomicLong adaptivePartitionInvocationCount = new AtomicLong();
++    private static final AtomicLong adaptivePartitionCount = new AtomicLong();
++    /** Marks code running on a LeavesX worker so nested pure computations can help inline instead of deadlocking. */
++    private static final ThreadLocal<Boolean> COMPUTE_WORKER_CONTEXT = ThreadLocal.withInitial(() -> false);
+     private static final WorkloadCounters[] WORKLOAD_COUNTERS = createWorkloadCounters();
+ 
+     private LeavesXComputeExecutor() {
+@@ -85,6 +92,9 @@ public final class LeavesXComputeExecutor {
+         callerItemCount.set(0L);
+         workerItemCount.set(0L);
+         maximumConcurrentWorkerCount.set(0L);
++        adaptiveAdmissionCount.set(0L);
++        adaptivePartitionInvocationCount.set(0L);
++        adaptivePartitionCount.set(0L);
+         for (final WorkloadCounters counters : WORKLOAD_COUNTERS) {
+             counters.reset();
+         }
+@@ -151,6 +161,26 @@ public final class LeavesXComputeExecutor {
+         return Math.min(MAX_PARTITIONS, lanes * PARTITIONS_PER_LANE);
+     }
+ 
++    /**
++     * Returns whether a configured pure-computation batch should be submitted now.
++     *
++     * <p>The configured threshold remains the normal admission guard. When the pool is idle, a batch down to half
++     * that threshold is admitted so medium AI/entity snapshots can use otherwise idle cores. This method is only an
++     * admission hint; callers still have to use {@link #invokeRangesWithCount(Workload, int, int, RangeTask)} and keep
++     * all live-world access on the calling thread.</p>
++     */
++    public static boolean shouldAttempt(final Workload workload, final int size, final int minimumSize) {
++        final ThreadPoolExecutor current = executor;
++        if (current == null || workerCount <= 1 || size <= 0) {
++            return false;
++        }
++        if (size >= minimumSize) {
++            return true;
++        }
++        return isIdleForAdaptiveDispatch(current)
++            && size >= Math.max(MIN_ADAPTIVE_ITEMS_PER_TASK, (minimumSize + 1) / 2);
++    }
++
+     /**
+      * Processes contiguous ranges and waits for every range before returning.
+      *
+@@ -214,20 +244,41 @@ public final class LeavesXComputeExecutor {
+             workloadCounters.unavailableParallelismFallbacks.incrementAndGet();
+             return 0;
+         }
+-        if (size < minimumSize) {
++        final boolean belowConfiguredThreshold = size < minimumSize;
++        final boolean adaptivelyAdmitted = belowConfiguredThreshold
++            && isIdleForAdaptiveDispatch(current)
++            && size >= Math.max(MIN_ADAPTIVE_ITEMS_PER_TASK, (minimumSize + 1) / 2);
++        if (belowConfiguredThreshold && !adaptivelyAdmitted) {
+             belowFeatureThresholdFallbackCount.incrementAndGet();
+             workloadCounters.belowFeatureThresholdFallbacks.incrementAndGet();
+             return 0;
+         }
++        if (adaptivelyAdmitted) {
++            adaptiveAdmissionCount.incrementAndGet();
++        }
+ 
+         // Use a bounded amount of over-partitioning for large batches. The extra ranges are still contiguous and
+         // deterministic, but give the executor enough work units to keep all workers busy when one range is slower.
+-        final int taskCount = partitionCountFor(size, computeLaneCount(), minimumItemsPerTask);
++        final int lanes = computeLaneCount();
++        final int baselineTaskCount = partitionCountFor(size, lanes, minimumItemsPerTask);
++        final int taskCount = adaptivePartitionCountFor(current, workload, size, lanes, minimumItemsPerTask);
+         if (taskCount <= 1) {
+             insufficientPartitionFallbackCount.incrementAndGet();
+             workloadCounters.insufficientPartitionFallbacks.incrementAndGet();
+             return 0;
+         }
++        if (taskCount > baselineTaskCount) {
++            adaptivePartitionInvocationCount.incrementAndGet();
++            adaptivePartitionCount.addAndGet(taskCount - baselineTaskCount);
++        }
++
++        // A worker that invokes another pure computation must not submit work and then wait for the same bounded pool:
++        // if every worker does this simultaneously, all of them would be waiting for queued children. Execute the
++        // nested ranges on the current worker instead. The data contract is unchanged because the callback is still
++        // pure and receives only its caller-owned snapshot.
++        if (isComputeWorkerThread()) {
++            return invokeInlineOnWorker(workloadCounters, task, size, taskCount);
++        }
+         final int rangeSize = (size + taskCount - 1) / taskCount;
+         final int expectedTaskCount = (size + rangeSize - 1) / rangeSize;
+         final int callerTaskIndex = expectedTaskCount - 1;
+@@ -299,6 +350,69 @@ public final class LeavesXComputeExecutor {
+         return Math.min(partitionBudget, usefulPartitions);
+     }
+ 
++    /**
++     * Uses finer deterministic ranges while the pool is idle, then falls back to the configured granularity under
++     * contention. The scheduler never exceeds the same bounded partition budget used by scratch-buffer callers.
++     */
++    private static int adaptivePartitionCountFor(
++        final ThreadPoolExecutor current,
++        final Workload workload,
++        final int size,
++        final int availableLanes,
++        final int minimumItems
++    ) {
++        final int baseline = partitionCountFor(size, availableLanes, minimumItems);
++        if (baseline <= 1 || !isIdleForAdaptiveDispatch(current)) {
++            return baseline;
++        }
++
++        // AI distance work benefits from more, shorter ranges on large hosts. For AABB and spawn snapshots use the
++        // same rule; they still remain primitive-only and therefore retain the exact server-thread commit boundary.
++        final int divisor = workerCount >= 8 ? 4 : 2;
++        final int adaptiveMinimum = Math.max(MIN_ADAPTIVE_ITEMS_PER_TASK, Math.max(1, minimumItems / divisor));
++        return Math.max(baseline, partitionCountFor(size, availableLanes, adaptiveMinimum));
++    }
++
++    /** Returns true when enough workers are idle to admit finer-grained work without queueing behind another batch. */
++    private static boolean isIdleForAdaptiveDispatch(final ThreadPoolExecutor current) {
++        if (current == null || current.getQueue().size() != 0) {
++            return false;
++        }
++        final int active = current.getActiveCount();
++        return active <= Math.max(1, workerCount / 4);
++    }
++
++    private static boolean isComputeWorkerThread() {
++        return COMPUTE_WORKER_CONTEXT.get();
++    }
++
++    /** Executes all partitions inline on a worker when a nested invocation would otherwise self-block the pool. */
++    private static int invokeInlineOnWorker(
++        final WorkloadCounters workloadCounters,
++        final RangeTask task,
++        final int size,
++        final int taskCount
++    ) {
++        final RangeInvocation invocation = new RangeInvocation(task, workloadCounters, 0);
++        final int rangeSize = (size + taskCount - 1) / taskCount;
++        for (int taskIndex = 0; taskIndex < taskCount; taskIndex++) {
++            final int rangeStart = taskIndex * rangeSize;
++            final int rangeEnd = Math.min(size, rangeStart + rangeSize);
++            invocation.runInlineWorker(taskIndex, rangeStart, rangeEnd);
++        }
++        invocation.recordLoad();
++        final Throwable failure = invocation.failure;
++        if (failure != null) {
++            LOGGER.error("LeavesX nested pure computation failed; requesting synchronous recomputation", failure);
++            failedInvocationCount.incrementAndGet();
++            workloadCounters.failedInvocations.incrementAndGet();
++            return 0;
++        }
++        parallelInvocationCount.incrementAndGet();
++        workloadCounters.parallelInvocations.incrementAndGet();
++        return taskCount;
++    }
++
+     private static void recordMaximumConcurrentWorkers(final int count) {
+         long current = maximumConcurrentWorkerCount.get();
+         while (count > current && !maximumConcurrentWorkerCount.compareAndSet(current, count)) {
+@@ -338,6 +452,9 @@ public final class LeavesXComputeExecutor {
+             callerItemCount.get(),
+             workerItemCount.get(),
+             (int)Math.min(Integer.MAX_VALUE, maximumConcurrentWorkerCount.get()),
++            adaptiveAdmissionCount.get(),
++            adaptivePartitionInvocationCount.get(),
++            adaptivePartitionCount.get(),
+             List.copyOf(workloads)
+         );
+     }
+@@ -400,6 +517,9 @@ public final class LeavesXComputeExecutor {
+         long callerItems,
+         long workerItems,
+         int maximumConcurrentWorkers,
++        long adaptiveAdmissions,
++        long adaptivePartitionInvocations,
++        long adaptivePartitions,
+         List<WorkloadMetrics> workloads
+     ) {
+     }
+@@ -561,6 +681,21 @@ public final class LeavesXComputeExecutor {
+             }
+         }
+ 
++        private void runInlineWorker(final int taskIndex, final int startInclusive, final int endExclusive) {
++            final int active = (int)this.activeWorkers.incrementAndGet();
++            final int itemCount = endExclusive - startInclusive;
++            this.workerRanges.incrementAndGet();
++            this.workerItems.addAndGet(Math.max(0, itemCount));
++            this.maximumConcurrentWorkers.accumulateAndGet(active, Math::max);
++            try {
++                this.task.run(taskIndex, startInclusive, endExclusive);
++            } catch (final Throwable computationFailure) {
++                this.recordFailure(computationFailure);
++            } finally {
++                this.activeWorkers.decrementAndGet();
++            }
++        }
++
+         private void runOnCaller(
+             final int taskIndex,
+             final int startInclusive,
+@@ -654,7 +789,17 @@ public final class LeavesXComputeExecutor {
+ 
+         @Override
+         public void run() {
+-            this.invocation.runWorker(this.taskIndex, this.startInclusive, this.endExclusive);
++            final boolean previous = COMPUTE_WORKER_CONTEXT.get();
++            COMPUTE_WORKER_CONTEXT.set(true);
++            try {
++                this.invocation.runWorker(this.taskIndex, this.startInclusive, this.endExclusive);
++            } finally {
++                if (previous) {
++                    COMPUTE_WORKER_CONTEXT.set(true);
++                } else {
++                    COMPUTE_WORKER_CONTEXT.remove();
++                }
++            }
+         }
+ 
+         private void cancel() {
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index 4ab16d1581c46ec1e108f7f89be2a1e5e45f8769..010089a79d6bcd9197e29c6db050dc43ed6bedd4 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -6,7 +6,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.concurrent.Future;
+ import java.util.concurrent.TimeUnit;
++import java.util.concurrent.TimeoutException;
+ import java.util.concurrent.ThreadPoolExecutor;
+ import java.util.concurrent.atomic.AtomicBoolean;
+ import java.util.concurrent.atomic.AtomicInteger;
+@@ -267,6 +271,71 @@ class LeavesXComputeExecutorTest {
+         assertEquals(1_024L, workload.callerItems() + workload.workerItems());
+     }
+ 
++    @Test
++    void adaptivelyDispatchesAnIdleMediumAiBatch() {
++        LeavesXComputeExecutor.configure(4, 64);
++        final AtomicIntegerArray counts = new AtomicIntegerArray(192);
++
++        final int partitions = LeavesXComputeExecutor.invokeRangesWithCount(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++            counts.length(),
++            256,
++            128,
++            (taskIndex, start, end) -> {
++                for (int index = start; index < end; index++) {
++                    counts.incrementAndGet(index);
++                }
++            }
++        );
++
++        assertTrue(partitions > 1, "an idle pool should admit a medium pure-AI batch");
++        for (int index = 0; index < counts.length(); index++) {
++            assertEquals(1, counts.get(index), "adaptive dispatch must process index " + index + " exactly once");
++        }
++        final LeavesXComputeExecutor.WorkloadMetrics metrics = LeavesXComputeExecutor.metrics().workloads().stream()
++            .filter(workload -> workload.workload() == LeavesXComputeExecutor.Workload.AI_TARGET_SORT)
++            .findFirst()
++            .orElseThrow();
++        assertEquals(1L, metrics.parallelInvocations());
++        assertTrue(metrics.workerItems() > 0L, "the adaptive batch must actually execute work off-thread");
++    }
++
++    @Test
++    void nestedWorkerInvocationsDoNotDeadlockTheSharedPool() throws Exception {
++        LeavesXComputeExecutor.configure(2, 16);
++        final ExecutorService caller = Executors.newSingleThreadExecutor();
++        final Future<Boolean> result = caller.submit(() -> LeavesXComputeExecutor.invokeRanges(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++            256,
++            1,
++            (taskIndex, start, end) -> {
++                if (Thread.currentThread().getName().startsWith("LeavesX Compute Worker")) {
++                    final int nestedPartitions = LeavesXComputeExecutor.invokeRangesWithCount(
++                        LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
++                        64,
++                        1,
++                        16,
++                        (nestedTask, nestedStart, nestedEnd) -> { }
++                    );
++                    if (nestedPartitions <= 0) {
++                        throw new AssertionError("nested pure computation must complete inline on a worker");
++                    }
++                }
++            }
++        ));
++
++        boolean completed = false;
++        try {
++            completed = result.get(2L, TimeUnit.SECONDS);
++        } catch (final TimeoutException timeout) {
++            // The assertion below reports the deadlock while finally shutting down the synthetic pool.
++        } finally {
++            LeavesXComputeExecutor.shutdown();
++            caller.shutdownNow();
++        }
++        assertTrue(completed, "a worker must not wait for work queued behind itself");
++    }
++
+     @Test
+     void waitsForSubmittedRangesBeforeReportingFailure() throws Exception {
+         LeavesXComputeExecutor.configure(2);

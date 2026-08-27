@@ -27,6 +27,7 @@ import static net.kyori.adventure.text.event.HoverEvent.showText;
 import static net.kyori.adventure.text.format.NamedTextColor.AQUA;
 import static net.kyori.adventure.text.format.NamedTextColor.GRAY;
 import static org.leavesmc.leaves.command.bot.subcommands.ActionCommand.BotArgument.getBot;
+import static org.leavesmc.leaves.command.bot.BotCommandLocale.message;
 
 public class StartCommand extends LiteralNode {
 
@@ -42,9 +43,9 @@ public class StartCommand extends LiteralNode {
         AbstractBotAction<?> action = holder.createByCommand(context);
         if (bot.addBotAction(action, sender)) {
             sender.sendMessage(join(spaces(),
-                text("Action", GRAY),
+                text(message("Action", "动作"), GRAY),
                 text(holder.getName(), AQUA).hoverEvent(showText(text(action.getActionDataString()))),
-                text("has been issued to", GRAY),
+                text(message("has been issued to", "已发送给"), GRAY),
                 asAdventure(bot.getDisplayName())
             ));
         }

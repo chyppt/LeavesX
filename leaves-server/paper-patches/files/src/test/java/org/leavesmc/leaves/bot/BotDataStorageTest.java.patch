@@ -1,0 +1,81 @@
+--- /dev/null
++++ b/src/test/java/org/leavesmc/leaves/bot/BotDataStorageTest.java
+@@ -1,0 +_,78 @@
++package org.leavesmc.leaves.bot;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.UUID;
++import net.minecraft.nbt.CompoundTag;
++import net.minecraft.nbt.NbtIo;
++import net.minecraft.world.level.storage.LevelResource;
++import net.minecraft.world.level.storage.LevelStorageSource;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++/** Regression coverage for resident fakeplayer storage's non-destructive load protocol. */
++@Normal
++final class BotDataStorageTest {
++
++    @Test
++    void keepsDataUntilSuccessfulConsumption() throws Exception {
++        Path root = Files.createTempDirectory("leavesx-bot-storage");
++        LevelStorageSource.LevelStorageAccess session = mock(LevelStorageSource.LevelStorageAccess.class);
++        when(session.getLevelPath(any(LevelResource.class))).thenAnswer(invocation ->
++            root.resolve(invocation.getArgument(0, LevelResource.class).id())
++        );
++
++        BotDataStorage storage = new BotDataStorage(session, "resume_fakeplayerdata", "resume_fakeplayer.dat");
++        String name = "bot_test";
++        UUID uuid = UUID.randomUUID();
++        CompoundTag registration = new CompoundTag();
++        registration.putString("name", name);
++        registration.store("uuid", net.minecraft.core.UUIDUtil.CODEC, uuid);
++        storage.getSavedBotList().put(name, registration);
++
++        Path dataFile = root.resolve("resume_fakeplayerdata").resolve(uuid + ".dat");
++        CompoundTag entityData = new CompoundTag();
++        NbtIo.writeCompressed(entityData, dataFile);
++
++        assertTrue(storage.read(uuid.toString()).isPresent());
++        assertFalse(storage.isDataFileCorrupt(name));
++        assertTrue(Files.exists(dataFile));
++        assertTrue(storage.getSavedBotList().contains(name));
++
++        storage.consumeLoadedData(name, uuid);
++
++        assertFalse(Files.exists(dataFile));
++        assertFalse(storage.getSavedBotList().contains(name));
++    }
++
++    @Test
++    void onlyUnreadableCompressionIsClassifiedAsCorrupt() throws Exception {
++        Path root = Files.createTempDirectory("leavesx-bot-corrupt");
++        LevelStorageSource.LevelStorageAccess session = mock(LevelStorageSource.LevelStorageAccess.class);
++        when(session.getLevelPath(any(LevelResource.class))).thenAnswer(invocation ->
++            root.resolve(invocation.getArgument(0, LevelResource.class).id())
++        );
++
++        BotDataStorage storage = new BotDataStorage(session, "resume_fakeplayerdata", "resume_fakeplayer.dat");
++        String name = "bot_corrupt";
++        UUID uuid = UUID.randomUUID();
++        CompoundTag registration = new CompoundTag();
++        registration.putString("name", name);
++        registration.store("uuid", net.minecraft.core.UUIDUtil.CODEC, uuid);
++        storage.getSavedBotList().put(name, registration);
++
++        Path dataFile = root.resolve("resume_fakeplayerdata").resolve(uuid + ".dat");
++        Files.write(dataFile, new byte[] {0x01, 0x02, 0x03, 0x04});
++        assertTrue(storage.isDataFileCorrupt(name));
++
++        // A missing file is recoverable and must not be auto-cleaned.
++        Files.delete(dataFile);
++        assertFalse(storage.isDataFileCorrupt(name));
++    }
++}

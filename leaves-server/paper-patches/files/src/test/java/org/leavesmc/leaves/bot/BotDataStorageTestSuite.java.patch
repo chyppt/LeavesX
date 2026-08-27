@@ -1,0 +1,20 @@
+--- /dev/null
++++ b/src/test/java/org/leavesmc/leaves/bot/BotDataStorageTestSuite.java
+@@ -1,0 +_,17 @@
++package org.leavesmc.leaves.bot;
++
++import org.junit.platform.suite.api.ConfigurationParameter;
++import org.junit.platform.suite.api.IncludeTags;
++import org.junit.platform.suite.api.SelectClasses;
++import org.junit.platform.suite.api.Suite;
++import org.junit.platform.suite.api.SuiteDisplayName;
++import org.leavesmc.leaves.command.bot.BotCommandLocaleTest;
++
++/** Runs fakeplayer persistence regressions through Leaves' explicit test-suite filter. */
++@Suite(failIfNoTests = false)
++@SuiteDisplayName("Fakeplayer persistence tests")
++@IncludeTags("Normal")
++@SelectClasses({BotDataStorageTest.class, BotCommandLocaleTest.class})
++@ConfigurationParameter(key = "TestSuite", value = "Normal")
++public final class BotDataStorageTestSuite {
++}

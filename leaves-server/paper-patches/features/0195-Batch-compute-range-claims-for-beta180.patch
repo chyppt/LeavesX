@@ -1,0 +1,107 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 26 Aug 2026 14:51:10 +0800
+Subject: [PATCH] Batch compute range claims for beta180
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index abb26197daa0bc4b306d264d852dbadf2b9ee1bb..7f778c07e27eea5a5efe51f3989cfb6fc97131aa 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -21,6 +21,8 @@ public final class LeavesXComputeExecutor {
+     private static final int MAX_QUEUED_TASKS = 128;
+     /** Keep two scheduler lanes per worker so a slow range cannot strand the rest of the pool. */
+     private static final int PARTITIONS_PER_LANE = 2;
++    /** Claim the overflow cursor in small contiguous blocks to reduce atomic cursor traffic. */
++    private static final int RANGES_PER_CLAIM = 2;
+     private static final int MAX_PARTITIONS = 64;
+     private static final int MAX_AUTOMATIC_WORKERS = 16;
+     /** Do not create ranges smaller than this when an idle pool is deliberately over-partitioned. */
+@@ -717,19 +719,41 @@ public final class LeavesXComputeExecutor {
+             this.maximumConcurrentWorkers.accumulateAndGet(active, Math::max);
+             try {
+                 int taskIndex = initialTaskIndex;
++                final int initialStart = taskIndex * rangeSize;
++                ranges++;
++                items += Math.max(0, Math.min(inputSize, initialStart + rangeSize) - initialStart);
++                try {
++                    this.task.run(
++                        taskIndex,
++                        initialStart,
++                        Math.min(inputSize, initialStart + rangeSize)
++                    );
++                } catch (final Throwable computationFailure) {
++                    this.recordFailure(computationFailure);
++                } finally {
++                    this.workersDone.countDown();
++                }
++
++                // Initial ranges are reserved one-per-submission before workers start. Only claim from the shared
++                // cursor after that reservation; otherwise a fast worker could execute another worker's first range.
++                taskIndex = nextTask.getAndAdd(RANGES_PER_CLAIM);
+                 while (taskIndex < taskCount - 1) {
+-                    final int start = taskIndex * rangeSize;
+-                    final int end = Math.min(inputSize, start + rangeSize);
+-                    ranges++;
+-                    items += Math.max(0, end - start);
+-                    try {
+-                        this.task.run(taskIndex, start, end);
+-                    } catch (final Throwable computationFailure) {
+-                        this.recordFailure(computationFailure);
+-                    } finally {
+-                        this.workersDone.countDown();
++                    final int claimEnd = Math.min(taskCount - 1, taskIndex + RANGES_PER_CLAIM);
++                    while (taskIndex < claimEnd) {
++                        final int start = taskIndex * rangeSize;
++                        final int end = Math.min(inputSize, start + rangeSize);
++                        ranges++;
++                        items += Math.max(0, end - start);
++                        try {
++                            this.task.run(taskIndex, start, end);
++                        } catch (final Throwable computationFailure) {
++                            this.recordFailure(computationFailure);
++                        } finally {
++                            this.workersDone.countDown();
++                        }
++                        taskIndex++;
+                     }
+-                    taskIndex = nextTask.getAndIncrement();
++                    taskIndex = nextTask.getAndAdd(RANGES_PER_CLAIM);
+                 }
+             } finally {
+                 this.activeWorkers.decrementAndGet();
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index 9e1bc90cdcbb1c9f5838f502d52670d8e094a151..47138f15d1dda878208d595e7211320bd8d70cb1 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -48,6 +48,30 @@ public class LeavesXComputeExecutorTest {
+         assertArrayEquals(expected, actual);
+     }
+ 
++    @Test
++    void claimsUnevenOverflowRangesWithoutDuplicatingWork() {
++        LeavesXComputeExecutor.configure(4, 64);
++        final int size = 4_097;
++        final AtomicIntegerArray counts = new AtomicIntegerArray(size);
++
++        final boolean parallel = LeavesXComputeExecutor.invokeRanges(size, 64, (taskIndex, start, end) -> {
++            for (int index = start; index < end; index++) {
++                counts.incrementAndGet(index);
++            }
++        });
++
++        assertTrue(parallel);
++        for (int index = 0; index < size; index++) {
++            assertEquals(1, counts.get(index), "index " + index + " must be claimed exactly once");
++        }
++        final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
++        assertEquals(size, metrics.callerItems() + metrics.workerItems());
++        assertEquals(
++            LeavesXComputeExecutor.partitionCountFor(size, LeavesXComputeExecutor.computeLaneCount(), 64),
++            metrics.callerRanges() + metrics.workerRanges()
++        );
++    }
++
+     @Test
+     void requestsSynchronousFallbackForSmallInputs() {
+         LeavesXComputeExecutor.configure(4);

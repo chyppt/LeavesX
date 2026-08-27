@@ -7,13 +7,10 @@ import com.mojang.logging.LogUtils;
 import io.papermc.paper.adventure.PaperAdventure;
 import io.papermc.paper.profile.MutablePropertyMap;
 import io.papermc.paper.util.MCUtil;
-import net.kyori.adventure.text.format.NamedTextColor;
-import net.kyori.adventure.text.format.Style;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
-import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -40,6 +37,8 @@ import org.leavesmc.leaves.event.bot.BotRemoveEvent;
 import org.leavesmc.leaves.event.bot.BotSpawnLocationEvent;
 import org.slf4j.Logger;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -65,6 +64,13 @@ public class BotList {
     private final Map<String, ServerBot> botsByLowerName = Maps.newHashMap();
     private final Map<String, Set<String>> botsNameByWorldUuid = Maps.newHashMap();
     private final Map<String, Set<String>> legacyBotsNameByWorldUuid = Maps.newHashMap();
+    /**
+     * Startup-only resident bot queue. WorldLoadEvent fires before the first server tick, so restoring every bot in
+     * that callback can create a single large entity and chunk-ticket burst. The queue is drained after the server is
+     * ready, one bot per tick, while runtime world loads retain their original immediate behavior.
+     */
+    private final ArrayDeque<PendingResumeBot> pendingResumeBots = new ArrayDeque<>();
+    private final Set<String> pendingResumeKeys = new HashSet<>();
 
     public BotList(@NotNull MinecraftServer server) {
         this.server = server;
@@ -134,15 +140,23 @@ public class BotList {
             if (!storage.getSavedBotList().contains(lowerName)) {
                 return null;
             }
-            String name = storage.getNameFromLower(lowerName);
-            UUID uuid = storage.getUUIDFromLower(lowerName);
+            // Older Leaves records may omit the denormalised name or UUID fields. The list key and the original
+            // name-derived UUID are safe fallbacks; neither case justifies deleting the resident registration.
+            String name = storage.getSavedBotList().getCompoundOrEmpty(lowerName).getStringOr("name", lowerName);
+            UUID uuid = storage.findUUID(lowerName).orElseGet(() -> BotUtil.getBotUUID(name));
             BotLoadEvent event = new BotLoadEvent(name, uuid);
             this.server.server.getPluginManager().callEvent(event);
             if (event.isCancelled()) {
                 return null;
             }
 
-            ServerBot bot = new ServerBot(this.server, this.server.getLevel(Level.OVERWORLD), new GameProfile(uuid, name));
+            ServerLevel initialWorld = this.findInitialWorld();
+            if (initialWorld == null) {
+                LOGGER.debug("Deferring fakeplayer {} because no server world is available yet", name);
+                return null;
+            }
+
+            ServerBot bot = new ServerBot(this.server, initialWorld, new GameProfile(uuid, name));
             bot.connection = new ServerBotPacketListenerImpl(this.server, bot);
             Optional<ValueInput> optional;
             try (ProblemReporter.ScopedCollector scopedCollector = new ProblemReporter.ScopedCollector(bot.problemPath(), LOGGER)) {
@@ -156,23 +170,58 @@ public class BotList {
             }
             ValueInput nbt = optional.get();
 
-            ResourceKey<Level> resourcekey = null;
-            if (nbt.getLong("WorldUUIDMost").isPresent() && nbt.getLong("WorldUUIDLeast").isPresent()) {
-                org.bukkit.World bWorld = Bukkit.getServer().getWorld(new UUID(nbt.getLong("WorldUUIDMost").orElseThrow(), nbt.getLong("WorldUUIDLeast").orElseThrow()));
-                if (bWorld != null) {
-                    resourcekey = ((CraftWorld) bWorld).getHandle().dimension();
-                }
-            }
-            if (resourcekey == null) {
+            Optional<Long> worldUuidMost = nbt.getLong("WorldUUIDMost");
+            Optional<Long> worldUuidLeast = nbt.getLong("WorldUUIDLeast");
+            if (worldUuidMost.isEmpty() || worldUuidLeast.isEmpty()) {
+                LOGGER.debug("Deferring fakeplayer {} because its world metadata is incomplete", name);
                 return null;
             }
 
-            ServerLevel world = this.server.getLevel(resourcekey);
-            return this.placeNewBot(bot, world, bot.getLocation(), nbt);
+            UUID worldUuid = new UUID(worldUuidMost.get(), worldUuidLeast.get());
+            ServerLevel world = this.findLoadedWorld(worldUuid);
+            if (world == null) {
+                // WorldLoadEvent can arrive while Bukkit is still publishing its world map. Keep the data file and
+                // let the next world-load/startup drain retry it instead of consuming a valid resident bot.
+                LOGGER.debug("Deferring fakeplayer {} because world {} is not loaded yet", name, worldUuid);
+                return null;
+            }
+
+            ServerBot loaded = this.placeNewBot(bot, world, bot.getLocation(), nbt);
+            if (loaded != null) {
+                // Storage is consumed only after the entity is fully registered. Any earlier return path preserves the
+                // list entry and .dat file for a later retry.
+                storage.consumeLoadedData(name, uuid);
+            }
+            return loaded;
         } catch (Exception e) {
             LOGGER.error("Failed to load bot {}", inputName, e);
             return null;
         }
+    }
+
+    /** Finds any world available during the early startup window for constructing the temporary bot instance. */
+    @Nullable
+    private ServerLevel findInitialWorld() {
+        ServerLevel overworld = this.server.getLevel(Level.OVERWORLD);
+        if (overworld != null) {
+            return overworld;
+        }
+        for (ServerLevel level : this.server.getAllLevels()) {
+            return level;
+        }
+        return null;
+    }
+
+    /** Resolves a saved world without depending solely on Bukkit's still-initialising world registry. */
+    @Nullable
+    private ServerLevel findLoadedWorld(@NotNull UUID worldUuid) {
+        for (ServerLevel level : this.server.getAllLevels()) {
+            if (worldUuid.equals(level.uuid)) {
+                return level;
+            }
+        }
+        org.bukkit.World bukkitWorld = Bukkit.getServer().getWorld(worldUuid);
+        return bukkitWorld instanceof CraftWorld craftWorld ? craftWorld.getHandle() : null;
     }
 
     public ServerBot placeNewBot(@NotNull ServerBot bot, ServerLevel world, Location location, ValueInput save) {
@@ -198,6 +247,7 @@ public class BotList {
         this.bots.add(bot);
         this.botsByLowerName.put(bot.getScoreboardName().toLowerCase(Locale.ROOT), bot);
         this.botsByUUID.put(bot.getUUID(), bot);
+        bot.applyLeavesXPresentation();
 
         bot.suppressTrackerForLogin = true;
         world.addNewPlayer(bot);
@@ -206,7 +256,16 @@ public class BotList {
             bot.loadAndSpawnParentVehicle(nbt);
         });
 
-        BotJoinEvent event1 = new BotJoinEvent(bot.getBukkitEntity(), PaperAdventure.asAdventure(Component.translatable("multiplayer.player.joined", bot.getDisplayName())).style(Style.style(NamedTextColor.YELLOW)));
+        final net.kyori.adventure.text.Component defaultJoinMessage =
+            org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.defaultJoinMessage(bot.getScoreboardName());
+        BotJoinEvent event1 = new BotJoinEvent(
+            bot.getBukkitEntity(),
+            org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.joinMessage(
+                bot.getScoreboardName(),
+                bot.getBukkitEntity().displayName(),
+                defaultJoinMessage
+            )
+        );
         this.server.server.getPluginManager().callEvent(event1);
 
         net.kyori.adventure.text.Component joinMessage = event1.joinMessage();
@@ -228,7 +287,19 @@ public class BotList {
     }
 
     public boolean removeBot(@NotNull ServerBot bot, @NotNull BotRemoveEvent.RemoveReason reason, @Nullable CommandSender remover, boolean save, boolean resume) {
-        BotRemoveEvent event = new BotRemoveEvent(bot.getBukkitEntity(), reason, remover, PaperAdventure.asAdventure(Component.translatable("multiplayer.player.left", bot.getDisplayName())).style(Style.style(NamedTextColor.YELLOW)), save);
+        final net.kyori.adventure.text.Component defaultQuitMessage =
+            org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.defaultQuitMessage(bot.getScoreboardName());
+        BotRemoveEvent event = new BotRemoveEvent(
+            bot.getBukkitEntity(),
+            reason,
+            remover,
+            org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.quitMessage(
+                bot.getScoreboardName(),
+                bot.getBukkitEntity().displayName(),
+                defaultQuitMessage
+            ),
+            save
+        );
         this.server.server.getPluginManager().callEvent(event);
 
         if (event.isCancelled() && event.getReason() != BotRemoveEvent.RemoveReason.INTERNAL) {
@@ -306,6 +377,7 @@ public class BotList {
     }
 
     public void removeAllIn(String worldUuid) {
+        this.removePendingStartupResume(worldUuid);
         for (String fullName : this.botsNameByWorldUuid.getOrDefault(worldUuid, new HashSet<>())) {
             ServerBot bot = this.getBotByName(fullName);
             if (bot != null) {
@@ -315,6 +387,8 @@ public class BotList {
     }
 
     public void removeAll() {
+        this.pendingResumeBots.clear();
+        this.pendingResumeKeys.clear();
         for (ServerBot bot : this.bots) {
             bot.resume = LeavesConfig.modify.fakeplayer.canResident;
             this.removeBot(bot, BotRemoveEvent.RemoveReason.INTERNAL, null, LeavesConfig.modify.fakeplayer.canResident, LeavesConfig.modify.fakeplayer.canResident);
@@ -326,46 +400,107 @@ public class BotList {
             return;
         }
         CompoundTag savedBotList = this.getResumeBotList().copy();
+        final List<String> invalidEntries = new ArrayList<>();
         for (Map.Entry<String, Tag> entry : savedBotList.entrySet()) {
             String lowerName = entry.getKey();
-            String fullName = ((CompoundTag) entry.getValue()).getStringOr("name", lowerName);
+            if (!(entry.getValue() instanceof CompoundTag record)) {
+                if (org.leavesx.leavesx.config.LeavesXRuntime.cleanInvalidResidentBots()
+                    && this.resumeDataStorage.isDataFileCorrupt(lowerName)) {
+                    invalidEntries.add(lowerName);
+                }
+                LOGGER.debug("Keeping fakeplayer record {} because its list entry is not a compound", lowerName);
+                continue;
+            }
+            String fullName = record.getStringOr("name", lowerName);
             UUID levelUuid = BotUtil.getBotLevel(fullName, this.resumeDataStorage);
             if (levelUuid == null) {
-                LOGGER.warn("Bot {} has no world UUID, skipping loading.", fullName);
+                if (org.leavesx.leavesx.config.LeavesXRuntime.cleanInvalidResidentBots()
+                    && this.resumeDataStorage.isDataFileCorrupt(fullName)) {
+                    invalidEntries.add(lowerName);
+                } else {
+                    // Missing world metadata, an unavailable world, or a missing file is not proof of corruption. Keep
+                    // the record so operators can restore it and so a later world load can retry it.
+                    LOGGER.debug("Keeping resident fakeplayer {} until its world/data becomes available", fullName);
+                }
                 continue;
             }
             this.botsNameByWorldUuid
                 .computeIfAbsent(levelUuid.toString(), (k) -> new HashSet<>())
                 .add(fullName);
         }
+        this.removeInvalidResidentEntries(this.resumeDataStorage, invalidEntries);
         loadLegacyResumeBotInfo();
+
+        // Depending on the Paper startup path, a world's WorldLoadEvent may have fired before Leaves loads the
+        // resident index. Revisit worlds that are already present so those bots are queued just like later events.
+        for (ServerLevel level : this.server.getAllLevels()) {
+            this.loadResume(level.uuid.toString());
+        }
     }
 
     private void loadLegacyResumeBotInfo() {
         CompoundTag savedBotList = this.getManualSavedBotList().copy();
+        final List<String> invalidEntries = new ArrayList<>();
         for (String fullName : savedBotList.keySet()) {
             // Legacy format saved fullName as the key
-            CompoundTag nbt = savedBotList.getCompound(fullName).orElseThrow();
+            CompoundTag nbt = savedBotList.getCompound(fullName).orElse(null);
+            if (nbt == null) {
+                if (org.leavesx.leavesx.config.LeavesXRuntime.cleanInvalidResidentBots()
+                    && this.manualSaveDataStorage.isDataFileCorrupt(fullName)) {
+                    invalidEntries.add(fullName);
+                }
+                LOGGER.debug("Keeping legacy fakeplayer record {} because its list entry is not a compound", fullName);
+                continue;
+            }
             if (!nbt.getBoolean("resume").orElse(false)) {
                 continue;
             }
             UUID levelUuid = BotUtil.getBotLevel(fullName, this.manualSaveDataStorage);
             if (levelUuid == null) {
-                LOGGER.warn("Bot {} has no world UUID, skipping loading.", fullName);
+                if (org.leavesx.leavesx.config.LeavesXRuntime.cleanInvalidResidentBots()
+                    && this.manualSaveDataStorage.isDataFileCorrupt(fullName)) {
+                    invalidEntries.add(fullName);
+                } else {
+                    LOGGER.debug("Keeping legacy resident fakeplayer {} until its world/data becomes available", fullName);
+                }
                 continue;
             }
             this.legacyBotsNameByWorldUuid
                 .computeIfAbsent(levelUuid.toString(), (k) -> new HashSet<>())
                 .add(fullName);
         }
+        this.removeInvalidResidentEntries(this.manualSaveDataStorage, invalidEntries);
+    }
+
+    private void removeInvalidResidentEntries(final BotDataStorage storage, final List<String> invalidEntries) {
+        if (invalidEntries.isEmpty()) {
+            return;
+        }
+        final int removed = storage.removeSavedDataEntries(invalidEntries);
+        if (removed != 0) {
+            // Entity .dat files remain untouched so an operator can still recover or replace corrupt data manually.
+            LOGGER.info("Removed {} resident bot registration(s) whose data file is definitely corrupt.", removed);
+        }
+    }
+
+    /** Reapplies display-only settings to active bots after a LeavesX configuration reload. */
+    public void refreshLeavesXPresentation() {
+        this.bots.forEach(ServerBot::refreshLeavesXPresentation);
     }
 
     public void loadResume(String worldUuid) {
         if (!LeavesConfig.modify.fakeplayer.enable || !LeavesConfig.modify.fakeplayer.canResident) {
             return;
         }
-        new HashSet<>(this.botsNameByWorldUuid.getOrDefault(worldUuid, new HashSet<>())).forEach(this::loadNewResumeBot);
-        new HashSet<>(this.legacyBotsNameByWorldUuid.getOrDefault(worldUuid, new HashSet<>())).forEach(this::loadNewManualSavedBot);
+        final Set<String> resumeNames = new HashSet<>(this.botsNameByWorldUuid.getOrDefault(worldUuid, Set.of()));
+        final Set<String> legacyNames = new HashSet<>(this.legacyBotsNameByWorldUuid.getOrDefault(worldUuid, Set.of()));
+        if (!this.server.isReady()) {
+            resumeNames.forEach(name -> this.enqueueStartupResume(worldUuid, name, false));
+            legacyNames.forEach(name -> this.enqueueStartupResume(worldUuid, name, true));
+            return;
+        }
+        resumeNames.forEach(this::loadNewResumeBot);
+        legacyNames.forEach(this::loadNewManualSavedBot);
     }
 
     public void updateBotLevel(@NotNull ServerBot bot, @NotNull ServerLevel level) {
@@ -380,7 +515,52 @@ public class BotList {
     }
 
     public void networkTick() {
+        this.drainStartupResumeQueue();
         this.bots.forEach(ServerBot::networkTick);
+    }
+
+    private void enqueueStartupResume(final String worldUuid, final String name, final boolean legacy) {
+        final String key = (legacy ? "legacy:" : "resume:") + worldUuid + ':' + name.toLowerCase(Locale.ROOT);
+        if (this.pendingResumeKeys.add(key)) {
+            this.pendingResumeBots.addLast(new PendingResumeBot(name, legacy, key));
+        }
+    }
+
+    private void drainStartupResumeQueue() {
+        if (!this.server.isReady()
+            || !LeavesConfig.modify.fakeplayer.enable
+            || !LeavesConfig.modify.fakeplayer.canResident) {
+            return;
+        }
+        final int budget = org.leavesx.leavesx.config.LeavesXRuntime.startupResidentBots()
+            ? org.leavesx.leavesx.config.LeavesXRuntime.startupResidentBotsPerTick()
+            : Integer.MAX_VALUE;
+        for (int loaded = 0; loaded < budget; loaded++) {
+            final PendingResumeBot pending = this.pendingResumeBots.pollFirst();
+            if (pending == null) {
+                return;
+            }
+            this.pendingResumeKeys.remove(pending.key());
+            if (pending.legacy()) {
+                this.loadNewManualSavedBot(pending.name());
+            } else {
+                this.loadNewResumeBot(pending.name());
+            }
+        }
+    }
+
+    private void removePendingStartupResume(final String worldUuid) {
+        this.pendingResumeBots.removeIf(pending -> {
+            final String marker = ':' + worldUuid + ':';
+            final boolean matches = pending.key().contains(marker);
+            if (matches) {
+                this.pendingResumeKeys.remove(pending.key());
+            }
+            return matches;
+        });
+    }
+
+    private record PendingResumeBot(String name, boolean legacy, String key) {
     }
 
     @Nullable

@@ -1335,7 +1335,9 @@ public final class LeavesConfig {
             @Override
             public CollisionBehavior stringConvert(@NotNull String value) throws IllegalArgumentException {
                 if (value.equalsIgnoreCase("BLOCK_SHAPE_VANILLA")) {
-                    LeavesLogger.LOGGER.warn("Paper has updated the collision behavior to BLOCK_SHAPE_VANILLA mode, converting this to PAPER...");
+                    if (org.leavesx.leavesx.config.LeavesXRuntime.showCollisionConversionWarning()) {
+                        LeavesLogger.LOGGER.warn("Paper has updated the collision behavior to BLOCK_SHAPE_VANILLA mode, converting this to PAPER...");
+                    }
                     value = "PAPER";
                 }
                 return super.stringConvert(value);

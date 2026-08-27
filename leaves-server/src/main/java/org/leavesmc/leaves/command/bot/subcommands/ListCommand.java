@@ -26,6 +26,7 @@ import static net.kyori.adventure.text.Component.text;
 import static net.kyori.adventure.text.JoinConfiguration.noSeparators;
 import static net.kyori.adventure.text.event.HoverEvent.showText;
 import static net.kyori.adventure.text.format.NamedTextColor.*;
+import static org.leavesmc.leaves.command.bot.BotCommandLocale.message;
 
 public class ListCommand extends BotSubcommand {
 
@@ -40,12 +41,12 @@ public class ListCommand extends BotSubcommand {
             .map(ListCommand::getBotListMessage)
             .filter(Objects::nonNull)
             .reduce((a, b) -> a.append(text("\n")).append(b))
-            .orElseGet(() -> text("No bots on the server", GRAY));
+            .orElseGet(() -> text(message("No bots on the server", "服务器中没有假人"), GRAY));
         context.getSender().sendMessage(join(noSeparators(),
-            text("Total bot number: ", GRAY),
-            text(BotList.INSTANCE.bots.size(), AQUA).hoverEvent(showText(text("current bot count"))),
+            text(message("Total bot number: ", "假人总数："), GRAY),
+            text(BotList.INSTANCE.bots.size(), AQUA).hoverEvent(showText(text(message("current bot count", "当前假人数")))),
             text("/", GRAY),
-            text(LeavesConfig.modify.fakeplayer.limit, AQUA).hoverEvent(showText(text("bot count limit")))
+            text(LeavesConfig.modify.fakeplayer.limit, AQUA).hoverEvent(showText(text(message("bot count limit", "假人数量上限"))))
         ));
         context.getSender().sendMessage(msg);
         return true;
@@ -84,9 +85,9 @@ public class ListCommand extends BotSubcommand {
             Component botListMessage = getBotListMessage(world);
             CommandSender sender = context.getSender();
             if (botListMessage == null) {
-                sender.sendMessage(text("No bots in that world", RED));
+                sender.sendMessage(text(message("No bots in that world", "该世界中没有假人"), RED));
             } else {
-                sender.sendMessage(text("Bot in ").append(botListMessage));
+                sender.sendMessage(text(message("Bot in ", "假人位于 ")).append(botListMessage));
             }
             return true;
         }

@@ -1,0 +1,350 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 23 Aug 2026 18:32:02 +0800
+Subject: [PATCH] Enable validated AI and block entity hot paths
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index cbf84a9ca9a0b2a2de724e6e86525315c1d6106b..4e7955c75894508195007346a1e9e99ab9c630a9 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -80,6 +80,10 @@ public final class LeavesXRuntime {
+     private static boolean brainTickTraversalOptimization = true;
+     private static boolean brainBehaviorSchedulingOptimization = true;
+     private static boolean sensingCacheOptimization = true;
++    private static boolean mobPresenceSensorOptimization = true;
++    private static boolean playerSensorOptimization = true;
++    private static boolean visibleEntityTargetCacheOptimization = true;
++    private static boolean blockEntityTypeValidationOptimization = true;
+     private static boolean stationaryEntitySpeedOptimization = true;
+     private static boolean serverFireStateOptimization = true;
+     private static boolean insideBlockEffectCollectorOptimization = true;
+@@ -189,6 +193,14 @@ public final class LeavesXRuntime {
+             LeavesXOptimization.BRAIN_BEHAVIOR_SCHEDULING
+         );
+         sensingCacheOptimization = validated.optimizationEnabled(LeavesXOptimization.SENSING_CACHE);
++        mobPresenceSensorOptimization = validated.optimizationEnabled(LeavesXOptimization.MOB_PRESENCE_SENSORS);
++        playerSensorOptimization = validated.optimizationEnabled(LeavesXOptimization.PLAYER_SENSOR);
++        visibleEntityTargetCacheOptimization = validated.optimizationEnabled(
++            LeavesXOptimization.VISIBLE_ENTITY_TARGET_CACHE
++        );
++        blockEntityTypeValidationOptimization = validated.optimizationEnabled(
++            LeavesXOptimization.BLOCK_ENTITY_TYPE_VALIDATION
++        );
+         stationaryEntitySpeedOptimization = validated.optimizationEnabled(LeavesXOptimization.STATIONARY_ENTITY_SPEED);
+         serverFireStateOptimization = validated.optimizationEnabled(LeavesXOptimization.SERVER_FIRE_STATE);
+         insideBlockEffectCollectorOptimization = validated.optimizationEnabled(LeavesXOptimization.INSIDE_BLOCK_EFFECT_COLLECTOR);
+@@ -283,7 +295,7 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether block-entity type validation may use the per-block identity cache. */
+     public static boolean blockEntityTypeValidationOptimization() {
+-        return false;
++        return blockEntityOptimizations && blockEntityTypeValidationOptimization;
+     }
+ 
+     /** Returns whether first-match entity queries may stop in deterministic lookup order. */
+@@ -504,7 +516,7 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether mob-presence sensors may scan nullable memory directly without Optional and stream wrappers. */
+     public static boolean mobPresenceSensorOptimization() {
+-        return false;
++        return aiOptimizationsEnabled() && mobPresenceSensorOptimization;
+     }
+ 
+     /** Returns whether visible villager-baby sensing may use direct memory and list construction. */
+@@ -524,7 +536,7 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether player sensing may use direct loops and one attack-target snapshot. */
+     public static boolean playerSensorOptimization() {
+-        return false;
++        return aiOptimizationsEnabled() && playerSensorOptimization;
+     }
+ 
+     /** Returns whether armor-stand placement may stop after the first blocking entity. */
+@@ -815,7 +827,7 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether goal selection may replace repeated flag-map lookups with reusable indexed state. */
+     public static boolean goalSelectorOptimization() {
+-        return false;
++        return aiOptimizationsEnabled() && goalSelectorOptimization;
+     }
+ 
+     /** Returns whether Brain ticks may traverse stable sensor and memory-slot lists directly. */
+@@ -825,7 +837,7 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether Sensing may use one compact tri-state visibility cache. */
+     public static boolean sensingCacheOptimization() {
+-        return false;
++        return aiOptimizationsEnabled() && sensingCacheOptimization;
+     }
+ 
+     /** Returns whether stationary entities may reuse the immutable zero speed vector. */
+@@ -895,7 +907,7 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether visible-entity targeting may use the compact deterministic cache. */
+     public static boolean visibleEntityTargetCacheOptimization() {
+-        return false;
++        return aiOptimizationsEnabled() && visibleEntityTargetCacheOptimization;
+     }
+ 
+     /** Returns whether villager gossip totals may use allocation-free direct scans. */
+diff --git a/src/test/java/org/leavesx/leavesx/config/GoalSelectorOptimizationTest.java b/src/test/java/org/leavesx/leavesx/config/GoalSelectorOptimizationTest.java
+index e53415fbd4d3be3916086a3f807f8900f35e85d4..0d20a2c7a37f8144f376cb7ace6fa442552b9040 100644
+--- a/src/test/java/org/leavesx/leavesx/config/GoalSelectorOptimizationTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/GoalSelectorOptimizationTest.java
+@@ -8,6 +8,7 @@ import java.nio.file.Path;
+ import java.util.ArrayList;
+ import java.util.EnumSet;
+ import java.util.List;
++import java.util.Random;
+ import net.minecraft.world.entity.ai.goal.Goal;
+ import net.minecraft.world.entity.ai.goal.GoalSelector;
+ import org.bukkit.support.environment.Normal;
+@@ -69,6 +70,11 @@ class GoalSelectorOptimizationTest {
+         assertEquals(paperCalls, runDisabledFlagScenario(true));
+     }
+ 
++    @Test
++    void optimizedAndPaperPathsMatchAcrossDeterministicGoalSets() throws IOException {
++        assertEquals(runGeneratedScenarios(false), runGeneratedScenarios(true));
++    }
++
+     private List<String> runPriorityScenario(final boolean optimized) throws IOException {
+         final List<String> calls = new ArrayList<>();
+         final GoalSelector selector = new GoalSelector();
+@@ -104,6 +110,48 @@ class GoalSelectorOptimizationTest {
+         return tickWithConfiguration(selector, calls, optimized);
+     }
+ 
++    private List<List<String>> runGeneratedScenarios(final boolean optimized) throws IOException {
++        final List<List<String>> results = new ArrayList<>();
++        try {
++            LeavesXRuntime.publish(this.configuration(optimized));
++            for (int scenario = 0; scenario < 64; ++scenario) {
++                final Random random = new Random(0x4C656176657358L + scenario);
++                final List<String> calls = new ArrayList<>();
++                final GoalSelector selector = new GoalSelector();
++                final int goalCount = 4 + random.nextInt(9);
++                for (int index = 0; index < goalCount; ++index) {
++                    final EnumSet<Goal.Flag> flags = EnumSet.noneOf(Goal.Flag.class);
++                    for (final Goal.Flag flag : Goal.Flag.values()) {
++                        if (random.nextBoolean()) {
++                            flags.add(flag);
++                        }
++                    }
++                    if (flags.isEmpty()) {
++                        flags.add(Goal.Flag.values()[random.nextInt(Goal.Flag.values().length)]);
++                    }
++                    selector.addGoal(
++                        random.nextInt(8),
++                        new RecordingGoal(
++                            "scenario-" + scenario + "-goal-" + index,
++                            calls,
++                            random.nextBoolean(),
++                            random.nextBoolean(),
++                            random.nextBoolean(),
++                            flags.toArray(Goal.Flag[]::new)
++                        )
++                    );
++                }
++                for (int tick = 0; tick < 4; ++tick) {
++                    selector.tick();
++                }
++                results.add(List.copyOf(calls));
++            }
++            return List.copyOf(results);
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
+     private List<String> tickWithConfiguration(
+         final GoalSelector selector,
+         final List<String> calls,
+diff --git a/src/test/java/org/leavesx/leavesx/config/SensingCacheOptimizationTest.java b/src/test/java/org/leavesx/leavesx/config/SensingCacheOptimizationTest.java
+index 08c8da81146823af11be950ad53a133f6f450dde..57530a34f2cc6b70952641c9e4363345a521f9ea 100644
+--- a/src/test/java/org/leavesx/leavesx/config/SensingCacheOptimizationTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/SensingCacheOptimizationTest.java
+@@ -34,7 +34,7 @@ class SensingCacheOptimizationTest {
+     }
+ 
+     @Test
+-    void technicalCompatibilityKeepsPaperCacheAcrossReloads() throws IOException {
++    void switchingCacheModeDoesNotReuseEntriesFromThePreviousMode() throws IOException {
+         final Mob mob = mock(Mob.class);
+         final Entity target = targetWithId(31);
+         when(mob.hasLineOfSight(target)).thenReturn(true, false, true);
+@@ -42,19 +42,19 @@ class SensingCacheOptimizationTest {
+ 
+         try {
+             LeavesXRuntime.publish(this.configuration(true, "mode-enabled-first.yml"));
+-            assertFalse(LeavesXRuntime.sensingCacheOptimization());
++            assertTrue(LeavesXRuntime.sensingCacheOptimization());
+             sensing = new Sensing(mob);
+             assertTrue(sensing.hasLineOfSight(target));
+             assertTrue(sensing.hasLineOfSight(target));
+ 
+             LeavesXRuntime.publish(this.configuration(false, "mode-disabled.yml"));
+-            assertTrue(sensing.hasLineOfSight(target));
++            assertFalse(sensing.hasLineOfSight(target));
+ 
+             LeavesXRuntime.publish(this.configuration(true, "mode-enabled-again.yml"));
+-            assertFalse(LeavesXRuntime.sensingCacheOptimization());
++            assertTrue(LeavesXRuntime.sensingCacheOptimization());
+             sensing.tick();
+-            assertFalse(sensing.hasLineOfSight(target));
+-            verify(mob, times(2)).hasLineOfSight(target);
++            assertTrue(sensing.hasLineOfSight(target));
++            verify(mob, times(3)).hasLineOfSight(target);
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+diff --git a/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java b/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java
+index f61b268daa63556d9f30f8ece281709b5c17368b..99ca37952071cdcc5e9e6823e1d3340906a882a7 100644
+--- a/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java
+@@ -38,17 +38,19 @@ class TechnicalMechanicsCompatibilityTest {
+         assertFalse(LeavesXRuntime.tripWireEntityScansOptimization());
+         assertFalse(LeavesXRuntime.detectorRailEntityQueriesOptimization());
+         assertFalse(LeavesXRuntime.blockEntityTickerRemovalOptimization());
+-        assertFalse(LeavesXRuntime.blockEntityTypeValidationOptimization());
++        assertTrue(LeavesXRuntime.blockEntityTypeValidationOptimization());
+         assertFalse(LeavesXRuntime.minecartMotionDistanceOptimization());
+-        assertFalse(LeavesXRuntime.goalSelectorOptimization());
++        assertTrue(LeavesXRuntime.goalSelectorOptimization());
+         // Deterministic traversal reuse does not move or reorder Brain mutations and remains guarded for villagers.
+         assertTrue(LeavesXRuntime.brainBehaviorSchedulingOptimization());
+-        assertFalse(LeavesXRuntime.sensingCacheOptimization());
++        assertTrue(LeavesXRuntime.sensingCacheOptimization());
++        assertTrue(LeavesXRuntime.mobPresenceSensorOptimization());
++        assertTrue(LeavesXRuntime.playerSensorOptimization());
++        assertTrue(LeavesXRuntime.visibleEntityTargetCacheOptimization());
+         assertFalse(LeavesXRuntime.villagerHostileSensorOptimization());
+         assertFalse(LeavesXRuntime.villagerGolemAgreementOptimization());
+         assertFalse(LeavesXRuntime.targetingRangeChecksOptimization());
+         assertFalse(LeavesXRuntime.nearestEntityDistanceSortOptimization());
+-        assertFalse(LeavesXRuntime.visibleEntityTargetCacheOptimization());
+     }
+ 
+     @Test
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index ebff3f2f0fff69afbc6d810b921226084d2f2db1..673788d03e003ede1bfb33d840c3ace3f4e2e332 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -39,9 +39,10 @@ class VillagerCompatibilityContextTest {
+             assertFalse(LeavesXRuntime.goalSelectorOptimization());
+             assertFalse(LeavesXRuntime.brainTickTraversalOptimization());
+             assertFalse(LeavesXRuntime.sensingCacheOptimization());
++            assertFalse(LeavesXRuntime.mobPresenceSensorOptimization());
+             assertFalse(LeavesXRuntime.playerSensorOptimization());
++            assertFalse(LeavesXRuntime.visibleEntityTargetCacheOptimization());
+             assertFalse(LeavesXRuntime.hurtBySensorOptimization());
+-            assertFalse(LeavesXRuntime.mobPresenceSensorOptimization());
+             assertFalse(LeavesXRuntime.villagerBabiesSensorOptimization());
+             assertFalse(LeavesXRuntime.villagerFoodInventoryOptimization());
+             assertFalse(LeavesXRuntime.villagerFarmlandSeedScanOptimization());
+@@ -67,6 +68,11 @@ class VillagerCompatibilityContextTest {
+             assertTrue(LeavesXRuntime.entityStateOptimizations());
+             assertTrue(LeavesXRuntime.pathfindingOptimizations());
+             assertTrue(LeavesXRuntime.brainBehaviorSchedulingOptimization());
++            assertTrue(LeavesXRuntime.goalSelectorOptimization());
++            assertTrue(LeavesXRuntime.sensingCacheOptimization());
++            assertTrue(LeavesXRuntime.mobPresenceSensorOptimization());
++            assertTrue(LeavesXRuntime.playerSensorOptimization());
++            assertTrue(LeavesXRuntime.visibleEntityTargetCacheOptimization());
+         } finally {
+             LeavesXRuntime.exitVillagerCompatibilityContext(previous);
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+@@ -90,6 +96,9 @@ class VillagerCompatibilityContextTest {
+             assertFalse(LeavesXRuntime.nearestEntityDistanceSortPureComputation());
+             assertFalse(LeavesXRuntime.brainTickTraversalOptimization());
+             assertFalse(LeavesXRuntime.sensingCacheOptimization());
++            assertFalse(LeavesXRuntime.mobPresenceSensorOptimization());
++            assertFalse(LeavesXRuntime.playerSensorOptimization());
++            assertFalse(LeavesXRuntime.visibleEntityTargetCacheOptimization());
+         } finally {
+             LeavesXRuntime.exitVillagerBrainSafetyContext(previous);
+             assertTrue(LeavesXRuntime.brainBehaviorSchedulingOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
+index 520e20ec41b6dbb2f8e99ac34eb4b02033918e66..1bd0f5903e5d512f7a9bfad1f187fb250325885c 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
+@@ -1,5 +1,6 @@
+ package org.leavesx.leavesx.performance;
+ 
++import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+@@ -8,11 +9,14 @@ import java.lang.reflect.Method;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.util.Arrays;
++import java.util.List;
++import net.minecraft.core.registries.BuiltInRegistries;
+ import net.minecraft.world.level.block.Block;
+ import net.minecraft.world.level.block.entity.BlockEntityType;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.io.TempDir;
++import org.leavesmc.leaves.LeavesConfig;
+ import org.leavesx.leavesx.config.LeavesXConfig;
+ import org.leavesx.leavesx.config.LeavesXConfigLoader;
+ import org.leavesx.leavesx.config.LeavesXRuntime;
+@@ -31,10 +35,10 @@ class BlockEntityTypeValidationHotPathTest {
+     Path tempDir;
+ 
+     @Test
+-    void technicalCompatibilityOverridesTheBlockEntitySwitch() throws Exception {
++    void dedicatedSwitchRespectsTheBlockEntityMasterSwitch() throws Exception {
+         try {
+             publish(this.configuration(true, true, "enabled.yml"));
+-            assertFalse(LeavesXRuntime.blockEntityTypeValidationOptimization());
++            assertTrue(LeavesXRuntime.blockEntityTypeValidationOptimization());
+ 
+             publish(this.configuration(true, false, "setting-disabled.yml"));
+             assertFalse(LeavesXRuntime.blockEntityTypeValidationOptimization());
+@@ -46,6 +50,43 @@ class BlockEntityTypeValidationHotPathTest {
+         }
+     }
+ 
++    @Test
++    void identityCacheMatchesPaperForEveryRegisteredBlockMapping() throws Exception {
++        final boolean previousOldBlockRemoval = LeavesConfig.modify.oldMC.updater.oldBlockRemoveBehaviour;
++        try {
++            LeavesConfig.modify.oldMC.updater.oldBlockRemoveBehaviour = false;
++            final List<BlockEntityType<?>> types = BuiltInRegistries.BLOCK_ENTITY_TYPE.stream().toList();
++            final List<Block> blocks = BuiltInRegistries.BLOCK.stream().toList();
++            final boolean[][] paperResults = new boolean[types.size()][blocks.size()];
++
++            publish(this.configuration(true, false, "registry-paper.yml"));
++            for (int typeIndex = 0; typeIndex < types.size(); ++typeIndex) {
++                final BlockEntityType<?> type = types.get(typeIndex);
++                for (int blockIndex = 0; blockIndex < blocks.size(); ++blockIndex) {
++                    paperResults[typeIndex][blockIndex] = type.isValid(blocks.get(blockIndex).defaultBlockState());
++                }
++            }
++
++            publish(this.configuration(true, true, "registry-optimized.yml"));
++            for (int typeIndex = 0; typeIndex < types.size(); ++typeIndex) {
++                final BlockEntityType<?> type = types.get(typeIndex);
++                for (int blockIndex = 0; blockIndex < blocks.size(); ++blockIndex) {
++                    final Block block = blocks.get(blockIndex);
++                    assertEquals(
++                        paperResults[typeIndex][blockIndex],
++                        type.isValid(block.defaultBlockState()),
++                        () -> "Block-entity mapping changed for "
++                            + BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(type)
++                            + " and " + BuiltInRegistries.BLOCK.getKey(block)
++                    );
++                }
++            }
++        } finally {
++            LeavesConfig.modify.oldMC.updater.oldBlockRemoveBehaviour = previousOldBlockRemoval;
++            publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
+     @Test
+     void version38ConfigurationGainsTheDocumentedDefaultInPlace() throws IOException {
+         final Path path = this.tempDir.resolve("version-38.yml");

@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 26 Aug 2026 18:41:58 +0800
+Subject: [PATCH] Test component map equality fast path
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/PatchedDataComponentMapEqualsHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/PatchedDataComponentMapEqualsHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..b9a2c6d590328159657b83dd9478751d16b10fa8
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/PatchedDataComponentMapEqualsHotPathTest.java
+@@ -0,0 +1,53 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import net.minecraft.core.component.PatchedDataComponentMap;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies data-component equality rejects incompatible patches before scanning their entries. */
++@Normal
++final class PatchedDataComponentMapEqualsHotPathTest {
++
++    @Test
++    void equalityChecksPatchSizeBeforeMapEquality() throws IOException {
++        final MethodNode equalsMethod = equalsMethod();
++        final MethodInsnNode[] calls = Arrays.stream(equalsMethod.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++
++        final int sizeCall = indexOf(calls, "size");
++        final int mapEqualityCall = indexOf(calls, "equals");
++
++        assertTrue(sizeCall >= 0, "Patched data maps must reject different patch sizes without scanning entries");
++        assertTrue(mapEqualityCall >= 0, "Patched data maps must retain the final map equality check");
++        assertTrue(sizeCall < mapEqualityCall, "Patch size must be checked before map equality");
++    }
++
++    private static int indexOf(final MethodInsnNode[] calls, final String methodName) {
++        for (int index = 0; index < calls.length; ++index) {
++            if (calls[index].name.equals(methodName)) {
++                return index;
++            }
++        }
++        return -1;
++    }
++
++    private static MethodNode equalsMethod() throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(PatchedDataComponentMap.class.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode.methods.stream()
++            .filter(method -> method.name.equals("equals") && method.desc.equals("(Ljava/lang/Object;)Z"))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing PatchedDataComponentMap#equals"));
++    }
++}

@@ -18,6 +18,7 @@ import static net.kyori.adventure.text.JoinConfiguration.spaces;
 import static net.kyori.adventure.text.event.HoverEvent.showText;
 import static net.kyori.adventure.text.format.NamedTextColor.AQUA;
 import static net.kyori.adventure.text.format.NamedTextColor.GRAY;
+import static org.leavesmc.leaves.command.bot.BotCommandLocale.message;
 
 public class ListCommand extends LiteralNode {
 
@@ -32,11 +33,11 @@ public class ListCommand extends LiteralNode {
         CommandSender sender = context.getSender();
         List<AbstractBotAction<?>> actions = bot.getBotActions();
         if (actions.isEmpty()) {
-            sender.sendMessage(text("This bot has no active actions", GRAY));
+            sender.sendMessage(text(message("This bot has no active actions", "该假人没有正在执行的动作"), GRAY));
             return true;
         }
 
-        sender.sendMessage(asAdventure(bot.getDisplayName()).append(text("'s action list:", GRAY)));
+        sender.sendMessage(asAdventure(bot.getDisplayName()).append(text(message("'s action list:", "的动作列表："), GRAY)));
         for (int i = 0; i < actions.size(); i++) {
             AbstractBotAction<?> action = actions.get(i);
             sender.sendMessage(join(spaces(),

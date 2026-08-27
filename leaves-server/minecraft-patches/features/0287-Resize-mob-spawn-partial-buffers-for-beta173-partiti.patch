@@ -1,0 +1,21 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 25 Aug 2026 21:12:51 +0800
+Subject: [PATCH] Resize mob-spawn partial buffers for beta173 partitions
+
+
+diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+index 0ae323a9d0a4afdc6eb27cbfd72a4568431f139a..cbc16e1608316c0478821cc6f8d04b4fca72546f 100644
+--- a/net/minecraft/world/level/MobSpawnCountAccumulator.java
++++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+@@ -34,7 +34,9 @@ final class MobSpawnCountAccumulator {
+         }
+ 
+         @SuppressWarnings("unchecked") final Long2ObjectOpenHashMap<int[]>[] partialCounts =
+-            new Long2ObjectOpenHashMap[org.leavesx.leavesx.runtime.LeavesXComputeExecutor.computeLaneCount()];
++            new Long2ObjectOpenHashMap[
++                org.leavesx.leavesx.runtime.LeavesXComputeExecutor.computePartitionCapacity()
++            ];
+         final int completedPartitions = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRangesWithCount(
+             org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.MOB_SPAWN_COUNTING,
+             inputs.size(),

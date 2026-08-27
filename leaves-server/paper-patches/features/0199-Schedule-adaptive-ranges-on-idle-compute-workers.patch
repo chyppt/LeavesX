@@ -1,0 +1,283 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 26 Aug 2026 18:14:56 +0800
+Subject: [PATCH] Schedule adaptive ranges on idle compute workers
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 30ca8fc0b3e038c6ba97ce51b76eaa2565571338..9dc8509a7a0b6d2dff3988f2607c04251b84e7d2 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -281,11 +281,29 @@ public final class LeavesXComputeExecutor {
+         }
+         final int rangeSize = (size + taskCount - 1) / taskCount;
+         final int expectedTaskCount = (size + rangeSize - 1) / rangeSize;
+-        final RangeInvocation invocation = new RangeInvocation(task, workloadCounters, expectedTaskCount - 1);
+-        // Submit one bounded worker task per physical worker. Each task claims the next contiguous range from an
+-        // atomic cursor, reducing executor queue operations and allowing a fast worker to pick up later ranges from a
+-        // slow worker without changing deterministic range contents or merge order.
+-        final int workerTaskCount = Math.min(workerCount, expectedTaskCount - 1);
++        // Medium batches admitted below their normal threshold only use slots that can start immediately. Larger
++        // established workloads retain their validated full partition strategy, including their merge contracts.
++        final int availableWorkerTasks = adaptivelyAdmitted ? current.availableWorkerSlotCount() : workerCount;
++        final int workerTaskCount = Math.min(availableWorkerTasks, expectedTaskCount - 1);
++        // The latch counts logical worker-owned ranges, not queue entries. One submitted batch may claim several
++        // overflow ranges, all of which must finish before a caller can merge their private results.
++        final RangeInvocation invocation = new RangeInvocation(task, workloadCounters, expectedTaskCount - 1, workerTaskCount);
++        if (workerTaskCount == 0) {
++            // The caller still completes the immutable ranges once, preserving the existing no-retry contract for
++            // callers that merge per-partition results. Marking these as backpressure runs makes the reason visible
++            // in /leavesx threads without waiting for a busy worker pool.
++            unavailableParallelismFallbackCount.incrementAndGet();
++            workloadCounters.unavailableParallelismFallbacks.incrementAndGet();
++            invocation.runAllOnCaller(rangeSize, expectedTaskCount, size);
++            invocation.recordLoad();
++            if (invocation.failure != null) {
++                LOGGER.error("LeavesX synchronous backpressure computation failed", invocation.failure);
++                failedInvocationCount.incrementAndGet();
++                workloadCounters.failedInvocations.incrementAndGet();
++                return 0;
++            }
++            return expectedTaskCount;
++        }
+         // Reserve one initial range for every submitted worker so very fast ranges cannot all be consumed by the
+         // first thread that wakes up. The shared cursor starts after those guaranteed ranges and balances only the
+         // remaining overflow work.
+@@ -303,6 +321,7 @@ public final class LeavesXComputeExecutor {
+             } catch (final RejectedExecutionException rejection) {
+                 invocation.runInitialRangesOnCaller(workerIndex, workerTaskCount, rangeSize, size, true);
+                 invocation.runRemainingOnCaller(nextTask, rangeSize, expectedTaskCount - 1, size, true);
++                invocation.cancelWorkerBatches(workerTaskCount - workerIndex);
+                 break;
+             } catch (final RuntimeException submissionFailure) {
+                 LOGGER.error(
+@@ -311,6 +330,7 @@ public final class LeavesXComputeExecutor {
+                 );
+                 invocation.runInitialRangesOnCaller(workerIndex, workerTaskCount, rangeSize, size, true);
+                 invocation.runRemainingOnCaller(nextTask, rangeSize, expectedTaskCount - 1, size, true);
++                invocation.cancelWorkerBatches(workerTaskCount - workerIndex);
+                 break;
+             }
+         }
+@@ -393,13 +413,13 @@ public final class LeavesXComputeExecutor {
+         return Math.max(baseline, partitionCountFor(size, availableLanes, adaptiveMinimum));
+     }
+ 
+-    /** Returns true when enough workers are idle to admit finer-grained work without queueing behind another batch. */
++    /** Returns true when enough workers are free to benefit from finer ranges without queueing behind another batch. */
+     private static boolean isIdleForAdaptiveDispatch(final ComputeThreadPoolExecutor current) {
+         return current == executor
+             // ArrayBlockingQueue.isEmpty() takes the queue lock. Admission checks run on the server tick hot path,
+             // so use the executor-owned counter instead; it does not expose a mutable task to the callback.
+             && current.queuedTaskCount() == 0
+-            && current.executingTaskCount() <= Math.max(1, workerCount / 4);
++            && current.availableWorkerSlotCount() >= Math.max(1, (workerCount + 1) / 2);
+     }
+ 
+     private static boolean supportsAdaptiveScheduling(final Workload workload) {
+@@ -427,7 +447,7 @@ public final class LeavesXComputeExecutor {
+         final int size,
+         final int taskCount
+     ) {
+-        final RangeInvocation invocation = new RangeInvocation(task, workloadCounters, 0);
++        final RangeInvocation invocation = new RangeInvocation(task, workloadCounters, 0, 0);
+         final int rangeSize = (size + taskCount - 1) / taskCount;
+         for (int taskIndex = 0; taskIndex < taskCount; taskIndex++) {
+             final int rangeStart = taskIndex * rangeSize;
+@@ -681,6 +701,7 @@ public final class LeavesXComputeExecutor {
+         private final RangeTask task;
+         private final WorkloadCounters workloadCounters;
+         private final CountDownLatch workersDone;
++        private final CountDownLatch workerBatchesDone;
+         private final AtomicInteger activeWorkers = new AtomicInteger();
+         private final AtomicLong workerRanges = new AtomicLong();
+         private final AtomicLong workerItems = new AtomicLong();
+@@ -692,11 +713,13 @@ public final class LeavesXComputeExecutor {
+         private RangeInvocation(
+             final RangeTask task,
+             final WorkloadCounters workloadCounters,
+-            final int workerRangeCount
++            final int workerRangeCount,
++            final int workerBatchCount
+         ) {
+             this.task = task;
+             this.workloadCounters = workloadCounters;
+             this.workersDone = new CountDownLatch(workerRangeCount);
++            this.workerBatchesDone = new CountDownLatch(workerBatchCount);
+         }
+ 
+         /**
+@@ -759,6 +782,7 @@ public final class LeavesXComputeExecutor {
+                 this.activeWorkers.decrementAndGet();
+                 this.workerRanges.addAndGet(ranges);
+                 this.workerItems.addAndGet(items);
++                this.workerBatchesDone.countDown();
+             }
+         }
+ 
+@@ -820,6 +844,14 @@ public final class LeavesXComputeExecutor {
+             }
+         }
+ 
++        /** Runs every deterministic partition on the calling thread while the worker pool is fully occupied. */
++        private void runAllOnCaller(final int rangeSize, final int taskCount, final int inputSize) {
++            for (int taskIndex = 0; taskIndex < taskCount; taskIndex++) {
++                final int start = taskIndex * rangeSize;
++                this.runOnCaller(taskIndex, start, Math.min(inputSize, start + rangeSize), true);
++            }
++        }
++
+         /** Executes guaranteed initial ranges whose worker submissions were rejected. */
+         private void runInitialRangesOnCaller(
+             final int startTask,
+@@ -855,8 +887,20 @@ public final class LeavesXComputeExecutor {
+             this.workersDone.countDown();
+         }
+ 
++        /** Marks a queued batch as handled when shutdown or rejection prevents a worker from starting it. */
++        private void cancelWorkerBatch() {
++            this.workerBatchesDone.countDown();
++        }
++
++        private void cancelWorkerBatches(final int count) {
++            for (int index = 0; index < count; index++) {
++                this.cancelWorkerBatch();
++            }
++        }
++
+         /** Publishes this invocation's counters once, keeping atomics out of each hot range. */
+         private void recordLoad() {
++            this.awaitWorkerBatches();
+             final long workerRangeTotal = this.workerRanges.get();
+             final long workerItemTotal = this.workerItems.get();
+             callerRangeCount.addAndGet(this.callerRanges);
+@@ -874,6 +918,23 @@ public final class LeavesXComputeExecutor {
+             );
+         }
+ 
++        /** Waits until worker-local counters have been published after their final logical range completes. */
++        private void awaitWorkerBatches() {
++            boolean interrupted = false;
++            while (true) {
++                try {
++                    this.workerBatchesDone.await();
++                    break;
++                } catch (final InterruptedException interruption) {
++                    interrupted = true;
++                    this.recordFailure(interruption);
++                }
++            }
++            if (interrupted) {
++                Thread.currentThread().interrupt();
++            }
++        }
++
+         private synchronized void recordFailure(final Throwable computationFailure) {
+             if (this.failure == null) {
+                 this.failure = computationFailure;
+@@ -942,6 +1003,11 @@ public final class LeavesXComputeExecutor {
+         private int queuedTaskCount() {
+             return Math.max(0, this.queuedTasks.get());
+         }
++
++        /** Returns worker slots that are not executing or already reserved by an accepted task. */
++        private int availableWorkerSlotCount() {
++            return Math.max(0, this.getCorePoolSize() - this.executingTaskCount() - this.queuedTaskCount());
++        }
+     }
+ 
+     /** Runs multiple contiguous ranges from one queue entry, reducing queue/lock pressure for large snapshots. */
+@@ -983,18 +1049,22 @@ public final class LeavesXComputeExecutor {
+ 
+         /** Counts every unclaimed worker range down when a queued batch is cancelled during shutdown. */
+         private void cancel() {
+-            this.invocation.cancelWorker();
+-            // Cancellation must reserve the same contiguous claim width as active workers. Mixing getAndIncrement
+-            // with a worker's getAndAdd can steal the second range of a block already reserved by that worker.
+-            while (true) {
+-                final int taskIndex = this.nextTask.getAndAdd(RANGES_PER_CLAIM);
+-                if (taskIndex >= this.taskCount - 1) {
+-                    return;
+-                }
+-                final int claimEnd = Math.min(this.taskCount - 1, taskIndex + RANGES_PER_CLAIM);
+-                for (int claimedTask = taskIndex; claimedTask < claimEnd; claimedTask++) {
+-                    this.invocation.cancelWorker();
++            try {
++                this.invocation.cancelWorker();
++                // Cancellation must reserve the same contiguous claim width as active workers. Mixing getAndIncrement
++                // with a worker's getAndAdd can steal the second range of a block already reserved by that worker.
++                while (true) {
++                    final int taskIndex = this.nextTask.getAndAdd(RANGES_PER_CLAIM);
++                    if (taskIndex >= this.taskCount - 1) {
++                        return;
++                    }
++                    final int claimEnd = Math.min(this.taskCount - 1, taskIndex + RANGES_PER_CLAIM);
++                    for (int claimedTask = taskIndex; claimedTask < claimEnd; claimedTask++) {
++                        this.invocation.cancelWorker();
++                    }
+                 }
++            } finally {
++                this.invocation.cancelWorkerBatch();
+             }
+         }
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index 47138f15d1dda878208d595e7211320bd8d70cb1..f34f5630f099738b98a655b9e2db7b6396a12f66 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -353,6 +353,55 @@ public class LeavesXComputeExecutorTest {
+         assertTrue(totals.adaptivePartitions() > 0L);
+     }
+ 
++    /**
++     * Ensures medium immutable work can use idle cores without queueing behind the occupied half of the pool.
++     * This models overlapping safe snapshot batches while preserving one complete deterministic pass.
++     */
++    @Test
++    void adaptivelyDispatchesWhenHalfThePoolIsAvailable() throws Exception {
++        LeavesXComputeExecutor.configure(4, 64);
++        final ThreadPoolExecutor executor = executor();
++        final CountDownLatch release = new CountDownLatch(1);
++        final CountDownLatch workersStarted = new CountDownLatch(2);
++        final Runnable blocker = () -> {
++            workersStarted.countDown();
++            try {
++                release.await();
++            } catch (final InterruptedException interruption) {
++                Thread.currentThread().interrupt();
++            }
++        };
++        executor.execute(blocker);
++        executor.execute(blocker);
++        assertTrue(workersStarted.await(2L, TimeUnit.SECONDS));
++
++        try {
++            final AtomicIntegerArray counts = new AtomicIntegerArray(192);
++            final int partitions = LeavesXComputeExecutor.invokeRangesWithCount(
++                LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++                counts.length(),
++                256,
++                128,
++                (taskIndex, start, end) -> {
++                    for (int index = start; index < end; index++) {
++                        counts.incrementAndGet(index);
++                    }
++                }
++            );
++
++            assertTrue(partitions > 1, "the idle half of the pool should accept a medium pure-AI batch");
++            for (int index = 0; index < counts.length(); index++) {
++                assertEquals(1, counts.get(index), "adaptive dispatch must process index " + index + " exactly once");
++            }
++            assertTrue(
++                LeavesXComputeExecutor.metrics().workerItems() > 0L,
++                "available workers must execute part of the adaptive batch"
++            );
++        } finally {
++            release.countDown();
++        }
++    }
++
+     @Test
+     void doesNotAdaptivelyDispatchUnspecifiedWorkloads() {
+         LeavesXComputeExecutor.configure(4, 64);

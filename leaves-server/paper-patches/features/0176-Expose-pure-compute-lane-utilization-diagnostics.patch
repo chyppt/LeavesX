@@ -1,0 +1,282 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 23 Aug 2026 17:09:42 +0800
+Subject: [PATCH] Expose pure-compute lane utilization diagnostics
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 3317e7a51d3a7aad10ab97929e7be8dc5f23deda..ad790ae7fad6f66f95d347ff4b60890dffca9373 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -784,6 +784,12 @@ public final class LeavesXCommand extends Command {
+                 + metrics.invocations() + " 总调用",
+             NamedTextColor.GRAY
+         ));
++        sender.sendMessage(line(
++            "分片负载",
++            "主线程 " + metrics.callerItems() + " 项 / 工作线程 " + metrics.workerItems()
++                + " 项 / 工作线程并发峰值 " + metrics.maximumConcurrentWorkers(),
++            NamedTextColor.GRAY
++        ));
+         for (final LeavesXComputeExecutor.WorkloadMetrics workload : metrics.workloads()) {
+             if (workload.invocations() == 0L) {
+                 continue;
+@@ -803,6 +809,12 @@ public final class LeavesXCommand extends Command {
+                     + " / 背压接管 " + workload.backpressureCallerRuns(),
+                 NamedTextColor.DARK_GRAY
+             ));
++            sender.sendMessage(line(
++                "  分片负载",
++                "主线程 " + workload.callerItems() + " 项 / 工作线程 " + workload.workerItems()
++                    + " 项 / 并发峰值 " + workload.maximumConcurrentWorkers(),
++                NamedTextColor.DARK_GRAY
++            ));
+         }
+         sender.sendMessage(line(
+             "JVM 线程",
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index d7051e81652fe4c357b1333d2dcebf7ee637b9c7..62cc312370824d8d1fd25ce42f4a813c9849e77a 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -9,6 +9,7 @@ import java.util.concurrent.CountDownLatch;
+ import java.util.concurrent.RejectedExecutionException;
+ import java.util.concurrent.ThreadPoolExecutor;
+ import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicInteger;
+ import java.util.concurrent.atomic.AtomicLong;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+@@ -30,6 +31,13 @@ public final class LeavesXComputeExecutor {
+     private static final AtomicLong unavailableParallelismFallbackCount = new AtomicLong();
+     private static final AtomicLong failedInvocationCount = new AtomicLong();
+     private static final AtomicLong backpressureCallerRunCount = new AtomicLong();
++    // These counters describe where immutable ranges actually ran. They make a short-lived worker burst visible in
++    // /leavesx threads even after the pool has gone idle again.
++    private static final AtomicLong callerRangeCount = new AtomicLong();
++    private static final AtomicLong workerRangeCount = new AtomicLong();
++    private static final AtomicLong callerItemCount = new AtomicLong();
++    private static final AtomicLong workerItemCount = new AtomicLong();
++    private static final AtomicLong maximumConcurrentWorkerCount = new AtomicLong();
+     private static final WorkloadCounters[] WORKLOAD_COUNTERS = createWorkloadCounters();
+ 
+     private LeavesXComputeExecutor() {
+@@ -69,6 +77,11 @@ public final class LeavesXComputeExecutor {
+         unavailableParallelismFallbackCount.set(0L);
+         failedInvocationCount.set(0L);
+         backpressureCallerRunCount.set(0L);
++        callerRangeCount.set(0L);
++        workerRangeCount.set(0L);
++        callerItemCount.set(0L);
++        workerItemCount.set(0L);
++        maximumConcurrentWorkerCount.set(0L);
+         for (final WorkloadCounters counters : WORKLOAD_COUNTERS) {
+             counters.reset();
+         }
+@@ -220,6 +233,7 @@ public final class LeavesXComputeExecutor {
+         final int callerRangeStart = callerTaskIndex * rangeSize;
+         invocation.runOnCaller(callerTaskIndex, callerRangeStart, size, false);
+         invocation.awaitWorkers();
++        invocation.recordLoad();
+         final Throwable failure = invocation.failure;
+         if (failure != null) {
+             LOGGER.error("LeavesX parallel computation failed; recomputing on the main thread", failure);
+@@ -244,6 +258,13 @@ public final class LeavesXComputeExecutor {
+         return Math.min(availableLanes, usefulLanes);
+     }
+ 
++    private static void recordMaximumConcurrentWorkers(final int count) {
++        long current = maximumConcurrentWorkerCount.get();
++        while (count > current && !maximumConcurrentWorkerCount.compareAndSet(current, count)) {
++            current = maximumConcurrentWorkerCount.get();
++        }
++    }
++
+     /** Returns a lock-free snapshot used by the diagnostic command. */
+     public static Metrics metrics() {
+         final ThreadPoolExecutor current = executor;
+@@ -271,6 +292,11 @@ public final class LeavesXComputeExecutor {
+             unavailableParallelismFallbacks,
+             failedInvocationCount.get(),
+             backpressureCallerRunCount.get(),
++            callerRangeCount.get(),
++            workerRangeCount.get(),
++            callerItemCount.get(),
++            workerItemCount.get(),
++            (int)Math.min(Integer.MAX_VALUE, maximumConcurrentWorkerCount.get()),
+             List.copyOf(workloads)
+         );
+     }
+@@ -328,6 +354,11 @@ public final class LeavesXComputeExecutor {
+         long unavailableParallelismFallbacks,
+         long failedInvocations,
+         long backpressureCallerRuns,
++        long callerRanges,
++        long workerRanges,
++        long callerItems,
++        long workerItems,
++        int maximumConcurrentWorkers,
+         List<WorkloadMetrics> workloads
+     ) {
+     }
+@@ -344,7 +375,12 @@ public final class LeavesXComputeExecutor {
+         long failedInvocations,
+         long backpressureCallerRuns,
+         long totalItems,
+-        long maximumItems
++        long maximumItems,
++        long callerRanges,
++        long workerRanges,
++        long callerItems,
++        long workerItems,
++        int maximumConcurrentWorkers
+     ) {
+     }
+ 
+@@ -367,6 +403,11 @@ public final class LeavesXComputeExecutor {
+         private final AtomicLong backpressureCallerRuns = new AtomicLong();
+         private final AtomicLong totalItems = new AtomicLong();
+         private final AtomicLong maximumItems = new AtomicLong();
++        private final AtomicLong callerRanges = new AtomicLong();
++        private final AtomicLong workerRanges = new AtomicLong();
++        private final AtomicLong callerItems = new AtomicLong();
++        private final AtomicLong workerItems = new AtomicLong();
++        private final AtomicLong maximumConcurrentWorkers = new AtomicLong();
+ 
+         private void recordInvocation(final int size) {
+             this.invocations.incrementAndGet();
+@@ -389,6 +430,11 @@ public final class LeavesXComputeExecutor {
+             this.backpressureCallerRuns.set(0L);
+             this.totalItems.set(0L);
+             this.maximumItems.set(0L);
++            this.callerRanges.set(0L);
++            this.workerRanges.set(0L);
++            this.callerItems.set(0L);
++            this.workerItems.set(0L);
++            this.maximumConcurrentWorkers.set(0L);
+         }
+ 
+         private WorkloadMetrics snapshot(final Workload workload) {
+@@ -406,9 +452,32 @@ public final class LeavesXComputeExecutor {
+                 this.failedInvocations.get(),
+                 this.backpressureCallerRuns.get(),
+                 this.totalItems.get(),
+-                this.maximumItems.get()
++                this.maximumItems.get(),
++                this.callerRanges.get(),
++                this.workerRanges.get(),
++                this.callerItems.get(),
++                this.workerItems.get(),
++                (int)Math.min(Integer.MAX_VALUE, this.maximumConcurrentWorkers.get())
+             );
+         }
++
++        private void recordLoad(
++            final long callerRangeCount,
++            final long workerRangeCount,
++            final long callerItemCount,
++            final long workerItemCount,
++            final int maximumConcurrentWorkerCount
++        ) {
++            this.callerRanges.addAndGet(callerRangeCount);
++            this.workerRanges.addAndGet(workerRangeCount);
++            this.callerItems.addAndGet(callerItemCount);
++            this.workerItems.addAndGet(workerItemCount);
++            long current = this.maximumConcurrentWorkers.get();
++            while (maximumConcurrentWorkerCount > current
++                && !this.maximumConcurrentWorkers.compareAndSet(current, maximumConcurrentWorkerCount)) {
++                current = this.maximumConcurrentWorkers.get();
++            }
++        }
+     }
+ 
+     /** Coordinates one invocation without allocating a Future/list pair for every worker partition. */
+@@ -417,6 +486,12 @@ public final class LeavesXComputeExecutor {
+         private final RangeTask task;
+         private final WorkloadCounters workloadCounters;
+         private final CountDownLatch workersDone;
++        private final AtomicInteger activeWorkers = new AtomicInteger();
++        private final AtomicLong workerRanges = new AtomicLong();
++        private final AtomicLong workerItems = new AtomicLong();
++        private long callerRanges;
++        private long callerItems;
++        private final AtomicInteger maximumConcurrentWorkers = new AtomicInteger();
+         private volatile Throwable failure;
+ 
+         private RangeInvocation(
+@@ -430,11 +505,17 @@ public final class LeavesXComputeExecutor {
+         }
+ 
+         private void runWorker(final int taskIndex, final int startInclusive, final int endExclusive) {
++            final int active = (int)this.activeWorkers.incrementAndGet();
++            final int itemCount = endExclusive - startInclusive;
++            this.workerRanges.incrementAndGet();
++            this.workerItems.addAndGet(Math.max(0, itemCount));
++            this.maximumConcurrentWorkers.accumulateAndGet(active, Math::max);
+             try {
+                 this.task.run(taskIndex, startInclusive, endExclusive);
+             } catch (final Throwable computationFailure) {
+                 this.recordFailure(computationFailure);
+             } finally {
++                this.activeWorkers.decrementAndGet();
+                 this.workersDone.countDown();
+             }
+         }
+@@ -449,6 +530,9 @@ public final class LeavesXComputeExecutor {
+                 backpressureCallerRunCount.incrementAndGet();
+                 this.workloadCounters.backpressureCallerRuns.incrementAndGet();
+             }
++            final int itemCount = endExclusive - startInclusive;
++            this.callerRanges++;
++            this.callerItems += Math.max(0, itemCount);
+             try {
+                 this.task.run(taskIndex, startInclusive, endExclusive);
+             } catch (final Throwable computationFailure) {
+@@ -481,6 +565,25 @@ public final class LeavesXComputeExecutor {
+             this.workersDone.countDown();
+         }
+ 
++        /** Publishes this invocation's counters once, keeping atomics out of each hot range. */
++        private void recordLoad() {
++            final long workerRangeTotal = this.workerRanges.get();
++            final long workerItemTotal = this.workerItems.get();
++            callerRangeCount.addAndGet(this.callerRanges);
++            workerRangeCount.addAndGet(workerRangeTotal);
++            callerItemCount.addAndGet(this.callerItems);
++            workerItemCount.addAndGet(workerItemTotal);
++            final int maximumWorkers = this.maximumConcurrentWorkers.get();
++            recordMaximumConcurrentWorkers(maximumWorkers);
++            this.workloadCounters.recordLoad(
++                this.callerRanges,
++                workerRangeTotal,
++                this.callerItems,
++                workerItemTotal,
++                maximumWorkers
++            );
++        }
++
+         private synchronized void recordFailure(final Throwable computationFailure) {
+             if (this.failure == null) {
+                 this.failure = computationFailure;
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index b7a310c2d5508173511db66800c01b82e4e20c9b..b2eff1841eadf663778f56863eb84c511638c716 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -231,6 +231,18 @@ class LeavesXComputeExecutorTest {
+         assertTrue(parallel);
+         assertEquals(1, callerRanges.get(), "the tick thread should compute exactly one partition instead of only waiting");
+         assertTrue(workerRanges.get() > 0, "at least one partition should still execute on a worker");
++
++        final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
++        assertEquals(1L, metrics.callerRanges());
++        assertEquals(4L, metrics.workerRanges());
++        assertEquals(1_024L, metrics.callerItems() + metrics.workerItems());
++        assertTrue(metrics.maximumConcurrentWorkers() > 0);
++
++        final LeavesXComputeExecutor.WorkloadMetrics workload = metrics.workloads().stream()
++            .filter(value -> value.workload() == LeavesXComputeExecutor.Workload.UNSPECIFIED)
++            .findFirst()
++            .orElseThrow();
++        assertEquals(1_024L, workload.callerItems() + workload.workerItems());
+     }
+ 
+     @Test

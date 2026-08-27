@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 23 Aug 2026 17:42:26 +0800
+Subject: [PATCH] Restore safe Brain behavior traversal cache
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index edb495eba81d715879a38c39172397d1334c1509..cbf84a9ca9a0b2a2de724e6e86525315c1d6106b 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -78,6 +78,7 @@ public final class LeavesXRuntime {
+     private static volatile boolean syncableAttributeCollectionOptimization = true;
+     private static boolean goalSelectorOptimization = true;
+     private static boolean brainTickTraversalOptimization = true;
++    private static boolean brainBehaviorSchedulingOptimization = true;
+     private static boolean sensingCacheOptimization = true;
+     private static boolean stationaryEntitySpeedOptimization = true;
+     private static boolean serverFireStateOptimization = true;
+@@ -184,6 +185,9 @@ public final class LeavesXRuntime {
+         );
+         goalSelectorOptimization = validated.optimizationEnabled(LeavesXOptimization.GOAL_SELECTOR);
+         brainTickTraversalOptimization = validated.optimizationEnabled(LeavesXOptimization.BRAIN_TICK_TRAVERSAL);
++        brainBehaviorSchedulingOptimization = validated.optimizationEnabled(
++            LeavesXOptimization.BRAIN_BEHAVIOR_SCHEDULING
++        );
+         sensingCacheOptimization = validated.optimizationEnabled(LeavesXOptimization.SENSING_CACHE);
+         stationaryEntitySpeedOptimization = validated.optimizationEnabled(LeavesXOptimization.STATIONARY_ENTITY_SPEED);
+         serverFireStateOptimization = validated.optimizationEnabled(LeavesXOptimization.SERVER_FIRE_STATE);
+@@ -911,7 +915,9 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether Brain behavior scheduling may reuse deterministic traversals and snapshots. */
+     public static boolean brainBehaviorSchedulingOptimization() {
+-        return false;
++        // This fast path only reuses deterministic ordering and snapshots. The villager safety context still forces
++        // Paper's original traversal for panic, sensing, and iron-golem decisions.
++        return aiOptimizationsEnabled() && brainBehaviorSchedulingOptimization;
+     }
+ 
+     /** Returns whether POI acquisition may avoid temporary candidate collections. */
+diff --git a/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java b/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java
+index 3aa495d3e8a55038288ba9241eef65ecf4a3b4b0..f61b268daa63556d9f30f8ece281709b5c17368b 100644
+--- a/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/TechnicalMechanicsCompatibilityTest.java
+@@ -28,7 +28,7 @@ class TechnicalMechanicsCompatibilityTest {
+     }
+ 
+     @Test
+-    void enabledConfigurationCannotReenableSensitiveOptimizations() {
++    void strictModeDisablesOnlyTimingSensitiveOptimizations() {
+         LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+ 
+         assertTrue(LeavesXRuntime.strictTechnicalMechanicsCompatibility());
+@@ -41,7 +41,8 @@ class TechnicalMechanicsCompatibilityTest {
+         assertFalse(LeavesXRuntime.blockEntityTypeValidationOptimization());
+         assertFalse(LeavesXRuntime.minecartMotionDistanceOptimization());
+         assertFalse(LeavesXRuntime.goalSelectorOptimization());
+-        assertFalse(LeavesXRuntime.brainBehaviorSchedulingOptimization());
++        // Deterministic traversal reuse does not move or reorder Brain mutations and remains guarded for villagers.
++        assertTrue(LeavesXRuntime.brainBehaviorSchedulingOptimization());
+         assertFalse(LeavesXRuntime.sensingCacheOptimization());
+         assertFalse(LeavesXRuntime.villagerHostileSensorOptimization());
+         assertFalse(LeavesXRuntime.villagerGolemAgreementOptimization());
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index 836ce5effcd336ecf65ddec29b6fc8acb3803312..ebff3f2f0fff69afbc6d810b921226084d2f2db1 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -66,6 +66,7 @@ class VillagerCompatibilityContextTest {
+             assertTrue(LeavesXRuntime.entityQueryOptimizations());
+             assertTrue(LeavesXRuntime.entityStateOptimizations());
+             assertTrue(LeavesXRuntime.pathfindingOptimizations());
++            assertTrue(LeavesXRuntime.brainBehaviorSchedulingOptimization());
+         } finally {
+             LeavesXRuntime.exitVillagerCompatibilityContext(previous);
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+@@ -91,6 +92,7 @@ class VillagerCompatibilityContextTest {
+             assertFalse(LeavesXRuntime.sensingCacheOptimization());
+         } finally {
+             LeavesXRuntime.exitVillagerBrainSafetyContext(previous);
++            assertTrue(LeavesXRuntime.brainBehaviorSchedulingOptimization());
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+     }

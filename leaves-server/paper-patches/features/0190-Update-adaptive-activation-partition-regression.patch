@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 25 Aug 2026 22:28:31 +0800
+Subject: [PATCH] Update adaptive activation partition regression
+
+
+diff --git a/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java b/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
+index 59921a0735442e7d1a89421cc13f019f5cd45eac..795caebd1fd8f67d8c349b22c2646defce23788f 100644
+--- a/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
++++ b/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
+@@ -3,6 +3,7 @@ package io.papermc.paper.entity.activation;
+ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import java.io.IOException;
+ import java.util.Arrays;
+@@ -77,7 +78,11 @@ public class ActivationRangeSnapshotTest {
+         );
+ 
+         assertArrayEquals(expected, actual);
+-        assertEquals(8, partitions, "the bounded scheduler should use every profitable deterministic partition");
++        assertTrue(partitions >= 8, "the scheduler must retain the profitable baseline partitions");
++        assertTrue(
++            partitions <= LeavesXComputeExecutor.computePartitionCapacity(),
++            "adaptive partitioning must stay within the scratch-buffer capacity"
++        );
+         final LeavesXComputeExecutor.WorkloadMetrics metrics = workload();
+         assertEquals(1L, metrics.parallelInvocations());
+         assertEquals(size, metrics.totalItems());

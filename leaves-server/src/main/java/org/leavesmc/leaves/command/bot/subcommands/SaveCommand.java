@@ -17,6 +17,7 @@ import static io.papermc.paper.adventure.PaperAdventure.asAdventure;
 import static net.kyori.adventure.text.Component.join;
 import static net.kyori.adventure.text.Component.text;
 import static net.kyori.adventure.text.JoinConfiguration.spaces;
+import static org.leavesmc.leaves.command.bot.BotCommandLocale.message;
 
 public class SaveCommand extends BotSubcommand {
 
@@ -45,12 +46,15 @@ public class SaveCommand extends BotSubcommand {
             boolean success = botList.removeBot(bot, BotRemoveEvent.RemoveReason.COMMAND, sender, true, false);
             if (success) {
                 sender.sendMessage(join(spaces(),
-                    text("Successfully saved bot", NamedTextColor.GRAY),
+                    text(message("Successfully saved bot", "已成功保存假人"), NamedTextColor.GRAY),
                     asAdventure(bot.getDisplayName()),
-                    text("as " + bot.createState.fullName(), NamedTextColor.GRAY)
+                    text(message("as ", "，存档名称为 ") + bot.createState.fullName(), NamedTextColor.GRAY)
                 ));
             } else {
-                sender.sendMessage(text("Bot save canceled by a plugin", NamedTextColor.RED));
+                sender.sendMessage(text(message(
+                    "Bot save canceled by a plugin",
+                    "插件取消了假人保存"
+                ), NamedTextColor.RED));
             }
             return success;
         }

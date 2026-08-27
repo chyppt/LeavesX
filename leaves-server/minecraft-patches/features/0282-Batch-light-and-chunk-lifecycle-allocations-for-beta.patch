@@ -1,0 +1,232 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 23 Aug 2026 22:31:15 +0800
+Subject: [PATCH] Batch light and chunk lifecycle allocations for beta165
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+index ff437bedbba4ec0a22b37665d013873331b145cb..09cd93aabd7fc2cf96ef37a9fe1cbc388c9a8c44 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+@@ -89,6 +89,13 @@ public final class ChunkHolderManager {
+ 
+     private final ArrayDeque<NewChunkHolder> pendingFullLoadUpdate = new ArrayDeque<>();
+     private final MultiThreadedQueue<NewChunkHolder> offThreadPendingFullLoadUpdate = new MultiThreadedQueue<>();
++    // These buffers are tick-thread confined. Retaining their backing arrays avoids rebuilding the same temporary
++    // lists during dense unload, autosave and full-status bursts without changing any scheduling order.
++    private final ArrayList<NewChunkHolder> leavesX$unloadStage1 = new ArrayList<>(128);
++    private final ArrayList<NewChunkHolder.UnloadState> leavesX$unloadStage2 = new ArrayList<>(128);
++    private final ArrayList<NewChunkHolder> leavesX$unloadStage3 = new ArrayList<>(128);
++    private final ArrayList<NewChunkHolder> leavesX$autosaveReschedule = new ArrayList<>(32);
++    private final ArrayList<NewChunkHolder> leavesX$fullStatusChanges = new ArrayList<>(64);
+     private final ObjectRBTreeSet<NewChunkHolder> autoSaveQueue = new ObjectRBTreeSet<>((final NewChunkHolder c1, final NewChunkHolder c2) -> {
+         if (c1 == c2) {
+             return 0;
+@@ -299,7 +306,11 @@ public final class ChunkHolderManager {
+     }
+ 
+     public void autoSave() {
+-        final List<NewChunkHolder> reschedule = new ArrayList<>();
++        final boolean reuseBuffer = org.leavesx.leavesx.config.LeavesXRuntime.chunkAutosaveBufferReuseOptimization();
++        final List<NewChunkHolder> reschedule = reuseBuffer
++            ? this.leavesX$autosaveReschedule
++            : new ArrayList<>();
++        reschedule.clear();
+         final long currentTick = this.currentTick;
+         final long maxSaveTime = currentTick - Math.max(1L, PlatformHooks.get().configAutoSaveInterval(this.world));
+         final int maxToSave = PlatformHooks.get().configMaxAutoSavePerTick(this.world);
+@@ -327,6 +338,9 @@ public final class ChunkHolderManager {
+                 this.autoSaveQueue.add(holder);
+             }
+         }
++        if (reuseBuffer) {
++            reschedule.clear();
++        }
+     }
+ 
+     public void saveAllChunks(final boolean flush, final boolean shutdown, final boolean logProgress,
+@@ -1271,10 +1285,14 @@ public final class ChunkHolderManager {
+             this.world.getServer().tickRateManager().nanosecondsPerTick()
+         );
+         int processedCount = 0;
+-        // LeavesX start - reuse the three unload-stage buffers across sections handled during this world tick.
+-        final ArrayList<NewChunkHolder> stage1 = new ArrayList<>();
+-        final ArrayList<NewChunkHolder.UnloadState> stage2 = new ArrayList<>();
+-        final ArrayList<NewChunkHolder> stage3 = new ArrayList<>();
++        // LeavesX start - reuse the three unload-stage buffers across sections and later world ticks.
++        final boolean reuseStageBuffers = org.leavesx.leavesx.config.LeavesXRuntime.chunkUnloadStageBufferReuseOptimization();
++        final ArrayList<NewChunkHolder> stage1 = reuseStageBuffers ? this.leavesX$unloadStage1 : new ArrayList<>();
++        final ArrayList<NewChunkHolder.UnloadState> stage2 = reuseStageBuffers ? this.leavesX$unloadStage2 : new ArrayList<>();
++        final ArrayList<NewChunkHolder> stage3 = reuseStageBuffers ? this.leavesX$unloadStage3 : new ArrayList<>();
++        stage1.clear();
++        stage2.clear();
++        stage3.clear();
+ 
+         for (final ChunkUnloadQueue.SectionToUnload sectionRef : unloadSectionsForRegion) {
+             stage1.clear();
+@@ -1394,7 +1412,12 @@ public final class ChunkHolderManager {
+                 break;
+             }
+         }
+-        // LeavesX end - reuse the three unload-stage buffers across sections handled during this world tick.
++        if (reuseStageBuffers) {
++            stage1.clear();
++            stage2.clear();
++            stage3.clear();
++        }
++        // LeavesX end - reuse the three unload-stage buffers across sections and later world ticks.
+     }
+ 
+     public enum TicketOperationType {
+@@ -1588,7 +1611,11 @@ public final class ChunkHolderManager {
+             return ret;
+         }
+ 
+-        final List<NewChunkHolder> changedFullStatus = new ArrayList<>();
++        final boolean reuseBuffer = org.leavesx.leavesx.config.LeavesXRuntime.chunkStatusUpdateBufferReuseOptimization();
++        final List<NewChunkHolder> changedFullStatus = reuseBuffer
++            ? this.leavesX$fullStatusChanges
++            : new ArrayList<>();
++        changedFullStatus.clear();
+ 
+         NewChunkHolder holder;
+         while ((holder = pendingFullLoadUpdate.poll()) != null) {
+@@ -1602,6 +1629,10 @@ public final class ChunkHolderManager {
+             }
+         }
+ 
++        if (reuseBuffer) {
++            changedFullStatus.clear();
++        }
++
+         return ret;
+     }
+ 
+diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
+index 889e871e02305c495bc8327bf66f277e0098ace3..ec8a0f4e8badf2762d2b145aec75162aa1298685 100644
+--- a/net/minecraft/server/level/ServerChunkCache.java
++++ b/net/minecraft/server/level/ServerChunkCache.java
+@@ -74,6 +74,13 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+     private final @Nullable ChunkAccess[] lastChunk = new ChunkAccess[4];
+     private final List<LevelChunk> spawningChunks = new ObjectArrayList<>();
+     private final Set<ChunkHolder> chunkHoldersToBroadcast = new ReferenceOpenHashSet<>();
++    // Starlight can publish many section notifications during one light pass. Keep those notifications in a
++    // primitive double buffer and submit one main-thread drain instead of one Runnable per section.
++    private final Object leavesX$lightUpdateLock = new Object();
++    private LeavesXLightUpdateBuffer leavesX$pendingLightUpdates = new LeavesXLightUpdateBuffer();
++    private LeavesXLightUpdateBuffer leavesX$drainLightUpdates = new LeavesXLightUpdateBuffer();
++    private boolean leavesX$lightDrainScheduled;
++    private final Runnable leavesX$lightDrainTask = this::leavesX$drainLightUpdateBatch;
+     @VisibleForDebug
+     private NaturalSpawner.@Nullable SpawnState lastSpawnState;
+     // Paper start
+@@ -706,25 +713,98 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+ 
+     @Override
+     public void onLightUpdate(final LightLayer layer, final SectionPos pos) {
+-        this.mainThreadProcessor.execute(() -> {
+-            ChunkHolder chunk = this.getVisibleChunkIfPresent(pos.chunk().pack());
+-            if (chunk != null && chunk.sectionLightChanged(layer, pos.y())) {
+-                this.chunkHoldersToBroadcast.add(chunk);
+-            }
+-        });
++        this.leavesX$enqueueLightUpdate(layer, pos.asLong());
+     }
+ 
+     /** Handles the light-worker callback without constructing a SectionPos on the worker thread. */
+     @Override
+     public void onLightUpdate(final LightLayer layer, final long sectionNode) {
+-        final long chunkKey = ChunkPos.pack(SectionPos.x(sectionNode), SectionPos.z(sectionNode));
+-        final int sectionY = SectionPos.y(sectionNode);
+-        this.mainThreadProcessor.execute(() -> {
++        this.leavesX$enqueueLightUpdate(layer, sectionNode);
++    }
++
++    private void leavesX$enqueueLightUpdate(final LightLayer layer, final long sectionNode) {
++        if (!org.leavesx.leavesx.config.LeavesXRuntime.lightUpdateNotificationBatchingOptimization()) {
++            final long chunkKey = ChunkPos.pack(SectionPos.x(sectionNode), SectionPos.z(sectionNode));
++            final int sectionY = SectionPos.y(sectionNode);
++            this.mainThreadProcessor.execute(() -> {
++                final ChunkHolder chunk = this.getVisibleChunkIfPresent(chunkKey);
++                if (chunk != null && chunk.sectionLightChanged(layer, sectionY)) {
++                    this.chunkHoldersToBroadcast.add(chunk);
++                }
++            });
++            return;
++        }
++
++        final boolean submitDrain;
++        synchronized (this.leavesX$lightUpdateLock) {
++            this.leavesX$pendingLightUpdates.add(layer == LightLayer.SKY, sectionNode);
++            submitDrain = !this.leavesX$lightDrainScheduled;
++            this.leavesX$lightDrainScheduled = true;
++        }
++        if (submitDrain) {
++            this.mainThreadProcessor.execute(this.leavesX$lightDrainTask);
++        }
++    }
++
++    private void leavesX$drainLightUpdateBatch() {
++        final LeavesXLightUpdateBuffer batch;
++        synchronized (this.leavesX$lightUpdateLock) {
++            if (this.leavesX$pendingLightUpdates.isEmpty()) {
++                this.leavesX$lightDrainScheduled = false;
++                return;
++            }
++            batch = this.leavesX$pendingLightUpdates;
++            this.leavesX$pendingLightUpdates = this.leavesX$drainLightUpdates;
++            this.leavesX$drainLightUpdates = batch;
++        }
++
++        for (int index = 0; index < batch.size; ++index) {
++            final long sectionNode = batch.sectionNodes[index];
++            final long chunkKey = ChunkPos.pack(SectionPos.x(sectionNode), SectionPos.z(sectionNode));
+             final ChunkHolder chunk = this.getVisibleChunkIfPresent(chunkKey);
+-            if (chunk != null && chunk.sectionLightChanged(layer, sectionY)) {
++            final LightLayer layer = batch.skyLight[index] ? LightLayer.SKY : LightLayer.BLOCK;
++            if (chunk != null && chunk.sectionLightChanged(layer, SectionPos.y(sectionNode))) {
+                 this.chunkHoldersToBroadcast.add(chunk);
+             }
+-        });
++        }
++        batch.clear();
++
++        synchronized (this.leavesX$lightUpdateLock) {
++            if (this.leavesX$pendingLightUpdates.isEmpty()) {
++                this.leavesX$lightDrainScheduled = false;
++                return;
++            }
++        }
++        // Keep one task per captured batch. New notifications remain ordered behind other main-thread work already
++        // queued after this task instead of being drained in an unbounded loop.
++        this.mainThreadProcessor.execute(this.leavesX$lightDrainTask);
++    }
++
++    /** Reusable primitive storage for one world light-update batch. Only the main thread drains a detached buffer. */
++    private static final class LeavesXLightUpdateBuffer {
++
++        private static final int INITIAL_CAPACITY = 1024;
++        private long[] sectionNodes = new long[INITIAL_CAPACITY];
++        private boolean[] skyLight = new boolean[INITIAL_CAPACITY];
++        private int size;
++
++        private void add(final boolean sky, final long sectionNode) {
++            if (this.size == this.sectionNodes.length) {
++                final int nextCapacity = this.sectionNodes.length + (this.sectionNodes.length >> 1);
++                this.sectionNodes = Arrays.copyOf(this.sectionNodes, nextCapacity);
++                this.skyLight = Arrays.copyOf(this.skyLight, nextCapacity);
++            }
++            this.sectionNodes[this.size] = sectionNode;
++            this.skyLight[this.size++] = sky;
++        }
++
++        private boolean isEmpty() {
++            return this.size == 0;
++        }
++
++        private void clear() {
++            this.size = 0;
++        }
+     }
+ 
+     public boolean hasActiveTickets() {

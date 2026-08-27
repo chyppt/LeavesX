@@ -1,0 +1,227 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 24 Aug 2026 14:19:27 +0800
+Subject: [PATCH] Add beta166 light deduplication and unload snapshot cache
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 5ce1c5f5982d139edf0c9d618e0d638affdb020d..d9a75dd9eef5958ce21d6d8b7ef0d94bb3f3924a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -52,7 +52,7 @@ public record LeavesXConfig(
+     boolean spectatorNoChunkLoading
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 66;
++    public static final int CURRENT_CONFIG_VERSION = 67;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index cb4251b0a39ac8ea30b30812550611dad9c6b0cc..4d87ae8a2acf3a269a8e74d8530cdaa5198823bd 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -330,7 +330,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：66。");
++        comments.put("config-version", "配置版本，请勿修改。默认：67。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index b9cd8ca36a8c59234eacb726f053dc05bedde2ba..10351e31e69e19fb6fb6d67d25b966c100277539 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -460,6 +460,10 @@ enum LeavesXOptimization {
+         "performance.network.light-update-notification-batching",
+         "合并同批区块光照通知，关闭后每个通知单独提交。默认：true。"
+     ),
++    LIGHT_UPDATE_NOTIFICATION_DEDUPLICATION(
++        "performance.network.light-update-notification-deduplication",
++        "合并同一光照层和区块节的重复通知，关闭后只批处理不去重。默认：true。"
++    ),
+     CHUNK_UNLOAD_STAGE_BUFFER_REUSE(
+         "performance.chunk.unload-stage-buffer-reuse",
+         "复用区块卸载三阶段列表，关闭后每轮重新创建。默认：true。"
+@@ -471,6 +475,10 @@ enum LeavesXOptimization {
+     CHUNK_STATUS_UPDATE_BUFFER_REUSE(
+         "performance.chunk.status-update-buffer-reuse",
+         "复用区块状态变更列表，关闭后每轮重新创建。默认：true。"
++    ),
++    CHUNK_UNLOAD_SECTION_SNAPSHOT_CACHE(
++        "performance.chunk.unload-section-snapshot-cache",
++        "缓存未变化的区块卸载节顺序，关闭后每轮重新扫描和排序。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index f65276da05ac9349ec32a478d3da69d6857f2c3c..36d56efd599868734f497c3eb71cf8b72375c94e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -819,6 +819,11 @@ public final class LeavesXRuntime {
+         return enabledForPureComputation(LeavesXOptimization.LIGHT_UPDATE_NOTIFICATION_BATCHING);
+     }
+ 
++    /** Returns whether duplicate section notifications may be coalesced within one light batch. */
++    public static boolean lightUpdateNotificationDeduplicationOptimization() {
++        return enabledForPureComputation(LeavesXOptimization.LIGHT_UPDATE_NOTIFICATION_DEDUPLICATION);
++    }
++
+     /** Returns whether the tick thread may retain its three chunk-unload stage lists. */
+     public static boolean chunkUnloadStageBufferReuseOptimization() {
+         return enabledForPureComputation(LeavesXOptimization.CHUNK_UNLOAD_STAGE_BUFFER_REUSE);
+@@ -834,6 +839,11 @@ public final class LeavesXRuntime {
+         return enabledForPureComputation(LeavesXOptimization.CHUNK_STATUS_UPDATE_BUFFER_REUSE);
+     }
+ 
++    /** Returns whether unchanged unload-section ordering may be reused between world ticks. */
++    public static boolean chunkUnloadSectionSnapshotCacheOptimization() {
++        return enabledForPureComputation(LeavesXOptimization.CHUNK_UNLOAD_SECTION_SNAPSHOT_CACHE);
++    }
++
+     /** Returns whether light packets may copy packed layer data without a temporary DataLayer. */
+     public static boolean lightLayerSnapshotCopyOptimization() {
+         return lightLayerSnapshotCopyOptimization;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 21fb558296bd360e2c51214983696e69372787e1..13456532e866ce060ba81b0e8d9f436e4d277078 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -43,9 +43,11 @@ class LeavesXConfigLoaderTest {
+         assertTrue(generated.contains("workers:"));
+         assertTrue(generated.contains("entity-activation:"));
+         assertTrue(generated.contains("light-update-notification-batching:"));
++        assertTrue(generated.contains("light-update-notification-deduplication:"));
+         assertTrue(generated.contains("unload-stage-buffer-reuse:"));
+         assertTrue(generated.contains("autosave-buffer-reuse:"));
+         assertTrue(generated.contains("status-update-buffer-reuse:"));
++        assertTrue(generated.contains("unload-section-snapshot-cache:"));
+         assertFalse(generated.contains("threading:"));
+         assertFalse(generated.contains("folia"));
+         for (final String comment : LeavesXConfigWriter.comments().values()) {
+@@ -130,15 +132,17 @@ class LeavesXConfigLoaderTest {
+     }
+ 
+     @Test
+-    void upgradesVersion65WithConfigurableChunkAndLightBatching() throws Exception {
++    void upgradesVersion66WithConfigurableChunkAndLightBatching() throws Exception {
+         final Path path = write("""
+             # 用户配置。
+-            config-version: 65
++            config-version: 66
+             performance:
+               network:
+                 light-update-notification-batching: false
++                light-update-notification-deduplication: false
+               chunk:
+                 unload-stage-buffer-reuse: false
++                unload-section-snapshot-cache: false
+             custom-extension:
+               retained: true
+             """);
+@@ -148,13 +152,17 @@ class LeavesXConfigLoaderTest {
+         final org.spongepowered.configurate.ConfigurationNode node =
+             io.papermc.paper.configuration.ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
+ 
+-        assertEquals(66, node.node("config-version").getInt());
++        assertEquals(67, node.node("config-version").getInt());
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.LIGHT_UPDATE_NOTIFICATION_BATCHING));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.LIGHT_UPDATE_NOTIFICATION_DEDUPLICATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_STAGE_BUFFER_REUSE));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_SECTION_SNAPSHOT_CACHE));
+         assertTrue(config.optimizationEnabled(LeavesXOptimization.CHUNK_AUTOSAVE_BUFFER_REUSE));
+         assertTrue(config.optimizationEnabled(LeavesXOptimization.CHUNK_STATUS_UPDATE_BUFFER_REUSE));
+         assertFalse(node.node("performance", "network", "light-update-notification-batching").getBoolean());
++        assertFalse(node.node("performance", "network", "light-update-notification-deduplication").getBoolean());
+         assertFalse(node.node("performance", "chunk", "unload-stage-buffer-reuse").getBoolean());
++        assertFalse(node.node("performance", "chunk", "unload-section-snapshot-cache").getBoolean());
+         assertTrue(node.node("performance", "chunk", "autosave-buffer-reuse").getBoolean());
+         assertTrue(node.node("performance", "chunk", "status-update-buffer-reuse").getBoolean());
+         assertTrue(node.node("custom-extension", "retained").getBoolean());
+@@ -163,7 +171,9 @@ class LeavesXConfigLoaderTest {
+         try {
+             LeavesXRuntime.publish(config);
+             assertFalse(LeavesXRuntime.lightUpdateNotificationBatchingOptimization());
++            assertFalse(LeavesXRuntime.lightUpdateNotificationDeduplicationOptimization());
+             assertFalse(LeavesXRuntime.chunkUnloadStageBufferReuseOptimization());
++            assertFalse(LeavesXRuntime.chunkUnloadSectionSnapshotCacheOptimization());
+             assertTrue(LeavesXRuntime.chunkAutosaveBufferReuseOptimization());
+             assertTrue(LeavesXRuntime.chunkStatusUpdateBufferReuseOptimization());
+         } finally {
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
+index 86b7beb3fd8fca6d19906e402a780b14f2eff59c..b10d061cef12a012c2a4ccdcc261a4a003386697 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
+@@ -71,6 +71,7 @@ class LeavesXReleaseCompatibilityTest {
+         assertTrue(defaults.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_STAGE_BUFFER_REUSE));
+         assertTrue(defaults.optimizationEnabled(LeavesXOptimization.CHUNK_AUTOSAVE_BUFFER_REUSE));
+         assertTrue(defaults.optimizationEnabled(LeavesXOptimization.CHUNK_STATUS_UPDATE_BUFFER_REUSE));
++        assertTrue(defaults.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_SECTION_SNAPSHOT_CACHE));
+     }
+ 
+     @Test
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadQueueTest.java b/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadQueueTest.java
+index a569719b35a8feaf9c469631f9e98d4c34ddc788..bf29591c3de897cc3d70d9e3fc17455a9b2e2870 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadQueueTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadQueueTest.java
+@@ -44,4 +44,23 @@ class ChunkUnloadQueueTest {
+         queue.removeSection(0, 0);
+         assertEquals(1L, queue.pendingChunkCount());
+     }
++
++    @Test
++    void reusesStableSectionSnapshotUntilQueueMembershipChanges() {
++        final ChunkUnloadQueue queue = new ChunkUnloadQueue(2);
++        queue.addChunk(0, 0);
++        queue.addChunk(8, 8);
++
++        final java.util.List<ChunkUnloadQueue.SectionToUnload> first = queue.retrieveForAllRegions();
++        final java.util.List<ChunkUnloadQueue.SectionToUnload> second = queue.retrieveForAllRegions();
++        assertTrue(first == second);
++        assertEquals(2, first.size());
++        assertTrue(first.get(0).order() < first.get(1).order());
++
++        queue.addChunk(1, 1);
++        final java.util.List<ChunkUnloadQueue.SectionToUnload> afterMutation = queue.retrieveForAllRegions();
++        assertFalse(first == afterMutation);
++        assertEquals(2, afterMutation.size());
++        assertEquals(2, afterMutation.get(0).count());
++    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/LightUpdateCallbackHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/LightUpdateCallbackHotPathTest.java
+index fcc426604fcf967d2c8435515ef8cc455ebdc9cb..b5f5c4f66a991a808e1db8604664903ace4c5bf7 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/LightUpdateCallbackHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/LightUpdateCallbackHotPathTest.java
+@@ -77,11 +77,15 @@ class LightUpdateCallbackHotPathTest {
+         final var empty = bufferClass.getDeclaredMethod("isEmpty");
+         final var sectionNodesField = bufferClass.getDeclaredField("sectionNodes");
+         final var skyLightField = bufferClass.getDeclaredField("skyLight");
++        final var seenSkySectionsField = bufferClass.getDeclaredField("seenSkySections");
++        final var seenBlockSectionsField = bufferClass.getDeclaredField("seenBlockSections");
+         final var sizeField = bufferClass.getDeclaredField("size");
+         for (final var member : java.util.List.of(add, clear, empty)) {
+             member.setAccessible(true);
+         }
+-        for (final var field : java.util.List.of(sectionNodesField, skyLightField, sizeField)) {
++        for (final var field : java.util.List.of(
++            sectionNodesField, skyLightField, seenSkySectionsField, seenBlockSectionsField, sizeField
++        )) {
+             field.setAccessible(true);
+         }
+ 
+@@ -89,10 +93,14 @@ class LightUpdateCallbackHotPathTest {
+         for (int index = 0; index < 1_500; ++index) {
+             add.invoke(buffer, (index & 1) == 0, 10_000L + index);
+         }
++        add.invoke(buffer, true, 10_000L);
++        add.invoke(buffer, false, 10_001L);
+ 
+         final long[] sectionNodes = (long[])sectionNodesField.get(buffer);
+         final boolean[] skyLight = (boolean[])skyLightField.get(buffer);
+         assertEquals(1_500, sizeField.getInt(buffer));
++        assertEquals(750, ((it.unimi.dsi.fastutil.longs.LongOpenHashSet)seenSkySectionsField.get(buffer)).size());
++        assertEquals(750, ((it.unimi.dsi.fastutil.longs.LongOpenHashSet)seenBlockSectionsField.get(buffer)).size());
+         assertTrue(sectionNodes.length >= 1_500);
+         for (int index = 0; index < 1_500; ++index) {
+             assertEquals(10_000L + index, sectionNodes[index]);

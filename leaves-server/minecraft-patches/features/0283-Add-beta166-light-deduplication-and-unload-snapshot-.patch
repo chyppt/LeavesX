@@ -1,0 +1,140 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 24 Aug 2026 14:29:53 +0800
+Subject: [PATCH] Add beta166 light deduplication and unload snapshot cache
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java b/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
+index 323b5339cbd1062106dfe7f360c4f2222d9c18c1..c31ffc62a14357e8eaf8321d69eff743c531a7c9 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
+@@ -19,7 +19,11 @@ public final class ChunkUnloadQueue {
+ 
+     /** Exact number of chunk holders currently waiting for unload processing. */
+     private final AtomicLong pendingChunkCount = new AtomicLong();
++    private final AtomicLong mutationVersion = new AtomicLong();
+     private final ConcurrentChainedLong2ReferenceHashTable<UnloadSection> unloadSections = new ConcurrentChainedLong2ReferenceHashTable<>();
++    private final Object snapshotLock = new Object();
++    private volatile long cachedSnapshotVersion = Long.MIN_VALUE;
++    private volatile List<SectionToUnload> cachedSectionSnapshot = List.of();
+ 
+     /*
+      * Note: write operations do not occur in parallel for any given section.
+@@ -43,6 +47,27 @@ public final class ChunkUnloadQueue {
+     }
+ 
+     public List<SectionToUnload> retrieveForAllRegions() {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.chunkUnloadSectionSnapshotCacheOptimization()) {
++            final long version = this.mutationVersion.get();
++            final List<SectionToUnload> cached = this.cachedSectionSnapshot;
++            if (this.cachedSnapshotVersion == version) {
++                return cached;
++            }
++            synchronized (this.snapshotLock) {
++                final long lockedVersion = this.mutationVersion.get();
++                if (this.cachedSnapshotVersion != lockedVersion) {
++                    // The table iterator is weakly consistent by design. Publish one bounded snapshot and let a
++                    // concurrent mutation invalidate it on the next call instead of retrying on the tick thread.
++                    this.cachedSectionSnapshot = List.copyOf(this.buildSectionSnapshot());
++                    this.cachedSnapshotVersion = lockedVersion;
++                }
++                return this.cachedSectionSnapshot;
++            }
++        }
++        return this.buildSectionSnapshot();
++    }
++
++    private List<SectionToUnload> buildSectionSnapshot() {
+         final List<SectionToUnload> ret = new ArrayList<>();
+ 
+         for (final Iterator<ConcurrentChainedLong2ReferenceHashTable.TableEntry<UnloadSection>> iterator = this.unloadSections.entryIterator(); iterator.hasNext();) {
+@@ -70,6 +95,7 @@ public final class ChunkUnloadQueue {
+         final UnloadSection removed = this.unloadSections.remove(CoordinateUtils.getChunkKey(sectionX, sectionZ));
+         if (removed != null) {
+             this.pendingChunkCount.addAndGet(-removed.chunks.size());
++            this.mutationVersion.incrementAndGet();
+         }
+         return removed;
+     }
+@@ -92,6 +118,7 @@ public final class ChunkUnloadQueue {
+         final boolean added = section.chunks.add(chunkKey);
+         if (added) {
+             this.pendingChunkCount.incrementAndGet();
++            this.mutationVersion.incrementAndGet();
+         }
+         return added;
+     }
+@@ -116,6 +143,7 @@ public final class ChunkUnloadQueue {
+         }
+ 
+         this.pendingChunkCount.decrementAndGet();
++        this.mutationVersion.incrementAndGet();
+ 
+         if (section.chunks.isEmpty()) {
+             this.unloadSections.remove(sectionKey);
+@@ -133,6 +161,7 @@ public final class ChunkUnloadQueue {
+     public long removeFirstChunk(final int sectionX, final int sectionZ, final UnloadSection section) {
+         final long chunkKey = section.chunks.removeFirstLong();
+         this.pendingChunkCount.decrementAndGet();
++        this.mutationVersion.incrementAndGet();
+         if (section.chunks.isEmpty()) {
+             this.unloadSections.remove(CoordinateUtils.getChunkKey(sectionX, sectionZ));
+         }
+diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
+index ec8a0f4e8badf2762d2b145aec75162aa1298685..b489b8fddc378a91d2365dfcf852e34b90d40cc4 100644
+--- a/net/minecraft/server/level/ServerChunkCache.java
++++ b/net/minecraft/server/level/ServerChunkCache.java
+@@ -4,6 +4,7 @@ import com.google.common.annotations.VisibleForTesting;
+ import com.mojang.datafixers.DataFixer;
+ import com.mojang.logging.LogUtils;
+ import it.unimi.dsi.fastutil.longs.LongSet;
++import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+ import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+ import it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet;
+ import java.io.IOException;
+@@ -737,7 +738,11 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+ 
+         final boolean submitDrain;
+         synchronized (this.leavesX$lightUpdateLock) {
+-            this.leavesX$pendingLightUpdates.add(layer == LightLayer.SKY, sectionNode);
++            this.leavesX$pendingLightUpdates.add(
++                layer == LightLayer.SKY,
++                sectionNode,
++                org.leavesx.leavesx.config.LeavesXRuntime.lightUpdateNotificationDeduplicationOptimization()
++            );
+             submitDrain = !this.leavesX$lightDrainScheduled;
+             this.leavesX$lightDrainScheduled = true;
+         }
+@@ -786,9 +791,23 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+         private static final int INITIAL_CAPACITY = 1024;
+         private long[] sectionNodes = new long[INITIAL_CAPACITY];
+         private boolean[] skyLight = new boolean[INITIAL_CAPACITY];
++        private final LongOpenHashSet seenSkySections = new LongOpenHashSet(INITIAL_CAPACITY);
++        private final LongOpenHashSet seenBlockSections = new LongOpenHashSet(INITIAL_CAPACITY);
+         private int size;
+ 
+         private void add(final boolean sky, final long sectionNode) {
++            this.add(sky, sectionNode, true);
++        }
++
++        private void add(final boolean sky, final long sectionNode, final boolean deduplicate) {
++            // A light worker can report the same section several times before the main-thread handoff. The section
++            // state is already coalesced by ChunkHolder, so retaining only the first notification is behavior-neutral.
++            if (deduplicate) {
++                final LongOpenHashSet seen = sky ? this.seenSkySections : this.seenBlockSections;
++                if (!seen.add(sectionNode)) {
++                    return;
++                }
++            }
+             if (this.size == this.sectionNodes.length) {
+                 final int nextCapacity = this.sectionNodes.length + (this.sectionNodes.length >> 1);
+                 this.sectionNodes = Arrays.copyOf(this.sectionNodes, nextCapacity);
+@@ -804,6 +823,8 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+ 
+         private void clear() {
+             this.size = 0;
++            this.seenSkySections.clear();
++            this.seenBlockSections.clear();
+         }
+     }
+ 

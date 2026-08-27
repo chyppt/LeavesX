@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 25 Aug 2026 22:19:23 +0800
+Subject: [PATCH] Admit medium natural-spawn snapshots when compute workers are
+ idle
+
+
+diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
+index b489b8fddc378a91d2365dfcf852e34b90d40cc4..8a0caf5bd172973b3263fc94d3cac5b80a7bc39b 100644
+--- a/net/minecraft/server/level/ServerChunkCache.java
++++ b/net/minecraft/server/level/ServerChunkCache.java
+@@ -637,8 +637,11 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+             );
+         }
+         final boolean useParallelCounting = org.leavesx.leavesx.config.LeavesXRuntime.parallelMobSpawnCounting()
+-            && org.leavesx.leavesx.runtime.LeavesXComputeExecutor.workerCount() > 1
+-            && entityCount >= org.leavesx.leavesx.config.LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities();
++            && org.leavesx.leavesx.runtime.LeavesXComputeExecutor.shouldAttempt(
++                org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.MOB_SPAWN_COUNTING,
++                entityCount,
++                org.leavesx.leavesx.config.LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities()
++            );
+         return NaturalSpawner.createStateOptimized(
+             chunkCount,
+             this.level.getAllEntities(),

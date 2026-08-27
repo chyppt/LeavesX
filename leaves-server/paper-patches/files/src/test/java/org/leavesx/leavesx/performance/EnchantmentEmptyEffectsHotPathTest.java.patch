@@ -1,0 +1,64 @@
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EnchantmentEmptyEffectsHotPathTest.java
+@@ -1,0 +_,61 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import net.minecraft.world.item.enchantment.Enchantment;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies empty enchantment-effect lists do not create unused loot contexts. */
++@Normal
++final class EnchantmentEmptyEffectsHotPathTest {
++
++    @Test
++    void tickSkipsContextCreationWhenNoTickEffectsExist() throws IOException {
++        assertEmptyCheckPrecedesContextCreation(method("tick"), "entityContext");
++    }
++
++    @Test
++    void damageImmunitySkipsContextCreationWhenNoImmunityEffectsExist() throws IOException {
++        assertEmptyCheckPrecedesContextCreation(method("isImmuneToDamage"), "damageContext");
++    }
++
++    private static void assertEmptyCheckPrecedesContextCreation(final MethodNode method, final String contextMethod) {
++        final MethodInsnNode[] calls = Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++        final int effects = indexOf(calls, "getEffects");
++        final int emptyCheck = indexOf(calls, "isEmpty");
++        final int context = indexOf(calls, contextMethod);
++
++        assertTrue(effects >= 0, () -> method.name + " must read its effect list");
++        assertTrue(emptyCheck > effects, () -> method.name + " must reject an empty effect list");
++        assertTrue(context > emptyCheck, () -> method.name + " must create its loot context after the empty check");
++    }
++
++    private static int indexOf(final MethodInsnNode[] calls, final String methodName) {
++        for (int index = 0; index < calls.length; ++index) {
++            if (calls[index].name.equals(methodName)) {
++                return index;
++            }
++        }
++        return -1;
++    }
++
++    private static MethodNode method(final String name) throws IOException {
++        final ClassNode classNode = new ClassNode(Opcodes.ASM9);
++        new ClassReader(Enchantment.class.getName()).accept(classNode, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return classNode.methods.stream()
++            .filter(method -> method.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing Enchantment#" + name));
++    }
++}

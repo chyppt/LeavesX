@@ -30,11 +30,12 @@ public class GlobalConfigManager {
             return;
         }
 
+        final Set<String> sourceKeys = Set.copyOf(LeavesConfig.config.getKeys(true));
         for (Field field : LeavesConfig.class.getDeclaredFields()) {
             initField(field, null, CONFIG_START);
         }
         verifiedConfigs.values().forEach(config -> config.validator().runAfterLoader(config.get(), false));
-        clearRemovedConfig();
+        clearGeneratedUnmanagedConfig(sourceKeys);
         LeavesConfig.save();
 
         loaded = true;
@@ -45,11 +46,12 @@ public class GlobalConfigManager {
             return;
         }
 
+        final Set<String> sourceKeys = Set.copyOf(LeavesConfig.config.getKeys(true));
         for (Field field : LeavesConfig.class.getDeclaredFields()) {
             initField(field, null, CONFIG_START);
         }
         verifiedConfigs.values().stream().filter(config -> !config.lock()).forEach(config -> config.validator().runAfterLoader(config.get(), true));
-        clearRemovedConfig();
+        clearGeneratedUnmanagedConfig(sourceKeys);
         LeavesConfig.save();
     }
 
@@ -123,14 +125,23 @@ public class GlobalConfigManager {
         }
     }
 
-    private static void clearRemovedConfig() {
-        for (String key : LeavesConfig.config.getKeys(true)) {
+    /**
+     * Removes only unmanaged paths created during this load cycle.
+     *
+     * <p>Existing unknown paths may belong to a newer Leaves version or an extension. LeavesX keeps those values so a
+     * core replacement or temporary downgrade cannot silently destroy configuration. Successfully converted legacy
+     * paths are still removed directly by {@link VerifiedTransferConfig}.</p>
+     */
+    static void clearGeneratedUnmanagedConfig(@NotNull Set<String> sourceKeys) {
+        for (String key : Set.copyOf(LeavesConfig.config.getKeys(true))) {
             if (!key.startsWith(CONFIG_START) || key.equals(CONFIG_START)) {
                 continue;
             }
 
             String keyWithoutPrefix = key.substring(CONFIG_START.length());
-            if (!verifiedConfigs.containsKey(keyWithoutPrefix) && getVerifiedConfigSubPaths(keyWithoutPrefix + ".").isEmpty()) {
+            if (!sourceKeys.contains(key)
+                && !verifiedConfigs.containsKey(keyWithoutPrefix)
+                && getVerifiedConfigSubPaths(keyWithoutPrefix + ".").isEmpty()) {
                 LeavesConfig.config.set(key, null);
             }
         }

@@ -1,0 +1,323 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 25 Aug 2026 17:00:02 +0800
+Subject: [PATCH] Add beta170 startup AI staggering and container hot paths
+
+
+diff --git a/net/minecraft/world/entity/Mob.java b/net/minecraft/world/entity/Mob.java
+index bc1d421be36e36100468dee7eff88d3c221008cf..28b1f22862cd1c0e65e9cedcb467098e2c9fc2ed 100644
+--- a/net/minecraft/world/entity/Mob.java
++++ b/net/minecraft/world/entity/Mob.java
+@@ -58,6 +58,7 @@ import net.minecraft.world.entity.ai.navigation.PathNavigation;
+ import net.minecraft.world.entity.ai.sensing.Sensing;
+ import net.minecraft.world.entity.item.ItemEntity;
+ import net.minecraft.world.entity.monster.Enemy;
++import net.minecraft.world.entity.monster.Monster;
+ import net.minecraft.world.entity.player.Player;
+ import net.minecraft.world.entity.vehicle.boat.AbstractBoat;
+ import net.minecraft.world.item.Item;
+@@ -83,6 +84,7 @@ import net.minecraft.world.level.pathfinder.Path;
+ import net.minecraft.world.level.pathfinder.PathType;
+ import net.minecraft.world.level.storage.ValueInput;
+ import net.minecraft.world.level.storage.ValueOutput;
++import net.minecraft.world.level.entity.EntityTypeTest;
+ import net.minecraft.world.level.storage.loot.LootParams;
+ import net.minecraft.world.level.storage.loot.LootTable;
+ import net.minecraft.world.level.storage.loot.parameters.LootContextParamSets;
+@@ -102,6 +104,7 @@ import org.bukkit.event.entity.EntityUnleashEvent;
+ 
+ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUser, Leashable {
+     private static final EntityDataAccessor<Byte> DATA_MOB_FLAGS_ID = SynchedEntityData.defineId(Mob.class, EntityDataSerializers.BYTE);
++    private static final EntityTypeTest<Entity, Monster> LEAVESX_MONSTER_ENTITY_TYPE = EntityTypeTest.forClass(Monster.class);
+     private static final int MOB_FLAG_NO_AI = 1;
+     private static final int MOB_FLAG_LEFTHANDED = 2;
+     private static final int MOB_FLAG_AGGRESSIVE = 4;
+@@ -150,6 +153,8 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+     private int homeRadius = -1;
+     public boolean aware = true; // CraftBukkit
+     public net.kyori.adventure.util.TriState despawnInPeacefulOverride = net.kyori.adventure.util.TriState.NOT_SET; // Paper - allow changing despawnInPeaceful
++    private long leavesXDenseMonsterAiNextCheckTick = Long.MIN_VALUE;
++    private boolean leavesXDenseMonsterAiActive;
+ 
+     protected Mob(final EntityType<? extends Mob> type, final Level level) {
+         super(type, level);
+@@ -846,7 +851,16 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+         profiler.push("sensing");
+         this.sensing.tick();
+         profiler.pop();
++        // LeavesX start - spread the first AI/pathfinding burst after a restart across a few ticks.
++        // Sensing remains on its vanilla schedule; only the expensive goal/navigation/brain phases are deferred.
++        if (!org.leavesx.leavesx.config.LeavesXRuntime.allowStartupAiStep(
++            this instanceof net.minecraft.world.entity.npc.villager.Villager
++        )) {
++            return;
++        }
++        // LeavesX end
+         int idBasedTickCount = this.tickCount + this.getId();
++        final boolean denseMonsterAi = this.leavesXDenseMonsterAiActive();
+         if (idBasedTickCount % 2 != 0 && this.tickCount > 1) {
+             profiler.push("targetSelector");
+             this.targetSelector.tickRunningGoals(false);
+@@ -854,13 +868,27 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+             profiler.push("goalSelector");
+             this.goalSelector.tickRunningGoals(false);
+             profiler.pop();
+-        } else {
++        } else if (!denseMonsterAi
++            || org.leavesx.leavesx.performance.DenseMonsterAiPolicy.fullGoalSelectionDue(
++                this.tickCount,
++                this.getId(),
++                org.leavesx.leavesx.config.LeavesXRuntime.denseMonsterAiGoalIntervalTicks()
++            )) {
+             profiler.push("targetSelector");
+             this.targetSelector.tick();
+             profiler.pop();
+             profiler.push("goalSelector");
+             this.goalSelector.tick();
+             profiler.pop();
++        } else {
++            // Keep target acquisition and running goals alive while spreading expensive candidate selection across
++            // ticks. A targetless dense monster can therefore still finish movement/attack goals normally.
++            profiler.push("targetSelector");
++            this.targetSelector.tick();
++            profiler.pop();
++            profiler.push("goalSelector");
++            this.goalSelector.tickRunningGoals(false);
++            profiler.pop();
+         }
+ 
+         profiler.push("navigation");
+@@ -880,6 +908,41 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+         profiler.pop();
+     }
+ 
++    /**
++     * Refreshes the local monster-density snapshot at a low cadence and returns the cached decision for this tick.
++     *
++     * <p>Only {@link Monster} instances without a current target are eligible. The bounded query stops as soon as
++     * the configured threshold is reached, and the pooled buffer avoids an allocation for every monster tick.</p>
++     */
++    private boolean leavesXDenseMonsterAiActive() {
++        if (!(this instanceof Monster)
++            || !org.leavesx.leavesx.config.LeavesXRuntime.denseMonsterAiThrottling()
++            || this.getTarget() != null) {
++            return false;
++        }
++
++        final long currentTick = this.level().getGameTime();
++        if (currentTick < this.leavesXDenseMonsterAiNextCheckTick) {
++            return this.leavesXDenseMonsterAiActive;
++        }
++
++        final int checkInterval = org.leavesx.leavesx.config.LeavesXRuntime.denseMonsterAiCheckIntervalTicks();
++        this.leavesXDenseMonsterAiNextCheckTick = currentTick + checkInterval;
++        final int radius = org.leavesx.leavesx.config.LeavesXRuntime.denseMonsterAiNearbyRadius();
++        final int threshold = org.leavesx.leavesx.config.LeavesXRuntime.denseMonsterAiMinimumEntities();
++        final AABB searchBox = this.getBoundingBox().inflate(radius, radius, radius);
++        try (Level.LeavesXEntityQueryBuffer scan = Level.leavesX$acquireEntityQueryBuffer()) {
++            this.leavesXDenseMonsterAiActive = scan.countUpTo(
++                this.level(),
++                LEAVESX_MONSTER_ENTITY_TYPE,
++                searchBox,
++                EntitySelector.NO_SPECTATORS,
++                threshold
++            ) >= threshold;
++        }
++        return this.leavesXDenseMonsterAiActive;
++    }
++
+     protected void customServerAiStep(final ServerLevel level) {
+     }
+ 
+diff --git a/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java b/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
+index 98ffefe0ae6512ef6dee5b729227cda7701ba688..b25429e12a664c06d029de3aa41eaa04f2cec021 100644
+--- a/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
++++ b/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
+@@ -16,6 +16,11 @@ public abstract class ContainerOpenersCounter {
+     private static final int CHECK_TICK_DELAY = 5;
+     private int openCount;
+     private double maxInteractionRange;
++    // Rechecks happen every five ticks while a container is open. Keep the immutable geometry and only rebuild it
++    // when the block position or effective interaction range changes.
++    private BlockPos leavesXSearchBoxPosition;
++    private double leavesXSearchBoxRange = Double.NaN;
++    private AABB leavesXSearchBox;
+     // CraftBukkit start
+     public boolean opened;
+     public void onOpenAPI(Level level, BlockPos pos, BlockState blockState) {
+@@ -108,12 +113,17 @@ public abstract class ContainerOpenersCounter {
+     }
+ 
+     public List<ContainerUser> getEntitiesWithContainerOpen(final Level level, final BlockPos pos) {
+-        double range = this.maxInteractionRange + 4.0;
+-        AABB searchBox = new AABB(pos).inflate(range);
+-        return level.getEntities((Entity)null, searchBox, entity -> this.hasContainerOpen(entity, pos))
+-            .stream()
+-            .map(entity -> (ContainerUser)entity)
+-            .collect(Collectors.toList());
++        final double range = this.maxInteractionRange + 4.0;
++        final AABB searchBox = org.leavesx.leavesx.config.LeavesXRuntime.containerOpenerSearchBoxCacheOptimization()
++            ? this.leavesXGetSearchBox(pos, range)
++            : new AABB(pos).inflate(range);
++        final List<Entity> entities = level.getEntities((Entity)null, searchBox, entity -> this.hasContainerOpen(entity, pos));
++        if (org.leavesx.leavesx.config.LeavesXRuntime.containerUserListScanOptimization()) {
++            // The query predicate admits only ContainerUser instances. The returned Level list is already independent,
++            // mutable and in the same order as the stream-collected list used by the original implementation.
++            return (List<ContainerUser>)(List<?>)entities;
++        }
++        return entities.stream().map(entity -> (ContainerUser)entity).collect(Collectors.toList());
+     }
+ 
+     private boolean hasContainerOpen(final Entity entity, final BlockPos blockPos) {
+@@ -171,7 +181,9 @@ public abstract class ContainerOpenersCounter {
+ 
+     private int leavesXCountOpeners(final Level level, final BlockPos pos) {
+         final double range = this.maxInteractionRange + 4.0;
+-        final AABB searchBox = new AABB(pos).inflate(range);
++        final AABB searchBox = org.leavesx.leavesx.config.LeavesXRuntime.containerOpenerSearchBoxCacheOptimization()
++            ? this.leavesXGetSearchBox(pos, range)
++            : new AABB(pos).inflate(range);
+         try (Level.LeavesXEntityQueryBuffer scan = Level.leavesX$acquireEntityQueryBuffer()) {
+             final List<Entity> entities = scan.query(level, null, searchBox, entity -> this.hasContainerOpen(entity, pos));
+             this.maxInteractionRange = 0.0;
+@@ -183,6 +195,17 @@ public abstract class ContainerOpenersCounter {
+         }
+     }
+ 
++    private AABB leavesXGetSearchBox(final BlockPos pos, final double range) {
++        if (this.leavesXSearchBox == null
++            || !pos.equals(this.leavesXSearchBoxPosition)
++            || Double.compare(range, this.leavesXSearchBoxRange) != 0) {
++            this.leavesXSearchBoxPosition = pos.immutable();
++            this.leavesXSearchBoxRange = range;
++            this.leavesXSearchBox = new AABB(pos).inflate(range);
++        }
++        return this.leavesXSearchBox;
++    }
++
+     public int getOpenerCount() {
+         return this.openCount;
+     }
+diff --git a/net/minecraft/world/level/block/entity/HopperBlockEntity.java b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
+index 40e3ab792220066739dd4392c9e2cd0c8961e9fe..c10980ddbd767fdd63c90ba1ba8bd509a796e7b8 100644
+--- a/net/minecraft/world/level/block/entity/HopperBlockEntity.java
++++ b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
+@@ -186,6 +186,18 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
+     private static int getFullState(final HopperBlockEntity hopper) {
+         hopper.unpackLootTable(null);
+ 
++        // Lithium's stack list subscribes to count changes, so the counters remain correct even when plugins mutate
++        // existing ItemStack instances. The first active check upgrades the existing backing list without copying it.
++        if (org.leavesx.leavesx.config.LeavesXRuntime.hopperSlotStateCacheOptimization()
++            && org.leavesmc.leaves.LeavesConfig.performance.sleepingBlockEntity) {
++            final LithiumStackList stackList = InventoryHelper.getLithiumStackList(hopper);
++            final int occupiedSlots = stackList.getOccupiedSlots();
++            if (occupiedSlots == 0) {
++                return HOPPER_EMPTY;
++            }
++            return stackList.getFullSlots() == stackList.size() ? HOPPER_IS_FULL : HOPPER_HAS_ITEMS;
++        }
++
+         final List<ItemStack> hopperItems = hopper.items;
+ 
+         boolean empty = true;
+@@ -592,6 +604,26 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
+     }
+ 
+     private static boolean isFullContainer(final Container container, final Direction direction) {
++        // A sided inventory exposes only a face-specific subset, so its full-slot counter cannot answer this query.
++        // For non-sided Lithium inventories the counter describes the same slots that vanilla scans here.
++        if (org.leavesx.leavesx.config.LeavesXRuntime.hopperSlotStateCacheOptimization()
++            && !(container instanceof WorldlyContainer)
++            && container instanceof LithiumInventory lithiumInventory) {
++            final LithiumStackList stackList = InventoryHelper.getLithiumStackList(lithiumInventory);
++            return stackList.getFullSlots() == stackList.size();
++        }
++
++        if (org.leavesx.leavesx.config.LeavesXRuntime.hopperDirectSlotScansOptimization()
++            && !(container instanceof WorldlyContainer)) {
++            for (int slot = 0, size = container.getContainerSize(); slot < size; slot++) {
++                final ItemStack itemStack = container.getItem(slot);
++                if (itemStack.getCount() < itemStack.getMaxStackSize()) {
++                    return false;
++                }
++            }
++            return true;
++        }
++
+         int[] slots = getSlots(container, direction);
+ 
+         for (int slot : slots) {
+@@ -624,9 +656,18 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
+             }
+             // Leaves end - Lithium Sleeping Block Entity
+ 
+-            for (int slot : getSlots(container, direction)) {
+-                if (tryTakeInItemFromSlot(hopper, container, slot, direction, level)) { // Spigot
+-                    return true;
++            if (org.leavesx.leavesx.config.LeavesXRuntime.hopperDirectSlotScansOptimization()
++                && !(container instanceof WorldlyContainer)) {
++                for (int slot = 0, size = container.getContainerSize(); slot < size; slot++) {
++                    if (tryTakeInItemFromSlot(hopper, container, slot, direction, level)) { // Spigot
++                        return true;
++                    }
++                }
++            } else {
++                for (int slot : getSlots(container, direction)) {
++                    if (tryTakeInItemFromSlot(hopper, container, slot, direction, level)) { // Spigot
++                        return true;
++                    }
+                 }
+             }
+ 
+@@ -636,6 +677,11 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
+                 && (!org.leavesmc.leaves.LeavesConfig.modify.oldMC.oldHopperSuckInBehavior && blockState.isCollisionShapeFullBlock(level, blockPos))
+                 && !blockState.is(BlockTags.DOES_NOT_BLOCK_HOPPERS); // Leaves - oldHopperSuckInBehavior
+             if (!isBlocked) {
++                if (!org.leavesmc.leaves.LeavesConfig.performance.sleepingBlockEntity
++                    && org.leavesx.leavesx.config.LeavesXRuntime.hopperItemEntityQueryBufferOptimization()
++                    && hopper instanceof HopperBlockEntity blockHopper) {
++                    return blockHopper.leavesXTrySuckInItemEntities(level);
++                }
+                 for (ItemEntity entity : org.leavesmc.leaves.LeavesConfig.performance.sleepingBlockEntity ? lithiumGetInputItemEntities(level, hopper) : getItemsAtAndAbove(level, hopper)) { // Leaves - Lithium Sleeping Block Entity
+                     if (addItem(hopper, entity)) {
+                         return true;
+@@ -937,17 +983,38 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
+         }
+     }
+ 
++    private boolean leavesXTrySuckInItemEntities(final Level level) {
++        final AABB searchBox = this.leavesXGetEntityContainerQueryCache().itemEntitySearchBox;
++        try (Level.LeavesXEntityQueryBuffer scan = Level.leavesX$acquireEntityQueryBuffer()) {
++            final List<ItemEntity> entities = scan.queryOfClass(
++                level,
++                ItemEntity.class,
++                null,
++                searchBox,
++                EntitySelector.ENTITY_STILL_ALIVE
++            );
++            for (int index = 0, size = entities.size(); index < size; index++) {
++                if (addItem(this, entities.get(index))) {
++                    return true;
++                }
++            }
++            return false;
++        }
++    }
++
+     private static final class LeavesXEntityContainerQueryCache {
+ 
+         private final BlockPos sourceContainerPos;
+         private BlockPos attachedContainerPos;
+         private final AABB sourceContainerSearchBox;
++        private final AABB itemEntitySearchBox;
+         private AABB attachedContainerSearchBox;
+         private final List<Entity> queryResults = new java.util.ArrayList<>(1);
+ 
+         private LeavesXEntityContainerQueryCache(final BlockPos hopperPos, final Direction facing) {
+             this.sourceContainerPos = hopperPos.above();
+             this.sourceContainerSearchBox = new AABB(this.sourceContainerPos);
++            this.itemEntitySearchBox = Hopper.SUCK_AABB.move(hopperPos.getX(), hopperPos.getY(), hopperPos.getZ());
+             this.updateAttachedContainer(hopperPos, facing);
+         }
+ 

@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 27 Aug 2026 11:51:28 +0800
+Subject: [PATCH] Keep fakeplayer prefix out of default lifecycle messages
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 19f5ad498b16f02b83923c42706548c0085a31fd..fb6dee138557c38f6c148a1178c7e8cca0841d7d 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -433,7 +433,7 @@ public final class LeavesXConfigWriter {
+         comments.put("console-messages.show-offline-mode-warning", "是否显示离线模式安全警告。默认：false。");
+         comments.put("console-messages.show-collision-conversion-warning", "是否显示碰撞模式自动转换提示。默认：false。");
+         comments.put("fakeplayer.clean-invalid-resident-bots", "只清理压缩 NBT 已确认损坏的假人登记；缺世界、世界未加载或缺文件都会保留。默认：true。");
+-        comments.put("fakeplayer.display-prefix", "假人显示名前缀，支持 MiniMessage 和 &/§ 颜色代码，空字符串关闭。默认：[假人]。");
++        comments.put("fakeplayer.display-prefix", "假人头顶和 TAB 显示前缀；默认加入退出提示不带前缀。支持 MiniMessage 和 &/§ 颜色代码。默认：[假人]。");
+         comments.put("fakeplayer.forbidden-name-contains", "假人用户名包含这些文字时禁止创建，大小写不敏感；空列表不限制。默认：[]。");
+         comments.put("messages.join", "自定义进入提示，可用 <name> 和 <display_name>，支持 MiniMessage 和 &/§ 颜色代码，空字符串保持默认。默认：空。");
+         comments.put("messages.quit", "自定义退出提示，可用 <name> 和 <display_name>，支持 MiniMessage 和 &/§ 颜色代码，空字符串保持默认。默认：空。");
+diff --git a/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java b/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
+index c12b4ab5e1e3f0bf8a01153911019fa67f1daf4f..8f8528c00e13c6e4c9c1c2833f24376ab0c93ca3 100644
+--- a/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
++++ b/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
+@@ -1,6 +1,7 @@
+ package org.leavesx.leavesx.presentation;
+ 
+ import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.NamedTextColor;
+ import net.kyori.adventure.text.minimessage.MiniMessage;
+ import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
+ import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
+@@ -29,6 +30,18 @@ public final class LeavesXPlayerPresentation {
+         return deserializeConfigured(prefix).append(Component.text(accountName));
+     }
+ 
++    /** Builds the default fakeplayer join message from the account name, excluding the display-only prefix. */
++    public static Component defaultJoinMessage(final String accountName) {
++        return Component.translatable("multiplayer.player.joined", Component.text(accountName))
++            .color(NamedTextColor.YELLOW);
++    }
++
++    /** Builds the default fakeplayer quit message from the account name, excluding the display-only prefix. */
++    public static Component defaultQuitMessage(final String accountName) {
++        return Component.translatable("multiplayer.player.left", Component.text(accountName))
++            .color(NamedTextColor.YELLOW);
++    }
++
+     /** Returns the configured join message, or the event's Paper default when no template is configured. */
+     public static Component joinMessage(
+         final String accountName,
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+index d8b626b763ccc7e6db38246a36d7393bfbd52ac5..d9d22b363ab185ca1652f1fd31be20356402aefd 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+@@ -3,6 +3,7 @@ package org.leavesx.leavesx.config;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ 
+ import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.NamedTextColor;
+ import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.AfterEach;
+@@ -53,6 +54,20 @@ final class LeavesXPlayerPresentationTest {
+         ));
+     }
+ 
++    @Test
++    void defaultLifecycleMessagesExcludeTheDisplayOnlyPrefix() {
++        publishConfig("&a[假人]", "", "");
++
++        assertEquals(
++            Component.translatable("multiplayer.player.joined", Component.text("bot")).color(NamedTextColor.YELLOW),
++            LeavesXPlayerPresentation.defaultJoinMessage("bot")
++        );
++        assertEquals(
++            Component.translatable("multiplayer.player.left", Component.text("bot")).color(NamedTextColor.YELLOW),
++            LeavesXPlayerPresentation.defaultQuitMessage("bot")
++        );
++    }
++
+     private static void publishConfig(final String prefix, final String join, final String quit) {
+         final java.nio.file.Path path;
+         try {

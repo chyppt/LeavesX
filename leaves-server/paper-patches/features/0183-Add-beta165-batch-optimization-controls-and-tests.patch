@@ -1,0 +1,355 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 23 Aug 2026 22:20:07 +0800
+Subject: [PATCH] Add beta165 batch optimization controls and tests
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 4472dc766a867a97735108938f1e80d7089a5ba3..5ce1c5f5982d139edf0c9d618e0d638affdb020d 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -52,7 +52,7 @@ public record LeavesXConfig(
+     boolean spectatorNoChunkLoading
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 65;
++    public static final int CURRENT_CONFIG_VERSION = 66;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 7cba09803f50bdd88eaedbdcad35e911fe8c0802..cb4251b0a39ac8ea30b30812550611dad9c6b0cc 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -330,7 +330,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：65。");
++        comments.put("config-version", "配置版本，请勿修改。默认：66。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 9f3891cdc899dfe5465b98dc6eb2c21adca31393..b9cd8ca36a8c59234eacb726f053dc05bedde2ba 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -455,6 +455,22 @@ enum LeavesXOptimization {
+     BLOCK_TRAVERSAL_VISITED_SET_REUSE(
+         "performance.entity-update.block-traversal-visited-set-reuse",
+         "复用实体移动时的方块去重集合，关闭后每次新建集合。默认：true。"
++    ),
++    LIGHT_UPDATE_NOTIFICATION_BATCHING(
++        "performance.network.light-update-notification-batching",
++        "合并同批区块光照通知，关闭后每个通知单独提交。默认：true。"
++    ),
++    CHUNK_UNLOAD_STAGE_BUFFER_REUSE(
++        "performance.chunk.unload-stage-buffer-reuse",
++        "复用区块卸载三阶段列表，关闭后每轮重新创建。默认：true。"
++    ),
++    CHUNK_AUTOSAVE_BUFFER_REUSE(
++        "performance.chunk.autosave-buffer-reuse",
++        "复用区块自动保存重排列表，关闭后每轮重新创建。默认：true。"
++    ),
++    CHUNK_STATUS_UPDATE_BUFFER_REUSE(
++        "performance.chunk.status-update-buffer-reuse",
++        "复用区块状态变更列表，关闭后每轮重新创建。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 22f4ab2f1c3df56668df3eb3cd896835253040a3..f65276da05ac9349ec32a478d3da69d6857f2c3c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -90,8 +90,10 @@ public final class LeavesXRuntime {
+     private static boolean naturalSpawnPositionChecksOptimization = true;
+     private static boolean naturalSpawnChunkReadinessOptimization = true;
+     private static boolean naturalSpawnLocalCapAccountingOptimization = true;
+-    private static long fineGrainedOptimizationMaskLow = LeavesXOptimization.allEnabledMaskLow();
+-    private static long fineGrainedOptimizationMaskHigh = LeavesXOptimization.allEnabledMaskHigh();
++    // Worker-owned light and chunk tasks read these masks. Volatile publication makes reload changes visible without
++    // adding locks to any hot path.
++    private static volatile long fineGrainedOptimizationMaskLow = LeavesXOptimization.allEnabledMaskLow();
++    private static volatile long fineGrainedOptimizationMaskHigh = LeavesXOptimization.allEnabledMaskHigh();
+     private static final int VILLAGER_FULL_COMPATIBILITY_CONTEXT = 1;
+     private static final int VILLAGER_BRAIN_SAFETY_CONTEXT = 1 << 1;
+     private static final ThreadLocal<Integer> VILLAGER_OPTIMIZATION_CONTEXT = ThreadLocal.withInitial(() -> 0);
+@@ -812,6 +814,26 @@ public final class LeavesXRuntime {
+         return lightUpdatePacketAssemblyOptimization;
+     }
+ 
++    /** Returns whether light workers may coalesce section notifications into one main-thread drain. */
++    public static boolean lightUpdateNotificationBatchingOptimization() {
++        return enabledForPureComputation(LeavesXOptimization.LIGHT_UPDATE_NOTIFICATION_BATCHING);
++    }
++
++    /** Returns whether the tick thread may retain its three chunk-unload stage lists. */
++    public static boolean chunkUnloadStageBufferReuseOptimization() {
++        return enabledForPureComputation(LeavesXOptimization.CHUNK_UNLOAD_STAGE_BUFFER_REUSE);
++    }
++
++    /** Returns whether the tick thread may retain the automatic-save reschedule list. */
++    public static boolean chunkAutosaveBufferReuseOptimization() {
++        return enabledForPureComputation(LeavesXOptimization.CHUNK_AUTOSAVE_BUFFER_REUSE);
++    }
++
++    /** Returns whether the tick thread may retain the pending full-status change list. */
++    public static boolean chunkStatusUpdateBufferReuseOptimization() {
++        return enabledForPureComputation(LeavesXOptimization.CHUNK_STATUS_UPDATE_BUFFER_REUSE);
++    }
++
+     /** Returns whether light packets may copy packed layer data without a temporary DataLayer. */
+     public static boolean lightLayerSnapshotCopyOptimization() {
+         return lightLayerSnapshotCopyOptimization;
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index f8e55863c442010ec4e588fae319300c61c0fddd..21fb558296bd360e2c51214983696e69372787e1 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -42,6 +42,10 @@ class LeavesXConfigLoaderTest {
+         assertTrue(generated.contains("warden-target-sensor:"));
+         assertTrue(generated.contains("workers:"));
+         assertTrue(generated.contains("entity-activation:"));
++        assertTrue(generated.contains("light-update-notification-batching:"));
++        assertTrue(generated.contains("unload-stage-buffer-reuse:"));
++        assertTrue(generated.contains("autosave-buffer-reuse:"));
++        assertTrue(generated.contains("status-update-buffer-reuse:"));
+         assertFalse(generated.contains("threading:"));
+         assertFalse(generated.contains("folia"));
+         for (final String comment : LeavesXConfigWriter.comments().values()) {
+@@ -125,6 +129,48 @@ class LeavesXConfigLoaderTest {
+         }
+     }
+ 
++    @Test
++    void upgradesVersion65WithConfigurableChunkAndLightBatching() throws Exception {
++        final Path path = write("""
++            # 用户配置。
++            config-version: 65
++            performance:
++              network:
++                light-update-notification-batching: false
++              chunk:
++                unload-stage-buffer-reuse: false
++            custom-extension:
++              retained: true
++            """);
++
++        final LeavesXConfig config = LeavesXConfigLoader.load(path);
++        final String upgraded = Files.readString(path);
++        final org.spongepowered.configurate.ConfigurationNode node =
++            io.papermc.paper.configuration.ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
++
++        assertEquals(66, node.node("config-version").getInt());
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.LIGHT_UPDATE_NOTIFICATION_BATCHING));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_STAGE_BUFFER_REUSE));
++        assertTrue(config.optimizationEnabled(LeavesXOptimization.CHUNK_AUTOSAVE_BUFFER_REUSE));
++        assertTrue(config.optimizationEnabled(LeavesXOptimization.CHUNK_STATUS_UPDATE_BUFFER_REUSE));
++        assertFalse(node.node("performance", "network", "light-update-notification-batching").getBoolean());
++        assertFalse(node.node("performance", "chunk", "unload-stage-buffer-reuse").getBoolean());
++        assertTrue(node.node("performance", "chunk", "autosave-buffer-reuse").getBoolean());
++        assertTrue(node.node("performance", "chunk", "status-update-buffer-reuse").getBoolean());
++        assertTrue(node.node("custom-extension", "retained").getBoolean());
++        assertTrue(upgraded.startsWith("# 用户配置。"));
++
++        try {
++            LeavesXRuntime.publish(config);
++            assertFalse(LeavesXRuntime.lightUpdateNotificationBatchingOptimization());
++            assertFalse(LeavesXRuntime.chunkUnloadStageBufferReuseOptimization());
++            assertTrue(LeavesXRuntime.chunkAutosaveBufferReuseOptimization());
++            assertTrue(LeavesXRuntime.chunkStatusUpdateBufferReuseOptimization());
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
+     @Test
+     void preservesLeadingHeaderByteOrderMarkAndLineEndingsDuringUpgrade() throws IOException {
+         final Path path = write("\uFEFF# First user header line.\r\n"
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
+index e3783df2d7a9b82da894d5829daf42ffd8d3c9c7..86b7beb3fd8fca6d19906e402a780b14f2eff59c 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
+@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import java.io.IOException;
++import java.lang.reflect.Modifier;
+ import java.net.URISyntaxException;
+ import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+@@ -66,6 +67,23 @@ class LeavesXReleaseCompatibilityTest {
+         assertTrue(defaults.parallelEntityActivation());
+         assertEquals(2_048, defaults.entityActivationMinimumEntities());
+         assertEquals(512, defaults.entityActivationMinimumItemsPerWorker());
++        assertTrue(defaults.optimizationEnabled(LeavesXOptimization.LIGHT_UPDATE_NOTIFICATION_BATCHING));
++        assertTrue(defaults.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_STAGE_BUFFER_REUSE));
++        assertTrue(defaults.optimizationEnabled(LeavesXOptimization.CHUNK_AUTOSAVE_BUFFER_REUSE));
++        assertTrue(defaults.optimizationEnabled(LeavesXOptimization.CHUNK_STATUS_UPDATE_BUFFER_REUSE));
++    }
++
++    @Test
++    void workerVisibleOptimizationMasksUseVolatilePublication() throws ReflectiveOperationException {
++        for (final String fieldName : new String[] {
++            "fineGrainedOptimizationMaskLow",
++            "fineGrainedOptimizationMaskHigh"
++        }) {
++            assertTrue(
++                Modifier.isVolatile(LeavesXRuntime.class.getDeclaredField(fieldName).getModifiers()),
++                fieldName
++            );
++        }
+     }
+ 
+     @Test
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChunkSchedulerBufferReuseHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ChunkSchedulerBufferReuseHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..459a81187f542f7db75ec1dd314324552aa3762d
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ChunkSchedulerBufferReuseHotPathTest.java
+@@ -0,0 +1,64 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkHolderManager;
++import java.io.IOException;
++import java.util.Arrays;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Verifies tick-thread chunk scheduling retains only private, explicitly configurable scratch lists. */
++@Normal
++class ChunkSchedulerBufferReuseHotPathTest {
++
++    @Test
++    void managerOwnsSeparateScratchListsForEachLifecyclePhase() throws IOException {
++        final ClassNode owner = classNode(ChunkHolderManager.class);
++        for (final String fieldName : new String[] {
++            "leavesX$unloadStage1",
++            "leavesX$unloadStage2",
++            "leavesX$unloadStage3",
++            "leavesX$autosaveReschedule",
++            "leavesX$fullStatusChanges"
++        }) {
++            assertTrue(owner.fields.stream().anyMatch(field -> field.name.equals(fieldName)
++                && field.desc.equals("Ljava/util/ArrayList;")), fieldName);
++        }
++    }
++
++    @Test
++    void eachHotPathConsultsItsDedicatedRuntimeSwitch() throws IOException {
++        final ClassNode owner = classNode(ChunkHolderManager.class);
++        assertRuntimeSwitch(owner, "autoSave", "chunkAutosaveBufferReuseOptimization");
++        assertRuntimeSwitch(owner, "processUnloads", "chunkUnloadStageBufferReuseOptimization");
++        assertRuntimeSwitch(owner, "processPendingFullUpdate", "chunkStatusUpdateBufferReuseOptimization");
++    }
++
++    private static void assertRuntimeSwitch(
++        final ClassNode owner,
++        final String methodName,
++        final String runtimeMethod
++    ) {
++        final MethodNode method = owner.methods.stream()
++            .filter(candidate -> candidate.name.equals(methodName))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing " + methodName));
++        assertTrue(Arrays.stream(method.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime")
++                && call.name.equals(runtimeMethod)), runtimeMethod);
++    }
++
++    private static ClassNode classNode(final Class<?> owner) throws IOException {
++        final ClassNode node = new ClassNode(Opcodes.ASM9);
++        new ClassReader(owner.getName()).accept(node, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return node;
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/LightUpdateCallbackHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/LightUpdateCallbackHotPathTest.java
+index 7aaa1191830c6bad63de99ad99b6819bfcc61973..fcc426604fcf967d2c8435515ef8cc455ebdc9cb 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/LightUpdateCallbackHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/LightUpdateCallbackHotPathTest.java
+@@ -1,5 +1,6 @@
+ package org.leavesx.leavesx.performance;
+ 
++import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+@@ -48,9 +49,70 @@ class LightUpdateCallbackHotPathTest {
+             && method.desc.equals(PACKED_CALLBACK)));
+     }
+ 
++    @Test
++    void serverChunkCacheBatchesPackedCallbacksBeforeTheMainThreadHandoff() throws IOException {
++        final ClassNode owner = classNode(ServerChunkCache.class);
++        assertTrue(owner.methods.stream().anyMatch(method -> method.name.equals("leavesX$enqueueLightUpdate")
++            && method.desc.equals("(Lnet/minecraft/world/level/LightLayer;J)V")));
++        assertTrue(owner.methods.stream().anyMatch(method -> method.name.equals("leavesX$drainLightUpdateBatch")
++            && method.desc.equals("()V")));
++
++        final ClassNode buffer = classNode("net.minecraft.server.level.ServerChunkCache$LeavesXLightUpdateBuffer");
++        assertTrue(buffer.fields.stream().anyMatch(field -> field.name.equals("sectionNodes")
++            && field.desc.equals("[J")));
++        assertTrue(buffer.fields.stream().anyMatch(field -> field.name.equals("skyLight")
++            && field.desc.equals("[Z")));
++    }
++
++    @Test
++    void primitiveBatchPreservesOrderAcrossGrowthAndCanBeReused() throws ReflectiveOperationException {
++        final Class<?> bufferClass = Class.forName(
++            "net.minecraft.server.level.ServerChunkCache$LeavesXLightUpdateBuffer"
++        );
++        final var constructor = bufferClass.getDeclaredConstructor();
++        constructor.setAccessible(true);
++        final Object buffer = constructor.newInstance();
++        final var add = bufferClass.getDeclaredMethod("add", boolean.class, long.class);
++        final var clear = bufferClass.getDeclaredMethod("clear");
++        final var empty = bufferClass.getDeclaredMethod("isEmpty");
++        final var sectionNodesField = bufferClass.getDeclaredField("sectionNodes");
++        final var skyLightField = bufferClass.getDeclaredField("skyLight");
++        final var sizeField = bufferClass.getDeclaredField("size");
++        for (final var member : java.util.List.of(add, clear, empty)) {
++            member.setAccessible(true);
++        }
++        for (final var field : java.util.List.of(sectionNodesField, skyLightField, sizeField)) {
++            field.setAccessible(true);
++        }
++
++        assertTrue((boolean)empty.invoke(buffer));
++        for (int index = 0; index < 1_500; ++index) {
++            add.invoke(buffer, (index & 1) == 0, 10_000L + index);
++        }
++
++        final long[] sectionNodes = (long[])sectionNodesField.get(buffer);
++        final boolean[] skyLight = (boolean[])skyLightField.get(buffer);
++        assertEquals(1_500, sizeField.getInt(buffer));
++        assertTrue(sectionNodes.length >= 1_500);
++        for (int index = 0; index < 1_500; ++index) {
++            assertEquals(10_000L + index, sectionNodes[index]);
++            assertEquals((index & 1) == 0, skyLight[index]);
++        }
++
++        clear.invoke(buffer);
++        assertTrue((boolean)empty.invoke(buffer));
++        assertEquals(0, sizeField.getInt(buffer));
++    }
++
+     private static ClassNode classNode(final Class<?> owner) throws IOException {
+         final ClassNode node = new ClassNode(Opcodes.ASM9);
+         new ClassReader(owner.getName()).accept(node, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+         return node;
+     }
++
++    private static ClassNode classNode(final String binaryName) throws IOException {
++        final ClassNode node = new ClassNode(Opcodes.ASM9);
++        new ClassReader(binaryName).accept(node, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return node;
++    }
+ }

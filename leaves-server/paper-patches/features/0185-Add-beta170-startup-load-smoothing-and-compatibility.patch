@@ -1,0 +1,1215 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 25 Aug 2026 17:00:02 +0800
+Subject: [PATCH] Add beta170 startup load smoothing and compatibility guards
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index daf21707a96357461ba16498c311cf7dacf93068..d535d8ebaee8546ac8f671c34839e413209b3888 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1019,6 +1019,13 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(line("长跳候选构建", onOff(LeavesXRuntime.longJumpCandidateOptimization()), NamedTextColor.AQUA));
+         sender.sendMessage(line("山羊冲撞选点", onOff(LeavesXRuntime.ramPositionSelectionOptimization()), NamedTextColor.AQUA));
+         sender.sendMessage(line("动物空闲降频", onOff(config.animalIdleGoalThrottling()) + "，倍数 " + config.animalIdleGoalIntervalMultiplier(), config.animalIdleGoalThrottling() ? NamedTextColor.YELLOW : NamedTextColor.GREEN));
++        sender.sendMessage(line(
++            "密集怪物 AI",
++            onOff(config.denseMonsterAiThrottling()) + "，范围 " + config.denseMonsterAiNearbyRadius()
++                + "，阈值 " + config.denseMonsterAiMinimumEntities()
++                + "，完整选择每 " + config.denseMonsterAiGoalIntervalTicks() + " Tick",
++            config.denseMonsterAiThrottling() ? NamedTextColor.YELLOW : NamedTextColor.GREEN
++        ));
+         sender.sendMessage(line("刷怪优化", onOff(config.mobSpawningOptimizations()) + "，并行 " + onOff(config.parallelMobSpawnCounting()), NamedTextColor.AQUA));
+         sender.sendMessage(line("刷怪并行阈值", LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities() + " 实体", NamedTextColor.AQUA));
+         sender.sendMessage(line("方块实体优化", onOff(config.blockEntityOptimizations()), NamedTextColor.AQUA));
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java b/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java
+index 0d47007e994936b2bcab63d82aff2622cb80f39d..aaae558e4f69e5f85d82b526e6cb2adcc7e7c2c4 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java
+@@ -97,18 +97,18 @@ final class LeavesXDiagnosticsGui implements Listener {
+                 "堆内存 " + oneDecimal(overview.usedHeapGiB()) + " / " + oneDecimal(overview.maximumHeapGiB()) + " GiB"
+             )
+         ));
+-        inventory.setItem(10, actionItem(Material.FILLED_MAP, "世界负载", "区块、持有器、实体和卸载队列"));
+-        inventory.setItem(11, actionItem(Material.ZOMBIE_HEAD, "实体类型", "查看实体数量和活跃数量"));
+-        inventory.setItem(12, actionItem(Material.SPYGLASS, "实体热点", "查看实体密集区块坐标"));
+-        inventory.setItem(13, actionItem(Material.HOPPER, "方块实体", "查看方块实体类型和更新数量"));
+-        inventory.setItem(14, actionItem(Material.OBSERVER, "方块实体热点", "查看方块实体密集区块"));
+-        inventory.setItem(15, actionItem(Material.NAME_TAG, "区块票据", "查看区块加载来源和插件票据"));
+-        inventory.setItem(16, actionItem(Material.NETHER_STAR, "完整诊断", "一次输出全部诊断信息"));
+-        inventory.setItem(27, actionItem(Material.REPEATER, "区块活动", "查看最近加载、卸载和票据变化"));
+-        inventory.setItem(28, actionItem(Material.REDSTONE_BLOCK, "内存", "堆、堆外、直接缓冲区和 GC"));
+-        inventory.setItem(29, actionItem(Material.LIGHTNING_ROD, "慢 Tick", "查看计算、等待和现场调用栈"));
+-        inventory.setItem(30, actionItem(Material.COMPARATOR, "网络", "连接、数据包、延迟和发送队列"));
+-        inventory.setItem(31, actionItem(Material.COMPASS, "系统配额", "查看 CPU、cgroup、内存和节流"));
++        inventory.setItem(10, actionItem(Material.FILLED_MAP, "世界负载", "区块、持有器、实体和卸载队列", overview));
++        inventory.setItem(11, actionItem(Material.ZOMBIE_HEAD, "实体类型", "查看实体数量和活跃数量", overview));
++        inventory.setItem(12, actionItem(Material.SPYGLASS, "实体热点", "查看实体密集区块坐标", overview));
++        inventory.setItem(13, actionItem(Material.HOPPER, "方块实体", "查看方块实体类型和更新数量", overview));
++        inventory.setItem(14, actionItem(Material.OBSERVER, "方块实体热点", "查看方块实体密集区块", overview));
++        inventory.setItem(15, actionItem(Material.NAME_TAG, "区块票据", "查看区块加载来源和插件票据", overview));
++        inventory.setItem(16, actionItem(Material.NETHER_STAR, "完整诊断", "一次输出全部诊断信息", overview));
++        inventory.setItem(27, actionItem(Material.REPEATER, "区块活动", "查看最近加载、卸载和票据变化", overview));
++        inventory.setItem(28, actionItem(Material.REDSTONE_BLOCK, "内存", "堆、堆外、直接缓冲区和 GC", overview));
++        inventory.setItem(29, actionItem(Material.LIGHTNING_ROD, "慢 Tick", "查看计算、等待和现场调用栈", overview));
++        inventory.setItem(30, actionItem(Material.COMPARATOR, "网络", "连接、数据包、延迟和发送队列", overview));
++        inventory.setItem(31, actionItem(Material.COMPASS, "系统配额", "查看 CPU、cgroup、内存和节流", overview));
+         inventory.setItem(32, item(
+             Material.REDSTONE_TORCH,
+             "线程",
+@@ -119,8 +119,8 @@ final class LeavesXDiagnosticsGui implements Listener {
+                 "点击输出完整线程状态"
+             )
+         ));
+-        inventory.setItem(33, actionItem(Material.COMMAND_BLOCK, "插件任务", "查看较慢的 Bukkit 同步任务"));
+-        inventory.setItem(34, actionItem(Material.WRITABLE_BOOK, "配置状态", "查看当前生效的 LeavesX 设置"));
++        inventory.setItem(33, actionItem(Material.COMMAND_BLOCK, "插件任务", "查看较慢的 Bukkit 同步任务", overview));
++        inventory.setItem(34, actionItem(Material.WRITABLE_BOOK, "配置状态", "查看当前生效的 LeavesX 设置", overview));
+         inventory.setItem(40, item(Material.RECOVERY_COMPASS, "刷新", NamedTextColor.GREEN, List.of("重新读取当前状态")));
+         inventory.setItem(44, item(Material.BARRIER, "关闭", NamedTextColor.RED, List.of()));
+     }
+@@ -152,8 +152,25 @@ final class LeavesXDiagnosticsGui implements Listener {
+         );
+     }
+ 
+-    private static ItemStack actionItem(final Material material, final String name, final String description) {
+-        return item(material, name, NamedTextColor.AQUA, List.of(description, "点击查看"));
++    private static ItemStack actionItem(
++        final Material material,
++        final String name,
++        final String description,
++        final Overview overview
++    ) {
++        // Inventory lore is rendered by the client as the item tooltip. Keep the current snapshot here so operators
++        // can inspect the important values by hovering, without running a command or mutating server state.
++        return item(
++            material,
++            name,
++            NamedTextColor.AQUA,
++            List.of(
++                description,
++                "TPS " + oneDecimal(overview.tps()) + " / MSPT " + oneDecimal(overview.mspt()),
++                "区块 " + overview.chunks() + " / 待卸载 " + overview.pendingUnloads(),
++                "实体 " + overview.entities() + " / 方块实体 " + overview.blockEntities()
++            )
++        );
+     }
+ 
+     private static ItemStack item(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index d9a75dd9eef5958ce21d6d8b7ef0d94bb3f3924a..7252f86d592af2c6d6ad976be4f06f3da04e6dd9 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -27,6 +27,11 @@ public record LeavesXConfig(
+     boolean mobSpawningOptimizations,
+     boolean animalIdleGoalThrottling,
+     int animalIdleGoalIntervalMultiplier,
++    boolean denseMonsterAiThrottling,
++    int denseMonsterAiNearbyRadius,
++    int denseMonsterAiMinimumEntities,
++    int denseMonsterAiCheckIntervalTicks,
++    int denseMonsterAiGoalIntervalTicks,
+     boolean parallelAiTargetSearch,
+     int aiTargetSearchMinimumCandidates,
+     int aiTargetSearchMinimumItemsPerWorker,
+@@ -49,10 +54,15 @@ public record LeavesXConfig(
+     long fineGrainedOptimizationMaskLow,
+     long fineGrainedOptimizationMaskHigh,
+     boolean villagerCompatibilityMode,
+-    boolean spectatorNoChunkLoading
++    boolean spectatorNoChunkLoading,
++    boolean startupResidentBots,
++    int startupResidentBotsPerTick,
++    boolean startupAiStaggering,
++    int startupAiWarmupTicks,
++    int startupAiEntitiesPerTick
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 67;
++    public static final int CURRENT_CONFIG_VERSION = 69;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -71,6 +81,18 @@ public record LeavesXConfig(
+         if (animalIdleGoalIntervalMultiplier < 1 || animalIdleGoalIntervalMultiplier > 20) {
+             throw new IllegalArgumentException("performance.animal-idle-goals.interval-multiplier must be between 1 and 20");
+         }
++        if (denseMonsterAiNearbyRadius < 2 || denseMonsterAiNearbyRadius > 32) {
++            throw new IllegalArgumentException("performance.dense-monster-ai.nearby-radius must be between 2 and 32");
++        }
++        if (denseMonsterAiMinimumEntities < 8 || denseMonsterAiMinimumEntities > 512) {
++            throw new IllegalArgumentException("performance.dense-monster-ai.minimum-entities must be between 8 and 512");
++        }
++        if (denseMonsterAiCheckIntervalTicks < 1 || denseMonsterAiCheckIntervalTicks > 200) {
++            throw new IllegalArgumentException("performance.dense-monster-ai.check-interval-ticks must be between 1 and 200");
++        }
++        if (denseMonsterAiGoalIntervalTicks < 2 || denseMonsterAiGoalIntervalTicks > 20) {
++            throw new IllegalArgumentException("performance.dense-monster-ai.goal-interval-ticks must be between 2 and 20");
++        }
+         if (computeWorkers < 0 || computeWorkers > 16) {
+             throw new IllegalArgumentException("parallelism.workers must be between 0 and 16");
+         }
+@@ -114,6 +136,15 @@ public record LeavesXConfig(
+             || (fineGrainedOptimizationMaskHigh & ~LeavesXOptimization.allEnabledMaskHigh()) != 0L) {
+             throw new IllegalArgumentException("fine-grained optimization mask contains unsupported bits");
+         }
++        if (startupResidentBotsPerTick < 1 || startupResidentBotsPerTick > 16) {
++            throw new IllegalArgumentException("performance.startup-resident-bots.per-tick must be between 1 and 16");
++        }
++        if (startupAiWarmupTicks < 1 || startupAiWarmupTicks > 200) {
++            throw new IllegalArgumentException("performance.startup-ai.warmup-ticks must be between 1 and 200");
++        }
++        if (startupAiEntitiesPerTick < 1 || startupAiEntitiesPerTick > 512) {
++            throw new IllegalArgumentException("performance.startup-ai.entities-per-tick must be between 1 and 512");
++        }
+     }
+ 
+     /**
+@@ -143,6 +174,11 @@ public record LeavesXConfig(
+             true,
+             false,
+             2,
++            false,
++            8,
++            32,
++            20,
++            4,
+             true,
+             256,
+             128,
+@@ -165,7 +201,12 @@ public record LeavesXConfig(
+             LeavesXOptimization.allEnabledMaskLow(),
+             LeavesXOptimization.allEnabledMaskHigh(),
+             true,
+-            false
++            false,
++            false,
++            1,
++            true,
++            40,
++            16
+         );
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 213e1de0e6d2d59b0878de7922f913070c1fcdd4..baa07814d2decee3373fb1efe6eb72d5411e8512 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -120,6 +120,14 @@ public final class LeavesXConfigBootstrap {
+             config.animalIdleGoalThrottling() ? "enabled" : "disabled",
+             config.animalIdleGoalIntervalMultiplier()
+         );
++        LOGGER.info(
++            "LeavesX dense-monster AI throttling: {}, radius {}, threshold {}, density check {} ticks, full goal selection {} ticks",
++            config.denseMonsterAiThrottling() ? "enabled" : "disabled",
++            config.denseMonsterAiNearbyRadius(),
++            config.denseMonsterAiMinimumEntities(),
++            config.denseMonsterAiCheckIntervalTicks(),
++            config.denseMonsterAiGoalIntervalTicks()
++        );
+         LOGGER.info(
+             "LeavesX adaptive chunk unloading: {}, backlog threshold {}, budget {}-{} chunks/tick",
+             config.adaptiveChunkUnloading() ? "enabled" : "disabled",
+@@ -131,6 +139,17 @@ public final class LeavesXConfigBootstrap {
+             "LeavesX spectator no-chunk-loading: {} (requires spectators_generate_chunks=false)",
+             config.spectatorNoChunkLoading() ? "enabled" : "disabled"
+         );
++        LOGGER.info(
++            "LeavesX startup resident-bot restore: {}, up to {} bot(s) per tick",
++            config.startupResidentBots() ? "enabled" : "disabled",
++            config.startupResidentBotsPerTick()
++        );
++        LOGGER.info(
++            "LeavesX startup AI staggering: {}, {} tick warmup, {} mob(s) per tick",
++            config.startupAiStaggering() ? "enabled" : "disabled",
++            config.startupAiWarmupTicks(),
++            config.startupAiEntitiesPerTick()
++        );
+         LOGGER.info(
+             "LeavesX diagnostics: {} second rolling window, retain synchronous plugin tasks from {} ms",
+             config.diagnosticsRollingWindowSeconds(),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index fbc5deb380ae3b7c33d2cec86e5a79e161de09aa..6f44a4f9bdc6d3aeb0521f05e781ced36b1b4e38 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -177,6 +177,31 @@ public final class LeavesXConfigLoader {
+                     "performance.animal-idle-goals.interval-multiplier",
+                     2
+                 ),
++                readBoolean(
++                    node.node("performance", "dense-monster-ai", "enabled"),
++                    "performance.dense-monster-ai.enabled",
++                    false
++                ),
++                readInt(
++                    node.node("performance", "dense-monster-ai", "nearby-radius"),
++                    "performance.dense-monster-ai.nearby-radius",
++                    8
++                ),
++                readInt(
++                    node.node("performance", "dense-monster-ai", "minimum-entities"),
++                    "performance.dense-monster-ai.minimum-entities",
++                    32
++                ),
++                readInt(
++                    node.node("performance", "dense-monster-ai", "check-interval-ticks"),
++                    "performance.dense-monster-ai.check-interval-ticks",
++                    20
++                ),
++                readInt(
++                    node.node("performance", "dense-monster-ai", "goal-interval-ticks"),
++                    "performance.dense-monster-ai.goal-interval-ticks",
++                    4
++                ),
+                 readBoolean(
+                     node.node("parallelism", "ai-target-search", "enabled"),
+                     "parallelism.ai-target-search.enabled",
+@@ -283,6 +308,31 @@ public final class LeavesXConfigLoader {
+                     node.node("performance", "spectator-no-chunk-loading"),
+                     "performance.spectator-no-chunk-loading",
+                     false
++                ),
++                readBoolean(
++                    node.node("performance", "startup-resident-bots", "enabled"),
++                    "performance.startup-resident-bots.enabled",
++                    false
++                ),
++                readInt(
++                    node.node("performance", "startup-resident-bots", "per-tick"),
++                    "performance.startup-resident-bots.per-tick",
++                    1
++                ),
++                readBoolean(
++                    node.node("performance", "startup-ai", "enabled"),
++                    "performance.startup-ai.enabled",
++                    true
++                ),
++                readInt(
++                    node.node("performance", "startup-ai", "warmup-ticks"),
++                    "performance.startup-ai.warmup-ticks",
++                    40
++                ),
++                readInt(
++                    node.node("performance", "startup-ai", "entities-per-tick"),
++                    "performance.startup-ai.entities-per-tick",
++                    16
+                 )
+             );
+         } catch (final IllegalArgumentException ex) {
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 4d87ae8a2acf3a269a8e74d8530cdaa5198823bd..910d811844b1396670edf1423318bd3dcf060ab9 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -153,6 +153,36 @@ public final class LeavesXConfigWriter {
+             config.spectatorNoChunkLoading(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "startup-resident-bots", "enabled"),
++            "performance.startup-resident-bots.enabled",
++            config.startupResidentBots(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "startup-resident-bots", "per-tick"),
++            "performance.startup-resident-bots.per-tick",
++            config.startupResidentBotsPerTick(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "startup-ai", "enabled"),
++            "performance.startup-ai.enabled",
++            config.startupAiStaggering(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "startup-ai", "warmup-ticks"),
++            "performance.startup-ai.warmup-ticks",
++            config.startupAiWarmupTicks(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "startup-ai", "entities-per-tick"),
++            "performance.startup-ai.entities-per-tick",
++            config.startupAiEntitiesPerTick(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("performance", "ai", "villager-profession-assignment"),
+             "performance.ai.villager-profession-assignment",
+@@ -195,6 +225,36 @@ public final class LeavesXConfigWriter {
+             config.animalIdleGoalIntervalMultiplier(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("performance", "dense-monster-ai", "enabled"),
++            "performance.dense-monster-ai.enabled",
++            config.denseMonsterAiThrottling(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "dense-monster-ai", "nearby-radius"),
++            "performance.dense-monster-ai.nearby-radius",
++            config.denseMonsterAiNearbyRadius(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "dense-monster-ai", "minimum-entities"),
++            "performance.dense-monster-ai.minimum-entities",
++            config.denseMonsterAiMinimumEntities(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "dense-monster-ai", "check-interval-ticks"),
++            "performance.dense-monster-ai.check-interval-ticks",
++            config.denseMonsterAiCheckIntervalTicks(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("performance", "dense-monster-ai", "goal-interval-ticks"),
++            "performance.dense-monster-ai.goal-interval-ticks",
++            config.denseMonsterAiGoalIntervalTicks(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("parallelism", "ai-target-search", "enabled"),
+             "parallelism.ai-target-search.enabled",
+@@ -330,7 +390,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：67。");
++        comments.put("config-version", "配置版本，请勿修改。默认：69。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -351,6 +411,11 @@ public final class LeavesXConfigWriter {
+             "performance.spectator-no-chunk-loading",
+             "开启后，旁观者且 spectators_generate_chunks=false 时不加载或观察区块，按无玩家处理。默认：false。"
+         );
++        comments.put("performance.startup-resident-bots.enabled", "启动时分批恢复常驻假人，降低重启瞬间的区块和实体尖峰。默认：false。");
++        comments.put("performance.startup-resident-bots.per-tick", "启动分批恢复时每 Tick 最多恢复的假人数。默认：1。");
++        comments.put("performance.startup-ai.enabled", "启动前几秒分批执行生物 AI，降低重启瞬间的寻路尖峰。默认：true。");
++        comments.put("performance.startup-ai.warmup-ticks", "启动分批 AI 持续的 Tick 数。默认：40。");
++        comments.put("performance.startup-ai.entities-per-tick", "启动阶段每 Tick 最多完整执行的普通生物 AI 数；兼容模式下村民不受此限制。默认：16。");
+         comments.put("performance.ai.villager-profession-assignment", "优化村民领取职业时的职业查找，关闭后使用原版查找。默认：true。");
+         comments.put("performance.ai.long-jump-candidates", "优化山羊和青蛙准备长跳时的候选位置构建，关闭后使用原版构建。默认：true。");
+         comments.put("performance.ai.ram-position-selection", "优化山羊蓄力冲撞时的起点排序与筛选，关闭后使用原版流程。默认：true。");
+@@ -358,6 +423,11 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.mob-spawning-optimizations", "减少刷怪统计的临时对象和重复遍历。默认：true。");
+         comments.put("performance.animal-idle-goals.enabled", "降低动物空闲游走和环顾频率，会改变空闲行为。默认：false。");
+         comments.put("performance.animal-idle-goals.interval-multiplier", "动物空闲行为间隔倍数，仅在上一项开启时生效。默认：2。");
++        comments.put("performance.dense-monster-ai.enabled", "怪物在小范围大量聚集且没有攻击目标时降低目标选择频率。默认：false。");
++        comments.put("performance.dense-monster-ai.nearby-radius", "统计怪物密度的水平和垂直范围，单位为方块。默认：8。");
++        comments.put("performance.dense-monster-ai.minimum-entities", "范围内达到此数量才降低怪物 AI 频率。默认：32。");
++        comments.put("performance.dense-monster-ai.check-interval-ticks", "重新检查局部怪物密度的间隔，单位为 Tick。默认：20。");
++        comments.put("performance.dense-monster-ai.goal-interval-ticks", "密集且无目标时完整选择 AI 目标的间隔，单位为 Tick。默认：4。");
+         comments.put("performance.item-merge-optimizations", "物品堆满后停止无用合并扫描。默认：true。");
+         comments.put("performance.block-entity-optimizations", "减少漏斗等方块实体每刻创建的临时对象。默认：true。");
+         comments.put("performance.block-entity-ticker-removal", "加快区块卸载时清理方块实体更新项。默认：true。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 10351e31e69e19fb6fb6d67d25b966c100277539..2b8ddc48a5517bf913c9cc2916ad3e1bcbafd173 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -479,6 +479,26 @@ enum LeavesXOptimization {
+     CHUNK_UNLOAD_SECTION_SNAPSHOT_CACHE(
+         "performance.chunk.unload-section-snapshot-cache",
+         "缓存未变化的区块卸载节顺序，关闭后每轮重新扫描和排序。默认：true。"
++    ),
++    HOPPER_SLOT_STATE_CACHE(
++        "performance.block-entity.hopper-slot-state-cache",
++        "利用已维护的漏斗槽位状态判断目标容器是否已满，关闭后逐槽检查。默认：true。"
++    ),
++    HOPPER_DIRECT_SLOT_SCANS(
++        "performance.block-entity.hopper-direct-slot-scans",
++        "普通容器让漏斗直接按槽位顺序扫描，关闭后先构建槽位数组。默认：true。"
++    ),
++    HOPPER_ITEM_ENTITY_QUERY_BUFFER(
++        "performance.block-entity.hopper-item-entity-query-buffer",
++        "复用漏斗吸取掉落物的查询列表和范围，关闭后每次新建。默认：true。"
++    ),
++    CONTAINER_OPENER_SEARCH_BOX_CACHE(
++        "performance.block-entity.container-opener-search-box-cache",
++        "复用箱子开启者重检的搜索范围，关闭后每次重新创建。默认：true。"
++    ),
++    CONTAINER_USER_LIST_SCAN(
++        "performance.block-entity.container-user-list-scan",
++        "箱子开启者列表直接复用查询结果，关闭后使用原版流转换。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 36d56efd599868734f497c3eb71cf8b72375c94e..66dc263c1edd29dd328d45d4015bce8df3dd0bcb 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -1,5 +1,7 @@
+ package org.leavesx.leavesx.config;
+ 
++import net.minecraft.server.MinecraftServer;
++
+ import java.util.Objects;
+ 
+ /**
+@@ -47,6 +49,12 @@ public final class LeavesXRuntime {
+     private static boolean aiOptimizations = true;
+     private static volatile boolean villagerCompatibilityMode = true;
+     private static volatile boolean spectatorNoChunkLoading;
++    private static volatile boolean startupResidentBots;
++    private static volatile int startupResidentBotsPerTick = 1;
++    private static volatile boolean startupAiStaggering = true;
++    private static volatile int startupAiWarmupTicks = 40;
++    private static volatile int startupAiEntitiesPerTick = 16;
++    private static final StartupAiBudget STARTUP_AI_BUDGET = new StartupAiBudget();
+     private static boolean villagerProfessionAssignmentOptimization = true;
+     private static boolean longJumpCandidateOptimization = true;
+     private static boolean ramPositionSelectionOptimization = true;
+@@ -54,6 +62,11 @@ public final class LeavesXRuntime {
+     private static boolean mobSpawningOptimizations = true;
+     private static boolean animalIdleGoalThrottling;
+     private static int animalIdleGoalIntervalMultiplier = 2;
++    private static boolean denseMonsterAiThrottling;
++    private static int denseMonsterAiNearbyRadius = 8;
++    private static int denseMonsterAiMinimumEntities = 32;
++    private static int denseMonsterAiCheckIntervalTicks = 20;
++    private static int denseMonsterAiGoalIntervalTicks = 4;
+     private static boolean parallelAiTargetSearch = true;
+     private static int aiTargetSearchMinimumCandidates = AI_TARGET_SEARCH_PROFITABLE_FLOOR;
+     private static int aiTargetSearchMinimumItemsPerWorker = AI_TARGET_SEARCH_MINIMUM_ITEMS_FLOOR;
+@@ -136,6 +149,12 @@ public final class LeavesXRuntime {
+         aiOptimizations = validated.aiOptimizations();
+         villagerCompatibilityMode = validated.villagerCompatibilityMode();
+         spectatorNoChunkLoading = validated.spectatorNoChunkLoading();
++        startupResidentBots = validated.startupResidentBots();
++        startupResidentBotsPerTick = validated.startupResidentBotsPerTick();
++        startupAiStaggering = validated.startupAiStaggering();
++        startupAiWarmupTicks = validated.startupAiWarmupTicks();
++        startupAiEntitiesPerTick = validated.startupAiEntitiesPerTick();
++        STARTUP_AI_BUDGET.reset(startupAiEntitiesPerTick);
+         villagerProfessionAssignmentOptimization = validated.villagerProfessionAssignmentOptimization();
+         longJumpCandidateOptimization = validated.longJumpCandidateOptimization();
+         ramPositionSelectionOptimization = validated.ramPositionSelectionOptimization();
+@@ -143,6 +162,11 @@ public final class LeavesXRuntime {
+         mobSpawningOptimizations = validated.mobSpawningOptimizations();
+         animalIdleGoalThrottling = validated.animalIdleGoalThrottling();
+         animalIdleGoalIntervalMultiplier = validated.animalIdleGoalIntervalMultiplier();
++        denseMonsterAiThrottling = validated.denseMonsterAiThrottling();
++        denseMonsterAiNearbyRadius = validated.denseMonsterAiNearbyRadius();
++        denseMonsterAiMinimumEntities = validated.denseMonsterAiMinimumEntities();
++        denseMonsterAiCheckIntervalTicks = validated.denseMonsterAiCheckIntervalTicks();
++        denseMonsterAiGoalIntervalTicks = validated.denseMonsterAiGoalIntervalTicks();
+         parallelAiTargetSearch = validated.parallelAiTargetSearch();
+         // Keep a conservative floor for ordinary per-mob scans; operators can raise the configured value when their
+         // workload contains smaller lists where dispatch overhead is measurable.
+@@ -222,6 +246,49 @@ public final class LeavesXRuntime {
+         return diagnosticsCommandEnabled;
+     }
+ 
++    /** Returns whether resident fakeplayers should be restored gradually during the initial boot. */
++    public static boolean startupResidentBots() {
++        return startupResidentBots;
++    }
++
++    /** Returns the maximum number of resident fakeplayers restored by one startup tick. */
++    public static int startupResidentBotsPerTick() {
++        return startupResidentBotsPerTick;
++    }
++
++    /** Returns whether startup AI staggering is enabled for the first few server ticks. */
++    public static boolean startupAiStaggering() {
++        return startupAiStaggering;
++    }
++
++    /** Returns the number of initial ticks over which AI work is spread. */
++    public static int startupAiWarmupTicks() {
++        return startupAiWarmupTicks;
++    }
++
++    /** Returns the maximum number of budgeted mobs allowed to run their full AI step in one startup tick. */
++    public static int startupAiEntitiesPerTick() {
++        return startupAiEntitiesPerTick;
++    }
++
++    /**
++     * Claims one startup AI slot.
++     *
++     * <p>The sensing phase remains untouched. When the short startup window is active, only the expensive goal,
++     * navigation and custom-brain phases are spread across ticks. The selection rotates with the entity traversal
++     * order, so the first entities in a stable {@code EntityTickList} cannot consume the budget on every tick.</p>
++     */
++    public static boolean allowStartupAiStep(final boolean villager) {
++        // Villager compatibility mode must preserve every Brain tick used by panic and iron-golem mechanics.
++        if (villager && villagerCompatibilityMode) {
++            return true;
++        }
++        if (!startupAiStaggering || MinecraftServer.currentTick > startupAiWarmupTicks) {
++            return true;
++        }
++        return STARTUP_AI_BUDGET.allow(MinecraftServer.currentTick, startupAiEntitiesPerTick);
++    }
++
+     /** Returns the default number of entity types and hotspots shown by diagnostics. */
+     public static int diagnosticsDefaultResultLimit() {
+         return diagnosticsDefaultResultLimit;
+@@ -362,6 +429,31 @@ public final class LeavesXRuntime {
+         return blockEntityOptimizations && enabled(LeavesXOptimization.LIST_BACKED_CONTAINER_SCANS);
+     }
+ 
++    /** Returns whether maintained Lithium slot counters may answer non-sided hopper fullness checks. */
++    public static boolean hopperSlotStateCacheOptimization() {
++        return blockEntityOptimizations && enabled(LeavesXOptimization.HOPPER_SLOT_STATE_CACHE);
++    }
++
++    /** Returns whether non-sided hopper scans may traverse slots directly without a temporary index array. */
++    public static boolean hopperDirectSlotScansOptimization() {
++        return blockEntityOptimizations && enabled(LeavesXOptimization.HOPPER_DIRECT_SLOT_SCANS);
++    }
++
++    /** Returns whether fixed block hoppers may reuse storage while scanning input item entities. */
++    public static boolean hopperItemEntityQueryBufferOptimization() {
++        return blockEntityOptimizations && enabled(LeavesXOptimization.HOPPER_ITEM_ENTITY_QUERY_BUFFER);
++    }
++
++    /** Returns whether container opener recounts may reuse their immutable search box. */
++    public static boolean containerOpenerSearchBoxCacheOptimization() {
++        return blockEntityOptimizations && enabled(LeavesXOptimization.CONTAINER_OPENER_SEARCH_BOX_CACHE);
++    }
++
++    /** Returns whether the public container-user query may return its already-filtered independent list directly. */
++    public static boolean containerUserListScanOptimization() {
++        return blockEntityOptimizations && enabled(LeavesXOptimization.CONTAINER_USER_LIST_SCAN);
++    }
++
+     /** Returns whether occupied-bed villager lookups may stop after the first match. */
+     public static boolean occupiedBedVillagerQueriesOptimization() {
+         return entityQueryOptimizations && enabled(LeavesXOptimization.OCCUPIED_BED_VILLAGER_QUERIES);
+@@ -638,6 +730,31 @@ public final class LeavesXRuntime {
+         return animalIdleGoalIntervalMultiplier;
+     }
+ 
++    /** Returns whether targetless monsters in a locally dense group may reduce full goal-selection frequency. */
++    public static boolean denseMonsterAiThrottling() {
++        return denseMonsterAiThrottling && aiOptimizationsEnabled() && !villagerOptimizationContextActive();
++    }
++
++    /** Returns the horizontal/vertical radius used for dense-monster checks. */
++    public static int denseMonsterAiNearbyRadius() {
++        return denseMonsterAiNearbyRadius;
++    }
++
++    /** Returns the number of nearby monsters required before dense AI throttling applies. */
++    public static int denseMonsterAiMinimumEntities() {
++        return denseMonsterAiMinimumEntities;
++    }
++
++    /** Returns the cached-density refresh interval in server ticks. */
++    public static int denseMonsterAiCheckIntervalTicks() {
++        return denseMonsterAiCheckIntervalTicks;
++    }
++
++    /** Returns the full goal-selection interval used while a monster is locally dense and targetless. */
++    public static int denseMonsterAiGoalIntervalTicks() {
++        return denseMonsterAiGoalIntervalTicks;
++    }
++
+     /** Returns whether pure target-distance snapshots may use LeavesX compute workers. */
+     public static boolean parallelAiTargetSearch() {
+         return parallelAiTargetSearch && !villagerOptimizationContextActive();
+diff --git a/src/main/java/org/leavesx/leavesx/config/StartupAiBudget.java b/src/main/java/org/leavesx/leavesx/config/StartupAiBudget.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f3e04a3edbd47bc2e638ea6c6ab0e89e8817b9e3
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/config/StartupAiBudget.java
+@@ -0,0 +1,66 @@
++package org.leavesx.leavesx.config;
++
++/**
++ * Bounded, rotating budget for expensive mob AI during the first server ticks.
++ *
++ * <p>The entity tick list has a stable traversal order. A simple counter would therefore always admit the same first
++ * mobs. This budget estimates the traversal size from the previous tick and rotates the admitted residue class, so
++ * work is spread across both ticks and entity positions while retaining a strict per-tick upper bound.</p>
++ */
++final class StartupAiBudget {
++
++    private long tick = Long.MIN_VALUE;
++    private int calls;
++    private int accepted;
++    private int estimatedCalls = 64;
++    private int stride = 4;
++    private int offset;
++
++    /** Resets all startup-only state after bootstrap or configuration reload. */
++    synchronized void reset(final int limit) {
++        this.tick = Long.MIN_VALUE;
++        this.calls = 0;
++        this.accepted = 0;
++        this.estimatedCalls = Math.max(limit, limit * 4);
++        this.stride = strideFor(this.estimatedCalls, limit);
++        this.offset = 0;
++    }
++
++    /**
++     * Claims one full-AI slot for the current entity traversal position.
++     *
++     * @param currentTick current global server tick
++     * @param limit strict maximum number of admitted mobs in one tick
++     * @return whether the caller may execute its expensive AI phases
++     */
++    synchronized boolean allow(final long currentTick, final int limit) {
++        if (this.tick != currentTick) {
++            this.advanceTick(currentTick, limit);
++        }
++
++        final int callIndex = this.calls++;
++        if (this.accepted >= limit || Math.floorMod(callIndex - this.offset, this.stride) != 0) {
++            return false;
++        }
++        this.accepted++;
++        return true;
++    }
++
++    private void advanceTick(final long currentTick, final int limit) {
++        if (this.tick != Long.MIN_VALUE) {
++            this.estimatedCalls = Math.max(1, this.calls);
++            this.stride = strideFor(this.estimatedCalls, limit);
++            this.offset++;
++            if (this.offset >= this.stride) {
++                this.offset = 0;
++            }
++        }
++        this.tick = currentTick;
++        this.calls = 0;
++        this.accepted = 0;
++    }
++
++    private static int strideFor(final int estimatedCalls, final int limit) {
++        return Math.max(1, (estimatedCalls + limit - 1) / limit);
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/performance/DenseMonsterAiPolicy.java b/src/main/java/org/leavesx/leavesx/performance/DenseMonsterAiPolicy.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..517deddecb433197eba80817e69c096c682c9710
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/performance/DenseMonsterAiPolicy.java
+@@ -0,0 +1,26 @@
++package org.leavesx.leavesx.performance;
++
++/**
++ * Pure scheduling helpers for the optional dense-monster AI policy.
++ *
++ * <p>The policy only decides when the normal full goal-selection pass may run. It never changes a goal's state or
++ * removes an entity, which keeps the world mutation and Bukkit event paths on the server thread.</p>
++ */
++public final class DenseMonsterAiPolicy {
++
++    private DenseMonsterAiPolicy() {
++    }
++
++    /**
++     * Returns whether a full goal-selection pass is due for this entity on the current tick.
++     *
++     * <p>Mixing the entity id into the phase spreads scans across ticks instead of waking every dense-farm mob at
++     * once. Non-positive ids are handled with floor modulus so the result is deterministic for test entities too.</p>
++     */
++    public static boolean fullGoalSelectionDue(final long tick, final int entityId, final int intervalTicks) {
++        if (intervalTicks <= 1) {
++            return true;
++        }
++        return Math.floorMod(tick + entityId, intervalTicks) == 0;
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 13456532e866ce060ba81b0e8d9f436e4d277078..5fea627bf0461528bd969d3df097c60762ad8d2e 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -39,6 +39,13 @@ class LeavesXConfigLoaderTest {
+         assertTrue(generated.contains("ram-position-selection:"));
+         assertTrue(generated.contains("entity-queries:"));
+         assertTrue(generated.contains("hopper-entity-queries:"));
++        assertTrue(generated.contains("hopper-slot-state-cache:"));
++        assertTrue(generated.contains("hopper-direct-slot-scans:"));
++        assertTrue(generated.contains("hopper-item-entity-query-buffer:"));
++        assertTrue(generated.contains("container-opener-search-box-cache:"));
++        assertTrue(generated.contains("container-user-list-scan:"));
++        assertTrue(generated.contains("dense-monster-ai:"));
++        assertTrue(generated.contains("nearby-radius:"));
+         assertTrue(generated.contains("warden-target-sensor:"));
+         assertTrue(generated.contains("workers:"));
+         assertTrue(generated.contains("entity-activation:"));
+@@ -152,7 +159,7 @@ class LeavesXConfigLoaderTest {
+         final org.spongepowered.configurate.ConfigurationNode node =
+             io.papermc.paper.configuration.ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
+ 
+-        assertEquals(67, node.node("config-version").getInt());
++        assertEquals(69, node.node("config-version").getInt());
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.LIGHT_UPDATE_NOTIFICATION_BATCHING));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.LIGHT_UPDATE_NOTIFICATION_DEDUPLICATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_STAGE_BUFFER_REUSE));
+@@ -181,6 +188,48 @@ class LeavesXConfigLoaderTest {
+         }
+     }
+ 
++    @Test
++    void upgradesVersion67WithIndependentHopperAndChestControls() throws Exception {
++        final Path path = write("""
++            # 用户漏斗配置。
++            config-version: 67
++            performance:
++              block-entity:
++                hopper-slot-state-cache: false
++                hopper-direct-slot-scans: false
++                hopper-item-entity-query-buffer: false
++                container-opener-search-box-cache: false
++                container-user-list-scan: false
++            custom-extension:
++              retained: true
++            """);
++
++        final LeavesXConfig config = LeavesXConfigLoader.load(path);
++        final org.spongepowered.configurate.ConfigurationNode node =
++            io.papermc.paper.configuration.ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
++
++        assertEquals(69, node.node("config-version").getInt());
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_SLOT_STATE_CACHE));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_DIRECT_SLOT_SCANS));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_ITEM_ENTITY_QUERY_BUFFER));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.CONTAINER_OPENER_SEARCH_BOX_CACHE));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.CONTAINER_USER_LIST_SCAN));
++        assertTrue(node.node("custom-extension", "retained").getBoolean());
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx.yml.bak")));
++        assertFalse(Files.exists(this.temporaryDirectory.resolve("leavesx-migration-report.yml")));
++
++        try {
++            LeavesXRuntime.publish(config);
++            assertFalse(LeavesXRuntime.hopperSlotStateCacheOptimization());
++            assertFalse(LeavesXRuntime.hopperDirectSlotScansOptimization());
++            assertFalse(LeavesXRuntime.hopperItemEntityQueryBufferOptimization());
++            assertFalse(LeavesXRuntime.containerOpenerSearchBoxCacheOptimization());
++            assertFalse(LeavesXRuntime.containerUserListScanOptimization());
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
+     @Test
+     void preservesLeadingHeaderByteOrderMarkAndLineEndingsDuringUpgrade() throws IOException {
+         final Path path = write("\uFEFF# First user header line.\r\n"
+@@ -242,6 +291,12 @@ class LeavesXConfigLoaderTest {
+               animal-idle-goals:
+                 enabled: true
+                 interval-multiplier: 3
++              dense-monster-ai:
++                enabled: true
++                nearby-radius: 10
++                minimum-entities: 40
++                check-interval-ticks: 15
++                goal-interval-ticks: 5
+               item-merge-optimizations: false
+               block-entity-optimizations: false
+               block-entity-ticker-removal: false
+@@ -285,6 +340,11 @@ class LeavesXConfigLoaderTest {
+         assertFalse(config.mobSpawningOptimizations());
+         assertTrue(config.animalIdleGoalThrottling());
+         assertEquals(3, config.animalIdleGoalIntervalMultiplier());
++        assertTrue(config.denseMonsterAiThrottling());
++        assertEquals(10, config.denseMonsterAiNearbyRadius());
++        assertEquals(40, config.denseMonsterAiMinimumEntities());
++        assertEquals(15, config.denseMonsterAiCheckIntervalTicks());
++        assertEquals(5, config.denseMonsterAiGoalIntervalTicks());
+         assertFalse(config.parallelAiTargetSearch());
+         assertEquals(4_096, config.aiTargetSearchMinimumCandidates());
+         assertEquals(2_048, config.aiTargetSearchMinimumItemsPerWorker());
+@@ -316,6 +376,11 @@ class LeavesXConfigLoaderTest {
+             assertFalse(LeavesXRuntime.parallelEntityActivation());
+             assertEquals(131_072, LeavesXRuntime.entityActivationMinimumEntities());
+             assertEquals(16_384, LeavesXRuntime.entityActivationMinimumItemsPerWorker());
++            assertFalse(LeavesXRuntime.denseMonsterAiThrottling());
++            assertEquals(10, LeavesXRuntime.denseMonsterAiNearbyRadius());
++            assertEquals(40, LeavesXRuntime.denseMonsterAiMinimumEntities());
++            assertEquals(15, LeavesXRuntime.denseMonsterAiCheckIntervalTicks());
++            assertEquals(5, LeavesXRuntime.denseMonsterAiGoalIntervalTicks());
+         } finally {
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
+index b10d061cef12a012c2a4ccdcc261a4a003386697..f12ded1a9da0f234ca1f3190015619457f10f2a7 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXReleaseCompatibilityTest.java
+@@ -58,6 +58,16 @@ class LeavesXReleaseCompatibilityTest {
+         final LeavesXConfig defaults = LeavesXConfig.safeDefaults();
+ 
+         assertFalse(defaults.animalIdleGoalThrottling());
++        assertFalse(defaults.startupResidentBots());
++        assertEquals(1, defaults.startupResidentBotsPerTick());
++        assertTrue(defaults.startupAiStaggering());
++        assertEquals(40, defaults.startupAiWarmupTicks());
++        assertEquals(16, defaults.startupAiEntitiesPerTick());
++        assertFalse(defaults.denseMonsterAiThrottling());
++        assertEquals(8, defaults.denseMonsterAiNearbyRadius());
++        assertEquals(32, defaults.denseMonsterAiMinimumEntities());
++        assertEquals(20, defaults.denseMonsterAiCheckIntervalTicks());
++        assertEquals(4, defaults.denseMonsterAiGoalIntervalTicks());
+         assertEquals(LeavesXConfig.fineGrainedOptimizationCount(), defaults.enabledFineGrainedOptimizationCount());
+         assertTrue(defaults.entityStateOptimizations());
+         assertTrue(defaults.entityQueryOptimizations());
+@@ -72,6 +82,11 @@ class LeavesXReleaseCompatibilityTest {
+         assertTrue(defaults.optimizationEnabled(LeavesXOptimization.CHUNK_AUTOSAVE_BUFFER_REUSE));
+         assertTrue(defaults.optimizationEnabled(LeavesXOptimization.CHUNK_STATUS_UPDATE_BUFFER_REUSE));
+         assertTrue(defaults.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_SECTION_SNAPSHOT_CACHE));
++        assertTrue(defaults.optimizationEnabled(LeavesXOptimization.HOPPER_SLOT_STATE_CACHE));
++        assertTrue(defaults.optimizationEnabled(LeavesXOptimization.HOPPER_DIRECT_SLOT_SCANS));
++        assertTrue(defaults.optimizationEnabled(LeavesXOptimization.HOPPER_ITEM_ENTITY_QUERY_BUFFER));
++        assertTrue(defaults.optimizationEnabled(LeavesXOptimization.CONTAINER_OPENER_SEARCH_BOX_CACHE));
++        assertTrue(defaults.optimizationEnabled(LeavesXOptimization.CONTAINER_USER_LIST_SCAN));
+     }
+ 
+     @Test
+diff --git a/src/test/java/org/leavesx/leavesx/config/StartupAiBudgetTest.java b/src/test/java/org/leavesx/leavesx/config/StartupAiBudgetTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..6efe5da662299e84981a519963651b701c924aae
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/config/StartupAiBudgetTest.java
+@@ -0,0 +1,57 @@
++package org.leavesx.leavesx.config;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.util.HashSet;
++import java.util.Set;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++/** Regression coverage for bounded and fair startup AI scheduling. */
++@Normal
++class StartupAiBudgetTest {
++
++    @Test
++    void neverExceedsPerTickLimitAndRotatesAcrossEntityPositions() {
++        final StartupAiBudget budget = new StartupAiBudget();
++        final Set<Integer> admittedPositions = new HashSet<>();
++        final int entityCount = 4_096;
++        final int limit = 16;
++
++        budget.reset(limit);
++        for (long tick = 1; tick <= 40; tick++) {
++            int admittedThisTick = 0;
++            for (int entityIndex = 0; entityIndex < entityCount; entityIndex++) {
++                if (budget.allow(tick, limit)) {
++                    admittedThisTick++;
++                    admittedPositions.add(entityIndex);
++                }
++            }
++            assertEquals(limit, admittedThisTick, "tick " + tick);
++        }
++
++        assertTrue(admittedPositions.size() >= 600, "startup slots should not stay on the first entities");
++    }
++
++    @Test
++    void adaptsAfterEntityCountDrops() {
++        final StartupAiBudget budget = new StartupAiBudget();
++        budget.reset(16);
++
++        for (int entityIndex = 0; entityIndex < 4_096; entityIndex++) {
++            budget.allow(1, 16);
++        }
++        for (int entityIndex = 0; entityIndex < 10; entityIndex++) {
++            budget.allow(2, 16);
++        }
++
++        int admitted = 0;
++        for (int entityIndex = 0; entityIndex < 10; entityIndex++) {
++            if (budget.allow(3, 16)) {
++                admitted++;
++            }
++        }
++        assertEquals(10, admitted);
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index 1088520447df3bb6f16c1c145a236a3bd2c0ba72..be8419f18679171c2e3761cc12fa38b2ba1e39d1 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -15,6 +15,7 @@ import org.objectweb.asm.tree.ClassNode;
+ import org.objectweb.asm.tree.FieldInsnNode;
+ import org.objectweb.asm.tree.MethodInsnNode;
+ import org.objectweb.asm.tree.MethodNode;
++import org.objectweb.asm.tree.TypeInsnNode;
+ 
+ /** Verifies that a vanilla-compatibility villager tick disables every relevant LeavesX fast path. */
+ @Normal
+@@ -126,6 +127,27 @@ class VillagerCompatibilityContextTest {
+         assertFalse(customServerAiStep.tryCatchBlocks.isEmpty());
+     }
+ 
++    @Test
++    void startupAiBudgetExplicitlyExemptsVillagers() throws IOException {
++        final MethodNode serverAiStep = method(classNode("net.minecraft.world.entity.Mob"), "serverAiStep");
++        final String villagerOwner = Villager.class.getName().replace('.', '/');
++        final String runtimeOwner = LeavesXRuntime.class.getName().replace('.', '/');
++
++        assertTrue(Arrays.stream(serverAiStep.instructions.toArray())
++            .filter(TypeInsnNode.class::isInstance)
++            .map(TypeInsnNode.class::cast)
++            .anyMatch(instruction -> instruction.getOpcode() == Opcodes.INSTANCEOF && instruction.desc.equals(villagerOwner)));
++        assertTrue(Arrays.stream(serverAiStep.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals(runtimeOwner)
++                && call.name.equals("allowStartupAiStep")
++                && call.desc.equals("(Z)Z")));
++
++        LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        assertTrue(LeavesXRuntime.allowStartupAiStep(true));
++    }
++
+     private static LeavesXConfig configWithVillagerCompatibilityMode(final boolean enabled) {
+         return new LeavesXConfig(
+             LeavesXConfig.CURRENT_CONFIG_VERSION,
+@@ -148,6 +170,11 @@ class VillagerCompatibilityContextTest {
+             true,
+             false,
+             2,
++            false,
++            8,
++            32,
++            20,
++            4,
+             true,
+             256,
+             128,
+@@ -170,7 +197,12 @@ class VillagerCompatibilityContextTest {
+             LeavesXOptimization.allEnabledMaskLow(),
+             LeavesXOptimization.allEnabledMaskHigh(),
+             enabled,
+-            false
++            false,
++            false,
++            1,
++            true,
++            40,
++            16
+         );
+     }
+ 
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ContainerOpenerRecheckHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ContainerOpenerRecheckHotPathTest.java
+index 0002f9bcbf69165ebc8d29afcb5872d03147d690..1ad94b66803bfd32f666f79d295e8c14c85640c3 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ContainerOpenerRecheckHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ContainerOpenerRecheckHotPathTest.java
+@@ -1,11 +1,20 @@
+ package org.leavesx.leavesx.performance;
+ 
+ import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotSame;
++import static org.junit.jupiter.api.Assertions.assertSame;
+ 
+ import java.io.IOException;
++import java.lang.reflect.Method;
+ import java.util.Arrays;
+ import java.util.List;
++import net.minecraft.core.BlockPos;
++import net.minecraft.world.entity.player.Player;
++import net.minecraft.world.level.Level;
+ import net.minecraft.world.level.block.entity.ContainerOpenersCounter;
++import net.minecraft.world.level.block.state.BlockState;
++import net.minecraft.world.phys.AABB;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+ import org.objectweb.asm.ClassReader;
+@@ -44,9 +53,63 @@ class ContainerOpenerRecheckHotPathTest {
+         final MethodNode publicQuery = method(classNode(ContainerOpenersCounter.class), "getEntitiesWithContainerOpen");
+ 
+         assertTrue(invocations(publicQuery).stream().anyMatch(call -> call.name.equals("getEntities")));
++        assertTrue(hasInvocation(
++            publicQuery,
++            "org/leavesx/leavesx/config/LeavesXRuntime",
++            "containerOpenerSearchBoxCacheOptimization"
++        ));
++        assertTrue(hasInvocation(
++            publicQuery,
++            "org/leavesx/leavesx/config/LeavesXRuntime",
++            "containerUserListScanOptimization"
++        ));
+         assertTrue(hasInvocation(publicQuery, "java/util/stream/Stream", "collect"));
+     }
+ 
++    @Test
++    void stablePositionAndRangeReuseTheExactSearchGeometry() throws ReflectiveOperationException {
++        final ContainerOpenersCounter counter = new ContainerOpenersCounter() {
++            @Override
++            protected void onOpen(final Level level, final BlockPos pos, final BlockState state) {
++            }
++
++            @Override
++            protected void onClose(final Level level, final BlockPos pos, final BlockState state) {
++            }
++
++            @Override
++            protected void openerCountChanged(
++                final Level level,
++                final BlockPos pos,
++                final BlockState state,
++                final int previous,
++                final int current
++            ) {
++            }
++
++            @Override
++            public boolean isOwnContainer(final Player player) {
++                return false;
++            }
++        };
++        final Method getSearchBox = ContainerOpenersCounter.class.getDeclaredMethod(
++            "leavesXGetSearchBox",
++            BlockPos.class,
++            double.class
++        );
++        getSearchBox.setAccessible(true);
++        final BlockPos position = new BlockPos(12, 64, -8);
++
++        final AABB first = (AABB)getSearchBox.invoke(counter, position, 8.0D);
++        final AABB repeated = (AABB)getSearchBox.invoke(counter, position, 8.0D);
++        final AABB wider = (AABB)getSearchBox.invoke(counter, position, 12.0D);
++
++        assertSame(first, repeated);
++        assertEquals(new AABB(position).inflate(8.0D), first);
++        assertNotSame(first, wider);
++        assertEquals(new AABB(position).inflate(12.0D), wider);
++    }
++
+     private static boolean hasInvocation(final MethodNode method, final String owner, final String name) {
+         return invocations(method).stream().anyMatch(call -> call.owner.equals(owner) && call.name.equals(name));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/DenseMonsterAiPolicyTest.java b/src/test/java/org/leavesx/leavesx/performance/DenseMonsterAiPolicyTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..40ee9eb5794d5b21578ee98055b6eafc717d4f39
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/DenseMonsterAiPolicyTest.java
+@@ -0,0 +1,22 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import org.junit.jupiter.api.Test;
++
++class DenseMonsterAiPolicyTest {
++
++    @Test
++    void spreadsFullGoalSelectionAcrossEntityPhases() {
++        assertTrue(DenseMonsterAiPolicy.fullGoalSelectionDue(4L, 0, 4));
++        assertTrue(DenseMonsterAiPolicy.fullGoalSelectionDue(3L, 1, 4));
++        assertFalse(DenseMonsterAiPolicy.fullGoalSelectionDue(4L, 1, 4));
++    }
++
++    @Test
++    void intervalOneKeepsTheVanillaCadence() {
++        assertTrue(DenseMonsterAiPolicy.fullGoalSelectionDue(0L, 11, 1));
++        assertTrue(DenseMonsterAiPolicy.fullGoalSelectionDue(101L, -7, 0));
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+index bd97fba047d009a9cb9c86ec4f6d3ccd012261df..717585b4d4b0cc3a172e2c2598f7dfecbaf1c862 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+@@ -72,6 +72,18 @@ class FineGrainedOptimizationWiringTest {
+                 "net.minecraft.world.level.block.entity.ListBackedContainer",
+                 "listBackedContainerScansOptimization"
+             ),
++            new Wiring(
++                "net.minecraft.world.level.block.entity.HopperBlockEntity",
++                "hopperSlotStateCacheOptimization",
++                "hopperDirectSlotScansOptimization",
++                "hopperItemEntityQueryBufferOptimization"
++            ),
++            new Wiring(
++                "net.minecraft.world.level.block.entity.ContainerOpenersCounter",
++                "containerOpenerRecountOptimization",
++                "containerOpenerSearchBoxCacheOptimization",
++                "containerUserListScanOptimization"
++            ),
+             new Wiring(
+                 "net.minecraft.network.protocol.game.ClientboundLightUpdatePacketData",
+                 "lightUpdatePacketAssemblyOptimization"
+diff --git a/src/test/java/org/leavesx/leavesx/performance/HopperEntityQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/HopperEntityQueryHotPathTest.java
+index 5ebada159347d28eaea749f7d4d37fc736583768..251e2cb62958f5319964eed83fb2d83b29c4d2d8 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/HopperEntityQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/HopperEntityQueryHotPathTest.java
+@@ -16,6 +16,7 @@ import net.minecraft.core.Direction;
+ import net.minecraft.world.level.Level;
+ import net.minecraft.world.level.block.Blocks;
+ import net.minecraft.world.level.block.HopperBlock;
++import net.minecraft.world.level.block.entity.Hopper;
+ import net.minecraft.world.level.block.entity.HopperBlockEntity;
+ import net.minecraft.world.level.block.state.BlockState;
+ import net.minecraft.world.phys.AABB;
+@@ -45,6 +46,7 @@ class HopperEntityQueryHotPathTest {
+         assertField(cache, "attachedContainerPos", "Lnet/minecraft/core/BlockPos;");
+         assertField(cache, "sourceContainerSearchBox", "Lnet/minecraft/world/phys/AABB;");
+         assertField(cache, "attachedContainerSearchBox", "Lnet/minecraft/world/phys/AABB;");
++        assertField(cache, "itemEntitySearchBox", "Lnet/minecraft/world/phys/AABB;");
+         assertField(cache, "queryResults", "Ljava/util/List;");
+ 
+         assertTrue(
+@@ -68,6 +70,7 @@ class HopperEntityQueryHotPathTest {
+         assertEquals(hopperPos.below(), field(cache, "attachedContainerPos"));
+         assertEquals(new AABB(hopperPos.above()), field(cache, "sourceContainerSearchBox"));
+         assertEquals(new AABB(hopperPos.below()), field(cache, "attachedContainerSearchBox"));
++        assertEquals(Hopper.SUCK_AABB.move(hopperPos.getX(), hopperPos.getY(), hopperPos.getZ()), field(cache, "itemEntitySearchBox"));
+ 
+         final BlockState eastState = downState.setValue(HopperBlock.FACING, Direction.EAST);
+         hopper.setBlockState(eastState);
+@@ -77,6 +80,51 @@ class HopperEntityQueryHotPathTest {
+         assertTrue(((List<?>)field(cache, "queryResults")).isEmpty());
+     }
+ 
++    @Test
++    void itemEntityScanUsesTheReentrantSharedBufferAndRetainedGeometry() throws IOException {
++        final ClassNode hopper = classNode(HopperBlockEntity.class);
++        final MethodNode itemScan = method(hopper, "leavesXTrySuckInItemEntities");
++
++        assertTrue(invocations(itemScan).stream().anyMatch(call ->
++            call.owner.equals("net/minecraft/world/level/Level") && call.name.equals("leavesX$acquireEntityQueryBuffer")
++        ));
++        assertTrue(invocations(itemScan).stream().anyMatch(call -> call.name.equals("queryOfClass")));
++        assertTrue(invocations(itemScan).stream().anyMatch(call -> call.name.equals("addItem")));
++        assertTrue(invocations(itemScan).stream().anyMatch(call -> call.name.equals("close")));
++        assertEquals(0L, allocations(itemScan, "java/util/ArrayList"));
++        assertEquals(0L, allocations(itemScan, "net/minecraft/world/phys/AABB"));
++
++        final MethodNode suckInItems = method(hopper, "suckInItems");
++        assertTrue(invocations(suckInItems).stream().anyMatch(call ->
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime")
++                && call.name.equals("hopperDirectSlotScansOptimization")
++        ));
++        assertTrue(invocations(suckInItems).stream().anyMatch(call ->
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime")
++                && call.name.equals("hopperItemEntityQueryBufferOptimization")
++        ));
++    }
++
++    @Test
++    void hopperAndDestinationFullnessUseTheConfigurableMaintainedSlotCounters() throws IOException {
++        final ClassNode hopper = classNode(HopperBlockEntity.class);
++        final MethodNode hopperState = method(hopper, "getFullState");
++        final MethodNode destinationState = method(hopper, "isFullContainer");
++
++        for (final MethodNode method : List.of(hopperState, destinationState)) {
++            assertTrue(invocations(method).stream().anyMatch(call ->
++                call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime")
++                    && call.name.equals("hopperSlotStateCacheOptimization")
++            ));
++        }
++        assertTrue(invocations(hopperState).stream().anyMatch(call -> call.name.equals("getOccupiedSlots")));
++        assertTrue(invocations(destinationState).stream().anyMatch(call -> call.name.equals("getFullSlots")));
++        assertTrue(invocations(destinationState).stream().anyMatch(call ->
++            call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime")
++                && call.name.equals("hopperDirectSlotScansOptimization")
++        ));
++    }
++
+     @Test
+     void fixedHopperQueryFillsTheRetainedListWithoutAllocatingAnotherListOrBox() throws IOException {
+         final ClassNode hopper = classNode(HopperBlockEntity.class);

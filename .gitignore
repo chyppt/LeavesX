@@ -56,5 +56,24 @@ run
 # other sh
 *.sh
 
+# Local server/runtime artifacts
+/libraries/
+/versions/
+/logs/
+/eula.txt
+/server.properties
+/paper-api-reference/
+
+# Generated verification and temporary patch trees
+.tmp-*
+.verify-*/
+**/.tmp-*/
+**/.verify-*/
+**/build/
+
+# Local LeavesX runtime configuration
+/leavesx.yml
+/leavesx-compatibility.yml
+
 !gradle/wrapper/gradle-wrapper.jar
 !scripts/*.sh

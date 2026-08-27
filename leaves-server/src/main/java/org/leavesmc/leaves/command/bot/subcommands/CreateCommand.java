@@ -24,6 +24,7 @@ import org.leavesmc.leaves.command.bot.BotSubcommand;
 import org.leavesmc.leaves.event.bot.BotCreateEvent;
 
 import static net.kyori.adventure.text.Component.text;
+import static org.leavesmc.leaves.command.bot.BotCommandLocale.message;
 
 public class CreateCommand extends BotSubcommand {
 
@@ -47,7 +48,10 @@ public class CreateCommand extends BotSubcommand {
             world = context.getArgument(WorldArgument.class);
         } catch (IllegalArgumentException e) {
             if (!(sender instanceof Entity entity)) {
-                sender.sendMessage(text("Must specify world and location when executed by console", NamedTextColor.RED));
+                sender.sendMessage(text(message(
+                    "Must specify world and location when executed by console",
+                    "控制台执行时必须指定世界和坐标"
+                ), NamedTextColor.RED));
                 return false;
             }
             world = entity.getWorld();
@@ -75,22 +79,28 @@ public class CreateCommand extends BotSubcommand {
     private static boolean canCreate(CommandSender sender, @NotNull String name) {
         BotList botList = BotList.INSTANCE;
         if (!name.matches("^[a-zA-Z0-9_]{4,16}$")) {
-            sender.sendMessage(text("This name is illegal, bot name must be 4-16 characters and contain only letters, numbers, and underscores.", NamedTextColor.RED));
+            sender.sendMessage(text(message(
+                "This name is illegal, bot name must be 4-16 characters and contain only letters, numbers, and underscores.",
+                "假人名称不合法：必须为 4-16 个字符，且只能包含字母、数字和下划线。"
+            ), NamedTextColor.RED));
             return false;
         }
 
         if (Bukkit.getPlayerExact(name) != null || botList.getBotByName(name) != null) {
-            sender.sendMessage(text("This bot is already in server", NamedTextColor.RED));
+            sender.sendMessage(text(message("This bot is already in server", "该假人已在服务器中"), NamedTextColor.RED));
             return false;
         }
 
-        if (LeavesConfig.modify.fakeplayer.unableNames.contains(name)) {
-            sender.sendMessage(text("This name is not allowed in this server", NamedTextColor.RED));
+        if (BotUtil.isNameForbidden(name)) {
+            sender.sendMessage(text(message(
+                "This name is not allowed in this server",
+                "服务器禁止使用该假人名称"
+            ), NamedTextColor.RED));
             return false;
         }
 
         if (botList.bots.size() >= LeavesConfig.modify.fakeplayer.limit) {
-            sender.sendMessage(text("Bot number limit exceeded", NamedTextColor.RED));
+            sender.sendMessage(text(message("Bot number limit exceeded", "假人数量已达到上限"), NamedTextColor.RED));
             return false;
         }
 

@@ -38,18 +38,30 @@ public class LeavesVersionFetcher extends PaperVersionFetcher {
     @NotNull
     @Override
     public Component getVersionMessage() {
-        final Component updateMessage;
         final ServerBuildInfo build = ServerBuildInfo.buildInfo();
-        if (build.buildNumber().isEmpty() && build.gitCommit().isEmpty()) {
-            updateMessage = text("You are running a development version without access to version information", color(0xFF5300));
-        } else if (build.buildNumber().isEmpty()) {
-            updateMessage = text("You are running a development version from CI", color(0xFF5300));
-        } else {
-            updateMessage = getUpdateStatusMessage("LeavesMC/Leaves", build);
-        }
+        final Component updateMessage = getUpdateStatusMessage(build);
         final @Nullable Component history = this.getHistory();
 
         return history != null ? Component.textOfChildren(updateMessage, Component.newline(), history) : updateMessage;
+    }
+
+    private static Component getUpdateStatusMessage(@NotNull final ServerBuildInfo build) {
+        // LeavesX builds are not published by the Leaves release service, so an upstream lookup can only fail.
+        if ("LeavesX".equals(build.brandName())) {
+            final OptionalInt buildNumber = build.buildNumber();
+            final String buildLabel = buildNumber.isPresent() ? " build " + buildNumber.getAsInt() : "";
+            return Component.text(
+                "You are running LeavesX" + buildLabel + " for Minecraft " + build.minecraftVersionId(),
+                NamedTextColor.GREEN
+            );
+        }
+
+        if (build.buildNumber().isEmpty() && build.gitCommit().isEmpty()) {
+            return text("You are running a development version without access to version information", color(0xFF5300));
+        } else if (build.buildNumber().isEmpty()) {
+            return text("You are running a development version from CI", color(0xFF5300));
+        }
+        return getUpdateStatusMessage("LeavesMC/Leaves", build);
     }
 
     private static Component getUpdateStatusMessage(@NotNull final String repo, @NotNull final ServerBuildInfo build) {

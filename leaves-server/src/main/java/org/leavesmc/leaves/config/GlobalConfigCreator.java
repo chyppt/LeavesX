@@ -40,6 +40,8 @@ public class GlobalConfigCreator {
             }
             file.createNewFile();
             config.save(file);
+            // LeavesX - keep the standalone template identical to the file produced during normal server startup.
+            org.leavesx.leavesx.config.migration.LeavesConfigDocumenter.document(file.toPath());
         } catch (IOException e) {
             e.printStackTrace();
         }

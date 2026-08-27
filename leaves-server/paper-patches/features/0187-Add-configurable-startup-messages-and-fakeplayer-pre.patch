@@ -1,0 +1,491 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 25 Aug 2026 19:08:30 +0800
+Subject: [PATCH] Add configurable startup messages and fakeplayer presentation
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 7252f86d592af2c6d6ad976be4f06f3da04e6dd9..52a1f8c9ea6c06298d74490c490142fee68cb89d 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -59,10 +59,17 @@ public record LeavesXConfig(
+     int startupResidentBotsPerTick,
+     boolean startupAiStaggering,
+     int startupAiWarmupTicks,
+-    int startupAiEntitiesPerTick
++    int startupAiEntitiesPerTick,
++    boolean showRootAdminWarning,
++    boolean showOfflineModeWarning,
++    boolean showCollisionConversionWarning,
++    boolean cleanInvalidResidentBots,
++    String fakeplayerDisplayPrefix,
++    String joinMessage,
++    String quitMessage
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 69;
++    public static final int CURRENT_CONFIG_VERSION = 70;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -145,6 +152,13 @@ public record LeavesXConfig(
+         if (startupAiEntitiesPerTick < 1 || startupAiEntitiesPerTick > 512) {
+             throw new IllegalArgumentException("performance.startup-ai.entities-per-tick must be between 1 and 512");
+         }
++        fakeplayerDisplayPrefix = requireBoundedText(
++            fakeplayerDisplayPrefix,
++            "fakeplayer.display-prefix",
++            256
++        );
++        joinMessage = requireBoundedText(joinMessage, "messages.join", 2_048);
++        quitMessage = requireBoundedText(quitMessage, "messages.quit", 2_048);
+     }
+ 
+     /**
+@@ -206,10 +220,27 @@ public record LeavesXConfig(
+             1,
+             true,
+             40,
+-            16
++            16,
++            false,
++            false,
++            false,
++            true,
++            "[假人]",
++            "",
++            ""
+         );
+     }
+ 
++    private static String requireBoundedText(final String value, final String path, final int maximumLength) {
++        if (value == null) {
++            throw new IllegalArgumentException(path + " must not be null");
++        }
++        if (value.length() > maximumLength) {
++            throw new IllegalArgumentException(path + " must not exceed " + maximumLength + " characters");
++        }
++        return value;
++    }
++
+     /** Returns whether one independently configurable optimization is enabled. */
+     boolean optimizationEnabled(final LeavesXOptimization optimization) {
+         return optimization.enabledIn(this.fineGrainedOptimizationMaskLow, this.fineGrainedOptimizationMaskHigh);
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index baa07814d2decee3373fb1efe6eb72d5411e8512..cc69c60838d11c8e036f60050046704893d1abfa 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -63,6 +63,10 @@ public final class LeavesXConfigBootstrap {
+             );
+         }
+         LeavesXRuntime.publish(next);
++        final net.minecraft.server.MinecraftServer server = net.minecraft.server.MinecraftServer.getServer();
++        if (server != null && server.getBotList() != null) {
++            server.getBotList().refreshLeavesXPresentation();
++        }
+         LOGGER.info("Reloaded LeavesX configuration from {}", path);
+         return next;
+     }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 6f44a4f9bdc6d3aeb0521f05e781ced36b1b4e38..9afb281ec08bc1b8c312a38ef600cedcff40d280 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -27,7 +27,7 @@ public final class LeavesXConfigLoader {
+     private static final int ENTITY_ACTIVATION_ITEMS_DEFAULT = 512;
+     private static final int MOB_SPAWN_DEFAULT = 2_048;
+     private static final int PARALLEL_THRESHOLD_MIGRATION_VERSION = 64;
+-    private static final String HEADER = "LeavesX 性能配置。默认设置保持 Paper、Bukkit 和原版行为。";
++    private static final String HEADER = "LeavesX 配置。默认设置保持 Paper、Bukkit 和原版行为。";
+     // Schema-owned version comments may be replaced; all other leading user comments stay untouched.
+     private static final Pattern GENERATED_CONFIG_VERSION_COMMENT = Pattern.compile(
+         "(?m)^[\\t ]*#[\\t ]*配置版本，请勿修改。默认：\\d+。[\\t ]*(?:\\r\\n|\\r|\\n|$)"
+@@ -333,7 +333,34 @@ public final class LeavesXConfigLoader {
+                     node.node("performance", "startup-ai", "entities-per-tick"),
+                     "performance.startup-ai.entities-per-tick",
+                     16
+-                )
++                ),
++                readBoolean(
++                    node.node("console-messages", "show-root-admin-warning"),
++                    "console-messages.show-root-admin-warning",
++                    false
++                ),
++                readBoolean(
++                    node.node("console-messages", "show-offline-mode-warning"),
++                    "console-messages.show-offline-mode-warning",
++                    false
++                ),
++                readBoolean(
++                    node.node("console-messages", "show-collision-conversion-warning"),
++                    "console-messages.show-collision-conversion-warning",
++                    false
++                ),
++                readBoolean(
++                    node.node("fakeplayer", "clean-invalid-resident-bots"),
++                    "fakeplayer.clean-invalid-resident-bots",
++                    true
++                ),
++                readString(
++                    node.node("fakeplayer", "display-prefix"),
++                    "fakeplayer.display-prefix",
++                    "[假人]"
++                ),
++                readString(node.node("messages", "join"), "messages.join", ""),
++                readString(node.node("messages", "quit"), "messages.quit", "")
+             );
+         } catch (final IllegalArgumentException ex) {
+             throw new LeavesXConfigException("Invalid LeavesX configuration at " + path + ": " + ex.getMessage(), ex);
+@@ -527,6 +554,17 @@ public final class LeavesXConfigLoader {
+         throw invalidType(path, "a boolean", raw);
+     }
+ 
++    private static String readString(final ConfigurationNode node, final String path, final String defaultValue) {
++        if (node.virtual()) {
++            return defaultValue;
++        }
++        final Object raw = node.rawScalar();
++        if (raw instanceof String value) {
++            return value;
++        }
++        throw invalidType(path, "a string", raw);
++    }
++
+     private static IllegalArgumentException invalidType(
+         final String path,
+         final String expected,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 910d811844b1396670edf1423318bd3dcf060ab9..7e658231173e24d267f5f707ae91b49db76006a3 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -69,6 +69,38 @@ public final class LeavesXConfigWriter {
+     ) {
+         boolean changed = false;
+         changed |= writeValue(node.node("config-version"), "config-version", config.configVersion(), missingOnly);
++        changed |= writeValue(
++            node.node("console-messages", "show-root-admin-warning"),
++            "console-messages.show-root-admin-warning",
++            config.showRootAdminWarning(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("console-messages", "show-offline-mode-warning"),
++            "console-messages.show-offline-mode-warning",
++            config.showOfflineModeWarning(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("console-messages", "show-collision-conversion-warning"),
++            "console-messages.show-collision-conversion-warning",
++            config.showCollisionConversionWarning(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("fakeplayer", "clean-invalid-resident-bots"),
++            "fakeplayer.clean-invalid-resident-bots",
++            config.cleanInvalidResidentBots(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("fakeplayer", "display-prefix"),
++            "fakeplayer.display-prefix",
++            config.fakeplayerDisplayPrefix(),
++            missingOnly
++        );
++        changed |= writeValue(node.node("messages", "join"), "messages.join", config.joinMessage(), missingOnly);
++        changed |= writeValue(node.node("messages", "quit"), "messages.quit", config.quitMessage(), missingOnly);
+         changed |= writeValue(
+             node.node("diagnostics", "command-enabled"),
+             "diagnostics.command-enabled",
+@@ -390,7 +422,14 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：69。");
++        comments.put("config-version", "配置版本，请勿修改。默认：70。");
++        comments.put("console-messages.show-root-admin-warning", "是否显示使用 root 或管理员启动的警告。默认：false。");
++        comments.put("console-messages.show-offline-mode-warning", "是否显示离线模式安全警告。默认：false。");
++        comments.put("console-messages.show-collision-conversion-warning", "是否显示碰撞模式自动转换提示。默认：false。");
++        comments.put("fakeplayer.clean-invalid-resident-bots", "自动清理缺少世界信息且无法恢复的假人记录。默认：true。");
++        comments.put("fakeplayer.display-prefix", "假人显示名前缀，支持 MiniMessage，空字符串关闭。默认：[假人]。");
++        comments.put("messages.join", "自定义进入提示，可用 <name> 和 <display_name>，空字符串保持默认。默认：空。");
++        comments.put("messages.quit", "自定义退出提示，可用 <name> 和 <display_name>，空字符串保持默认。默认：空。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 9b39af7b9f2af3c11de3c260a5d719e8f8c90360..fac7442aa762f1a61d75fa9fa2f539fa846a48d2 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -54,6 +54,13 @@ public final class LeavesXRuntime {
+     private static volatile boolean startupAiStaggering = true;
+     private static volatile int startupAiWarmupTicks = 40;
+     private static volatile int startupAiEntitiesPerTick = 16;
++    private static volatile boolean showRootAdminWarning;
++    private static volatile boolean showOfflineModeWarning;
++    private static volatile boolean showCollisionConversionWarning;
++    private static volatile boolean cleanInvalidResidentBots = true;
++    private static volatile String fakeplayerDisplayPrefix = "[假人]";
++    private static volatile String joinMessage = "";
++    private static volatile String quitMessage = "";
+     private static final StartupAiBudget STARTUP_AI_BUDGET = new StartupAiBudget();
+     private static boolean villagerProfessionAssignmentOptimization = true;
+     private static boolean longJumpCandidateOptimization = true;
+@@ -154,6 +161,13 @@ public final class LeavesXRuntime {
+         startupAiStaggering = validated.startupAiStaggering();
+         startupAiWarmupTicks = validated.startupAiWarmupTicks();
+         startupAiEntitiesPerTick = validated.startupAiEntitiesPerTick();
++        showRootAdminWarning = validated.showRootAdminWarning();
++        showOfflineModeWarning = validated.showOfflineModeWarning();
++        showCollisionConversionWarning = validated.showCollisionConversionWarning();
++        cleanInvalidResidentBots = validated.cleanInvalidResidentBots();
++        fakeplayerDisplayPrefix = validated.fakeplayerDisplayPrefix();
++        joinMessage = validated.joinMessage();
++        quitMessage = validated.quitMessage();
+         STARTUP_AI_BUDGET.reset(startupAiEntitiesPerTick);
+         villagerProfessionAssignmentOptimization = validated.villagerProfessionAssignmentOptimization();
+         longJumpCandidateOptimization = validated.longJumpCandidateOptimization();
+@@ -271,6 +285,41 @@ public final class LeavesXRuntime {
+         return startupAiEntitiesPerTick;
+     }
+ 
++    /** Returns whether Paper's root or administrator startup warning should be shown. */
++    public static boolean showRootAdminWarning() {
++        return showRootAdminWarning;
++    }
++
++    /** Returns whether the offline-mode startup warning should be shown. */
++    public static boolean showOfflineModeWarning() {
++        return showOfflineModeWarning;
++    }
++
++    /** Returns whether Leaves should report legacy collision-mode conversion. */
++    public static boolean showCollisionConversionWarning() {
++        return showCollisionConversionWarning;
++    }
++
++    /** Returns whether unrecoverable resident fakeplayer registrations should be removed automatically. */
++    public static boolean cleanInvalidResidentBots() {
++        return cleanInvalidResidentBots;
++    }
++
++    /** Returns the MiniMessage prefix applied only to a fakeplayer's display identity. */
++    public static String fakeplayerDisplayPrefix() {
++        return fakeplayerDisplayPrefix;
++    }
++
++    /** Returns the optional MiniMessage player-join template. */
++    public static String joinMessage() {
++        return joinMessage;
++    }
++
++    /** Returns the optional MiniMessage player-quit template. */
++    public static String quitMessage() {
++        return quitMessage;
++    }
++
+     /**
+      * Claims one startup AI slot for an ordinary mob.
+      *
+diff --git a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java
+index 4b13930603a129b43f04fd156b83b38d7a641561..0db7b43e40aa929e0e923ed530e58189a99ec7a0 100644
+--- a/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java
++++ b/src/main/java/org/leavesx/leavesx/config/migration/LeavesConfigMigrator.java
+@@ -25,7 +25,7 @@ public final class LeavesConfigMigrator {
+     public static final String DEFAULT_SOURCE_FILE_NAME = "leaves.yml";
+     public static final String DEFAULT_TARGET_FILE_NAME = "leavesx.yml";
+ 
+-    private static final String LEAVESX_HEADER = "LeavesX 性能配置。Leaves 原配置仍保存在 leaves.yml。";
++    private static final String LEAVESX_HEADER = "LeavesX 配置。Leaves 原配置仍保存在 leaves.yml。";
+ 
+     private final MigrationOutput output;
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java b/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..5c483f828813f43799727c9eed01cab00f1616b5
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
+@@ -0,0 +1,63 @@
++package org.leavesx.leavesx.presentation;
++
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.minimessage.MiniMessage;
++import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++
++/** Builds configured player-facing names and lifecycle messages without changing account identity. */
++public final class LeavesXPlayerPresentation {
++
++    private static final MiniMessage MINI_MESSAGE = MiniMessage.miniMessage();
++
++    private LeavesXPlayerPresentation() {
++    }
++
++    /**
++     * Creates the display identity used by fakeplayers in Bukkit display-name APIs and the vanilla player list.
++     *
++     * @param accountName unchanged game-profile name
++     * @return configured prefix followed by the literal account name
++     */
++    public static Component fakeplayerDisplayName(final String accountName) {
++        final String prefix = LeavesXRuntime.fakeplayerDisplayPrefix();
++        if (prefix.isEmpty()) {
++            return Component.text(accountName);
++        }
++        return MINI_MESSAGE.deserialize(prefix).append(Component.text(accountName));
++    }
++
++    /** Returns the configured join message, or the event's Paper default when no template is configured. */
++    public static Component joinMessage(
++        final String accountName,
++        final Component displayName,
++        final Component paperDefault
++    ) {
++        return render(LeavesXRuntime.joinMessage(), accountName, displayName, paperDefault);
++    }
++
++    /** Returns the configured quit message, or the event's Paper default when no template is configured. */
++    public static Component quitMessage(
++        final String accountName,
++        final Component displayName,
++        final Component paperDefault
++    ) {
++        return render(LeavesXRuntime.quitMessage(), accountName, displayName, paperDefault);
++    }
++
++    private static Component render(
++        final String template,
++        final String accountName,
++        final Component displayName,
++        final Component paperDefault
++    ) {
++        if (template.isEmpty()) {
++            return paperDefault;
++        }
++        return MINI_MESSAGE.deserialize(
++            template,
++            Placeholder.unparsed("name", accountName),
++            Placeholder.component("display_name", displayName)
++        );
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 5fea627bf0461528bd969d3df097c60762ad8d2e..38b3be7fdc6b189fc0b75ddce16d9d511a96c26c 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -9,9 +9,12 @@ import java.io.IOException;
+ import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.io.TempDir;
++import org.leavesx.leavesx.presentation.LeavesXPlayerPresentation;
+ 
+ @Normal
+ class LeavesXConfigLoaderTest {
+@@ -28,8 +31,17 @@ class LeavesXConfigLoaderTest {
+ 
+         assertEquals(LeavesXConfig.safeDefaults(), created);
+         assertEquals(created, reloaded);
++        assertFalse(created.showRootAdminWarning());
++        assertFalse(created.showOfflineModeWarning());
++        assertFalse(created.showCollisionConversionWarning());
++        assertTrue(created.cleanInvalidResidentBots());
++        assertEquals("[假人]", created.fakeplayerDisplayPrefix());
+         final String generated = Files.readString(path);
+         assertTrue(generated.contains("performance:"));
++        assertTrue(generated.contains("console-messages:"));
++        assertTrue(generated.contains("fakeplayer:"));
++        assertTrue(generated.contains("messages:"));
++        assertTrue(generated.contains("display-prefix:"));
+         assertTrue(generated.contains("mob-spawning:"));
+         assertTrue(generated.contains("diagnostics:"));
+         assertTrue(generated.contains("rolling-window-seconds:"));
+@@ -159,7 +171,7 @@ class LeavesXConfigLoaderTest {
+         final org.spongepowered.configurate.ConfigurationNode node =
+             io.papermc.paper.configuration.ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
+ 
+-        assertEquals(69, node.node("config-version").getInt());
++        assertEquals(LeavesXConfig.CURRENT_CONFIG_VERSION, node.node("config-version").getInt());
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.LIGHT_UPDATE_NOTIFICATION_BATCHING));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.LIGHT_UPDATE_NOTIFICATION_DEDUPLICATION));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.CHUNK_UNLOAD_STAGE_BUFFER_REUSE));
+@@ -208,7 +220,7 @@ class LeavesXConfigLoaderTest {
+         final org.spongepowered.configurate.ConfigurationNode node =
+             io.papermc.paper.configuration.ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
+ 
+-        assertEquals(69, node.node("config-version").getInt());
++        assertEquals(LeavesXConfig.CURRENT_CONFIG_VERSION, node.node("config-version").getInt());
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_SLOT_STATE_CACHE));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_DIRECT_SLOT_SCANS));
+         assertFalse(config.optimizationEnabled(LeavesXOptimization.HOPPER_ITEM_ENTITY_QUERY_BUFFER));
+@@ -738,6 +750,47 @@ class LeavesXConfigLoaderTest {
+         }
+     }
+ 
++    @Test
++    void loadsConsoleAndFakeplayerPresentationSettings() throws IOException {
++        final Path path = write("""
++            config-version: 69
++            console-messages:
++              show-root-admin-warning: true
++              show-offline-mode-warning: true
++              show-collision-conversion-warning: true
++            fakeplayer:
++              clean-invalid-resident-bots: false
++              display-prefix: '<gray>[假人]</gray>'
++            messages:
++              join: '<name> -> <display_name>'
++              quit: '<display_name> left'
++            """);
++
++        final LeavesXConfig config = LeavesXConfigLoader.load(path);
++        assertTrue(config.showRootAdminWarning());
++        assertTrue(config.showOfflineModeWarning());
++        assertTrue(config.showCollisionConversionWarning());
++        assertFalse(config.cleanInvalidResidentBots());
++        assertEquals("<gray>[假人]</gray>", config.fakeplayerDisplayPrefix());
++
++        try {
++            LeavesXRuntime.publish(config);
++            final Component displayName = LeavesXPlayerPresentation.fakeplayerDisplayName("bot_1");
++            final PlainTextComponentSerializer plain = PlainTextComponentSerializer.plainText();
++            assertEquals("[假人]bot_1", plain.serialize(displayName));
++            assertEquals(
++                "bot_1 -> [假人]bot_1",
++                plain.serialize(LeavesXPlayerPresentation.joinMessage("bot_1", displayName, Component.text("default")))
++            );
++            assertEquals(
++                "[假人]bot_1 left",
++                plain.serialize(LeavesXPlayerPresentation.quitMessage("bot_1", displayName, Component.text("default")))
++            );
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
+     @Test
+     void rejectsWrongScalarTypeWithConfigurationPath() throws IOException {
+         final Path path = write("""
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index dba9d1ae66e3bcd8a6c092d5e001ecde4e799fa6..b44c9a9bdba69aae65db65696254c0258a58a679 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -209,7 +209,14 @@ class VillagerCompatibilityContextTest {
+             1,
+             true,
+             40,
+-            16
++            16,
++            false,
++            false,
++            false,
++            true,
++            "[假人]",
++            "",
++            ""
+         );
+     }
+ 

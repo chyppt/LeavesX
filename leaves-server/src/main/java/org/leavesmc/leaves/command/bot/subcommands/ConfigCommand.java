@@ -26,6 +26,7 @@ import static net.kyori.adventure.text.Component.text;
 import static net.kyori.adventure.text.JoinConfiguration.spaces;
 import static net.kyori.adventure.text.format.NamedTextColor.AQUA;
 import static net.kyori.adventure.text.format.NamedTextColor.GRAY;
+import static org.leavesmc.leaves.command.bot.BotCommandLocale.message;
 
 public class ConfigCommand extends BotSubcommand {
 
@@ -61,9 +62,9 @@ public class ConfigCommand extends BotSubcommand {
             CommandSender sender = context.getSender();
             Collection<AbstractBotConfig<?>> botConfigs = bot.getAllConfigs();
             sender.sendMessage(join(spaces(),
-                text("Bot", GRAY),
-                asAdventure(bot.getDisplayName()).append(text("'s", GRAY)),
-                text("configs:", GRAY)
+                text(message("Bot", "假人"), GRAY),
+                asAdventure(bot.getDisplayName()).append(text(message("'s", "的"), GRAY)),
+                text(message("configs:", "配置："), GRAY)
             ));
             for (AbstractBotConfig<?> botConfig : botConfigs) {
                 sender.sendMessage(join(spaces(),
@@ -101,11 +102,11 @@ public class ConfigCommand extends BotSubcommand {
             ServerBot bot = BotArgument.getBot(context);
             AbstractBotConfig<?> botConfig = bot.getConfig(config);
             context.getSender().sendMessage(join(spaces(),
-                text("Bot", GRAY),
-                asAdventure(bot.getDisplayName()).append(text("'s", GRAY)),
-                text("config", GRAY),
+                text(message("Bot", "假人"), GRAY),
+                asAdventure(bot.getDisplayName()).append(text(message("'s", "的"), GRAY)),
+                text(message("config", "配置"), GRAY),
                 botConfig.getNameComponent(),
-                text("is", GRAY),
+                text(message("is", "当前值为"), GRAY),
                 text(String.valueOf(bot.getConfig(config).getValue()), AQUA)
             ));
             return true;
@@ -120,11 +121,11 @@ public class ConfigCommand extends BotSubcommand {
                 throw CommandSyntaxException.BUILT_IN_EXCEPTIONS.dispatcherUnknownArgument().create();
             }
             context.getSender().sendMessage(join(spaces(),
-                text("Bot", GRAY),
-                asAdventure(bot.getDisplayName()).append(text("'s", GRAY)),
-                text("config", GRAY),
+                text(message("Bot", "假人"), GRAY),
+                asAdventure(bot.getDisplayName()).append(text(message("'s", "的"), GRAY)),
+                text(message("config", "配置"), GRAY),
                 botConfig.getNameComponent(),
-                text("changed to", GRAY),
+                text(message("changed to", "已修改为"), GRAY),
                 text(String.valueOf(botConfig.getValue()), AQUA)
             ));
             return true;

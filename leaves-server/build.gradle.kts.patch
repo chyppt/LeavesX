@@ -59,7 +59,11 @@
 +// Leaves start - build change
 +sourceSets {
 +    main {
-+        java { srcDir("../paper-server/src/main/java") }
++        java {
++            srcDir("../paper-server/src/main/java")
++            // Historical verification snapshots are kept for provenance but must never be compiled as production sources.
++            exclude(".tmp-beta174-mc-verify/**")
++        }
 +        resources { srcDir("../paper-server/src/main/resources") }
 +    }
 +    test {
@@ -106,6 +110,8 @@
 +    compilerArgs.add("-Xlint:-removal")
 +    compilerArgs.add("-Xlint:-dep-ann")
 +    compilerArgs.add("--add-modules=jdk.incubator.vector") // SIMD
++    // Historical verification snapshots are retained for provenance but must never enter any compile source set.
++    exclude("**/.tmp-beta174-mc-verify/**")
 +}
 +// Leaves end - hide irrelevant compilation warnings
 +
@@ -138,10 +144,12 @@
              "Build-Number" to (build ?: ""),
              "Build-Time" to buildTime.toString(),
              "Git-Branch" to gitBranch,
-@@ -190,6 +_,11 @@
+@@ -190,6 +_,12 @@
      }
  }
-
+-
++
++// Keep the distributable filename independent from the upstream Leaves task defaults.
 +tasks.named<io.papermc.paperweight.tasks.CreateLeavesclipJar>("createLeavesclipJar") {
 +    val minecraftVersion = rootProject.providers.gradleProperty("mcVersion")
 +    outputZip.set(layout.buildDirectory.file(minecraftVersion.map { "libs/leavesx-$it.jar" }))
@@ -150,6 +158,17 @@
  // Compile tests with -parameters for better junit parameterized test names
  tasks.compileTestJava {
      options.compilerArgs.add("-parameters")
+@@ -224,7 +_,8 @@
+ }
+-
++
+ tasks.test {
+-    include("**/**TestSuite.class")
++    // Keep the upstream test task focused on the explicit compatibility suites.
++    include("**/*TestSuite.class")
+     workingDir = temporaryDir
+     useJUnitPlatform {
+         forkEvery = 1
 @@ -237,7 +_,7 @@
      jvmArgumentProviders.add(provider)
  }

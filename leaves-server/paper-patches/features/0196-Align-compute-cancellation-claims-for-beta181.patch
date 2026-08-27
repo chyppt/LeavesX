@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 26 Aug 2026 15:32:24 +0800
+Subject: [PATCH] Align compute cancellation claims for beta181
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 7f778c07e27eea5a5efe51f3989cfb6fc97131aa..30ca8fc0b3e038c6ba97ce51b76eaa2565571338 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -984,12 +984,17 @@ public final class LeavesXComputeExecutor {
+         /** Counts every unclaimed worker range down when a queued batch is cancelled during shutdown. */
+         private void cancel() {
+             this.invocation.cancelWorker();
++            // Cancellation must reserve the same contiguous claim width as active workers. Mixing getAndIncrement
++            // with a worker's getAndAdd can steal the second range of a block already reserved by that worker.
+             while (true) {
+-                final int taskIndex = this.nextTask.getAndIncrement();
++                final int taskIndex = this.nextTask.getAndAdd(RANGES_PER_CLAIM);
+                 if (taskIndex >= this.taskCount - 1) {
+                     return;
+                 }
+-                this.invocation.cancelWorker();
++                final int claimEnd = Math.min(this.taskCount - 1, taskIndex + RANGES_PER_CLAIM);
++                for (int claimedTask = taskIndex; claimedTask < claimEnd; claimedTask++) {
++                    this.invocation.cancelWorker();
++                }
+             }
+         }
+     }

@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Tue, 25 Aug 2026 17:49:52 +0800
+Subject: [PATCH] Preserve active mob targets during startup AI staggering
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 66dc263c1edd29dd328d45d4015bce8df3dd0bcb..9b39af7b9f2af3c11de3c260a5d719e8f8c90360 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -272,15 +272,29 @@ public final class LeavesXRuntime {
+     }
+ 
+     /**
+-     * Claims one startup AI slot.
++     * Claims one startup AI slot for an ordinary mob.
+      *
+-     * <p>The sensing phase remains untouched. When the short startup window is active, only the expensive goal,
+-     * navigation and custom-brain phases are spread across ticks. The selection rotates with the entity traversal
+-     * order, so the first entities in a stable {@code EntityTickList} cannot consume the budget on every tick.</p>
++     * <p>This overload is retained for callers that do not have a priority signal. Critical entities should use
++     * {@link #allowStartupAiStep(boolean, boolean)} so an active combat target is never delayed by boot smoothing.</p>
+      */
+     public static boolean allowStartupAiStep(final boolean villager) {
++        return allowStartupAiStep(villager, false);
++    }
++
++    /**
++     * Claims a startup AI slot while preserving critical entity responsiveness.
++     *
++     * <p>The sensing phase remains untouched. During the short startup window, ordinary mobs are admitted by the
++     * rotating budget; villagers in compatibility mode and mobs with an active target bypass that budget so panic,
++     * combat and plugin-visible target transitions keep their normal timing.</p>
++     *
++     * @param villager whether the caller is a villager
++     * @param priority whether the caller currently has a target and must remain responsive
++     * @return whether the caller may execute its expensive AI phases
++     */
++    public static boolean allowStartupAiStep(final boolean villager, final boolean priority) {
+         // Villager compatibility mode must preserve every Brain tick used by panic and iron-golem mechanics.
+-        if (villager && villagerCompatibilityMode) {
++        if ((villager && villagerCompatibilityMode) || priority) {
+             return true;
+         }
+         if (!startupAiStaggering || MinecraftServer.currentTick > startupAiWarmupTicks) {
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index be8419f18679171c2e3761cc12fa38b2ba1e39d1..dba9d1ae66e3bcd8a6c092d5e001ecde4e799fa6 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -142,10 +142,17 @@ class VillagerCompatibilityContextTest {
+             .map(MethodInsnNode.class::cast)
+             .anyMatch(call -> call.owner.equals(runtimeOwner)
+                 && call.name.equals("allowStartupAiStep")
+-                && call.desc.equals("(Z)Z")));
++                && call.desc.equals("(ZZ)Z")));
++        assertTrue(Arrays.stream(serverAiStep.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals("net/minecraft/world/entity/Mob")
++                && call.name.equals("getTarget")
++                && call.desc.equals("()Lnet/minecraft/world/entity/LivingEntity;")));
+ 
+         LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         assertTrue(LeavesXRuntime.allowStartupAiStep(true));
++        assertTrue(LeavesXRuntime.allowStartupAiStep(false, true));
+     }
+ 
+     private static LeavesXConfig configWithVillagerCompatibilityMode(final boolean enabled) {

@@ -1,0 +1,440 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 26 Aug 2026 17:03:01 +0800
+Subject: [PATCH] Finalize beta182 compatibility and allocation paths
+
+
+diff --git a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+index 781859c8a24102443f3d1a39d2b4596436fe0fa6..eabde23c53bc87f4204da1ebb49f83bd9cb1d18f 100644
+--- a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
++++ b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+@@ -109,13 +109,14 @@ final class ActivationRangeSnapshot {
+         final int start,
+         final int end
+     ) {
++        int entityOffset = start * AABB_COMPONENTS;
+         for (int index = start; index < end; index++) {
+             final byte activationType = activationTypes[index];
+             if (activationType < 0) {
+                 intersections[index] = activationType == ALWAYS_ACTIVATE;
++                entityOffset += AABB_COMPONENTS;
+                 continue;
+             }
+-            final int entityOffset = index * AABB_COMPONENTS;
+             final int activationOffset = activationType * AABB_COMPONENTS;
+             intersections[index] = activationBounds[activationOffset] < entityBounds[entityOffset + 3]
+                 && activationBounds[activationOffset + 3] > entityBounds[entityOffset]
+@@ -123,6 +124,7 @@ final class ActivationRangeSnapshot {
+                 && activationBounds[activationOffset + 4] > entityBounds[entityOffset + 1]
+                 && activationBounds[activationOffset + 2] < entityBounds[entityOffset + 5]
+                 && activationBounds[activationOffset + 5] > entityBounds[entityOffset + 2];
++            entityOffset += AABB_COMPONENTS;
+         }
+     }
+ 
+@@ -139,7 +141,8 @@ final class ActivationRangeSnapshot {
+         final long currentTick,
+         final int size
+     ) {
+-        for (int index = 0; index < size; index++) {
++        int entityOffset = 0;
++        for (int index = 0; index < size; index++, entityOffset += AABB_COMPONENTS) {
+             final Entity entity = entities.get(index);
+             if ((!tickMarkers && entity instanceof Marker) || currentTick <= entity.activatedTick) {
+                 workspace.activationTypes[index] = SKIP_ENTITY;
+@@ -150,7 +153,7 @@ final class ActivationRangeSnapshot {
+                 continue;
+             }
+             workspace.activationTypes[index] = (byte)entity.activationType.ordinal();
+-            writeBounds(workspace.entityBounds, index * AABB_COMPONENTS, entity.getBoundingBox());
++            writeBounds(workspace.entityBounds, entityOffset, entity.getBoundingBox());
+         }
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 9298f1af70c1e768fb4cebb9a4c74d20b21fe88a..4d8a023203ed6581144f2e0759d38cc142858652 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -589,6 +589,21 @@ public final class LeavesXRuntime {
+         return villagerCompatibilityMode;
+     }
+ 
++    /**
++     * Determines whether an inactive villager must retain Paper's complete server AI step.
++     *
++     * <p>Paper normally allows operators to replace this with a Brain-only update. That saves work, but it omits
++     * navigation and mob-level goal processing which the vanilla villager panic and iron-golem cycle can observe.
++     * LeavesX compatibility mode therefore retains the complete Paper path for villagers only. Other entity types
++     * and an explicitly disabled compatibility mode continue to follow the configured Paper setting.</p>
++     *
++     * @param paperTickInactiveVillagers configured Paper inactive-villager behavior
++     * @return whether to execute the complete inactive-villager AI step
++     */
++    public static boolean shouldRunFullInactiveVillagerAi(final boolean paperTickInactiveVillagers) {
++        return paperTickInactiveVillagers || villagerCompatibilityMode;
++    }
++
+     /** Returns whether gamerule-disabled spectators should be treated as having no player chunk loader. */
+     public static boolean spectatorNoChunkLoading() {
+         return spectatorNoChunkLoading;
+diff --git a/src/main/java/org/leavesx/leavesx/performance/ChunkUnloadBudget.java b/src/main/java/org/leavesx/leavesx/performance/ChunkUnloadBudget.java
+index 086e7b42dae33b033f47093c7ed33bb5691ed8af..c4eb7fb4c5a17ea7f8313c5c6b624a5cd2879ffd 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/ChunkUnloadBudget.java
++++ b/src/main/java/org/leavesx/leavesx/performance/ChunkUnloadBudget.java
+@@ -44,6 +44,9 @@ public final class ChunkUnloadBudget {
+         }
+ 
+         final double fraction = Math.clamp(unloadFraction, 0.0, 1.0);
++        if (fraction == 0.0D) {
++            return (int)Math.min(pendingChunkCount, cappedBase);
++        }
+         final long availableIncrease = (long)maximum - minimum;
+         final long pressure = Math.min(
+             availableIncrease,
+diff --git a/src/main/java/org/leavesx/leavesx/performance/DenseMonsterAiPolicy.java b/src/main/java/org/leavesx/leavesx/performance/DenseMonsterAiPolicy.java
+index 517deddecb433197eba80817e69c096c682c9710..1475b0f8b555216cf785250cb476bf18c9ed5b48 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/DenseMonsterAiPolicy.java
++++ b/src/main/java/org/leavesx/leavesx/performance/DenseMonsterAiPolicy.java
+@@ -21,6 +21,9 @@ public final class DenseMonsterAiPolicy {
+         if (intervalTicks <= 1) {
+             return true;
+         }
++        if ((intervalTicks & (intervalTicks - 1)) == 0) {
++            return ((tick + entityId) & (intervalTicks - 1)) == 0;
++        }
+         return Math.floorMod(tick + entityId, intervalTicks) == 0;
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/performance/PoiVisitedSectionSet.java b/src/main/java/org/leavesx/leavesx/performance/PoiVisitedSectionSet.java
+index e1a712ecba8db3a1fc2e889828ec874777eee81e..ac5d64b0722800f9921c7703eb532fb50acf0fd4 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/PoiVisitedSectionSet.java
++++ b/src/main/java/org/leavesx/leavesx/performance/PoiVisitedSectionSet.java
+@@ -102,17 +102,18 @@ public final class PoiVisitedSectionSet {
+             return this.fallback.add(CoordinateUtils.getChunkSectionKey(x, y, z));
+         }
+ 
++        final long[] bits = this.visitedBits;
+         final int localX = x - this.minimumX;
+         final int localY = y - this.minimumY;
+         final int localZ = z - this.minimumZ;
+         final int index = ((localZ * this.sizeX + localX) * this.sizeY) + localY;
+         final int wordIndex = index >>> 6;
+         final long mask = 1L << (index & 63);
+-        final long previous = this.visitedBits[wordIndex];
++        final long previous = bits[wordIndex];
+         if ((previous & mask) != 0L) {
+             return false;
+         }
+-        this.visitedBits[wordIndex] = previous | mask;
++        bits[wordIndex] = previous | mask;
+         return true;
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/performance/ProtocolIntegerEncoding.java b/src/main/java/org/leavesx/leavesx/performance/ProtocolIntegerEncoding.java
+index 04159565b584bb626c5e6e6d4e4ec36df57d0700..b5c2c0a5ad8e165b5d07a68f1097f64fc49bc993 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/ProtocolIntegerEncoding.java
++++ b/src/main/java/org/leavesx/leavesx/performance/ProtocolIntegerEncoding.java
+@@ -12,6 +12,7 @@ import io.netty.buffer.ByteBuf;
+ public final class ProtocolIntegerEncoding {
+ 
+     private static final int[] VARLONG_EXACT_BYTE_LENGTHS = createVarLongByteLengths();
++    private static final int[] VARINT_EXACT_BYTE_LENGTHS = createVarIntByteLengths();
+ 
+     private ProtocolIntegerEncoding() {
+     }
+@@ -26,6 +27,11 @@ public final class ProtocolIntegerEncoding {
+         return VARLONG_EXACT_BYTE_LENGTHS[Long.numberOfLeadingZeros(value)];
+     }
+ 
++    /** Returns the exact encoded size of a VarInt. */
++    public static int getVarIntByteSize(final int value) {
++        return VARINT_EXACT_BYTE_LENGTHS[Integer.numberOfLeadingZeros(value)];
++    }
++
+     /**
+      * Writes one VarInt using at most two fixed-width buffer operations.
+      *
+@@ -153,4 +159,13 @@ public final class ProtocolIntegerEncoding {
+         lengths[64] = 1;
+         return lengths;
+     }
++
++    private static int[] createVarIntByteLengths() {
++        final int[] lengths = new int[33];
++        for (int leadingZeros = 0; leadingZeros < 32; ++leadingZeros) {
++            lengths[leadingZeros] = (int)Math.ceil((31.0 - (leadingZeros - 1)) / 7.0);
++        }
++        lengths[32] = 1;
++        return lengths;
++    }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/performance/SortedIndexListCompactor.java b/src/main/java/org/leavesx/leavesx/performance/SortedIndexListCompactor.java
+index acda2c5fe3252618d33519cad8483d17ee3e18a7..87f243e73f6a49c9042a6d12cdb58d370fd7a8c6 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/SortedIndexListCompactor.java
++++ b/src/main/java/org/leavesx/leavesx/performance/SortedIndexListCompactor.java
+@@ -23,6 +23,16 @@ public final class SortedIndexListCompactor {
+ 
+         final int originalSize = list.size();
+         final int firstRemovedIndex = sortedIndices.getInt(0);
++        if (removalCount == originalSize) {
++            list.clear();
++            return;
++        }
++        if (removalCount == originalSize - firstRemovedIndex
++            && sortedIndices.getInt(removalCount - 1) == originalSize - 1) {
++            // A suffix needs no survivor copies. The caller's strict ordering contract makes this range exact.
++            list.subList(firstRemovedIndex, originalSize).clear();
++            return;
++        }
+         int writeIndex = firstRemovedIndex;
+         int removalCursor = 1;
+         int nextRemovedIndex = removalCursor < removalCount ? sortedIndices.getInt(removalCursor) : originalSize;
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+index b8a80bcfe6b7bfdab8b2e97ce07c63217be62fdd..7602a763e9a6ccaeb539cba1f660797542cb9e8d 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -311,11 +311,14 @@ public final class StableDistanceSorter {
+         final int size
+     ) {
+         workspace.ensureCoordinateCapacity(size);
++        final double[] x = workspace.x;
++        final double[] y = workspace.y;
++        final double[] z = workspace.z;
+         for (int index = 0; index < size; index++) {
+             final Entity entity = entities.get(index);
+-            workspace.x[index] = entity.getX();
+-            workspace.y[index] = entity.getY();
+-            workspace.z[index] = entity.getZ();
++            x[index] = entity.getX();
++            y[index] = entity.getY();
++            z[index] = entity.getZ();
+         }
+     }
+ 
+@@ -328,12 +331,14 @@ public final class StableDistanceSorter {
+         final double originY,
+         final double originZ
+     ) {
++        final long[] keys = workspace.keys;
++        final int[] order = workspace.order;
+         for (int index = 0; index < size; index++) {
+             final Entity entity = entities.get(index);
+-            workspace.keys[index] = sortableDistanceKey(
++            keys[index] = sortableDistanceKey(
+                 squaredDistance(originX, originY, originZ, entity.getX(), entity.getY(), entity.getZ())
+             );
+-            workspace.order[index] = index;
++            order[index] = index;
+         }
+     }
+ 
+@@ -346,11 +351,16 @@ public final class StableDistanceSorter {
+         final double originY,
+         final double originZ
+     ) {
++        final double[] x = workspace.x;
++        final double[] y = workspace.y;
++        final double[] z = workspace.z;
++        final long[] keys = workspace.keys;
++        final int[] order = workspace.order;
+         for (int index = start; index < end; index++) {
+-            workspace.keys[index] = sortableDistanceKey(
+-                squaredDistance(originX, originY, originZ, workspace.x[index], workspace.y[index], workspace.z[index])
++            keys[index] = sortableDistanceKey(
++                squaredDistance(originX, originY, originZ, x[index], y[index], z[index])
+             );
+-            workspace.order[index] = index;
++            order[index] = index;
+         }
+     }
+ 
+@@ -364,12 +374,16 @@ public final class StableDistanceSorter {
+         final double originZ
+     ) {
+         int nearest = -1;
++        final double[] x = workspace.x;
++        final double[] y = workspace.y;
++        final double[] z = workspace.z;
++        final long[] keys = workspace.keys;
+         for (int index = start; index < end; index++) {
+             final long key = sortableDistanceKey(
+-                squaredDistance(originX, originY, originZ, workspace.x[index], workspace.y[index], workspace.z[index])
++                squaredDistance(originX, originY, originZ, x[index], y[index], z[index])
+             );
+-            workspace.keys[index] = key;
+-            if (nearest < 0 || Long.compareUnsigned(key, workspace.keys[nearest]) < 0) {
++            keys[index] = key;
++            if (nearest < 0 || Long.compareUnsigned(key, keys[nearest]) < 0) {
+                 nearest = index;
+             }
+         }
+@@ -406,22 +420,23 @@ public final class StableDistanceSorter {
+         final int[] offsets,
+         final int offsetBase
+     ) {
++        final int bucketBase = offsetBase;
+         for (int shift = 0; shift < Long.SIZE; shift += Byte.SIZE) {
+-            Arrays.fill(offsets, offsetBase, offsetBase + RADIX_BUCKETS, 0);
++            Arrays.fill(offsets, bucketBase, bucketBase + RADIX_BUCKETS, 0);
+             for (int index = start; index < end; index++) {
+-                offsets[offsetBase + bucket(keys[order[index]], shift)]++;
++                offsets[bucketBase + bucket(keys[order[index]], shift)]++;
+             }
+ 
+             int next = start;
+             for (int bucket = 0; bucket < RADIX_BUCKETS; bucket++) {
+-                final int offsetIndex = offsetBase + bucket;
++                final int offsetIndex = bucketBase + bucket;
+                 final int count = offsets[offsetIndex];
+                 offsets[offsetIndex] = next;
+                 next += count;
+             }
+             for (int index = start; index < end; index++) {
+                 final int value = order[index];
+-                final int offsetIndex = offsetBase + bucket(keys[value], shift);
++                final int offsetIndex = bucketBase + bucket(keys[value], shift);
+                 scratch[offsets[offsetIndex]++] = value;
+             }
+ 
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index 39eccaf197c2fdcb337fbbc5f1875f0fc0243d14..ba8eb443f1bdc445cda1fd5862391ac99333e9f4 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -80,6 +80,21 @@ class VillagerCompatibilityContextTest {
+         }
+     }
+ 
++    @Test
++    void compatibilityModeRetainsTheFullInactiveVillagerAiStep() {
++        LeavesXRuntime.publish(configWithVillagerCompatibilityMode(true));
++        try {
++            assertTrue(LeavesXRuntime.shouldRunFullInactiveVillagerAi(false));
++            assertTrue(LeavesXRuntime.shouldRunFullInactiveVillagerAi(true));
++
++            LeavesXRuntime.publish(configWithVillagerCompatibilityMode(false));
++            assertFalse(LeavesXRuntime.shouldRunFullInactiveVillagerAi(false));
++            assertTrue(LeavesXRuntime.shouldRunFullInactiveVillagerAi(true));
++        } finally {
++            LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        }
++    }
++
+     @Test
+     void brainSafetyContextDisablesCriticalFastPathsWhenCompatibilityModeIsDisabled() {
+         LeavesXRuntime.publish(configWithVillagerCompatibilityMode(false));
+@@ -222,7 +237,7 @@ class VillagerCompatibilityContextTest {
+     }
+ 
+     @Test
+-    void compatibilityModeDoesNotOverridePaperInactiveVillagerPolicy() throws IOException {
++    void compatibilityModeKeepsInactiveVillagerBrainTicksAvailable() throws IOException {
+         final MethodNode inactiveTick = method(classNode(Villager.class.getName()), "inactiveTick");
+         final String runtimeOwner = LeavesXRuntime.class.getName().replace('.', '/');
+         final List<String> runtimeCalls = Arrays.stream(inactiveTick.instructions.toArray())
+@@ -240,7 +255,9 @@ class VillagerCompatibilityContextTest {
+         assertTrue(runtimeCalls.contains("enterVillagerCompatibilityContext"));
+         assertTrue(runtimeCalls.contains("exitVillagerCompatibilityContext"));
+         assertTrue(runtimeCalls.stream().allMatch(call -> call.equals("enterVillagerCompatibilityContext")
+-            || call.equals("exitVillagerCompatibilityContext")));
++            || call.equals("exitVillagerCompatibilityContext")
++            || call.equals("shouldRunFullInactiveVillagerAi")));
++        assertTrue(runtimeCalls.contains("shouldRunFullInactiveVillagerAi"));
+     }
+ 
+     private static ClassNode classNode(final String className) throws IOException {
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadBudgetTest.java b/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadBudgetTest.java
+index d868b9a70eb19e6cff6e4a75fcc5fdadf77e6463..09ea12fc943ddf526d3a6514de1aa0085f6ab9c5 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadBudgetTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadBudgetTest.java
+@@ -45,4 +45,12 @@ class ChunkUnloadBudgetTest {
+     void retainsTheConfiguredSafetyCapWhileTheServerIsLagging() {
+         assertEquals(500, ChunkUnloadBudget.calculate(20_000, 1_000, 0.05, true, 1_000, 100, 500, 80_000_000L, TARGET_TICK_NANOS));
+     }
++
++    @Test
++    void zeroUnloadFractionPreservesTheBoundedBaseBudget() {
++        assertEquals(
++            100,
++            ChunkUnloadBudget.calculate(20_000, 100, 0.0D, true, 1_000, 100, 500, 20_000_000L, TARGET_TICK_NANOS)
++        );
++    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/DenseMonsterAiPolicyTest.java b/src/test/java/org/leavesx/leavesx/performance/DenseMonsterAiPolicyTest.java
+index 40ee9eb5794d5b21578ee98055b6eafc717d4f39..d9216a784d01f073d7b79b0fee32fa906bdccc6f 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/DenseMonsterAiPolicyTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/DenseMonsterAiPolicyTest.java
+@@ -1,5 +1,6 @@
+ package org.leavesx.leavesx.performance;
+ 
++import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+@@ -19,4 +20,18 @@ class DenseMonsterAiPolicyTest {
+         assertTrue(DenseMonsterAiPolicy.fullGoalSelectionDue(0L, 11, 1));
+         assertTrue(DenseMonsterAiPolicy.fullGoalSelectionDue(101L, -7, 0));
+     }
++
++    @Test
++    void powerOfTwoIntervalsPreserveFloorModForNegativePhases() {
++        for (final int interval : new int[] {2, 4, 8, 16}) {
++            for (long tick = -65L; tick <= 65L; tick++) {
++                for (int entityId = -17; entityId <= 17; entityId++) {
++                    assertEquals(
++                        Math.floorMod(tick + entityId, interval) == 0,
++                        DenseMonsterAiPolicy.fullGoalSelectionDue(tick, entityId, interval)
++                    );
++                }
++            }
++        }
++    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ProtocolIntegerEncodingTest.java b/src/test/java/org/leavesx/leavesx/performance/ProtocolIntegerEncodingTest.java
+index 89f56cc3f0a818191fe848892a18ae96745bd612..a140c0303276a3bc599f3616aac5f5b791e47afa 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ProtocolIntegerEncodingTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ProtocolIntegerEncodingTest.java
+@@ -21,6 +21,7 @@ class ProtocolIntegerEncodingTest {
+ 
+         for (final int value : values) {
+             assertArrayEquals(legacyVarInt(value), optimizedVarInt(value), "VarInt value " + value);
++            assertEquals(legacyVarInt(value).length, ProtocolIntegerEncoding.getVarIntByteSize(value));
+         }
+     }
+ 
+@@ -46,6 +47,7 @@ class ProtocolIntegerEncodingTest {
+             final long longValue = random.nextLong();
+             assertArrayEquals(legacyVarInt(intValue), optimizedVarInt(intValue));
+             assertArrayEquals(legacyVarLong(longValue), optimizedVarLong(longValue));
++            assertEquals(legacyVarInt(intValue).length, ProtocolIntegerEncoding.getVarIntByteSize(intValue));
+         }
+     }
+ 
+diff --git a/src/test/java/org/leavesx/leavesx/performance/SortedIndexListCompactorTest.java b/src/test/java/org/leavesx/leavesx/performance/SortedIndexListCompactorTest.java
+index ec885ddf407ed5341c87824e96b919cc7baff59d..ece3b355f32d70ed5589d796115d9957f4ca8900 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/SortedIndexListCompactorTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/SortedIndexListCompactorTest.java
+@@ -31,6 +31,24 @@ class SortedIndexListCompactorTest {
+         assertEquals(List.of(), allValues);
+     }
+ 
++    @Test
++    void removesAContiguousSuffixWithoutCopyingSurvivors() {
++        final List<Integer> values = new ArrayList<>(List.of(0, 1, 2, 3, 4));
++
++        SortedIndexListCompactor.removeSortedIndices(values, IntArrayList.of(3, 4));
++
++        assertEquals(List.of(0, 1, 2), values);
++    }
++
++    @Test
++    void doesNotTreatSparseTailRemovalsAsASuffix() {
++        final List<Integer> values = new ArrayList<>(List.of(0, 1, 2, 3));
++
++        SortedIndexListCompactor.removeSortedIndices(values, IntArrayList.of(1, 3));
++
++        assertEquals(List.of(0, 2), values);
++    }
++
+     @Test
+     void leavesListUntouchedWhenNoIndexesAreMarked() {
+         final List<String> values = new ArrayList<>(List.of("a", "b"));

@@ -18,6 +18,7 @@ import org.slf4j.Logger;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Collection;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -87,9 +88,51 @@ public class BotDataStorage {
         });
     }
 
+    /**
+     * Consumes a data file after the corresponding bot has been placed successfully.
+     *
+     * <p>Loading is intentionally two-phase. A world-load callback can run before every world is visible to Bukkit,
+     * and plugins may cancel the load event. Deleting the file before those checks loses a perfectly valid resident
+     * bot. Callers must invoke this method only after {@code placeNewBot} has completed.</p>
+     *
+     * @param name saved bot name
+     * @param uuid saved bot UUID
+     */
+    public void consumeLoadedData(@NotNull String name, @NotNull UUID uuid) {
+        File file = new File(this.botDir, uuid + ".dat");
+        if (file.exists() && file.isFile() && !file.delete()) {
+            // Keep the list entry when the file cannot be removed. The next periodic save can repair it, and the
+            // operator still has the original data available instead of silently losing it.
+            LOGGER.warn("Failed to consume fakeplayer data for {}, keeping the resident record", name);
+            return;
+        }
+        this.removeSavedData(name);
+    }
+
     public void removeSavedData(String name) {
         this.savedBotList.remove(name.toLowerCase(Locale.ROOT));
         this.saveBotList();
+    }
+
+    /**
+     * Removes stale list registrations in one write while leaving their entity data files available for recovery.
+     *
+     * @param names saved bot names or lowercase list keys
+     * @return number of registrations removed
+     */
+    public int removeSavedDataEntries(Collection<String> names) {
+        int removed = 0;
+        for (String name : names) {
+            final String key = name.toLowerCase(Locale.ROOT);
+            if (this.savedBotList.contains(key)) {
+                this.savedBotList.remove(key);
+                removed++;
+            }
+        }
+        if (removed != 0) {
+            this.saveBotList();
+        }
+        return removed;
     }
 
     private Optional<CompoundTag> load(String name, String uuid) {
@@ -99,16 +142,33 @@ public class BotDataStorage {
             return Optional.empty();
         }
         try {
-            Optional<CompoundTag> optional = Optional.of(NbtIo.readCompressed(file.toPath(), NbtAccounter.unlimitedHeap()));
-            if (!file.delete()) {
-                throw new IOException("Failed to delete fakeplayer data");
-            }
-            this.removeSavedData(name);
-            return optional;
+            // Do not mutate storage here. The caller may still discover a missing world, a cancelled event, or a
+            // placement failure after reading the entity. Consumption happens explicitly after successful placement.
+            return Optional.of(NbtIo.readCompressed(file.toPath(), NbtAccounter.unlimitedHeap()));
         } catch (Exception exception) {
             BotDataStorage.LOGGER.warn("Failed to load fakeplayer data for {}", name);
         }
         return Optional.empty();
+    }
+
+    /**
+     * Returns whether an existing data file is definitely unreadable.
+     *
+     * <p>Missing files are deliberately not classified as corrupt: they can be restored from a backup or recreated by
+     * a later save. Likewise, missing world metadata is a recoverability problem, not proof that the record is broken.</p>
+     */
+    public boolean isDataFileCorrupt(@NotNull String name) {
+        final UUID uuid = this.findUUID(name).orElseGet(() -> BotUtil.getBotUUID(name));
+        final File file = new File(this.botDir, uuid + ".dat");
+        if (!file.exists() || !file.isFile()) {
+            return false;
+        }
+        try {
+            NbtIo.readCompressed(file.toPath(), NbtAccounter.unlimitedHeap());
+            return false;
+        } catch (Exception exception) {
+            return true;
+        }
     }
 
     public Optional<CompoundTag> read(String uuid) {
@@ -145,6 +205,11 @@ public class BotDataStorage {
 
     public UUID getUUIDFromLower(String lowerName) {
         return savedBotList.getCompoundOrEmpty(lowerName).read("uuid", UUIDUtil.CODEC).orElseThrow();
+    }
+
+    /** Returns the UUID stored in the list entry without deriving it again from the current configured name. */
+    public Optional<UUID> findUUID(String name) {
+        return savedBotList.getCompoundOrEmpty(name.toLowerCase(Locale.ROOT)).read("uuid", UUIDUtil.CODEC);
     }
 
     public String getNameFromLower(String lowerName) {

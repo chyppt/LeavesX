@@ -1,0 +1,233 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 26 Aug 2026 23:55:06 +0800
+Subject: [PATCH] Support legacy colors in fakeplayer presentation
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 909b2772b17a8eb6fa051506e213b621fea0b73d..19f5ad498b16f02b83923c42706548c0085a31fd 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -433,10 +433,10 @@ public final class LeavesXConfigWriter {
+         comments.put("console-messages.show-offline-mode-warning", "是否显示离线模式安全警告。默认：false。");
+         comments.put("console-messages.show-collision-conversion-warning", "是否显示碰撞模式自动转换提示。默认：false。");
+         comments.put("fakeplayer.clean-invalid-resident-bots", "只清理压缩 NBT 已确认损坏的假人登记；缺世界、世界未加载或缺文件都会保留。默认：true。");
+-        comments.put("fakeplayer.display-prefix", "假人显示名前缀，支持 MiniMessage，空字符串关闭。默认：[假人]。");
++        comments.put("fakeplayer.display-prefix", "假人显示名前缀，支持 MiniMessage 和 &/§ 颜色代码，空字符串关闭。默认：[假人]。");
+         comments.put("fakeplayer.forbidden-name-contains", "假人用户名包含这些文字时禁止创建，大小写不敏感；空列表不限制。默认：[]。");
+-        comments.put("messages.join", "自定义进入提示，可用 <name> 和 <display_name>，空字符串保持默认。默认：空。");
+-        comments.put("messages.quit", "自定义退出提示，可用 <name> 和 <display_name>，空字符串保持默认。默认：空。");
++        comments.put("messages.join", "自定义进入提示，可用 <name> 和 <display_name>，支持 MiniMessage 和 &/§ 颜色代码，空字符串保持默认。默认：空。");
++        comments.put("messages.quit", "自定义退出提示，可用 <name> 和 <display_name>，支持 MiniMessage 和 &/§ 颜色代码，空字符串保持默认。默认：空。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java b/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
+index 5c483f828813f43799727c9eed01cab00f1616b5..c12b4ab5e1e3f0bf8a01153911019fa67f1daf4f 100644
+--- a/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
++++ b/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
+@@ -3,12 +3,14 @@ package org.leavesx.leavesx.presentation;
+ import net.kyori.adventure.text.Component;
+ import net.kyori.adventure.text.minimessage.MiniMessage;
+ import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
++import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
+ import org.leavesx.leavesx.config.LeavesXRuntime;
+ 
+ /** Builds configured player-facing names and lifecycle messages without changing account identity. */
+ public final class LeavesXPlayerPresentation {
+ 
+     private static final MiniMessage MINI_MESSAGE = MiniMessage.miniMessage();
++    private static final char SECTION_SIGN = '\u00A7';
+ 
+     private LeavesXPlayerPresentation() {
+     }
+@@ -24,7 +26,7 @@ public final class LeavesXPlayerPresentation {
+         if (prefix.isEmpty()) {
+             return Component.text(accountName);
+         }
+-        return MINI_MESSAGE.deserialize(prefix).append(Component.text(accountName));
++        return deserializeConfigured(prefix).append(Component.text(accountName));
+     }
+ 
+     /** Returns the configured join message, or the event's Paper default when no template is configured. */
+@@ -54,10 +56,99 @@ public final class LeavesXPlayerPresentation {
+         if (template.isEmpty()) {
+             return paperDefault;
+         }
+-        return MINI_MESSAGE.deserialize(
++        return deserializeConfigured(
+             template,
+             Placeholder.unparsed("name", accountName),
+             Placeholder.component("display_name", displayName)
+         );
+     }
++
++    /**
++     * Parses both the documented MiniMessage syntax and legacy Minecraft color codes.
++     *
++     * <p>Legacy codes are translated before MiniMessage parsing so a template can safely combine
++     * {@code &a}/{@code \u00A7a} formatting with {@code <name>} and {@code <display_name>} placeholders.
++     * Unknown ampersands and section signs remain ordinary text.</p>
++     */
++    private static Component deserializeConfigured(
++        final String input,
++        final TagResolver... resolvers
++    ) {
++        return MINI_MESSAGE.deserialize(legacyCodesToMiniMessage(input), resolvers);
++    }
++
++    private static String legacyCodesToMiniMessage(final String input) {
++        final StringBuilder result = new StringBuilder(input.length());
++        for (int index = 0; index < input.length(); index++) {
++            final char marker = input.charAt(index);
++            if (marker != '&' && marker != SECTION_SIGN) {
++                result.append(marker);
++                continue;
++            }
++
++            // Support the common &#RRGGBB form in addition to the standard legacy palette.
++            if (index + 7 < input.length() && input.charAt(index + 1) == '#') {
++                final String hex = input.substring(index + 2, index + 8);
++                if (isHexColor(hex)) {
++                    result.append("<").append('#').append(hex).append('>');
++                    index += 7;
++                    continue;
++                }
++            }
++
++            if (index + 1 >= input.length()) {
++                result.append(marker);
++                continue;
++            }
++
++            final String tag = legacyTag(input.charAt(index + 1));
++            if (tag == null) {
++                result.append(marker);
++                continue;
++            }
++            result.append('<').append(tag).append('>');
++            index++;
++        }
++        return result.toString();
++    }
++
++    private static boolean isHexColor(final String value) {
++        for (int index = 0; index < value.length(); index++) {
++            final char character = value.charAt(index);
++            if (!(character >= '0' && character <= '9')
++                && !(character >= 'a' && character <= 'f')
++                && !(character >= 'A' && character <= 'F')) {
++                return false;
++            }
++        }
++        return true;
++    }
++
++    private static String legacyTag(final char code) {
++        return switch (Character.toLowerCase(code)) {
++            case '0' -> "black";
++            case '1' -> "dark_blue";
++            case '2' -> "dark_green";
++            case '3' -> "dark_aqua";
++            case '4' -> "dark_red";
++            case '5' -> "dark_purple";
++            case '6' -> "gold";
++            case '7' -> "gray";
++            case '8' -> "dark_gray";
++            case '9' -> "blue";
++            case 'a' -> "green";
++            case 'b' -> "aqua";
++            case 'c' -> "red";
++            case 'd' -> "light_purple";
++            case 'e' -> "yellow";
++            case 'f' -> "white";
++            case 'k' -> "obfuscated";
++            case 'l' -> "bold";
++            case 'm' -> "strikethrough";
++            case 'n' -> "underlined";
++            case 'o' -> "italic";
++            case 'r' -> "reset";
++            default -> null;
++        };
++    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..124f2bf16866e9d4e7ead4576f2beee6a4680d67
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+@@ -0,0 +1,74 @@
++package org.leavesx.leavesx.config;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++import org.leavesx.leavesx.presentation.LeavesXPlayerPresentation;
++
++/** Verifies fakeplayer presentation accepts MiniMessage and legacy color syntax. */
++@Normal
++final class LeavesXPlayerPresentationTest {
++
++    private static final LegacyComponentSerializer LEGACY = LegacyComponentSerializer.legacySection();
++
++    @AfterEach
++    void restoreDefaults() {
++        LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++    }
++
++    @Test
++    void parsesAmpersandAndSectionSignColorsInDisplayPrefix() {
++        publishConfig("&a[假人]", "", "");
++        assertEquals("\u00A7a[假人]bot", LEGACY.serialize(LeavesXPlayerPresentation.fakeplayerDisplayName("bot")));
++
++        publishConfig("\u00A7b[假人]", "", "");
++        assertEquals("\u00A7b[假人]bot", LEGACY.serialize(LeavesXPlayerPresentation.fakeplayerDisplayName("bot")));
++    }
++
++    @Test
++    void parsesLegacyColorsAlongsideConfiguredPlaceholders() {
++        publishConfig("[假人]", "&6<name> &7joined as <display_name>", "\u00A7c<display_name> left");
++        final Component displayName = LeavesXPlayerPresentation.fakeplayerDisplayName("bot");
++
++        assertEquals("\u00A76bot \u00A77joined as [假人]", LEGACY.serialize(
++            LeavesXPlayerPresentation.joinMessage("bot", displayName, Component.text("default"))
++        ));
++        assertEquals("\u00A7c[假人] left", LEGACY.serialize(
++            LeavesXPlayerPresentation.quitMessage("bot", displayName, Component.text("default"))
++        ));
++    }
++
++    @Test
++    void keepsMiniMessageCompatibility() {
++        publishConfig("<gray>[假人]</gray>", "<gold><name></gold>", "");
++        final Component displayName = LeavesXPlayerPresentation.fakeplayerDisplayName("bot");
++
++        assertEquals("\u00A77[假人]bot", LEGACY.serialize(displayName));
++        assertEquals("\u00A76bot", LEGACY.serialize(
++            LeavesXPlayerPresentation.joinMessage("bot", displayName, Component.text("default"))
++        ));
++    }
++
++    private static void publishConfig(final String prefix, final String join, final String quit) {
++        final java.nio.file.Path path;
++        try {
++            path = java.nio.file.Files.createTempFile("leavesx-presentation-", ".yml");
++            java.nio.file.Files.writeString(path, """
++                config-version: 71
++                fakeplayer:
++                  display-prefix: '%s'
++                messages:
++                  join: '%s'
++                  quit: '%s'
++                """.formatted(prefix, join, quit));
++            LeavesXRuntime.publish(LeavesXConfigLoader.load(path));
++            java.nio.file.Files.deleteIfExists(path);
++        } catch (java.io.IOException exception) {
++            throw new AssertionError("Unable to create temporary LeavesX presentation config", exception);
++        }
++    }
++}

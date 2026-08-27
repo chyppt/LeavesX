@@ -24,6 +24,7 @@ import static io.papermc.paper.adventure.PaperAdventure.asAdventure;
 import static net.kyori.adventure.text.Component.join;
 import static net.kyori.adventure.text.Component.text;
 import static net.kyori.adventure.text.JoinConfiguration.spaces;
+import static org.leavesmc.leaves.command.bot.BotCommandLocale.message;
 
 public class LoadCommand extends BotSubcommand {
 
@@ -52,16 +53,25 @@ public class LoadCommand extends BotSubcommand {
                 throw CommandSyntaxException.BUILT_IN_EXCEPTIONS.dispatcherUnknownArgument().create();
             }
             if (botList.getBotByName(botName) != null) {
-                sender.sendMessage(text("Bot with name " + botName + " already exists!", NamedTextColor.RED));
+                sender.sendMessage(text(message(
+                    "Bot with name " + botName + " already exists!",
+                    "名为 " + botName + " 的假人已存在！"
+                ), NamedTextColor.RED));
                 return false;
             }
 
             ServerBot bot = botList.loadNewManualSavedBot(botName);
             if (bot == null) {
-                sender.sendMessage(text("Failed to load bot, please check log", NamedTextColor.RED));
+                sender.sendMessage(text(message(
+                    "Failed to load bot, please check log",
+                    "假人加载失败，请检查服务器日志"
+                ), NamedTextColor.RED));
                 return false;
             }
-            sender.sendMessage(join(spaces(), text("Successfully loaded bot", NamedTextColor.GRAY), asAdventure(bot.getDisplayName())));
+            sender.sendMessage(join(spaces(), text(message(
+                "Successfully loaded bot",
+                "已成功加载假人"
+            ), NamedTextColor.GRAY), asAdventure(bot.getDisplayName())));
             return true;
         }
 
@@ -72,7 +82,13 @@ public class LoadCommand extends BotSubcommand {
             Set<String> bots = list.keySet();
             if (bots.isEmpty()) {
                 return builder
-                    .suggest("<NO SAVED BOT EXISTS>", net.minecraft.network.chat.Component.literal("There are no bots saved before, save one first."))
+                    .suggest(
+                        message("<NO SAVED BOT EXISTS>", "<没有已保存的假人>"),
+                        net.minecraft.network.chat.Component.literal(message(
+                            "There are no bots saved before, save one first.",
+                            "没有可加载的已保存假人，请先保存一个。"
+                        ))
+                    )
                     .buildFuture();
             }
             bots.forEach(key -> builder.suggest(list.getCompoundOrEmpty(key).getString("name").orElseThrow()));

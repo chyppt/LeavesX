@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sun, 23 Aug 2026 19:43:34 +0800
+Subject: [PATCH] Reduce ticket and entity traversal allocations for beta163
+
+
+diff --git a/net/minecraft/server/level/TicketType.java b/net/minecraft/server/level/TicketType.java
+index 147cd0458d719be6679b6bac2b6617b48d98ce4c..3981ce35e9da8952072235c39a39ff11b822eaff 100644
+--- a/net/minecraft/server/level/TicketType.java
++++ b/net/minecraft/server/level/TicketType.java
+@@ -117,7 +117,10 @@ public final class TicketType<T> implements ca.spottedleaf.moonrise.patches.chun
+ 
+     @Override
+     public int hashCode() {
+-        return java.util.Objects.hash(timeout, flags);
++        // This is exactly Arrays.hashCode(new Object[] {timeout, flags}) without boxing either primitive or
++        // allocating the varargs array. Ticket diagnostics and Moonrise ticket maps call this method frequently.
++        final int timeoutHash = (int)(this.timeout ^ (this.timeout >>> Integer.SIZE));
++        return 31 * (31 + timeoutHash) + this.flags;
+     }
+ 
+     @Override
+diff --git a/net/minecraft/world/level/BlockGetter.java b/net/minecraft/world/level/BlockGetter.java
+index 2a4c928281c7e455d6f210aeb599881855d328f8..cb0beac61857094f9c0f641ab48b11d47cd7520f 100644
+--- a/net/minecraft/world/level/BlockGetter.java
++++ b/net/minecraft/world/level/BlockGetter.java
+@@ -22,6 +22,11 @@ import net.minecraft.world.phys.shapes.VoxelShape;
+ import org.jspecify.annotations.Nullable;
+ 
+ public interface BlockGetter extends LevelHeightAccessor {
++    // Moving entities call the block traversal once or more per tick. Keep one scratch set per calling thread while
++    // retaining an allocating fallback for disabled configurations and unexpected re-entry.
++    ThreadLocal<LeavesXBlockTraversalWorkspace> LEAVESX_BLOCK_TRAVERSAL_WORKSPACE =
++        ThreadLocal.withInitial(LeavesXBlockTraversalWorkspace::new);
++
+     @Nullable BlockEntity getBlockEntity(BlockPos pos);
+ 
+     default <T extends BlockEntity> Optional<T> getBlockEntity(final BlockPos pos, final BlockEntityType<T> type) {
+@@ -217,28 +222,38 @@ public interface BlockGetter extends LevelHeightAccessor {
+ 
+             return true;
+         } else {
+-            LongSet visitedBlocks = new LongOpenHashSet();
++            final boolean reuseVisitedSet = org.leavesx.leavesx.config.LeavesXRuntime.blockTraversalVisitedSetReuseOptimization();
++            final LeavesXBlockTraversalWorkspace workspace = reuseVisitedSet
++                ? LEAVESX_BLOCK_TRAVERSAL_WORKSPACE.get()
++                : null;
++            final LongSet visitedBlocks = workspace == null ? new LongOpenHashSet() : workspace.acquire();
++            try {
++
++                for (BlockPos blockPos : BlockPos.betweenCornersInDirection(aabbAtTarget.move(travel.scale(-1.0)), travel)) {
++                    if (!visitor.visit(blockPos, 0)) {
++                        return false;
++                    }
+ 
+-            for (BlockPos blockPos : BlockPos.betweenCornersInDirection(aabbAtTarget.move(travel.scale(-1.0)), travel)) {
+-                if (!visitor.visit(blockPos, 0)) {
+-                    return false;
++                    visitedBlocks.add(blockPos.asLong());
+                 }
+ 
+-                visitedBlocks.add(blockPos.asLong());
+-            }
++                int iterations = addCollisionsAlongTravel(visitedBlocks, travel, aabbAtTarget, visitor);
++                if (iterations < 0) {
++                    return false;
++                }
+ 
+-            int iterations = addCollisionsAlongTravel(visitedBlocks, travel, aabbAtTarget, visitor);
+-            if (iterations < 0) {
+-                return false;
+-            }
++                for (BlockPos blockPos : BlockPos.betweenCornersInDirection(aabbAtTarget, travel)) {
++                    if (visitedBlocks.add(blockPos.asLong()) && !visitor.visit(blockPos, iterations + 1)) {
++                        return false;
++                    }
++                }
+ 
+-            for (BlockPos blockPos : BlockPos.betweenCornersInDirection(aabbAtTarget, travel)) {
+-                if (visitedBlocks.add(blockPos.asLong()) && !visitor.visit(blockPos, iterations + 1)) {
+-                    return false;
++                return true;
++            } finally {
++                if (workspace != null) {
++                    workspace.release(visitedBlocks);
+                 }
+             }
+-
+-            return true;
+         }
+     }
+ 
+@@ -339,4 +354,26 @@ public interface BlockGetter extends LevelHeightAccessor {
+     interface BlockStepVisitor {
+         boolean visit(BlockPos pos, int iteration);
+     }
++
++    /** Re-entry-safe owner for the allocation-free moving-entity traversal scratch set. */
++    final class LeavesXBlockTraversalWorkspace {
++
++        private final LongOpenHashSet pooled = new LongOpenHashSet();
++        private boolean inUse;
++
++        private LongSet acquire() {
++            if (this.inUse) {
++                return new LongOpenHashSet();
++            }
++            this.inUse = true;
++            return this.pooled;
++        }
++
++        private void release(final LongSet visitedBlocks) {
++            visitedBlocks.clear();
++            if (visitedBlocks == this.pooled) {
++                this.inUse = false;
++            }
++        }
++    }
+ }

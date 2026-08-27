@@ -24,6 +24,7 @@ import static net.kyori.adventure.text.Component.text;
 import static net.kyori.adventure.text.JoinConfiguration.spaces;
 import static net.kyori.adventure.text.format.NamedTextColor.*;
 import static net.minecraft.network.chat.Component.literal;
+import static org.leavesmc.leaves.command.bot.BotCommandLocale.message;
 
 public class RemoveCommand extends BotSubcommand {
 
@@ -36,7 +37,7 @@ public class RemoveCommand extends BotSubcommand {
         boolean success = BotList.INSTANCE.removeBot(bot, BotRemoveEvent.RemoveReason.COMMAND, sender, false, false);
         if (!success) {
             sender = sender == null ? Bukkit.getConsoleSender() : sender;
-            sender.sendMessage(text("Bot remove canceled by a plugin", RED));
+            sender.sendMessage(text(message("Bot remove canceled by a plugin", "插件取消了假人移除"), RED));
         }
         return success;
     }
@@ -78,11 +79,11 @@ public class RemoveCommand extends BotSubcommand {
             }, removeTimeSeconds * 20L).getTaskId();
 
             sender.sendMessage(join(spaces(),
-                text("Bot", GRAY),
+                text(message("Bot", "假人"), GRAY),
                 PaperAdventure.asAdventure(bot.getDisplayName()),
-                text("scheduled for removal in", GRAY),
+                text(message("scheduled for removal in", "将在以下时间后移除"), GRAY),
                 text(formatSeconds(removeTimeSeconds), AQUA),
-                text(isReschedule ? "(rescheduled)" : "", GRAY)
+                text(isReschedule ? message("(rescheduled)", "（已重新安排）") : "", GRAY)
             ));
             return true;
         }
@@ -95,7 +96,7 @@ public class RemoveCommand extends BotSubcommand {
             if (!timeStr.matches("^[\\d\\shmsHMS]+$")) {
                 throw new CommandSyntaxException(
                     CommandSyntaxException.BUILT_IN_EXCEPTIONS.dispatcherParseException(),
-                    literal("Invalid time format: " + timeStr)
+                    literal(message("Invalid time format: " + timeStr, "时间格式无效：" + timeStr))
                 );
             }
 
@@ -103,7 +104,7 @@ public class RemoveCommand extends BotSubcommand {
             if (!remaining.isEmpty() && remaining.matches(".*\\d+.*")) {
                 throw new CommandSyntaxException(
                     CommandSyntaxException.BUILT_IN_EXCEPTIONS.dispatcherParseException(),
-                    literal("Found trailing numbers without unit: " + timeStr)
+                    literal(message("Found trailing numbers without unit: " + timeStr, "发现没有单位的尾随数字：" + timeStr))
                 );
             }
 
@@ -119,7 +120,7 @@ public class RemoveCommand extends BotSubcommand {
                 } catch (NumberFormatException e) {
                     throw new CommandSyntaxException(
                         CommandSyntaxException.BUILT_IN_EXCEPTIONS.dispatcherParseException(),
-                        literal("Number too large: " + matcher.group(1))
+                        literal(message("Number too large: " + matcher.group(1), "数字过大：" + matcher.group(1)))
                     );
                 }
 
@@ -133,14 +134,14 @@ public class RemoveCommand extends BotSubcommand {
             if (!foundMatch) {
                 throw new CommandSyntaxException(
                     CommandSyntaxException.BUILT_IN_EXCEPTIONS.dispatcherParseException(),
-                    literal("No valid time units found in: " + timeStr)
+                    literal(message("No valid time units found in: " + timeStr, "未找到有效的时间单位：" + timeStr))
                 );
             }
 
             if (seconds > Integer.MAX_VALUE) {
                 throw new CommandSyntaxException(
                     CommandSyntaxException.BUILT_IN_EXCEPTIONS.dispatcherParseException(),
-                    literal("Total time exceeds maximum limit")
+                    literal(message("Total time exceeds maximum limit", "总时间超过上限"))
                 );
             }
 

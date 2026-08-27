@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 26 Aug 2026 14:29:07 +0800
+Subject: [PATCH] Batch compute worker metrics for beta179
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index ea63e6c83bd7c2feb33cc306991de544c6a40e75..abb26197daa0bc4b306d264d852dbadf2b9ee1bb 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -697,19 +697,44 @@ public final class LeavesXComputeExecutor {
+             this.workersDone = new CountDownLatch(workerRangeCount);
+         }
+ 
+-        private void runWorker(final int taskIndex, final int startInclusive, final int endExclusive) {
++        /**
++         * Executes all ranges claimed by one worker submission while publishing worker metrics once.
++         *
++         * <p>The callback is still invoked once per deterministic range and every range decrements the latch
++         * independently. Only the diagnostic counters are aggregated locally, avoiding several atomic updates per
++         * range on large snapshots.</p>
++         */
++        private void runWorkerBatch(
++            final int initialTaskIndex,
++            final AtomicInteger nextTask,
++            final int rangeSize,
++            final int taskCount,
++            final int inputSize
++        ) {
+             final int active = (int)this.activeWorkers.incrementAndGet();
+-            final int itemCount = endExclusive - startInclusive;
+-            this.workerRanges.incrementAndGet();
+-            this.workerItems.addAndGet(Math.max(0, itemCount));
++            long ranges = 0L;
++            long items = 0L;
+             this.maximumConcurrentWorkers.accumulateAndGet(active, Math::max);
+             try {
+-                this.task.run(taskIndex, startInclusive, endExclusive);
+-            } catch (final Throwable computationFailure) {
+-                this.recordFailure(computationFailure);
++                int taskIndex = initialTaskIndex;
++                while (taskIndex < taskCount - 1) {
++                    final int start = taskIndex * rangeSize;
++                    final int end = Math.min(inputSize, start + rangeSize);
++                    ranges++;
++                    items += Math.max(0, end - start);
++                    try {
++                        this.task.run(taskIndex, start, end);
++                    } catch (final Throwable computationFailure) {
++                        this.recordFailure(computationFailure);
++                    } finally {
++                        this.workersDone.countDown();
++                    }
++                    taskIndex = nextTask.getAndIncrement();
++                }
+             } finally {
+                 this.activeWorkers.decrementAndGet();
+-                this.workersDone.countDown();
++                this.workerRanges.addAndGet(ranges);
++                this.workerItems.addAndGet(items);
+             }
+         }
+ 
+@@ -923,21 +948,13 @@ public final class LeavesXComputeExecutor {
+ 
+         @Override
+         public void run() {
+-            final int initialStart = this.initialTaskIndex * this.rangeSize;
+-            this.invocation.runWorker(
++            this.invocation.runWorkerBatch(
+                 this.initialTaskIndex,
+-                initialStart,
+-                Math.min(this.inputSize, initialStart + this.rangeSize)
++                this.nextTask,
++                this.rangeSize,
++                this.taskCount,
++                this.inputSize
+             );
+-            while (true) {
+-                final int taskIndex = this.nextTask.getAndIncrement();
+-                if (taskIndex >= this.taskCount - 1) {
+-                    return;
+-                }
+-                final int start = taskIndex * this.rangeSize;
+-                final int end = Math.min(this.inputSize, start + this.rangeSize);
+-                this.invocation.runWorker(taskIndex, start, end);
+-            }
+         }
+ 
+         /** Counts every unclaimed worker range down when a queued batch is cancelled during shutdown. */
