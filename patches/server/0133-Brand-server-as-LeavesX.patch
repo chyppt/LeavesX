@@ -30,7 +30,7 @@ index 1ee3da2cd..15a846ddf 100644
 -            "Brand-Id" to "leavesmc:leaves", // Leaves
 -            "Brand-Name" to "Leaves", // Leaves
 +            "Specification-Vendor" to "LeavesX Team", // LeavesX
-+            "Brand-Id" to "leavesx:leavesx", // LeavesX
++            "Brand-Id" to "leavesmc:leaves", // LeavesX compatibility
 +            "Brand-Name" to "LeavesX", // LeavesX
              "Build-Number" to (build ?: ""),
              "Build-Time" to Instant.now().toString(),
