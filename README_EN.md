@@ -1,14 +1,14 @@
 # LeavesX
 
+[中文](README.md) | [English](README_EN.md)
+
 LeavesX is an independent branch of [Leaves](https://github.com/LeavesMC/Leaves), built on the Paper server architecture. It focuses on safe parallel computation, performance improvements, and compatibility fixes for technical, survival, and plugin-based servers.
 
 LeavesX keeps world state ownership on the server thread. Only audited, side-effect-free calculations run on worker threads, so Bukkit, Paper, plugin, redstone, TNT, piston, entity, and chunk state changes retain their synchronous semantics.
 
 ## Community
 
-- QQ group: 1104241735
-- [Join the QQ group](https://qm.qq.com/q/dT9f4qnieI)
-- [中文 README](README.md)
+- [QQ group: 1104241735](https://qm.qq.com/q/dT9f4qnieI)
 
 ## Project Scope
 
