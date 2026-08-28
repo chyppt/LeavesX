@@ -2,9 +2,13 @@
 
 [中文](README.md) | [English](README_EN.md)
 
-LeavesX 是 [Leaves](https://github.com/LeavesMC/Leaves) 的独立分支，基于 Paper 的服务端架构，重点维护安全的多线程计算、性能优化和兼容性修复。
+**LeavesX 新一代 Minecraft 服务端**
 
-LeavesX 面向希望保留原版机制、Bukkit/Paper 插件兼容性，同时改善高实体量和高区块负载表现的 Minecraft 服务端。项目是 Leaves 的独立分支，开发和发布均在本仓库完成。
+LeavesX 是 [Leaves](https://github.com/LeavesMC/Leaves) 的独立分支，基于 Paper 服务端架构，专注于多线程计算、性能优化、稳定性以及 Paper/Bukkit 兼容性。
+
+在保留原版机制、生电特性和插件 API 的基础上，LeavesX 针对 AI、自然生成和实体处理等高负载路径引入经过验证的并行计算与热路径优化，更充分地利用多核 CPU，改善高实体量和高区块负载场景下的运行表现。
+
+LeavesX 提供 300+ 可配置选项，适用于生电服、插件服及其他高负载服务器。
 
 ## 社区交流
 

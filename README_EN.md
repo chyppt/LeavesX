@@ -2,7 +2,13 @@
 
 [中文](README.md) | [English](README_EN.md)
 
-LeavesX is an independent branch of [Leaves](https://github.com/LeavesMC/Leaves), built on the Paper server architecture. It focuses on safe parallel computation, performance improvements, and compatibility fixes for technical, survival, and plugin-based servers.
+**LeavesX: a next-generation Minecraft server**
+
+LeavesX is an independent branch of [Leaves](https://github.com/LeavesMC/Leaves), built on the Paper server architecture. It focuses on parallel computation, performance, stability, and Paper/Bukkit compatibility.
+
+While keeping vanilla mechanics, technical gameplay, and plugin APIs in mind, LeavesX adds validated parallel calculation paths and hot-path optimizations for expensive workloads such as AI, natural spawning, and entity processing. The goal is to make better use of multi-core CPUs in servers with many entities or loaded chunks.
+
+LeavesX provides more than 300 configurable options for technical, plugin-based, and other high-load servers.
 
 LeavesX keeps world state ownership on the server thread. Only audited, side-effect-free calculations run on worker threads, so Bukkit, Paper, plugin, redstone, TNT, piston, entity, and chunk state changes retain their synchronous semantics.
 
