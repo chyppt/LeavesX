@@ -33,7 +33,7 @@ public class LeavesVersionFetcher extends PaperVersionFetcher {
 
     private static final int DISTANCE_ERROR = -1;
     private static final int DISTANCE_UNKNOWN = -2;
-    private static final String DOWNLOAD_PAGE = "https://leavesmc.org/downloads/leaves";
+    private static final String DOWNLOAD_PAGE = "https://github.com/chyppt/LeavesX/releases";
 
     @NotNull
     @Override
@@ -45,7 +45,7 @@ public class LeavesVersionFetcher extends PaperVersionFetcher {
         } else if (build.buildNumber().isEmpty()) {
             updateMessage = text("You are running a development version from CI", color(0xFF5300));
         } else {
-            updateMessage = getUpdateStatusMessage("LeavesMC/Leaves", build);
+            updateMessage = getUpdateStatusMessage("chyppt/LeavesX", build);
         }
         final @Nullable Component history = this.getHistory();
 
