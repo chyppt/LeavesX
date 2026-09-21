@@ -19,7 +19,7 @@ LeavesX 保留 Paper、Bukkit 和 Leaves 的公开 API 及传统插件加载语�
 ## 项目定位
 
 LeavesX 不使用 Folia 的区域线程模型，也不会要求插件改写为 Folia 插件。世界状态仍由服务器线程统一管理，只有经过边界审计的纯计算任务才会交给 LeavesX 计算线程。
-现阶段LeavesX性能并不如Folia，勉强可以与Leaf持平，LeavesX是在安全与稳定的基础上进行性能优化，如果您需要极致的性能，LeavesX不是您的首选，稳定+安全+性能+生电+兼容才是LeavesX的定位，LeavesX有部分代码为Leaf移植，同时开发过程中使用了Vibe coding（AI开发）若有介意请不要使用。
+现阶段LeavesX性能并不如Folia，勉强可以与Leaf持平，LeavesX是在安全与稳定的基础上进行性能优化，如果您需要极致的性能，LeavesX不是您的首选，稳定+安全+性能+生电+兼容才是LeavesX的定位，LeavesX有部分代码为Leaf移植，同时开发过程中使用了Vibe coding（AI开发 非100% AI产物）若有介意请不要使用。
 
 核心原则：
 
