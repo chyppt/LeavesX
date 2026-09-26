@@ -1,0 +1,23 @@
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/gameplay/NamedCceShulkerBoxTest.java
+@@ -1,0 +_,20 @@
++package org.leavesx.leavesx.gameplay;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import net.minecraft.network.chat.Component;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class NamedCceShulkerBoxTest {
++
++    @Test
++    void requiresTheExactAnvilName() {
++        assertTrue(NamedCceShulkerBox.matchesName(Component.literal("更新抑制器")));
++        assertFalse(NamedCceShulkerBox.matchesName(Component.literal("更新抑制器 ")));
++        assertFalse(NamedCceShulkerBox.matchesName(Component.literal("updateSuppression")));
++        assertFalse(NamedCceShulkerBox.matchesName(null));
++    }
++}

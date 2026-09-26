@@ -1,0 +1,212 @@
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/path/LeavesXAsyncPath.java
+@@ -1,0 +_,209 @@
++package org.leavesx.leavesx.path;
++
++import java.util.List;
++import java.util.Objects;
++import java.util.Set;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.CompletionException;
++import net.minecraft.core.BlockPos;
++import net.minecraft.network.FriendlyByteBuf;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.level.pathfinder.Node;
++import net.minecraft.world.level.pathfinder.Path;
++import net.minecraft.world.phys.Vec3;
++import org.jspecify.annotations.Nullable;
++
++/** A pending path whose worker result is adopted only by the observing server thread. */
++public final class LeavesXAsyncPath extends Path {
++
++    private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(LeavesXAsyncPath.class);
++
++    private final Set<BlockPos> targets;
++    private final CompletableFuture<@Nullable Path> future;
++    private volatile boolean processed;
++    private @Nullable Path resolved;
++
++    public LeavesXAsyncPath(
++        final Set<BlockPos> targets,
++        final CompletableFuture<@Nullable Path> future
++    ) {
++        super(List.of(), BlockPos.ZERO, false);
++        this.targets = Set.copyOf(targets);
++        this.future = Objects.requireNonNull(future, "future");
++    }
++
++    public boolean hasSameTargets(final Set<BlockPos> otherTargets) {
++        return this.targets.equals(otherTargets);
++    }
++
++    @Override
++    public boolean isProcessed() {
++        if (!this.processed && this.future.isDone()) {
++            this.resolve(false);
++        }
++        return this.processed;
++    }
++
++    public @Nullable Path resolvedPath() {
++        this.resolve(true);
++        return this.resolved;
++    }
++
++    private @Nullable Path path() {
++        this.resolve(true);
++        return this.resolved;
++    }
++
++    private void resolve(final boolean wait) {
++        if (this.processed || (!wait && !this.future.isDone())) {
++            return;
++        }
++        synchronized (this) {
++            if (this.processed) {
++                return;
++            }
++            try {
++                this.resolved = this.future.join();
++            } catch (final CompletionException failure) {
++                LOGGER.error("LeavesX asynchronous path calculation failed; this path request will be discarded", failure.getCause());
++                this.resolved = null;
++            }
++            this.processed = true;
++        }
++    }
++
++    @Override
++    public boolean isDone() {
++        if (!this.isProcessed()) {
++            return false;
++        }
++        return this.resolved == null || this.resolved.isDone();
++    }
++
++    @Override
++    public boolean notStarted() {
++        final Path path = this.path();
++        return path == null || path.notStarted();
++    }
++
++    @Override
++    public void advance() {
++        final Path path = this.path();
++        if (path != null) path.advance();
++    }
++
++    @Override
++    public @Nullable Node getEndNode() {
++        final Path path = this.path();
++        return path == null ? null : path.getEndNode();
++    }
++
++    @Override
++    public Node getNode(final int index) {
++        return Objects.requireNonNull(this.path()).getNode(index);
++    }
++
++    @Override
++    public void truncateNodes(final int length) {
++        final Path path = this.path();
++        if (path != null) path.truncateNodes(length);
++    }
++
++    @Override
++    public void replaceNode(final int index, final Node node) {
++        final Path path = this.path();
++        if (path != null) path.replaceNode(index, node);
++    }
++
++    @Override
++    public int getNodeCount() {
++        final Path path = this.path();
++        return path == null ? 0 : path.getNodeCount();
++    }
++
++    @Override
++    public int getNextNodeIndex() {
++        final Path path = this.path();
++        return path == null ? 0 : path.getNextNodeIndex();
++    }
++
++    @Override
++    public void setNextNodeIndex(final int nodeIndex) {
++        final Path path = this.path();
++        if (path != null) path.setNextNodeIndex(nodeIndex);
++    }
++
++    @Override
++    public Vec3 getEntityPosAtNode(final Entity entity, final int index) {
++        return Objects.requireNonNull(this.path()).getEntityPosAtNode(entity, index);
++    }
++
++    @Override
++    public BlockPos getNodePos(final int index) {
++        return Objects.requireNonNull(this.path()).getNodePos(index);
++    }
++
++    @Override
++    public Vec3 getNextEntityPos(final Entity entity) {
++        return Objects.requireNonNull(this.path()).getNextEntityPos(entity);
++    }
++
++    @Override
++    public BlockPos getNextNodePos() {
++        return Objects.requireNonNull(this.path()).getNextNodePos();
++    }
++
++    @Override
++    public Node getNextNode() {
++        return Objects.requireNonNull(this.path()).getNextNode();
++    }
++
++    @Override
++    public @Nullable Node getPreviousNode() {
++        final Path path = this.path();
++        return path == null ? null : path.getPreviousNode();
++    }
++
++    @Override
++    public boolean sameAs(final @Nullable Path other) {
++        if (other == this) {
++            return true;
++        }
++        final Path path = this.path();
++        return path != null && path.sameAs(other instanceof LeavesXAsyncPath async ? async.path() : other);
++    }
++
++    @Override
++    public boolean canReach() {
++        final Path path = this.path();
++        return path != null && path.canReach();
++    }
++
++    @Override
++    public BlockPos getTarget() {
++        final Path path = this.path();
++        return path == null ? BlockPos.ZERO : path.getTarget();
++    }
++
++    @Override
++    public float getDistToTarget() {
++        final Path path = this.path();
++        return path == null ? Float.MAX_VALUE : path.getDistToTarget();
++    }
++
++    @Override
++    public void writeToStream(final FriendlyByteBuf buffer) {
++        Objects.requireNonNull(this.path()).writeToStream(buffer);
++    }
++
++    @Override
++    public Path copy() {
++        final Path path = this.path();
++        return path == null ? new Path(List.of(), BlockPos.ZERO, false) : path.copy();
++    }
++
++    @Override
++    public String toString() {
++        return this.isProcessed() ? "LeavesXAsyncPath(" + this.resolved + ")" : "LeavesXAsyncPath(pending)";
++    }
++}

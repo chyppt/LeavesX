@@ -1,0 +1,405 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 17:51:16 +0800
+Subject: [PATCH] Evaluate large world activation in one parallel scan
+
+
+diff --git a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+index eabde23c53bc87f4204da1ebb49f83bd9cb1d18f..4fc06d064d87b56b83c0c2820cdbfa6a86554595 100644
+--- a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
++++ b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+@@ -4,6 +4,8 @@ import java.util.Arrays;
+ import java.util.List;
+ import net.minecraft.world.entity.Entity;
+ import net.minecraft.world.entity.Marker;
++import net.minecraft.world.entity.player.Player;
++import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.world.phys.AABB;
+ import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
+@@ -21,12 +23,149 @@ final class ActivationRangeSnapshot {
+     private static final int MINIMUM_CAPACITY = 64;
+     static final byte SKIP_ENTITY = -1;
+     static final byte ALWAYS_ACTIVATE = -2;
++    static final byte DEFAULT_ACTIVATION_ENTITY = -3;
+     private static final ActivationType[] ACTIVATION_TYPES = ActivationType.values();
++    private static final int PLAYER_BOXES = ACTIVATION_TYPES.length + 1;
+     private static final ThreadLocal<Workspace> WORKSPACE = ThreadLocal.withInitial(() -> new Workspace(true));
+ 
+     private ActivationRangeSnapshot() {
+     }
+ 
++    /**
++     * Evaluates a large world's activation state in one entity traversal instead of one spatial query per player.
++     *
++     * <p>All live player and entity values are frozen on the tick thread. Workers receive primitive arrays only;
++     * {@code activatedTick} writes remain ordered on the tick thread.</p>
++     */
++    static boolean activateWorld(
++        final ServerLevel world,
++        final List<? extends Player> players,
++        final boolean ignoreSpectators,
++        final boolean tickMarkers,
++        final long currentTick,
++        final int worldHeight,
++        final int maxRange,
++        final int miscRange,
++        final int raiderRange,
++        final int animalRange,
++        final int monsterRange,
++        final int waterRange,
++        final int flyingRange,
++        final int villagerRange
++    ) {
++        final int estimatedEntities = world.getEntityCount();
++        final int minimumCandidates = LeavesXRuntime.entityActivationMinimumEntities();
++        if (!LeavesXRuntime.parallelEntityActivation() || estimatedEntities < minimumCandidates) {
++            return false;
++        }
++        int eligiblePlayers = 0;
++        for (int index = 0, size = players.size(); index < size && eligiblePlayers < 2; index++) {
++            if (!ignoreSpectators || !players.get(index).isSpectator()) {
++                eligiblePlayers++;
++            }
++        }
++        if (eligiblePlayers < 2) {
++            return false;
++        }
++
++        final Workspace workspace = acquireWorkspace(Math.max(estimatedEntities, MINIMUM_CAPACITY));
++        try {
++            final int playerCount = snapshotPlayerBounds(
++                players,
++                workspace,
++                ignoreSpectators,
++                currentTick,
++                worldHeight,
++                maxRange,
++                miscRange,
++                raiderRange,
++                animalRange,
++                monsterRange,
++                waterRange,
++                flyingRange,
++                villagerRange
++            );
++            final int entityCount = snapshotWorldEntities(
++                world.getAllEntities(), workspace, tickMarkers, currentTick
++            );
++            if (playerCount == 0) {
++                Arrays.fill(workspace.intersections, 0, entityCount, false);
++            } else {
++                evaluateWorldSnapshot(
++                    workspace.entityBounds,
++                    workspace.activationTypes,
++                    workspace.playerBounds,
++                    workspace.intersections,
++                    entityCount,
++                    playerCount,
++                    minimumCandidates,
++                    LeavesXRuntime.entityActivationMinimumItemsPerWorker()
++                );
++            }
++            commitWorldActivations(workspace.entities, workspace.intersections, currentTick, entityCount);
++            return true;
++        } finally {
++            releaseWorkspace(workspace);
++        }
++    }
++
++    static int evaluateWorldSnapshot(
++        final double[] entityBounds,
++        final byte[] activationTypes,
++        final double[] playerBounds,
++        final boolean[] intersections,
++        final int entityCount,
++        final int playerCount,
++        final int minimumCandidates,
++        final int minimumItemsPerWorker
++    ) {
++        final int completedPartitions = LeavesXComputeExecutor.invokeRangesWithCount(
++            LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION,
++            entityCount,
++            minimumCandidates,
++            minimumItemsPerWorker,
++            (taskIndex, start, end) -> evaluateWorldRange(
++                entityBounds, activationTypes, playerBounds, intersections, playerCount, start, end
++            )
++        );
++        if (completedPartitions == 0) {
++            evaluateWorldRange(
++                entityBounds, activationTypes, playerBounds, intersections, playerCount, 0, entityCount
++            );
++        }
++        return completedPartitions;
++    }
++
++    /** Worker-only primitive intersection loop for the world-wide activation path. */
++    static void evaluateWorldRange(
++        final double[] entityBounds,
++        final byte[] activationTypes,
++        final double[] playerBounds,
++        final boolean[] intersections,
++        final int playerCount,
++        final int start,
++        final int end
++    ) {
++        for (int entityIndex = start; entityIndex < end; entityIndex++) {
++            final byte activationType = activationTypes[entityIndex];
++            if (activationType == SKIP_ENTITY) {
++                intersections[entityIndex] = false;
++                continue;
++            }
++            final int entityOffset = entityIndex * AABB_COMPONENTS;
++            final int boxIndex = activationType == DEFAULT_ACTIVATION_ENTITY ? 0 : activationType + 1;
++            boolean intersects = false;
++            for (int playerIndex = 0; playerIndex < playerCount; playerIndex++) {
++                final int activationOffset = (playerIndex * PLAYER_BOXES + boxIndex) * AABB_COMPONENTS;
++                if (intersects(playerBounds, activationOffset, entityBounds, entityOffset)) {
++                    intersects = true;
++                    break;
++                }
++            }
++            intersections[entityIndex] = intersects;
++        }
++    }
++
+     /**
+      * Activates one player's candidate list when the batch is large enough to amortize a primitive snapshot.
+      *
+@@ -166,6 +305,128 @@ final class ActivationRangeSnapshot {
+         destination[offset + 5] = bounds.maxZ;
+     }
+ 
++    private static boolean intersects(
++        final double[] first,
++        final int firstOffset,
++        final double[] second,
++        final int secondOffset
++    ) {
++        return first[firstOffset] < second[secondOffset + 3]
++            && first[firstOffset + 3] > second[secondOffset]
++            && first[firstOffset + 1] < second[secondOffset + 4]
++            && first[firstOffset + 4] > second[secondOffset + 1]
++            && first[firstOffset + 2] < second[secondOffset + 5]
++            && first[firstOffset + 5] > second[secondOffset + 2];
++    }
++
++    private static int snapshotPlayerBounds(
++        final List<? extends Player> players,
++        final Workspace workspace,
++        final boolean ignoreSpectators,
++        final long currentTick,
++        final int worldHeight,
++        final int maxRange,
++        final int miscRange,
++        final int raiderRange,
++        final int animalRange,
++        final int monsterRange,
++        final int waterRange,
++        final int flyingRange,
++        final int villagerRange
++    ) {
++        workspace.ensurePlayerCapacity(players.size());
++        int includedPlayers = 0;
++        for (int index = 0, size = players.size(); index < size; index++) {
++            final Player player = players.get(index);
++            player.activatedTick = currentTick;
++            if (ignoreSpectators && player.isSpectator()) {
++                continue;
++            }
++            final AABB playerBounds = player.getBoundingBox();
++            for (int boxIndex = 0; boxIndex < PLAYER_BOXES; boxIndex++) {
++                final int horizontalRange = switch (boxIndex) {
++                    case 0 -> maxRange;
++                    case 1 -> waterRange;
++                    case 2 -> flyingRange;
++                    case 3 -> villagerRange;
++                    case 4 -> monsterRange;
++                    case 5 -> animalRange;
++                    case 6 -> raiderRange;
++                    case 7 -> miscRange;
++                    default -> throw new IllegalStateException("Unexpected activation box " + boxIndex);
++                };
++                writeInflatedBounds(
++                    workspace.playerBounds,
++                    (includedPlayers * PLAYER_BOXES + boxIndex) * AABB_COMPONENTS,
++                    playerBounds,
++                    horizontalRange,
++                    worldHeight
++                );
++            }
++            includedPlayers++;
++        }
++        return includedPlayers;
++    }
++
++    private static void writeInflatedBounds(
++        final double[] destination,
++        final int offset,
++        final AABB bounds,
++        final double horizontalRange,
++        final double verticalRange
++    ) {
++        destination[offset] = bounds.minX - horizontalRange;
++        destination[offset + 1] = bounds.minY - verticalRange;
++        destination[offset + 2] = bounds.minZ - horizontalRange;
++        destination[offset + 3] = bounds.maxX + horizontalRange;
++        destination[offset + 4] = bounds.maxY + verticalRange;
++        destination[offset + 5] = bounds.maxZ + horizontalRange;
++    }
++
++    private static int snapshotWorldEntities(
++        final Iterable<Entity> source,
++        final Workspace workspace,
++        final boolean tickMarkers,
++        final long currentTick
++    ) {
++        final int previousCount = workspace.entityCount;
++        int count = 0;
++        for (final Entity entity : source) {
++            workspace.ensureCapacity(count + 1);
++            workspace.entities[count] = entity;
++            if ((!tickMarkers && entity instanceof Marker) || currentTick <= entity.activatedTick) {
++                workspace.activationTypes[count] = SKIP_ENTITY;
++            } else {
++                workspace.activationTypes[count] = entity.defaultActivationState
++                    ? DEFAULT_ACTIVATION_ENTITY
++                    : (byte)entity.activationType.ordinal();
++                writeBounds(workspace.entityBounds, count * AABB_COMPONENTS, entity.getBoundingBox());
++            }
++            count++;
++        }
++        if (count < previousCount) {
++            Arrays.fill(workspace.entities, count, previousCount, null);
++        }
++        workspace.entityCount = count;
++        return count;
++    }
++
++    private static void commitWorldActivations(
++        final Entity[] entities,
++        final boolean[] intersections,
++        final long currentTick,
++        final int size
++    ) {
++        for (int index = 0; index < size; index++) {
++            if (intersections[index]) {
++                final Entity entity = entities[index];
++                if (currentTick > entity.activatedTick) {
++                    entity.activatedTick = currentTick;
++                }
++            }
++        }
++    }
++
+     private static void commitActivations(
+         final List<Entity> entities,
+         final boolean[] intersections,
+@@ -218,6 +479,9 @@ final class ActivationRangeSnapshot {
+         private double[] entityBounds = new double[0];
+         private byte[] activationTypes = new byte[0];
+         private boolean[] intersections = new boolean[0];
++        private Entity[] entities = new Entity[0];
++        private double[] playerBounds = new double[0];
++        private int entityCount;
+         private boolean inUse;
+ 
+         private Workspace(final boolean pooled) {
+@@ -232,6 +496,19 @@ final class ActivationRangeSnapshot {
+             this.entityBounds = Arrays.copyOf(this.entityBounds, Math.multiplyExact(capacity, AABB_COMPONENTS));
+             this.activationTypes = Arrays.copyOf(this.activationTypes, capacity);
+             this.intersections = Arrays.copyOf(this.intersections, capacity);
++            this.entities = Arrays.copyOf(this.entities, capacity);
++        }
++
++        private void ensurePlayerCapacity(final int playerCount) {
++            final int required = Math.multiplyExact(
++                Math.multiplyExact(playerCount, PLAYER_BOXES), AABB_COMPONENTS
++            );
++            if (this.playerBounds.length < required) {
++                this.playerBounds = Arrays.copyOf(
++                    this.playerBounds,
++                    expandedCapacity(this.playerBounds.length, required)
++                );
++            }
+         }
+     }
+ }
+diff --git a/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java b/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
+index 795caebd1fd8f67d8c349b22c2646defce23788f..e1ab7abdcb05718ff9d93bdd4f9b42d295b63913 100644
+--- a/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
++++ b/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
+@@ -117,6 +117,72 @@ public class ActivationRangeSnapshotTest {
+         assertEquals(1L, workload().belowFeatureThresholdFallbacks());
+     }
+ 
++    @Test
++    void worldWideRangesMatchAnyPlayerActivationSemantics() {
++        final int entityCount = 4_096;
++        final int playerCount = 6;
++        final int boxesPerPlayer = ActivationType.values().length + 1;
++        final double[] entityBounds = new double[entityCount * AABB_COMPONENTS];
++        final byte[] activationTypes = new byte[entityCount];
++        final double[] playerBounds = new double[playerCount * boxesPerPlayer * AABB_COMPONENTS];
++        final boolean[] expected = new boolean[entityCount];
++        final boolean[] actual = new boolean[entityCount];
++        final Random random = new Random(0x4c656176657358L);
++
++        for (int player = 0; player < playerCount; player++) {
++            final double centerX = random.nextDouble(-256.0D, 256.0D);
++            final double centerZ = random.nextDouble(-256.0D, 256.0D);
++            for (int box = 0; box < boxesPerPlayer; box++) {
++                final double radius = 24.0D + box * 8.0D;
++                writeBounds(
++                    playerBounds,
++                    player * boxesPerPlayer + box,
++                    centerX - radius,
++                    -64.0D,
++                    centerZ - radius,
++                    centerX + radius,
++                    320.0D,
++                    centerZ + radius
++                );
++            }
++        }
++        for (int entity = 0; entity < entityCount; entity++) {
++            final double x = random.nextDouble(-384.0D, 384.0D);
++            final double y = random.nextDouble(-64.0D, 320.0D);
++            final double z = random.nextDouble(-384.0D, 384.0D);
++            writeBounds(entityBounds, entity, x, y, z, x + 0.6D, y + 1.8D, z + 0.6D);
++            activationTypes[entity] = entity % 31 == 0
++                ? ActivationRangeSnapshot.DEFAULT_ACTIVATION_ENTITY
++                : (byte)(entity % ActivationType.values().length);
++
++            final int box = activationTypes[entity] == ActivationRangeSnapshot.DEFAULT_ACTIVATION_ENTITY
++                ? 0
++                : activationTypes[entity] + 1;
++            final AABB entityBox = boxAt(entityBounds, entity * AABB_COMPONENTS);
++            for (int player = 0; player < playerCount; player++) {
++                if (boxAt(playerBounds, (player * boxesPerPlayer + box) * AABB_COMPONENTS).intersects(entityBox)) {
++                    expected[entity] = true;
++                    break;
++                }
++            }
++        }
++
++        LeavesXComputeExecutor.configure(4, 64);
++        final int partitions = ActivationRangeSnapshot.evaluateWorldSnapshot(
++            entityBounds,
++            activationTypes,
++            playerBounds,
++            actual,
++            entityCount,
++            playerCount,
++            512,
++            128
++        );
++
++        assertTrue(partitions > 1);
++        assertArrayEquals(expected, actual);
++    }
++
+     @Test
+     void workerRangeCannotReachLiveEntityOrWorldState() throws IOException {
+         final ClassNode classNode = new ClassNode(Opcodes.ASM9);

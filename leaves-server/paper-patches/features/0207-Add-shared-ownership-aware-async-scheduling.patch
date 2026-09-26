@@ -1,0 +1,632 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 11:18:27 +0800
+Subject: [PATCH] Add shared ownership-aware async scheduling
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 724988a96b4ee206dab74997e6abbeac389b8402..866691704fb1471a8ab8f5ee5efb8503e26e28ea 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -64,6 +64,7 @@ import org.leavesx.leavesx.diagnostics.LeavesXGcDiagnostics;
+ import org.leavesx.leavesx.diagnostics.LeavesXPluginTaskDiagnostics;
+ import org.leavesx.leavesx.diagnostics.LeavesXSystemDiagnostics;
+ import org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics;
++import org.leavesx.leavesx.runtime.LeavesXAsyncRuntime;
+ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
+ 
+ /** Built-in, main-thread-safe performance diagnostics for LeavesX operators. */
+@@ -1055,6 +1056,22 @@ public final class LeavesXCommand extends Command {
+                 NamedTextColor.DARK_GRAY
+             ));
+         }
++        for (final LeavesXAsyncRuntime.Workload workload : LeavesXAsyncRuntime.Workload.values()) {
++            final LeavesXAsyncRuntime.Metrics async = LeavesXAsyncRuntime.metrics(workload);
++            if (!async.enabled()) {
++                continue;
++            }
++            sender.sendMessage(line(
++                workload.displayName(),
++                async.activeThreads() + " 活跃 / " + async.queuedTasks() + " 排队 / "
++                    + async.completedTasks() + " 完成 / 归属队列 " + async.ownedLanes()
++                    + " / 拒绝 " + async.rejectedTasks() + " / 回退 " + async.callerRuns()
++                    + " / 失败 " + async.failedTasks(),
++                async.failedTasks() == 0L && async.rejectedTasks() == 0L
++                    ? NamedTextColor.GRAY
++                    : NamedTextColor.YELLOW
++            ));
++        }
+         sender.sendMessage(line(
+             "JVM 线程",
+             threads.getThreadCount() + " 当前 / " + threads.getPeakThreadCount() + " 峰值 / " + threads.getDaemonThreadCount() + " 守护",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index e305fe811b17d023cedd142d31c33ee501d2a572..dcf9ca3ad21aadff5b129856250ceb2e9eea9bed 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -68,6 +68,9 @@ public record LeavesXConfig(
+     boolean showOfflineModeWarning,
+     boolean showCollisionConversionWarning,
+     boolean cleanInvalidResidentBots,
++    boolean namedCceShulkerBoxes,
++    boolean quickOpenShulkerBoxes,
++    boolean carpetPlayerCommand,
+     String fakeplayerDisplayPrefix,
+     List<String> fakeplayerForbiddenNameContains,
+     boolean fakeplayerRoleEnabled,
+@@ -81,10 +84,11 @@ public record LeavesXConfig(
+     String fakeplayerRoleWrapperRight,
+     String joinMessage,
+     String quitMessage,
+-    String coreMessagePrefix
++    String coreMessagePrefix,
++    AsyncSettings asyncSettings
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 72;
++    public static final int CURRENT_CONFIG_VERSION = 74;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -181,6 +185,9 @@ public record LeavesXConfig(
+         joinMessage = requireBoundedText(joinMessage, "messages.join", 2_048);
+         quitMessage = requireBoundedText(quitMessage, "messages.quit", 2_048);
+         coreMessagePrefix = requireBoundedText(coreMessagePrefix, "messages.core-prefix", 256);
++        if (asyncSettings == null) {
++            throw new IllegalArgumentException("async settings must not be null");
++        }
+     }
+ 
+     /**
+@@ -247,6 +254,9 @@ public record LeavesXConfig(
+             false,
+             false,
+             true,
++            false,
++            false,
++            false,
+             "[假人]",
+             List.of(),
+             false,
+@@ -260,10 +270,71 @@ public record LeavesXConfig(
+             "]",
+             "",
+             "",
+-            ""
++            "",
++            AsyncSettings.safeDefaults()
+         );
+     }
+ 
++    /** Startup-only asynchronous execution settings. */
++    public record AsyncSettings(
++        boolean chunkSendEnabled,
++        int chunkSendQueueSize,
++        boolean mobSpawningEnabled,
++        boolean pathfindingEnabled,
++        int pathfindingThreads,
++        int pathfindingQueueSize,
++        int pathfindingKeepaliveSeconds,
++        boolean playerDataSaveEnabled,
++        int playerDataSaveQueueSize,
++        boolean entityTrackerEnabled,
++        int entityTrackerThreads,
++        int entityTrackerQueueSize
++    ) {
++
++        public AsyncSettings {
++            validateThreadCount(pathfindingThreads, "async.async-pathfinding.threads");
++            validateThreadCount(entityTrackerThreads, "async.async-entity-tracker.threads");
++            validateQueueSize(chunkSendQueueSize, "async.async-chunk-send.queue-size");
++            validateQueueSize(pathfindingQueueSize, "async.async-pathfinding.queue-size");
++            validateQueueSize(playerDataSaveQueueSize, "async.async-playerdata-save.queue-size");
++            validateQueueSize(entityTrackerQueueSize, "async.async-entity-tracker.queue-size");
++            if (pathfindingKeepaliveSeconds < 1 || pathfindingKeepaliveSeconds > 600) {
++                throw new IllegalArgumentException(
++                    "async.async-pathfinding.keepalive-seconds must be between 1 and 600"
++                );
++            }
++        }
++
++        public static AsyncSettings safeDefaults() {
++            return new AsyncSettings(
++                false,
++                256,
++                true,
++                false,
++                0,
++                1_024,
++                60,
++                false,
++                1_024,
++                false,
++                0,
++                1_024
++            );
++        }
++
++        private static void validateThreadCount(final int value, final String path) {
++            if (value < 0 || value > 16) {
++                throw new IllegalArgumentException(path + " must be between 0 and 16");
++            }
++        }
++
++        private static void validateQueueSize(final int value, final String path) {
++            if (value < 64 || value > 65_536) {
++                throw new IllegalArgumentException(path + " must be between 64 and 65536");
++            }
++        }
++    }
++
+     private static String requireBoundedText(final String value, final String path, final int maximumLength) {
+         if (value == null) {
+             throw new IllegalArgumentException(path + " must not be null");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index ea71de82f0390928a6d7de37a504d415a99cc156..480e5fe42478b42315b68ae95fa5b8730dd0edd6 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -28,6 +28,7 @@ public final class LeavesXConfigBootstrap {
+             config.minimumItemsPerWorker(),
+             config.prestartWorkers()
+         );
++        org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.configure(config.asyncSettings());
+         LeavesXRuntime.publish(config);
+         org.leavesx.leavesx.diagnostics.LeavesXGcDiagnostics.initialize();
+         if (config.diagnosticsCommandEnabled()) {
+@@ -68,6 +69,7 @@ public final class LeavesXConfigBootstrap {
+             );
+         }
+         LeavesXRuntime.publish(next);
++        org.leavesmc.leaves.command.bot.PlayerCommand.syncRegistration();
+         final net.minecraft.server.MinecraftServer server = net.minecraft.server.MinecraftServer.getServer();
+         if (server != null && server.getBotList() != null) {
+             server.getBotList().refreshLeavesXPresentation();
+@@ -102,6 +104,9 @@ public final class LeavesXConfigBootstrap {
+         if (previous.showCollisionConversionWarning() != next.showCollisionConversionWarning()) {
+             changed.add("console-messages.show-collision-conversion-warning");
+         }
++        if (!previous.asyncSettings().equals(next.asyncSettings())) {
++            changed.add("async");
++        }
+         return java.util.List.copyOf(changed);
+     }
+ 
+@@ -144,6 +149,15 @@ public final class LeavesXConfigBootstrap {
+             LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities(),
+             config.mobSpawnCountingMinimumEntities()
+         );
++        final LeavesXConfig.AsyncSettings async = config.asyncSettings();
++        LOGGER.info(
++            "LeavesX async subsystems: chunk send {}, mob spawning {}, pathfinding {}, player data save {}, entity tracker {}",
++            async.chunkSendEnabled(),
++            async.mobSpawningEnabled(),
++            async.pathfindingEnabled(),
++            async.playerDataSaveEnabled(),
++            async.entityTrackerEnabled()
++        );
+         LOGGER.info(
+             "LeavesX AI target-distance workers: {}, parallel from {} candidates (configured {}), minimum {} items per lane (configured {})",
+             config.parallelAiTargetSearch() ? "enabled" : "disabled",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 3985e76f0a855ef6513c2eca34708d9ad7009bf0..9add6436733fabb8c4c6903548b2f88e8531da5a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -354,6 +354,21 @@ public final class LeavesXConfigLoader {
+                     "fakeplayer.clean-invalid-resident-bots",
+                     true
+                 ),
++                readBoolean(
++                    node.node("features", "named-cce-shulker-boxes"),
++                    "features.named-cce-shulker-boxes",
++                    false
++                ),
++                readBoolean(
++                    node.node("features", "quick-open-shulker-boxes"),
++                    "features.quick-open-shulker-boxes",
++                    false
++                ),
++                readBoolean(
++                    node.node("fakeplayer", "carpet-player-command"),
++                    "fakeplayer.carpet-player-command",
++                    false
++                ),
+                 readString(
+                     node.node("fakeplayer", "display-prefix"),
+                     "fakeplayer.display-prefix",
+@@ -411,7 +426,69 @@ public final class LeavesXConfigLoader {
+                 ),
+                 readString(node.node("messages", "join"), "messages.join", ""),
+                 readString(node.node("messages", "quit"), "messages.quit", ""),
+-                readString(node.node("messages", "core-prefix"), "messages.core-prefix", "")
++                readString(node.node("messages", "core-prefix"), "messages.core-prefix", ""),
++                new LeavesXConfig.AsyncSettings(
++                    readBoolean(
++                        node.node("async", "async-chunk-send", "enabled"),
++                        "async.async-chunk-send.enabled",
++                        false
++                    ),
++                    readInt(
++                        node.node("async", "async-chunk-send", "queue-size"),
++                        "async.async-chunk-send.queue-size",
++                        256
++                    ),
++                    readBoolean(
++                        node.node("async", "async-mob-spawning", "enabled"),
++                        "async.async-mob-spawning.enabled",
++                        true
++                    ),
++                    readBoolean(
++                        node.node("async", "async-pathfinding", "enabled"),
++                        "async.async-pathfinding.enabled",
++                        false
++                    ),
++                    readInt(
++                        node.node("async", "async-pathfinding", "threads"),
++                        "async.async-pathfinding.threads",
++                        0
++                    ),
++                    readInt(
++                        node.node("async", "async-pathfinding", "queue-size"),
++                        "async.async-pathfinding.queue-size",
++                        1_024
++                    ),
++                    readInt(
++                        node.node("async", "async-pathfinding", "keepalive-seconds"),
++                        "async.async-pathfinding.keepalive-seconds",
++                        60
++                    ),
++                    readBoolean(
++                        node.node("async", "async-playerdata-save", "enabled"),
++                        "async.async-playerdata-save.enabled",
++                        false
++                    ),
++                    readInt(
++                        node.node("async", "async-playerdata-save", "queue-size"),
++                        "async.async-playerdata-save.queue-size",
++                        1_024
++                    ),
++                    readBoolean(
++                        node.node("async", "async-entity-tracker", "enabled"),
++                        "async.async-entity-tracker.enabled",
++                        false
++                    ),
++                    readInt(
++                        node.node("async", "async-entity-tracker", "threads"),
++                        "async.async-entity-tracker.threads",
++                        0
++                    ),
++                    readInt(
++                        node.node("async", "async-entity-tracker", "queue-size"),
++                        "async.async-entity-tracker.queue-size",
++                        1_024
++                    )
++                )
+             );
+         } catch (final IllegalArgumentException ex) {
+             throw new LeavesXConfigException("Invalid LeavesX configuration at " + path + ": " + ex.getMessage(), ex);
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index e14be57ead1ec67a1c4aba3faf9d2ac18ba4eeeb..c6721506738c11ac71855c60453ed830326540dd 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -87,6 +87,18 @@ public final class LeavesXConfigWriter {
+             config.showCollisionConversionWarning(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("features", "named-cce-shulker-boxes"),
++            "features.named-cce-shulker-boxes",
++            config.namedCceShulkerBoxes(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("features", "quick-open-shulker-boxes"),
++            "features.quick-open-shulker-boxes",
++            config.quickOpenShulkerBoxes(),
++            missingOnly
++        );
+         changed |= writeValue(
+             node.node("fakeplayer", "clean-invalid-resident-bots"),
+             "fakeplayer.clean-invalid-resident-bots",
+@@ -105,6 +117,12 @@ public final class LeavesXConfigWriter {
+             config.fakeplayerForbiddenNameContains(),
+             missingOnly
+         );
++        changed |= writeValue(
++            node.node("fakeplayer", "carpet-player-command"),
++            "fakeplayer.carpet-player-command",
++            config.carpetPlayerCommand(),
++            missingOnly
++        );
+         changed |= writeValue(node.node("fakeplayer", "role", "enabled"), "fakeplayer.role.enabled", config.fakeplayerRoleEnabled(), missingOnly);
+         changed |= writeValue(node.node("fakeplayer", "role", "required"), "fakeplayer.role.required", config.fakeplayerRoleRequired(), missingOnly);
+         changed |= writeValue(node.node("fakeplayer", "role", "length-limited"), "fakeplayer.role.length-limited", config.fakeplayerRoleLengthLimited(), missingOnly);
+@@ -117,6 +135,19 @@ public final class LeavesXConfigWriter {
+         changed |= writeValue(node.node("messages", "join"), "messages.join", config.joinMessage(), missingOnly);
+         changed |= writeValue(node.node("messages", "quit"), "messages.quit", config.quitMessage(), missingOnly);
+         changed |= writeValue(node.node("messages", "core-prefix"), "messages.core-prefix", config.coreMessagePrefix(), missingOnly);
++        final LeavesXConfig.AsyncSettings async = config.asyncSettings();
++        changed |= writeValue(node.node("async", "async-chunk-send", "enabled"), "async.async-chunk-send.enabled", async.chunkSendEnabled(), missingOnly);
++        changed |= writeValue(node.node("async", "async-chunk-send", "queue-size"), "async.async-chunk-send.queue-size", async.chunkSendQueueSize(), missingOnly);
++        changed |= writeValue(node.node("async", "async-mob-spawning", "enabled"), "async.async-mob-spawning.enabled", async.mobSpawningEnabled(), missingOnly);
++        changed |= writeValue(node.node("async", "async-pathfinding", "enabled"), "async.async-pathfinding.enabled", async.pathfindingEnabled(), missingOnly);
++        changed |= writeValue(node.node("async", "async-pathfinding", "threads"), "async.async-pathfinding.threads", async.pathfindingThreads(), missingOnly);
++        changed |= writeValue(node.node("async", "async-pathfinding", "queue-size"), "async.async-pathfinding.queue-size", async.pathfindingQueueSize(), missingOnly);
++        changed |= writeValue(node.node("async", "async-pathfinding", "keepalive-seconds"), "async.async-pathfinding.keepalive-seconds", async.pathfindingKeepaliveSeconds(), missingOnly);
++        changed |= writeValue(node.node("async", "async-playerdata-save", "enabled"), "async.async-playerdata-save.enabled", async.playerDataSaveEnabled(), missingOnly);
++        changed |= writeValue(node.node("async", "async-playerdata-save", "queue-size"), "async.async-playerdata-save.queue-size", async.playerDataSaveQueueSize(), missingOnly);
++        changed |= writeValue(node.node("async", "async-entity-tracker", "enabled"), "async.async-entity-tracker.enabled", async.entityTrackerEnabled(), missingOnly);
++        changed |= writeValue(node.node("async", "async-entity-tracker", "threads"), "async.async-entity-tracker.threads", async.entityTrackerThreads(), missingOnly);
++        changed |= writeValue(node.node("async", "async-entity-tracker", "queue-size"), "async.async-entity-tracker.queue-size", async.entityTrackerQueueSize(), missingOnly);
+         changed |= writeValue(
+             node.node("diagnostics", "command-enabled"),
+             "diagnostics.command-enabled",
+@@ -438,13 +469,16 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：72。");
++        comments.put("config-version", "配置版本，请勿修改。默认：74。");
+         comments.put("console-messages.show-root-admin-warning", "是否显示使用 root 或管理员启动的警告。默认：false。");
+         comments.put("console-messages.show-offline-mode-warning", "是否显示离线模式安全警告。默认：false。");
+         comments.put("console-messages.show-collision-conversion-warning", "是否显示碰撞模式自动转换提示。默认：false。");
++        comments.put("features.named-cce-shulker-boxes", "铁砧命名为“更新抑制器”的潜影盒可触发 CCE 更新抑制。默认：false。");
++        comments.put("features.quick-open-shulker-boxes", "主手或副手拿潜影盒右键空气时直接打开。默认：false。");
+         comments.put("fakeplayer.clean-invalid-resident-bots", "只清理压缩 NBT 已确认损坏的假人登记；缺世界、世界未加载或缺文件都会保留。默认：true。");
+         comments.put("fakeplayer.display-prefix", "假人头顶和 TAB 显示前缀；默认加入退出提示不带前缀。支持 MiniMessage 和 &/§ 颜色代码。默认：[假人]。");
+         comments.put("fakeplayer.forbidden-name-contains", "假人用户名包含这些文字时禁止创建，大小写不敏感；空列表不限制。默认：[]。");
++        comments.put("fakeplayer.carpet-player-command", "是否启用 Carpet 风格的 /player 假人控制命令。默认：false。");
+         comments.put("fakeplayer.role.enabled", "是否启用假人作用显示。作用只显示在头顶和 TAB，不改变真实用户名。默认：false。");
+         comments.put("fakeplayer.role.required", "是否强制创建假人时填写作用；仅在作用显示开启时生效。默认：false。");
+         comments.put("fakeplayer.role.length-limited", "是否限制作用长度。默认：true。");
+@@ -454,9 +488,21 @@ public final class LeavesXConfigWriter {
+         comments.put("fakeplayer.role.wrapper.enabled", "是否在作用外显示包裹符号。默认：true。");
+         comments.put("fakeplayer.role.wrapper.left", "作用左侧包裹符号。默认：[。");
+         comments.put("fakeplayer.role.wrapper.right", "作用右侧包裹符号。默认：]。");
+-        comments.put("messages.join", "自定义进入提示；<player> 是玩家名，<name> 保持兼容，<display_name> 是显示名，也支持 %player_name% 和 &/§ 颜色代码。空字符串保持默认。默认：空。");
+-        comments.put("messages.quit", "自定义退出提示；<player> 是玩家名，<name> 保持兼容，<display_name> 是显示名，也支持 %player_name% 和 &/§ 颜色代码。空字符串保持默认。默认：空。");
++        comments.put("messages.join", "自定义进入提示；支持 <player>、<name>、<display_name>、%player_name% 和颜色代码。默认：空，使用原版提示。");
++        comments.put("messages.quit", "自定义退出提示；支持 <player>、<name>、<display_name>、%player_name% 和颜色代码。默认：空，使用原版提示。");
+         comments.put("messages.core-prefix", "服务端核心提示的统一前缀，例如假人创建成功或配置重载提示；支持 MiniMessage 和 &/§ 颜色代码。默认：空。");
++        comments.put("async.async-chunk-send.enabled", "是否异步打包区块数据；多人进服、传送或高速飞行时可降低主线程负载。默认：false。");
++        comments.put("async.async-chunk-send.queue-size", "异步区块发送最多排队任务数；队列满时回到主线程完整处理。默认：256。");
++        comments.put("async.async-mob-spawning.enabled", "是否异步计算生物生成统计；需同时开启 Paper 的 per-player-mob-spawns。默认：true。");
++        comments.put("async.async-pathfinding.enabled", "是否异步计算生物寻路；结果按实体代次校验后在主线程使用。默认：false。");
++        comments.put("async.async-pathfinding.threads", "寻路为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");
++        comments.put("async.async-pathfinding.queue-size", "异步寻路最多排队任务数；队列满时等待空位，不会打乱同一生物的寻路顺序。默认：1024。");
++        comments.put("async.async-pathfinding.keepalive-seconds", "通用计算线程空闲保留时间，单位为秒。默认：60。");
++        comments.put("async.async-playerdata-save.enabled", "是否异步写入玩家数据；NBT 编码和同一玩家保存顺序保持不变。默认：false。");
++        comments.put("async.async-playerdata-save.queue-size", "玩家数据写入最多排队任务数；队列满时等待空位，不会让新存档越过旧存档。默认：1024。");
++        comments.put("async.async-entity-tracker.enabled", "是否并行计算实体追踪变化；发包、事件和追踪关系提交仍在主线程。默认：false。");
++        comments.put("async.async-entity-tracker.threads", "实体追踪为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");
++        comments.put("async.async-entity-tracker.queue-size", "实体追踪计算最多排队任务数；队列满时回到主线程。默认：1024。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 2b8ddc48a5517bf913c9cc2916ad3e1bcbafd173..eb820087aa79496ae8edcf7172c50ef10f904115 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -499,6 +499,14 @@ enum LeavesXOptimization {
+     CONTAINER_USER_LIST_SCAN(
+         "performance.block-entity.container-user-list-scan",
+         "箱子开启者列表直接复用查询结果，关闭后使用原版流转换。默认：true。"
++    ),
++    BIOME_ZOOM_LOOKUP_TABLES(
++        "performance.world.biome-zoom-lookup-tables",
++        "使用等价常量表计算生物群系缩放偏移，关闭后逐次浮点计算。默认：true。"
++    ),
++    MOB_SPAWNER_ENUM_MAP(
++        "performance.mob-spawning.spawner-enum-map",
++        "刷怪类别使用不可变枚举映射，减少查找开销；关闭后使用普通不可变映射。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 9994baf945d8b6c4f63086025302f4169f7ff941..10c753d925bb9525800b87ba7b67d76868d2cfb0 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -59,6 +59,9 @@ public final class LeavesXRuntime {
+     private static volatile boolean showOfflineModeWarning;
+     private static volatile boolean showCollisionConversionWarning;
+     private static volatile boolean cleanInvalidResidentBots = true;
++    private static volatile boolean namedCceShulkerBoxes;
++    private static volatile boolean quickOpenShulkerBoxes;
++    private static volatile boolean carpetPlayerCommand;
+     private static volatile String fakeplayerDisplayPrefix = "[假人]";
+     private static volatile List<String> forbiddenFakeplayerNameContains = List.of();
+     private static volatile boolean fakeplayerRoleEnabled;
+@@ -73,6 +76,7 @@ public final class LeavesXRuntime {
+     private static volatile String joinMessage = "";
+     private static volatile String quitMessage = "";
+     private static volatile String coreMessagePrefix = "";
++    private static volatile LeavesXConfig.AsyncSettings asyncSettings = LeavesXConfig.AsyncSettings.safeDefaults();
+     private static final StartupAiBudget STARTUP_AI_BUDGET = new StartupAiBudget();
+     private static boolean villagerProfessionAssignmentOptimization = true;
+     private static boolean longJumpCandidateOptimization = true;
+@@ -177,6 +181,9 @@ public final class LeavesXRuntime {
+         showOfflineModeWarning = validated.showOfflineModeWarning();
+         showCollisionConversionWarning = validated.showCollisionConversionWarning();
+         cleanInvalidResidentBots = validated.cleanInvalidResidentBots();
++        namedCceShulkerBoxes = validated.namedCceShulkerBoxes();
++        quickOpenShulkerBoxes = validated.quickOpenShulkerBoxes();
++        carpetPlayerCommand = validated.carpetPlayerCommand();
+         fakeplayerDisplayPrefix = validated.fakeplayerDisplayPrefix();
+         forbiddenFakeplayerNameContains = validated.fakeplayerForbiddenNameContains();
+         fakeplayerRoleEnabled = validated.fakeplayerRoleEnabled();
+@@ -191,6 +198,7 @@ public final class LeavesXRuntime {
+         joinMessage = validated.joinMessage();
+         quitMessage = validated.quitMessage();
+         coreMessagePrefix = validated.coreMessagePrefix();
++        asyncSettings = validated.asyncSettings();
+         STARTUP_AI_BUDGET.reset(startupAiEntitiesPerTick);
+         villagerProfessionAssignmentOptimization = validated.villagerProfessionAssignmentOptimization();
+         longJumpCandidateOptimization = validated.longJumpCandidateOptimization();
+@@ -278,6 +286,31 @@ public final class LeavesXRuntime {
+         configuration = validated;
+     }
+ 
++    /** Returns the startup-only asynchronous execution settings. */
++    public static LeavesXConfig.AsyncSettings asyncSettings() {
++        return asyncSettings;
++    }
++
++    public static boolean asyncChunkSend() {
++        return asyncSettings.chunkSendEnabled();
++    }
++
++    public static boolean asyncMobSpawning() {
++        return asyncSettings.mobSpawningEnabled();
++    }
++
++    public static boolean asyncPathfinding() {
++        return asyncSettings.pathfindingEnabled();
++    }
++
++    public static boolean asyncPlayerDataSave() {
++        return asyncSettings.playerDataSaveEnabled();
++    }
++
++    public static boolean asyncEntityTracker() {
++        return asyncSettings.entityTrackerEnabled();
++    }
++
+     /** Returns whether the built-in LeavesX diagnostic command should be registered. */
+     public static boolean diagnosticsCommandEnabled() {
+         return diagnosticsCommandEnabled;
+@@ -328,6 +361,21 @@ public final class LeavesXRuntime {
+         return cleanInvalidResidentBots;
+     }
+ 
++    /** Returns whether exactly named shulker boxes may trigger CCE update suppression. */
++    public static boolean namedCceShulkerBoxes() {
++        return namedCceShulkerBoxes;
++    }
++
++    /** Returns whether a held shulker box may be opened without placing it. */
++    public static boolean quickOpenShulkerBoxes() {
++        return quickOpenShulkerBoxes;
++    }
++
++    /** Returns whether the optional Carpet-style fakeplayer command is enabled. */
++    public static boolean carpetPlayerCommand() {
++        return carpetPlayerCommand;
++    }
++
+     /** Returns the MiniMessage prefix applied only to a fakeplayer's display identity. */
+     public static String fakeplayerDisplayPrefix() {
+         return fakeplayerDisplayPrefix;
+@@ -1184,6 +1232,16 @@ public final class LeavesXRuntime {
+         return naturalSpawnLocalCapAccountingOptimization;
+     }
+ 
++    /** Returns whether biome zoom arithmetic may use exact precomputed constants. */
++    public static boolean biomeZoomLookupTablesOptimization() {
++        return enabledForPureComputation(LeavesXOptimization.BIOME_ZOOM_LOOKUP_TABLES);
++    }
++
++    /** Returns whether mob-category spawn tables may use an immutable enum map. */
++    public static boolean mobSpawnerEnumMapOptimization() {
++        return mobSpawningOptimizations && enabled(LeavesXOptimization.MOB_SPAWNER_ENUM_MAP);
++    }
++
+     /** Returns whether POI searches may stop traversing once the requested bounded range is exhausted. */
+     public static boolean poiBoundedTraversalOptimization() {
+         return aiOptimizations && enabled(LeavesXOptimization.POI_BOUNDED_TRAVERSAL);
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 37780a2cbddb59ea76faf3acf7bbbff0297e667a..318d27e48e5cd41c1cf5eb229b8901870cfa1f48 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -159,6 +159,11 @@ public final class LeavesXComputeExecutor {
+         return workerCount;
+     }
+ 
++    /** Returns zero while the pool is stopped so other runtimes do not reserve CPU for stale worker settings. */
++    static int configuredWorkerCount() {
++        return executor == null ? 0 : workerCount;
++    }
++
+     static boolean allowsCoreThreadTimeout() {
+         final ComputeThreadPoolExecutor current = executor;
+         return current != null && current.allowsCoreThreadTimeOut();
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 580056c8c7566b95a11debd45f8af6fcf59230ff..9de2b711a5f6ab92070186e5e77ced4db43425e6 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -37,17 +37,35 @@ class LeavesXConfigLoaderTest {
+         assertFalse(created.showOfflineModeWarning());
+         assertFalse(created.showCollisionConversionWarning());
+         assertTrue(created.cleanInvalidResidentBots());
++        assertFalse(created.namedCceShulkerBoxes());
++        assertFalse(created.quickOpenShulkerBoxes());
++        assertFalse(created.carpetPlayerCommand());
++        assertFalse(created.asyncSettings().chunkSendEnabled());
++        assertTrue(created.asyncSettings().mobSpawningEnabled());
++        assertFalse(created.asyncSettings().pathfindingEnabled());
++        assertFalse(created.asyncSettings().playerDataSaveEnabled());
++        assertFalse(created.asyncSettings().entityTrackerEnabled());
+         assertEquals("[假人]", created.fakeplayerDisplayPrefix());
+         assertTrue(created.fakeplayerForbiddenNameContains().isEmpty());
+         final String generated = Files.readString(path);
+         assertTrue(generated.contains("performance:"));
+         assertTrue(generated.contains("console-messages:"));
+         assertTrue(generated.contains("fakeplayer:"));
++        assertTrue(generated.contains("features:"));
++        assertTrue(generated.contains("named-cce-shulker-boxes: false"));
++        assertTrue(generated.contains("quick-open-shulker-boxes: false"));
++        assertTrue(generated.contains("carpet-player-command: false"));
+         assertTrue(generated.contains("messages:"));
+         assertTrue(generated.contains("display-prefix:"));
+         assertTrue(generated.contains("forbidden-name-contains:"));
+         assertTrue(generated.contains("mob-spawning:"));
+         assertTrue(generated.contains("diagnostics:"));
++        assertTrue(generated.contains("async:"));
++        assertTrue(generated.contains("async-chunk-send:"));
++        assertTrue(generated.contains("async-mob-spawning:"));
++        assertTrue(generated.contains("async-pathfinding:"));
++        assertTrue(generated.contains("async-playerdata-save:"));
++        assertTrue(generated.contains("async-entity-tracker:"));
+         assertTrue(generated.contains("rolling-window-seconds:"));
+         assertTrue(generated.contains("slow-plugin-task-ms:"));
+         assertTrue(generated.contains("villager-profession-assignment:"));
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+index 5b1ca41bfa4d959e76060e96cffdd78e50911a91..af20ad6c0aec65e817be377f55b31ccd8e2100a9 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+@@ -90,10 +90,11 @@ final class LeavesXPlayerPresentationTest {
+             true, true, true, true, true, 1_000, 100, 500,
+             LeavesXOptimization.allEnabledMaskLow(), LeavesXOptimization.allEnabledMaskHigh(),
+             true, false, false, 1, true, 40, 16,
+-            false, false, false, true, "&a[假人]", List.of(),
+-            true, false, true, 4, false, true, true, "[", "]", "", "", ""
++            false, false, false, true, false, false, false, "&a[假人]", List.of(),
++            true, false, true, 4, false, true, true, "[", "]", "", "", "",
++            LeavesXConfig.AsyncSettings.safeDefaults()
+         ));
+-        assertEquals("\u00A7a[假人]\u00A7b[建筑]bot", LEGACY.serialize(
++        assertEquals("\u00A7a[假人][\u00A7b建筑]\u00A7abot", LEGACY.serialize(
+             LeavesXPlayerPresentation.fakeplayerDisplayName("bot", "&b建筑")
+         ));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index 9618e49dbf936b169efb9c46ff0af40a54c387da..1e9f22517e983726fbe6cc72b4b76dc453ec2770 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -229,6 +229,9 @@ class VillagerCompatibilityContextTest {
+             false,
+             false,
+             true,
++            false,
++            false,
++            false,
+             "[假人]",
+             List.of(),
+             false,
+@@ -242,7 +245,8 @@ class VillagerCompatibilityContextTest {
+             "]",
+             "",
+             "",
+-            ""
++            "",
++            LeavesXConfig.AsyncSettings.safeDefaults()
+         );
+     }
+ 

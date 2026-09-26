@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 17:52:03 +0800
+Subject: [PATCH] Keep saturated chunk packing off the tick thread
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+index 12ca62c0a116bf30021e7f1ba6344797b2cbbfba..bba22559b992447df88a092efa937f832d6aa9c9 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+@@ -572,10 +572,14 @@ public final class RegionizedPlayerChunkLoader {
+ 
+             final boolean shouldModify = this.world.chunkPacketBlockController.shouldModify(this.player, chunk);
+             final CompletableFuture<ClientboundLevelChunkWithLightPacket> packet =
+-                org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.submitValueOrRun(
++                org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.trySubmitValue(
+                     org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.CHUNK_SEND,
+                     () -> PlayerChunkSender.prepareChunkPacket(this.world, chunk, shouldModify)
+                 );
++            if (packet == null) {
++                this.leavesX$pendingAsyncChunkKeys.remove(chunkKey);
++                return false;
++            }
+             this.leavesX$pendingAsyncChunkPackets.addLast(new LeavesXAsyncChunkPacket(chunkKey, chunk, packet));
+             return true;
+         }

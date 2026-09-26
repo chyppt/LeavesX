@@ -21,6 +21,10 @@ LeavesX 保留 Paper、Bukkit 和 Leaves 的公开 API 及传统插件加载语�
 LeavesX 不使用 Folia 的区域线程模型，也不会要求插件改写为 Folia 插件。世界状态仍由服务器线程统一管理，只有经过边界审计的纯计算任务才会交给 LeavesX 计算线程。
 现阶段LeavesX性能并不如Folia，勉强可以与Leaf持平，LeavesX是在安全与稳定的基础上进行性能优化，如果您需要极致的性能，LeavesX不是您的首选，稳定+安全+性能+生电+兼容才是LeavesX的定位，LeavesX有部分代码为Leaf移植，同时开发过程中使用了Vibe coding（AI开发 非100% AI产物）若有介意请不要使用。
 
+LeavesX 当前不以超越 Folia 为目标，重点是在安全、稳定、生电兼容和 Paper/Bukkit 兼容的前提下提升性能。部分优化参考并移植了 Leaf 的低风险实现，其余功能由 LeavesX 独立开发；性能表现会因版本、插件、区块和实体负载而不同。
+
+项目开发过程中使用了 AI 辅助编程，并非全部代码由 AI 生成。请根据自己的使用需求决定是否采用。
+
 核心原则：
 
 - 不改变实体、方块、红石、TNT、活塞和区块状态的所有权。
@@ -65,17 +69,17 @@ LeavesX 会在服务端启动时生成或迁移 `leavesx.yml`。配置项均带�
 
 ## 构建
 
-需要 JDK 21 或更高版本，以及可以访问 GitHub 和 Maven 仓库的网络环境：
+当前 1.1.0 的 Minecraft 26.1.2 和 26.2 构建使用 JDK 25，需要可以访问 GitHub 和 Maven 仓库的网络环境：
 
 ```bash
 ./gradlew applyAllPatches
-./gradlew :leaves-server:createLeavesclipJar
+./gradlew :leaves-server:createBundlerJar
 ```
 
 生成的服务端位于：
 
 ```text
-leaves-server/build/libs/leavesx-26.1.2.jar
+leaves-server/build/libs/leaves-bundler-26.1.2-R0.1-SNAPSHOT.jar
 ```
 
 如果只需要运行测试，可以执行：
@@ -88,7 +92,7 @@ leaves-server/build/libs/leavesx-26.1.2.jar
 
 ## 上游关系
 
-LeavesX 保留 GitHub fork 的上游关联，便于查看 Leaves 的历史和手动同步；LeavesX 的开发提交只推送到本仓库的 `leavesx/26.1.2` 分支，不会自动合并或推送到 `LeavesMC/Leaves`。
+LeavesX 保留 GitHub fork 的上游关联，便于查看 Leaves 的历史和手动同步。1.1.0 的两个版本分别维护在 `leavesx/26.1.2` 和 `leavesx/26.2` 分支，不会自动合并或推送到 `LeavesMC/Leaves`。26.2 从 LeavesX 源码手动适配，不以 Leaf 源码作为底包。
 
 ## 开源协议
 

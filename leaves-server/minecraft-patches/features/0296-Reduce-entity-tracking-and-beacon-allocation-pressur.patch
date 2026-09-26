@@ -1,0 +1,490 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 17:07:44 +0800
+Subject: [PATCH] Reduce entity tracking and beacon allocation pressure
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+index ff25042d8e27802129672f86cf892a1dceec6668..12ca62c0a116bf30021e7f1ba6344797b2cbbfba 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+@@ -447,8 +447,9 @@ public final class RegionizedPlayerChunkLoader {
+         private final ArrayDeque<ChunkHolderManager.TicketOperation<?, ?>> delayedTicketOps = new ArrayDeque<>();
+         private final LongOpenHashSet sentChunks = new LongOpenHashSet();
+         private static final int MAX_ASYNC_CHUNK_SENDS_PER_PLAYER = 64;
+-        private final LongOpenHashSet leavesX$pendingAsyncChunkKeys = new LongOpenHashSet();
+-        private final ArrayDeque<LeavesXAsyncChunkPacket> leavesX$pendingAsyncChunkPackets = new ArrayDeque<>();
++        private final LongOpenHashSet leavesX$pendingAsyncChunkKeys = new LongOpenHashSet(MAX_ASYNC_CHUNK_SENDS_PER_PLAYER);
++        private final ArrayDeque<LeavesXAsyncChunkPacket> leavesX$pendingAsyncChunkPackets =
++            new ArrayDeque<>(MAX_ASYNC_CHUNK_SENDS_PER_PLAYER);
+         // Allocated only for read-only spectators. Normal players retain the original zero-overhead ticket path.
+         private final LongOpenHashSet observerPendingChunks;
+         private final Long2ObjectOpenHashMap<LevelChunk> observerSentChunkReferences;
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index 7395bca8bfc56afea8cfa2c965250d77608b7f49..5a784b39dce7fff47bfb469ddbc9266376abe3bc 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -140,6 +140,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+     private final String storageName;
+     private final PlayerMap playerMap = new PlayerMap();
+     public final Int2ObjectMap<ChunkMap.TrackedEntity> entityMap = new Int2ObjectOpenHashMap<>();
++    private LeavesXTrackerSnapshot[] leavesX$trackerSnapshots = new LeavesXTrackerSnapshot[0];
+     private final Long2ByteMap chunkTypeCache = new Long2ByteOpenHashMap();
+     // Paper - rewrite chunk system
+     public int serverViewDistance;
+@@ -1167,16 +1168,22 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+     ) {
+         final int entityCount = trackerEntities.size();
+         final Entity[] entities = trackerEntities.getRawDataUnchecked();
+-        final LeavesXTrackerSnapshot[] snapshots = new LeavesXTrackerSnapshot[entityCount];
++        if (this.leavesX$trackerSnapshots.length < entityCount) {
++            this.leavesX$trackerSnapshots = java.util.Arrays.copyOf(
++                this.leavesX$trackerSnapshots,
++                Math.max(entityCount, this.leavesX$trackerSnapshots.length << 1)
++            );
++        }
++        final LeavesXTrackerSnapshot[] snapshots = this.leavesX$trackerSnapshots;
+         for (int index = 0; index < entityCount; index++) {
+             final Entity entity = entities[index];
+             final ChunkMap.TrackedEntity tracker =
+                 ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
+-            if (tracker != null) {
+-                snapshots[index] = tracker.leavesX$createTrackerSnapshot(
++            snapshots[index] = tracker == null
++                ? null
++                : tracker.leavesX$createTrackerSnapshot(
+                     ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkData().nearbyPlayers
+                 );
+-            }
+         }
+ 
+         final int completedPartitions = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRangesWithCount(
+@@ -1376,6 +1383,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         // Paper start - optimise entity tracker
+         private long lastChunkUpdate = -1L;
+         private ca.spottedleaf.moonrise.common.misc.NearbyPlayers.TrackedChunk lastTrackedChunk;
++        private final LeavesXTrackerSnapshot leavesX$trackerSnapshot;
+ 
+         @Override
+         public final void moonrise$tick(final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.TrackedChunk chunk) {
+@@ -1461,6 +1469,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             this.entity = entity;
+             this.range = range;
+             this.lastSectionPos = SectionPos.of(entity);
++            this.leavesX$trackerSnapshot = new LeavesXTrackerSnapshot(this, entity);
+         }
+ 
+         @Override
+@@ -1578,51 +1587,38 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.TrackedChunk chunk
+         ) {
+             if (chunk == null) {
+-                return LeavesXTrackerSnapshot.empty(this, this.entity, null, -1L);
++                return this.leavesX$trackerSnapshot.resetEmpty(null, -1L);
+             }
+             final ca.spottedleaf.moonrise.common.list.ReferenceList<ServerPlayer> playerList =
+                 chunk.getPlayers(ca.spottedleaf.moonrise.common.misc.NearbyPlayers.NearbyMapType.VIEW_DISTANCE);
+             if (playerList == null || playerList.size() == 0) {
+-                return LeavesXTrackerSnapshot.empty(this, this.entity, chunk, chunk.getUpdateCount());
++                return this.leavesX$trackerSnapshot.resetEmpty(chunk, chunk.getUpdateCount());
+             }
+ 
+             final int count = playerList.size();
+-            final ServerPlayer[] players = java.util.Arrays.copyOf(playerList.getRawDataUnchecked(), count);
+-            final double[] playerX = new double[count];
+-            final double[] playerY = new double[count];
+-            final double[] playerZ = new double[count];
+-            final double[] horizontalRangeSquared = new double[count];
+-            final int effectiveRange = this.getEffectiveRange();
+-            for (int index = 0; index < count; index++) {
+-                final ServerPlayer player = players[index];
+-                playerX[index] = player.getX();
+-                playerY[index] = player.getY();
+-                playerZ[index] = player.getZ();
+-                final double range = Math.min(effectiveRange, ChunkMap.this.getPlayerViewDistance(player) * 16);
+-                horizontalRangeSquared[index] = range * range;
+-            }
+-            final double rangeY = ChunkMap.this.level.paperConfig().entities.trackingRangeY.enabled
+-                ? ChunkMap.this.level.paperConfig().entities.trackingRangeY.get(this.entity, -1)
+-                : -1.0;
+-            return new LeavesXTrackerSnapshot(
+-                this,
+-                this.entity,
++            final LeavesXTrackerSnapshot snapshot = this.leavesX$trackerSnapshot.reset(
+                 this.entity.getX(),
+                 this.entity.getY(),
+                 this.entity.getZ(),
+                 chunk,
+                 chunk.getUpdateCount(),
+-                players,
+-                playerX,
+-                playerY,
+-                playerZ,
+-                horizontalRangeSquared,
+-                rangeY
++                count
+             );
++            final ServerPlayer[] sourcePlayers = playerList.getRawDataUnchecked();
++            final int effectiveRange = this.getEffectiveRange();
++            for (int index = 0; index < count; index++) {
++                final ServerPlayer player = sourcePlayers[index];
++                final double range = Math.min(effectiveRange, ChunkMap.this.getPlayerViewDistance(player) * 16);
++                snapshot.setPlayer(index, player, player.getX(), player.getY(), player.getZ(), range * range);
++            }
++            snapshot.rangeY = ChunkMap.this.level.paperConfig().entities.trackingRangeY.enabled
++                ? ChunkMap.this.level.paperConfig().entities.trackingRangeY.get(this.entity, -1)
++                : -1.0;
++            return snapshot;
+         }
+ 
+         private void leavesX$applyTrackerSnapshot(final LeavesXTrackerSnapshot snapshot) {
+-            if (snapshot.players.length == 0) {
++            if (snapshot.playerCount == 0) {
+                 this.moonrise$clearPlayers();
+                 return;
+             }
+@@ -1631,7 +1627,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             this.lastChunkUpdate = snapshot.chunkUpdate;
+             this.lastTrackedChunk = snapshot.chunk;
+ 
+-            for (int index = 0; index < snapshot.players.length; index++) {
++            for (int index = 0; index < snapshot.playerCount; index++) {
+                 final ServerPlayer player = snapshot.players[index];
+                 if (player != this.entity) {
+                     this.leavesX$commitPlayerVisibility(player, snapshot.inRange[index]);
+@@ -1683,69 +1679,95 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+ 
+         private final ChunkMap.TrackedEntity tracker;
+         private final Entity entity;
+-        private final double entityX;
+-        private final double entityY;
+-        private final double entityZ;
+-        private final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.@Nullable TrackedChunk chunk;
+-        private final long chunkUpdate;
+-        private final ServerPlayer[] players;
+-        private final double[] playerX;
+-        private final double[] playerY;
+-        private final double[] playerZ;
+-        private final double[] horizontalRangeSquared;
+-        private final double rangeY;
+-        private final boolean[] inRange;
+-
+-        private LeavesXTrackerSnapshot(
+-            final ChunkMap.TrackedEntity tracker,
+-            final Entity entity,
++        private double entityX;
++        private double entityY;
++        private double entityZ;
++        private ca.spottedleaf.moonrise.common.misc.NearbyPlayers.@Nullable TrackedChunk chunk;
++        private long chunkUpdate;
++        private ServerPlayer[] players = new ServerPlayer[0];
++        /** Four scalar values per player: x, y, z and horizontal range squared. */
++        private double[] playerData = new double[0];
++        private double rangeY;
++        private boolean[] inRange = new boolean[0];
++        private int playerCount;
++
++        private LeavesXTrackerSnapshot(final ChunkMap.TrackedEntity tracker, final Entity entity) {
++            this.tracker = tracker;
++            this.entity = entity;
++        }
++
++        private LeavesXTrackerSnapshot reset(
+             final double entityX,
+             final double entityY,
+             final double entityZ,
+-            final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.@Nullable TrackedChunk chunk,
++            final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.TrackedChunk chunk,
+             final long chunkUpdate,
+-            final ServerPlayer[] players,
+-            final double[] playerX,
+-            final double[] playerY,
+-            final double[] playerZ,
+-            final double[] horizontalRangeSquared,
+-            final double rangeY
++            final int playerCount
+         ) {
+-            this.tracker = tracker;
+-            this.entity = entity;
++            this.ensureCapacity(playerCount);
++            if (playerCount < this.playerCount) {
++                java.util.Arrays.fill(this.players, playerCount, this.playerCount, null);
++            }
+             this.entityX = entityX;
+             this.entityY = entityY;
+             this.entityZ = entityZ;
+             this.chunk = chunk;
+             this.chunkUpdate = chunkUpdate;
+-            this.players = players;
+-            this.playerX = playerX;
+-            this.playerY = playerY;
+-            this.playerZ = playerZ;
+-            this.horizontalRangeSquared = horizontalRangeSquared;
+-            this.rangeY = rangeY;
+-            this.inRange = new boolean[players.length];
+-        }
+-
+-        private static LeavesXTrackerSnapshot empty(
+-            final ChunkMap.TrackedEntity tracker,
+-            final Entity entity,
++            this.playerCount = playerCount;
++            return this;
++        }
++
++        private LeavesXTrackerSnapshot resetEmpty(
+             final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.@Nullable TrackedChunk chunk,
+             final long chunkUpdate
+         ) {
+-            return new LeavesXTrackerSnapshot(
+-                tracker, entity, entity.getX(), entity.getY(), entity.getZ(), chunk, chunkUpdate,
+-                new ServerPlayer[0], new double[0], new double[0], new double[0], new double[0], -1.0
+-            );
++            if (this.playerCount > 0) {
++                java.util.Arrays.fill(this.players, 0, this.playerCount, null);
++            }
++            this.entityX = this.entity.getX();
++            this.entityY = this.entity.getY();
++            this.entityZ = this.entity.getZ();
++            this.chunk = chunk;
++            this.chunkUpdate = chunkUpdate;
++            this.rangeY = -1.0D;
++            this.playerCount = 0;
++            return this;
++        }
++
++        private void ensureCapacity(final int required) {
++            if (this.players.length >= required) {
++                return;
++            }
++            final int capacity = Math.max(required, Math.max(4, this.players.length << 1));
++            this.players = java.util.Arrays.copyOf(this.players, capacity);
++            this.playerData = java.util.Arrays.copyOf(this.playerData, capacity * 4);
++            this.inRange = java.util.Arrays.copyOf(this.inRange, capacity);
++        }
++
++        private void setPlayer(
++            final int index,
++            final ServerPlayer player,
++            final double x,
++            final double y,
++            final double z,
++            final double horizontalRangeSquared
++        ) {
++            this.players[index] = player;
++            final int offset = index * 4;
++            this.playerData[offset] = x;
++            this.playerData[offset + 1] = y;
++            this.playerData[offset + 2] = z;
++            this.playerData[offset + 3] = horizontalRangeSquared;
+         }
+ 
+         private void computeRanges() {
+-            for (int index = 0; index < this.players.length; index++) {
+-                final double deltaX = this.playerX[index] - this.entityX;
+-                final double deltaZ = this.playerZ[index] - this.entityZ;
+-                boolean visible = deltaX * deltaX + deltaZ * deltaZ <= this.horizontalRangeSquared[index];
++            for (int index = 0; index < this.playerCount; index++) {
++                final int offset = index * 4;
++                final double deltaX = this.playerData[offset] - this.entityX;
++                final double deltaZ = this.playerData[offset + 2] - this.entityZ;
++                boolean visible = deltaX * deltaX + deltaZ * deltaZ <= this.playerData[offset + 3];
+                 if (visible && this.rangeY >= 0.0) {
+-                    final double deltaY = this.playerY[index] - this.entityY;
++                    final double deltaY = this.playerData[offset + 1] - this.entityY;
+                     visible = deltaY * deltaY <= this.rangeY * this.rangeY;
+                 }
+                 this.inRange[index] = visible;
+@@ -1753,8 +1775,8 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         }
+ 
+         private boolean containsPlayer(final ServerPlayer player) {
+-            for (final ServerPlayer candidate : this.players) {
+-                if (candidate == player) return true;
++            for (int index = 0; index < this.playerCount; index++) {
++                if (this.players[index] == player) return true;
+             }
+             return false;
+         }
+diff --git a/net/minecraft/world/entity/EntitySelector.java b/net/minecraft/world/entity/EntitySelector.java
+index a3c13e421768f5e1a703b5b1167fa1c912b6f126..71d7605c1f6e1e470132891fe82ef988b1d8ce07 100644
+--- a/net/minecraft/world/entity/EntitySelector.java
++++ b/net/minecraft/world/entity/EntitySelector.java
+@@ -8,7 +8,8 @@ import net.minecraft.world.scores.Team;
+ 
+ public final class EntitySelector {
+     public static final Predicate<Entity> ENTITY_STILL_ALIVE = Entity::isAlive;
+-    public static final Predicate<Entity> LIVING_ENTITY_STILL_ALIVE = entity -> entity.isAlive() && entity instanceof LivingEntity;
++    public static final Predicate<Entity> LIVING_ENTITY_STILL_ALIVE = entity ->
++        entity instanceof LivingEntity livingEntity && livingEntity.isAlive();
+     public static final Predicate<Entity> ENTITY_NOT_BEING_RIDDEN = entity -> entity.isAlive() && !entity.isVehicle() && !entity.isPassenger();
+     public static final Predicate<Entity> CONTAINER_ENTITY_SELECTOR = entity -> entity instanceof Container && entity.isAlive();
+     public static final Predicate<Entity> NO_CREATIVE_OR_SPECTATOR = entity -> !(
+@@ -30,7 +31,9 @@ public final class EntitySelector {
+     // Paper end - Ability to control player's insomnia and phantoms
+     // Paper start - Affects Spawning API
+     public static final Predicate<Entity> PLAYER_AFFECTS_SPAWNING = (entity) -> {
+-        return !entity.isSpectator() && entity.isAlive() && entity instanceof Player player && player.affectsSpawning;
++        // Natural-spawn scans pass every nearby entity through this predicate. Rejecting non-players first avoids
++        // virtual spectator and LivingEntity health reads for the overwhelming majority of candidates.
++        return entity instanceof Player player && !player.isSpectator() && player.isAlive() && player.affectsSpawning;
+     };
+     // Paper end - Affects Spawning API
+ 
+diff --git a/net/minecraft/world/entity/ai/goal/TemptGoal.java b/net/minecraft/world/entity/ai/goal/TemptGoal.java
+index af2bd8a5cf760792a63dfb9c2370360f288beab6..ab55e1d40246b5d79f408a51f0f3775921d72edf 100644
+--- a/net/minecraft/world/entity/ai/goal/TemptGoal.java
++++ b/net/minecraft/world/entity/ai/goal/TemptGoal.java
+@@ -1,7 +1,9 @@
+ package net.minecraft.world.entity.ai.goal;
+ 
+ import java.util.EnumSet;
++import java.util.List;
+ import java.util.function.Predicate;
++import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.world.entity.LivingEntity;
+ import net.minecraft.world.entity.Mob;
+ import net.minecraft.world.entity.PathfinderMob;
+@@ -54,8 +56,10 @@ public class TemptGoal extends Goal {
+             this.calmDown--;
+             return false;
+         } else {
+-            this.player = getServerLevel(this.mob)
+-                .getNearestPlayer(this.targetingConditions.range(this.mob.getAttributeValue(Attributes.TEMPT_RANGE)), this.mob);
++            final ServerLevel level = getServerLevel(this.mob);
++            final double range = this.mob.getAttributeValue(Attributes.TEMPT_RANGE);
++            this.targetingConditions.range(range);
++            this.player = this.leavesX$findNearestTemptingPlayer(level, range);
+             // CraftBukkit start
+             if (this.player != null) {
+                 org.bukkit.event.entity.EntityTargetLivingEntityEvent event = org.bukkit.craftbukkit.event.CraftEventFactory.callEntityTargetLivingEvent(this.mob, this.player, org.bukkit.event.entity.EntityTargetEvent.TargetReason.TEMPT);
+@@ -69,6 +73,38 @@ public class TemptGoal extends Goal {
+         }
+     }
+ 
++    /**
++     * Applies the immutable distance bound before testing held items and visibility.
++     *
++     * <p>The generic nearest-entity helper intentionally evaluates its predicate first. TemptGoal's selector is
++     * substantially more expensive than squared distance and has no observable side effects, so a player that is
++     * already outside the configured range or farther than a valid candidate cannot affect the result.</p>
++     */
++    private @Nullable Player leavesX$findNearestTemptingPlayer(final ServerLevel level, final double range) {
++        final List<? extends Player> players = level.players();
++        final double mobX = this.mob.getX();
++        final double mobY = this.mob.getY();
++        final double mobZ = this.mob.getZ();
++        // TargetingConditions keeps a two-block visibility floor even when an attribute supplies a smaller range.
++        final double maximumVisibilityDistance = Math.max(range, 2.0D);
++        final double maximumDistance = maximumVisibilityDistance * maximumVisibilityDistance;
++        double bestDistance = -1.0D;
++        Player nearest = null;
++
++        for (int index = 0, size = players.size(); index < size; index++) {
++            final Player candidate = players.get(index);
++            final double distance = candidate.distanceToSqr(mobX, mobY, mobZ);
++            if (distance > maximumDistance || bestDistance >= 0.0D && distance >= bestDistance) {
++                continue;
++            }
++            if (this.targetingConditions.test(level, this.mob, candidate)) {
++                bestDistance = distance;
++                nearest = candidate;
++            }
++        }
++        return nearest;
++    }
++
+     private boolean shouldFollow(final LivingEntity player) {
+         return this.items.test(player.getMainHandItem()) || this.items.test(player.getOffhandItem());
+     }
+diff --git a/net/minecraft/world/level/block/entity/BeaconBlockEntity.java b/net/minecraft/world/level/block/entity/BeaconBlockEntity.java
+index beca8062d213c010f2135c842cc7b1bdcaf94d6e..2a84b00d20df98e2f244ad6c6fcde7f1e4a3ecb3 100644
+--- a/net/minecraft/world/level/block/entity/BeaconBlockEntity.java
++++ b/net/minecraft/world/level/block/entity/BeaconBlockEntity.java
+@@ -1,7 +1,6 @@
+ package net.minecraft.world.level.block.entity;
+ 
+ import com.google.common.collect.ImmutableList;
+-import com.google.common.collect.Lists;
+ import java.util.ArrayList;
+ import java.util.Collection;
+ import java.util.List;
+@@ -67,6 +66,8 @@ public class BeaconBlockEntity extends BlockEntity implements MenuProvider, Name
+     private static final String TAG_SECONDARY = "secondary_effect";
+     private List<BeaconBeamOwner.Section> beamSections = new ArrayList<>();
+     private List<BeaconBeamOwner.Section> checkingBeamSections = new ArrayList<>();
++    /** Reused only by this block entity's tick thread for beam and base scans. */
++    private final BlockPos.MutableBlockPos leavesX$scanPosition = new BlockPos.MutableBlockPos();
+     public int levels;
+     private int lastCheckY;
+     public @Nullable Holder<MobEffect> primaryPower;
+@@ -165,13 +166,13 @@ public class BeaconBlockEntity extends BlockEntity implements MenuProvider, Name
+         int x = pos.getX();
+         int y = pos.getY();
+         int z = pos.getZ();
+-        BlockPos checkPos;
++        final BlockPos.MutableBlockPos checkPos = entity.leavesX$scanPosition;
+         if (entity.lastCheckY < y) {
+-            checkPos = pos;
+-            entity.checkingBeamSections = Lists.newArrayList();
++            checkPos.set(x, y, z);
++            entity.checkingBeamSections.clear();
+             entity.lastCheckY = checkPos.getY() - 1;
+         } else {
+-            checkPos = new BlockPos(x, entity.lastCheckY + 1, z);
++            checkPos.set(x, entity.lastCheckY + 1, z);
+         }
+ 
+         BeaconBeamOwner.Section lastBeamSection = entity.checkingBeamSections.isEmpty()
+@@ -204,14 +205,14 @@ public class BeaconBlockEntity extends BlockEntity implements MenuProvider, Name
+                 lastBeamSection.increaseHeight();
+             }
+ 
+-            checkPos = checkPos.above();
++            checkPos.setY(checkPos.getY() + 1);
+             entity.lastCheckY++;
+         }
+ 
+         int previousLevels = entity.levels;
+         if (level.getGameTime() % 80L == 0L) {
+             if (!entity.beamSections.isEmpty()) {
+-                entity.levels = updateBase(level, x, y, z);
++                entity.levels = updateBase(level, x, y, z, entity.leavesX$scanPosition);
+             }
+ 
+             if (entity.levels > 0 && !entity.beamSections.isEmpty()) {
+@@ -232,7 +233,11 @@ public class BeaconBlockEntity extends BlockEntity implements MenuProvider, Name
+         if (entity.lastCheckY >= lastSetBlock) {
+             entity.lastCheckY = level.getMinY() - 1;
+             boolean wasActive = previousLevels > 0;
++            // Swap the published and construction lists. The next full scan clears the old published list only
++            // after it has stopped being observable, avoiding one ArrayList allocation per completed beam scan.
++            final List<BeaconBeamOwner.Section> previousBeamSections = entity.beamSections;
+             entity.beamSections = entity.checkingBeamSections;
++            entity.checkingBeamSections = previousBeamSections;
+             if (!level.isClientSide()) {
+                 boolean isActive = entity.levels > 0;
+                 if (!wasActive && isActive) {
+@@ -248,7 +253,13 @@ public class BeaconBlockEntity extends BlockEntity implements MenuProvider, Name
+         }
+     }
+ 
+-    private static int updateBase(final Level level, final int x, final int y, final int z) {
++    private static int updateBase(
++        final Level level,
++        final int x,
++        final int y,
++        final int z,
++        final BlockPos.MutableBlockPos scanPosition
++    ) {
+         int levels = 0;
+ 
+         for (int step = 1; step <= 4; levels = step++) {
+@@ -261,7 +272,7 @@ public class BeaconBlockEntity extends BlockEntity implements MenuProvider, Name
+ 
+             for (int lx = x - step; lx <= x + step && isOk; lx++) {
+                 for (int lz = z - step; lz <= z + step; lz++) {
+-                    if (!level.getBlockState(new BlockPos(lx, ly, lz)).is(BlockTags.BEACON_BASE_BLOCKS)) {
++                    if (!level.getBlockState(scanPosition.set(lx, ly, lz)).is(BlockTags.BEACON_BASE_BLOCKS)) {
+                         isOk = false;
+                         break;
+                     }

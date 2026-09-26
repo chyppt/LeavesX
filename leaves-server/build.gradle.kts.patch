@@ -99,7 +99,7 @@
      implementation("ca.spottedleaf:concurrentutil:0.0.10")
      implementation("org.jline:jline-terminal-ffm:3.27.1") // use ffm on java 22+
      implementation("org.jline:jline-terminal-jni:3.27.1") // fall back to jni on java 21
-@@ -159,26 +_,36 @@
+@@ -159,26 +_,38 @@
      implementation("me.lucko:spark-paper:1.10.152")
  }
  
@@ -123,7 +123,9 @@
 -        val buildTime = providers.environmentVariable("BUILD_STARTED_AT").map(Instant::parse).orElse(Instant.EPOCH).get()
 +        val buildTime = Instant.now() // Leaves - always use build time
          val gitHash = git.exec(providers, "rev-parse", "--short=7", "HEAD").get().trim()
-         val implementationVersion = "$mcVersion-${build ?: "DEV"}-$gitHash"
+-        val implementationVersion = "$mcVersion-${build ?: "DEV"}-$gitHash"
++        val leavesXVersion = rootProject.providers.gradleProperty("leavesXVersion").get()
++        val implementationVersion = "$mcVersion-$leavesXVersion-${build ?: "local"}-$gitHash"
          val date = git.exec(providers, "show", "-s", "--format=%ci", gitHash).get().trim()
          val gitBranch = git.exec(providers, "rev-parse", "--abbrev-ref", "HEAD").get().trim()
          attributes(
@@ -131,6 +133,7 @@
 -            "Implementation-Title" to "Paper",
 +            "Implementation-Title" to "LeavesX",
              "Implementation-Version" to implementationVersion,
++            "LeavesX-Version" to leavesXVersion,
              "Implementation-Vendor" to date,
 -            "Specification-Title" to "Paper",
 +            "Specification-Title" to "LeavesX",

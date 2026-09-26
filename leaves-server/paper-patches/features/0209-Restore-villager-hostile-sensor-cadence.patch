@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 13:06:00 +0800
+Subject: [PATCH] Restore villager hostile sensor cadence
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 9fbb96605231d05be07819107c27ef23fb49544e..9e7a44281da0d4dce8a58561ca7864f3e7fb453e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -755,13 +755,19 @@ public final class LeavesXRuntime {
+     }
+ 
+     /**
+-     * Keeps villager sensor cadence at the vanilla value while full compatibility mode owns the current tick.
+-     * Paper's per-sensor override remains authoritative for all other entities and when compatibility mode is off.
++     * Keeps villager sensor cadence at the vanilla value regardless of optional optimization context.
++     *
++     * <p>Hostile sensing drives panic and iron-golem spawning. Tying its cadence to a thread-local compatibility
++     * guard allowed a disabled compatibility setting, a reload, or an unusual caller to leave villagers on a very
++     * large Paper sensor interval. Identify the entity explicitly so every villager Brain keeps the authoritative
++     * vanilla cadence while Paper's override remains unchanged for every other entity.</p>
+      */
+-    public static int villagerSensorTickInterval(final int paperInterval, final int vanillaInterval) {
+-        return (VILLAGER_OPTIMIZATION_CONTEXT.get() & VILLAGER_FULL_COMPATIBILITY_CONTEXT) != 0
+-            ? vanillaInterval
+-            : paperInterval;
++    public static int villagerSensorTickInterval(
++        final boolean villager,
++        final int paperInterval,
++        final int vanillaInterval
++    ) {
++        return villager ? vanillaInterval : paperInterval;
+     }
+ 
+     private static void restoreVillagerContextBit(final int bit, final boolean enabled) {
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index 2178a3964425b0d80583f87599202ab06dc2ffbe..9c9c37c702233b1309ccb7eb134eb471b0c58f0c 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
+ import java.io.IOException;
+ import java.util.Arrays;
+ import java.util.List;
++import net.minecraft.world.entity.ai.sensing.Sensor;
+ import net.minecraft.world.entity.npc.villager.Villager;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+@@ -52,7 +53,8 @@ class VillagerCompatibilityContextTest {
+             assertFalse(LeavesXRuntime.villagerPlayTagOptimization());
+             assertFalse(LeavesXRuntime.yieldJobSiteOptimization());
+             assertFalse(LeavesXRuntime.occupiedPoiBedQueriesOptimization());
+-            assertTrue(LeavesXRuntime.villagerSensorTickInterval(1_200, 20) == 20);
++            assertTrue(LeavesXRuntime.villagerSensorTickInterval(true, 1_200, 20) == 20);
++            assertTrue(LeavesXRuntime.villagerSensorTickInterval(false, 1_200, 20) == 1_200);
+         } finally {
+             LeavesXRuntime.exitVillagerCompatibilityContext(previous);
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+@@ -75,13 +77,38 @@ class VillagerCompatibilityContextTest {
+             assertTrue(LeavesXRuntime.mobPresenceSensorOptimization());
+             assertTrue(LeavesXRuntime.playerSensorOptimization());
+             assertTrue(LeavesXRuntime.visibleEntityTargetCacheOptimization());
+-            assertTrue(LeavesXRuntime.villagerSensorTickInterval(1_200, 20) == 1_200);
++            assertTrue(LeavesXRuntime.villagerSensorTickInterval(true, 1_200, 20) == 20);
++            assertTrue(LeavesXRuntime.villagerSensorTickInterval(false, 1_200, 20) == 1_200);
+         } finally {
+             LeavesXRuntime.exitVillagerCompatibilityContext(previous);
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+         }
+     }
+ 
++    @Test
++    void villagerSensorCadenceDoesNotDependOnCompatibilityContext() throws IOException {
++        final MethodNode tick = method(classNode(Sensor.class.getName()), "tick");
++        final String villagerOwner = Villager.class.getName().replace('.', '/');
++        final String runtimeOwner = LeavesXRuntime.class.getName().replace('.', '/');
++
++        assertTrue(Arrays.stream(tick.instructions.toArray())
++            .filter(TypeInsnNode.class::isInstance)
++            .map(TypeInsnNode.class::cast)
++            .anyMatch(instruction -> instruction.getOpcode() == Opcodes.INSTANCEOF
++                && instruction.desc.equals(villagerOwner)));
++        assertTrue(Arrays.stream(tick.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .anyMatch(call -> call.owner.equals(runtimeOwner)
++                && call.name.equals("villagerSensorTickInterval")
++                && call.desc.equals("(ZII)I")));
++        assertTrue(Arrays.stream(tick.instructions.toArray())
++            .filter(FieldInsnNode.class::isInstance)
++            .map(FieldInsnNode.class::cast)
++            .filter(field -> field.getOpcode() == Opcodes.PUTFIELD && field.name.equals("timeToTick"))
++            .count() >= 2L, "villager sensors must clamp a stale Paper delay before their normal interval reset");
++    }
++
+     @Test
+     void compatibilityModeRetainsTheFullInactiveVillagerAiStep() {
+         LeavesXRuntime.publish(configWithVillagerCompatibilityMode(true));

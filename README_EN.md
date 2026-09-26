@@ -8,7 +8,7 @@ LeavesX is an independent branch of [Leaves](https://github.com/LeavesMC/Leaves)
 
 While keeping vanilla mechanics, technical gameplay, and plugin APIs in mind, LeavesX adds validated parallel calculation paths and hot-path optimizations for expensive workloads such as AI, natural spawning, and entity processing. The goal is to make better use of multi-core CPUs in servers with many entities or loaded chunks.
 
-LeavesX provides more than 300 configurable options for technical, plugin-based, and other high-load servers.
+LeavesX provides more than 100 configurable options for technical, plugin-based, and other high-load servers.
 
 LeavesX keeps world state ownership on the server thread. Only audited, side-effect-free calculations run on worker threads, so Bukkit, Paper, plugin, redstone, TNT, piston, entity, and chunk state changes retain their synchronous semantics.
 
@@ -19,6 +19,10 @@ LeavesX keeps world state ownership on the server thread. Only audited, side-eff
 ## Project Scope
 
 LeavesX does not use Folia's region-thread API and does not require plugins to be rewritten for Folia. Its design keeps the Paper/Bukkit programming model while moving only safe calculations away from the main tick loop.
+
+LeavesX prioritizes safety, stability, technical gameplay, and Paper/Bukkit compatibility rather than claiming to outperform Folia. Some optimizations are adapted from Leaf; performance depends on the Minecraft version, plugins, and chunk and entity workloads.
+
+AI-assisted programming is used during development, but not all code is AI-generated. Please take this into account when deciding whether to use the project.
 
 The main principles are:
 
@@ -64,17 +68,17 @@ The server creates or migrates `leavesx.yml` on startup. Options include comment
 
 ## Building
 
-Use JDK 21 or newer and a network connection that can reach GitHub and Maven repositories:
+The 1.1.0 builds for Minecraft 26.1.2 and 26.2 use JDK 25. A network connection that can reach GitHub and Maven repositories is required:
 
 ```bash
 ./gradlew applyAllPatches
-./gradlew :leaves-server:createLeavesclipJar
+./gradlew :leaves-server:createBundlerJar
 ```
 
 The generated server JAR is written under:
 
 ```text
-leaves-server/build/libs/leavesx-26.1.2.jar
+leaves-server/build/libs/leaves-bundler-26.1.2-R0.1-SNAPSHOT.jar
 ```
 
 To run the test suite:
@@ -85,9 +89,9 @@ To run the test suite:
 
 ## Releases
 
-Each supported Minecraft version is built from its matching upstream source baseline and published as a separate branch. Release assets use the form `LeavesX-1.0.0-<minecraft-version>.jar`.
+LeavesX 1.1.0 supports Minecraft 26.1.2 and 26.2, maintained separately on `leavesx/26.1.2` and `leavesx/26.2`. Release assets use the form `LeavesX-1.1.0-<minecraft-version>.jar`.
 
-The `26.2` build is based on the verified Leaf 26.2 source baseline and is identified separately in release notes; it is not presented as an official LeavesMC source release.
+The 26.2 build is manually adapted from LeavesX, retaining its Leaves foundation. It does not use Leaf as its source baseline and is not an official LeavesMC release.
 
 ## Upstream and License
 

@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 18:42:25 +0800
+Subject: [PATCH] Cover bounded dense entity push queries
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java
+index f781e4bb5087044a85f4c39d8cd6354bb9bc8eae..330fb54c77616b05f4a428a1e8bc16c0766a9ee7 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java
+@@ -110,6 +110,12 @@ class EntityCollisionHotPathTest {
+         assertTrue(calls.stream().anyMatch(call ->
+             call.owner.equals("net/minecraft/world/level/Level$LeavesXEntityQueryBuffer")
+                 && call.name.equals("query")
++                && call.desc.endsWith("I)Ljava/util/List;")
++        ));
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("net/minecraft/world/level/Level$LeavesXEntityQueryBuffer")
++                && call.name.equals("query")
++                && !call.desc.endsWith("I)Ljava/util/List;")
+         ));
+         assertTrue(calls.stream().anyMatch(call ->
+             call.owner.equals("net/minecraft/world/level/Level$LeavesXEntityQueryBuffer")

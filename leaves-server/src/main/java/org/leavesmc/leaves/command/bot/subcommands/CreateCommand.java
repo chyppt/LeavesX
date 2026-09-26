@@ -42,7 +42,8 @@ public class CreateCommand extends BotSubcommand {
         if (!canCreate(sender, fullName)) { // Check full name
             return false;
         }
-        String skinName = context.getArgumentOrDefault(SkinNameArgument.class, rawName); // Use raw name for correct skin
+        String skinName = context.getArgumentOrDefault(SkinNameArgument.class,
+            context.getArgumentOrDefault(LegacySkinNameArgument.class, rawName));
         String role = context.getArgumentOrDefault(RoleValueArgument.class, "");
         if (!BotUtil.isRoleLegal(role)) {
             sender.sendMessage(text(message(
@@ -93,10 +94,10 @@ public class CreateCommand extends BotSubcommand {
 
     private static boolean canCreate(CommandSender sender, @NotNull String name) {
         BotList botList = BotList.INSTANCE;
-        if (!name.matches("^[a-zA-Z0-9_]{4,16}$")) {
+        if (!BotUtil.isValidAccountName(name)) {
             sender.sendMessage(text(message(
-                "This name is illegal, bot name must be 4-16 characters and contain only letters, numbers, and underscores.",
-                "假人名称不合法：必须为 4-16 个字符，且只能包含字母、数字和下划线。"
+                "This name is illegal, bot name must be 3-16 characters and contain only letters, numbers, and underscores.",
+                "假人名称不合法：必须为 3-16 个字符，且只能包含字母、数字和下划线。"
             ), NamedTextColor.RED));
             return false;
         }
@@ -125,7 +126,9 @@ public class CreateCommand extends BotSubcommand {
     private static class NameArgument extends ArgumentNode<String> {
         private NameArgument() {
             super("name", StringArgumentType.word());
-            children(SkinNameArgument::new, RoleLiteral::new);
+            // The direct form is /bot create <name> <role>. Keep only the old console coordinate branch ambiguous;
+            // it must include a world and position before it can execute.
+            children(LegacySkinNameArgument::new, RoleValueArgument::new, RoleLiteral::new, SkinLiteral::new);
         }
 
         @Override
@@ -134,7 +137,7 @@ public class CreateCommand extends BotSubcommand {
         }
     }
 
-    /** Optional explicit branch keeps the existing second argument as a skin name for old scripts. */
+    /** Compatibility alias; the role literal is no longer needed for the normal command. */
     private static class RoleLiteral extends LiteralNode {
         private RoleLiteral() {
             super("role");
@@ -144,8 +147,9 @@ public class CreateCommand extends BotSubcommand {
 
     private static class RoleValueArgument extends ArgumentNode<String> {
         private RoleValueArgument() {
-            super("role_value", StringArgumentType.word());
-            children(SkinNameArgument::new);
+            // Brigadier word() accepts only ASCII. The final role consumes the remaining text, including Chinese
+            // and legacy color characters; BotUtil applies the configured length/Chinese restrictions afterward.
+            super("作用", StringArgumentType.greedyString());
         }
 
         @Override
@@ -154,10 +158,29 @@ public class CreateCommand extends BotSubcommand {
         }
     }
 
+    private static class SkinLiteral extends LiteralNode {
+        private SkinLiteral() {
+            super("skin");
+            children(SkinNameArgument::new);
+        }
+    }
+
+    private static class LegacySkinNameArgument extends ArgumentNode<String> {
+        private LegacySkinNameArgument() {
+            super("legacy_skin_name", StringArgumentType.word());
+            children(WorldArgument::new);
+        }
+
+        @Override
+        public boolean requires(@NotNull CommandSourceStack source) {
+            return source.getSender() instanceof ConsoleCommandSender;
+        }
+    }
+
     private static class SkinNameArgument extends ArgumentNode<String> {
         private SkinNameArgument() {
             super("skin_name", StringArgumentType.word());
-            children(WorldArgument::new);
+            children(WorldArgument::new, RoleValueArgument::new);
         }
 
         @Override
@@ -181,6 +204,7 @@ public class CreateCommand extends BotSubcommand {
     private static class LocationArgument extends ArgumentNode<FinePositionResolver> {
         private LocationArgument() {
             super("location", ArgumentTypes.finePosition());
+            children(RoleValueArgument::new);
         }
 
         @Override

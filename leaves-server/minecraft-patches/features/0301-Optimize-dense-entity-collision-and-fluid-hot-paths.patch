@@ -1,0 +1,332 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 18:28:27 +0800
+Subject: [PATCH] Optimize dense entity collision and fluid hot paths
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
+index 8d9ce3d301d5f7e4106587ae00adb8dd5b8b6f88..a6e21b7f65ef1926b261dd6bb37fbd59d7fbdcce 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
+@@ -529,6 +529,12 @@ public final class ChunkEntitySlices {
+             final int max = Mth.clamp(Mth.floor(box.maxY + 2.0) >> 4, minSection, maxSection);
+ 
+             final BasicEntityList<Entity>[] entitiesBySection = this.entitiesBySection;
++            final double boxMinX = box.minX;
++            final double boxMinY = box.minY;
++            final double boxMinZ = box.minZ;
++            final double boxMaxX = box.maxX;
++            final double boxMaxY = box.maxY;
++            final double boxMaxZ = box.maxZ;
+ 
+             for (int section = min; section <= max; ++section) {
+                 final BasicEntityList<Entity> list = entitiesBySection[section - minSection];
+@@ -542,7 +548,13 @@ public final class ChunkEntitySlices {
+                 for (int i = 0, len = Math.min(storage.length, list.size()); i < len; ++i) {
+                     final Entity entity = storage[i];
+ 
+-                    if (entity == null || entity == except || !entity.getBoundingBox().intersects(box)) {
++                    if (entity == null || entity == except) {
++                        continue;
++                    }
++                    final AABB entityBox = entity.getBoundingBox();
++                    if (entityBox.maxX <= boxMinX || entityBox.minX >= boxMaxX
++                        || entityBox.maxY <= boxMinY || entityBox.minY >= boxMaxY
++                        || entityBox.maxZ <= boxMinZ || entityBox.minZ >= boxMaxZ) {
+                         continue;
+                     }
+ 
+@@ -568,6 +580,12 @@ public final class ChunkEntitySlices {
+             final int max = Mth.clamp(Mth.floor(box.maxY + 2.0) >> 4, minSection, maxSection);
+ 
+             final BasicEntityList<Entity>[] entitiesBySection = this.entitiesBySection;
++            final double boxMinX = box.minX;
++            final double boxMinY = box.minY;
++            final double boxMinZ = box.minZ;
++            final double boxMaxX = box.maxX;
++            final double boxMaxY = box.maxY;
++            final double boxMaxZ = box.maxZ;
+ 
+             for (int section = min; section <= max; ++section) {
+                 final BasicEntityList<Entity> list = entitiesBySection[section - minSection];
+@@ -581,7 +599,13 @@ public final class ChunkEntitySlices {
+                 for (int i = 0, len = Math.min(storage.length, list.size()); i < len; ++i) {
+                     final Entity entity = storage[i];
+ 
+-                    if (entity == null || entity == except || !entity.getBoundingBox().intersects(box)) {
++                    if (entity == null || entity == except) {
++                        continue;
++                    }
++                    final AABB entityBox = entity.getBoundingBox();
++                    if (entityBox.maxX <= boxMinX || entityBox.minX >= boxMaxX
++                        || entityBox.maxY <= boxMinY || entityBox.minY >= boxMaxY
++                        || entityBox.maxZ <= boxMinZ || entityBox.minZ >= boxMaxZ) {
+                         continue;
+                     }
+ 
+diff --git a/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java b/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
+index 3dcb3f7a4828b9cb74fa5f0c1c6dcc7371bb8fdc..ee7923bca00e688486e70682bd86002a31a22841 100644
+--- a/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
++++ b/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
+@@ -1980,6 +1980,11 @@ public final class CollisionUtil {
+                     final int minYIterate = currChunkY == minChunkY ? (minBlockY & 15) + sectionAdjust : 0;
+                     final int maxYIterate = currChunkY == maxChunkY ? (maxBlockY & 15) - sectionAdjust : 15;
+ 
++                    if (minXIterate > maxXIterate || minYIterate > maxYIterate || minZIterate > maxZIterate) {
++                        continue;
++                    }
++                    final PalettedContainer.Data<BlockState> blocksData = blocks.leavesX$getData();
++
+                     for (int currY = minYIterate; currY <= maxYIterate; ++currY) {
+                         final int blockY = currY | (currChunkY << 4);
+                         for (int currZ = minZIterate; currZ <= maxZIterate; ++currZ) {
+@@ -1995,7 +2000,7 @@ public final class CollisionUtil {
+                                     continue;
+                                 }
+ 
+-                                final BlockState blockData = blocks.get(localBlockIndex);
++                                final BlockState blockData = blocks.leavesX$get(blocksData, localBlockIndex);
+ 
+                                 if (((CollisionBlockState)blockData).moonrise$emptyContextCollisionShape()) {
+                                     continue;
+diff --git a/net/minecraft/world/entity/EntityFluidInteraction.java b/net/minecraft/world/entity/EntityFluidInteraction.java
+index 817ec969b758f9902e9dc19d3be2d801740d207b..0f2dc30871b4c08f65305e40a0bb872490d883f9 100644
+--- a/net/minecraft/world/entity/EntityFluidInteraction.java
++++ b/net/minecraft/world/entity/EntityFluidInteraction.java
+@@ -3,7 +3,6 @@ package net.minecraft.world.entity;
+ import it.unimi.dsi.fastutil.objects.Reference2ObjectArrayMap;
+ import java.util.Map;
+ import java.util.Set;
+-import java.util.Map.Entry;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.core.SectionPos;
+ import net.minecraft.tags.TagKey;
+@@ -16,21 +15,34 @@ import net.minecraft.world.level.chunk.LevelChunkSection;
+ import net.minecraft.world.level.chunk.status.ChunkStatus;
+ import net.minecraft.world.level.material.Fluid;
+ import net.minecraft.world.level.material.FluidState;
++import net.minecraft.world.level.material.Fluids;
+ import net.minecraft.world.phys.AABB;
+ import net.minecraft.world.phys.Vec3;
+ import org.jspecify.annotations.Nullable;
+ 
+ public class EntityFluidInteraction {
+     private final Map<TagKey<Fluid>, EntityFluidInteraction.Tracker> trackerByFluid = new Reference2ObjectArrayMap<>();
++    private final TagKey<Fluid>[] leavesX$fluidTags;
++    private final EntityFluidInteraction.Tracker[] leavesX$trackers;
++    private final EntityFluidInteraction.@Nullable Tracker leavesX$waterTracker;
++    private final EntityFluidInteraction.@Nullable Tracker leavesX$lavaTracker;
++    private final BlockPos.MutableBlockPos leavesX$scanPosition = new BlockPos.MutableBlockPos();
+ 
++    @SuppressWarnings("unchecked")
+     public EntityFluidInteraction(final Set<TagKey<Fluid>> fluids) {
+         for (TagKey<Fluid> fluid : fluids) {
+             this.trackerByFluid.put(fluid, new EntityFluidInteraction.Tracker());
+         }
++        this.leavesX$fluidTags = this.trackerByFluid.keySet().toArray(TagKey[]::new);
++        this.leavesX$trackers = this.trackerByFluid.values().toArray(EntityFluidInteraction.Tracker[]::new);
++        this.leavesX$waterTracker = this.trackerByFluid.get(net.minecraft.tags.FluidTags.WATER);
++        this.leavesX$lavaTracker = this.trackerByFluid.get(net.minecraft.tags.FluidTags.LAVA);
+     }
+ 
+     public void update(final Entity entity, final boolean ignoreCurrent) {
+-        this.trackerByFluid.values().forEach(EntityFluidInteraction.Tracker::reset);
++        for (int index = 0; index < this.leavesX$trackers.length; index++) {
++            this.leavesX$trackers[index].reset();
++        }
+         AABB box = entity.getFluidInteractionBox();
+         if (box != null) {
+             int x0 = Mth.floor(box.minX);
+@@ -47,7 +59,11 @@ public class EntityFluidInteraction {
+                 Fluid lastFluidType = null;
+                 EntityFluidInteraction.Tracker tracker = null;
+                 BlockGetter level = entity.level();
+-                BlockPos.MutableBlockPos mutablePos = new BlockPos.MutableBlockPos();
++                final BlockPos.MutableBlockPos mutablePos = this.leavesX$scanPosition;
++                boolean touchedLava = false;
++                int lastLavaX = 0;
++                int lastLavaY = 0;
++                int lastLavaZ = 0;
+ 
+                 for (int x = x0; x <= x1; x++) {
+                     for (int y = y0; y <= y1; y++) {
+@@ -79,7 +95,10 @@ public class EntityFluidInteraction {
+                                             tracker.accumulateCurrent(flow);
+                                             // CraftBukkit start - store last lava contact location
+                                             if (fluidState.is(net.minecraft.tags.FluidTags.LAVA)) {
+-                                                entity.lastLavaContact = mutablePos.immutable();
++                                                touchedLava = true;
++                                                lastLavaX = x;
++                                                lastLavaY = y;
++                                                lastLavaZ = z;
+                                             }
+                                             // CraftBukkit end - store last lava contact location
+                                         }
+@@ -89,6 +108,9 @@ public class EntityFluidInteraction {
+                         }
+                     }
+                 }
++                if (touchedLava) {
++                    entity.lastLavaContact = new BlockPos(lastLavaX, lastLavaY, lastLavaZ);
++                }
+             }
+         }
+     }
+@@ -124,10 +146,16 @@ public class EntityFluidInteraction {
+     }
+ 
+     private EntityFluidInteraction.@Nullable Tracker getTrackerFor(final Fluid fluid) {
+-        for (Entry<TagKey<Fluid>, EntityFluidInteraction.Tracker> entry : this.trackerByFluid.entrySet()) {
+-            TagKey<Fluid> tag = entry.getKey();
+-            if (fluid.is(tag)) {
+-                return entry.getValue();
++        if (this.leavesX$waterTracker != null && (fluid == Fluids.WATER || fluid == Fluids.FLOWING_WATER)) {
++            return this.leavesX$waterTracker;
++        }
++        if (this.leavesX$lavaTracker != null && (fluid == Fluids.LAVA || fluid == Fluids.FLOWING_LAVA)) {
++            return this.leavesX$lavaTracker;
++        }
++        // Preserve custom tag semantics for non-vanilla fluids while keeping the common path allocation-free.
++        for (int index = 0; index < this.leavesX$fluidTags.length; index++) {
++            if (fluid.is(this.leavesX$fluidTags[index])) {
++                return this.leavesX$trackers[index];
+             }
+         }
+ 
+@@ -135,14 +163,14 @@ public class EntityFluidInteraction {
+     }
+ 
+     public void applyCurrentTo(final TagKey<Fluid> fluid, final Entity entity, final double scale) {
+-        EntityFluidInteraction.Tracker tracker = this.trackerByFluid.get(fluid);
++        EntityFluidInteraction.Tracker tracker = this.leavesX$getTracker(fluid);
+         if (tracker != null) {
+             tracker.applyCurrentTo(entity, scale);
+         }
+     }
+ 
+     public double getFluidHeight(final TagKey<Fluid> fluid) {
+-        EntityFluidInteraction.Tracker tracker = this.trackerByFluid.get(fluid);
++        EntityFluidInteraction.Tracker tracker = this.leavesX$getTracker(fluid);
+         return tracker != null ? tracker.height : 0.0;
+     }
+ 
+@@ -151,10 +179,20 @@ public class EntityFluidInteraction {
+     }
+ 
+     public boolean isEyeInFluid(final TagKey<Fluid> fluid) {
+-        EntityFluidInteraction.Tracker tracker = this.trackerByFluid.get(fluid);
++        EntityFluidInteraction.Tracker tracker = this.leavesX$getTracker(fluid);
+         return tracker != null && tracker.eyesInside;
+     }
+ 
++    private EntityFluidInteraction.@Nullable Tracker leavesX$getTracker(final TagKey<Fluid> fluid) {
++        if (fluid == net.minecraft.tags.FluidTags.WATER) {
++            return this.leavesX$waterTracker;
++        }
++        if (fluid == net.minecraft.tags.FluidTags.LAVA) {
++            return this.leavesX$lavaTracker;
++        }
++        return this.trackerByFluid.get(fluid);
++    }
++
+     private static class Tracker {
+         private double height;
+         private boolean eyesInside;
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 27cfcfddd10524c72d25fe90be18df7c17815bd6..2d26f413540ba12a129286afdfbbadd67f1ba60f 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -2248,7 +2248,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+ 
+     @Override
+     public boolean isAlive() {
+-        return !this.isRemoved() && this.getHealth() > 0.0F && !this.dead; // Paper - Check this.dead
++        return !this.dead && !this.isRemoved() && this.getHealth() > 0.0F; // Paper - Check this.dead
+     }
+ 
+     public boolean isLookingAtMe(
+@@ -3991,36 +3991,40 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             return;
+         }
+         // Paper end - don't run getEntities if we're not going to use its result
+-        List<Entity> pushableEntities = this.level().getPushableEntities(this, this.getBoundingBox());
+-        if (!pushableEntities.isEmpty()) {
+-            if (this.level() instanceof ServerLevel serverLevel) {
+-                // Paper - don't run getEntities if we're not going to use its result; moved up
+-                if (maxCramming > 0 && pushableEntities.size() > maxCramming - 1 && this.random.nextInt(4) == 0) {
+-                    int count = 0;
++        try (Level.LeavesXEntityQueryBuffer queryBuffer = Level.leavesX$acquireEntityQueryBuffer()) {
++            List<Entity> pushableEntities = queryBuffer.query(
++                this.level(), this, this.getBoundingBox(), EntitySelector.pushableBy(this)
++            );
++            if (!pushableEntities.isEmpty()) {
++                if (this.level() instanceof ServerLevel serverLevel) {
++                    // Paper - don't run getEntities if we're not going to use its result; moved up
++                    if (maxCramming > 0 && pushableEntities.size() > maxCramming - 1 && this.random.nextInt(4) == 0) {
++                        int count = 0;
++
++                        for (Entity entity : pushableEntities) {
++                            if (!entity.isPassenger()) {
++                                count++;
++                            }
++                        }
+ 
+-                    for (Entity entity : pushableEntities) {
+-                        if (!entity.isPassenger()) {
+-                            count++;
++                        if (count > maxCramming - 1) {
++                            this.hurtServer(serverLevel, this.damageSources().cramming(), 6.0F);
+                         }
+                     }
++                }
+ 
+-                    if (count > maxCramming - 1) {
+-                        this.hurtServer(serverLevel, this.damageSources().cramming(), 6.0F);
++                // Paper start - Cap entity collisions
++                this.numCollisions = Math.max(0, this.numCollisions - this.level().paperConfig().collisions.maxEntityCollisions);
++                for (Entity entity : pushableEntities) {
++                    if (this.numCollisions >= this.level().paperConfig().collisions.maxEntityCollisions) {
++                        break;
+                     }
+-                }
+-            }
+ 
+-            // Paper start - Cap entity collisions
+-            this.numCollisions = Math.max(0, this.numCollisions - this.level().paperConfig().collisions.maxEntityCollisions);
+-            for (Entity entity : pushableEntities) {
+-                if (this.numCollisions >= this.level().paperConfig().collisions.maxEntityCollisions) {
+-                    break;
++                    entity.numCollisions++;
++                    this.numCollisions++;
++                    // Paper end - Cap entity collisions
++                    this.doPush(entity);
+                 }
+-
+-                entity.numCollisions++;
+-                this.numCollisions++;
+-                // Paper end - Cap entity collisions
+-                this.doPush(entity);
+             }
+         }
+     }
+diff --git a/net/minecraft/world/level/chunk/PalettedContainer.java b/net/minecraft/world/level/chunk/PalettedContainer.java
+index 2ab0063351980b8a3f4341982ad18a2dd2683c0f..6323920f2575ea1ffe8b8edb33867792f3100f26 100644
+--- a/net/minecraft/world/level/chunk/PalettedContainer.java
++++ b/net/minecraft/world/level/chunk/PalettedContainer.java
+@@ -269,6 +269,16 @@ public class PalettedContainer<T> implements PaletteResize<T>, PalettedContainer
+         // Paper end - optimise palette reads
+     }
+ 
++    /** Freezes one palette view for a read-only hot loop on the owning tick thread. */
++    public PalettedContainer.Data<T> leavesX$getData() {
++        return this.data;
++    }
++
++    /** Reads through a previously frozen palette view without reloading the container field. */
++    public T leavesX$get(final PalettedContainer.Data<T> data, final int index) {
++        return this.readPalette(data, data.storage.get(index));
++    }
++
+     @Override
+     public void getAll(final Consumer<T> consumer) {
+         Palette<T> palette = this.data.palette();

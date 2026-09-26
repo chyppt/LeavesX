@@ -1,0 +1,63 @@
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/runtime/RecipeCountIndexTest.java
+@@ -1,0 +_,60 @@
++package org.leavesx.leavesx.runtime;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotSame;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.util.List;
++import java.util.Optional;
++import net.minecraft.world.item.crafting.RecipeMap;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Guards for the beta8 recipe ingredient-count index: the lazily-built index must survive
++ * invalidation + rebuild cycles (datapack reload, plugin add/remove) without ever exposing the
++ * null field to hot-path readers — the Crafter NPE regression from beta8.
++ */
++@Normal
++public class RecipeCountIndexTest {
++
++    private static RecipeMap newMap() {
++        return RecipeMap.create(List.of());
++    }
++
++    @Test
++    void hotPathQueryOnFreshMapDoesNotThrowAndReturnsEmpty() {
++        final RecipeMap map = newMap();
++        // The regression: this path used to read the null field directly and NPE.
++        assertEquals(0, map.getCraftingRecipesForCount(net.minecraft.world.item.crafting.RecipeType.CRAFTING, 3).count());
++    }
++
++    @Test
++    void invalidateThenQueryRebuildsLazily() {
++        final RecipeMap map = newMap();
++        // Warm the index.
++        map.getCraftingRecipesForCount(net.minecraft.world.item.crafting.RecipeType.CRAFTING, 1).count();
++        // Simulate a datapack reload invalidation.
++        map.leavesX$invalidateCountIndex();
++        // The very next hot-path query must not NPE; it rebuilds lazily.
++        assertEquals(0, map.getCraftingRecipesForCount(net.minecraft.world.item.crafting.RecipeType.CRAFTING, 2).count());
++    }
++
++    @Test
++    void invalidateThenQueryIsStableAcrossManyCycles() {
++        final RecipeMap map = newMap();
++        for (int cycle = 0; cycle < 8; cycle++) {
++            map.leavesX$invalidateCountIndex();
++            assertEquals(0, map.getCraftingRecipesForCount(net.minecraft.world.item.crafting.RecipeType.CRAFTING, cycle % 10).count());
++        }
++    }
++
++    @Test
++    void emptyIndexQueryNeverMutatesSharedState() {
++        final RecipeMap map = newMap();
++        final var first = map.getCraftingRecipesForCount(net.minecraft.world.item.crafting.RecipeType.CRAFTING, 5);
++        final var second = map.getCraftingRecipesForCount(net.minecraft.world.item.crafting.RecipeType.CRAFTING, 5);
++        assertEquals(first.count(), second.count());
++    }
++}

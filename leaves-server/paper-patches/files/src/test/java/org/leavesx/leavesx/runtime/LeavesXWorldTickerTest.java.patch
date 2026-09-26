@@ -1,0 +1,81 @@
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXWorldTickerTest.java
+@@ -1,0 +_,78 @@
++package org.leavesx.leavesx.runtime;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.util.Collections;
++import java.util.List;
++import java.util.concurrent.atomic.AtomicBoolean;
++import java.util.concurrent.atomic.AtomicInteger;
++import java.util.function.BooleanSupplier;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++
++@Normal
++public class LeavesXWorldTickerTest {
++
++    @AfterEach
++    void shutdown() {
++        LeavesXWorldTicker.shutdownExecutors();
++    }
++
++    @Test
++    void configureAcceptsThreadCounts() {
++        LeavesXWorldTicker.configure(4);
++        assertFalse(LeavesXWorldTicker.isReady(), "configure alone must not create executors");
++    }
++
++    @Test
++    void refreshWorldsWithEmptyListIsIdle() {
++        LeavesXWorldTicker.configure(0);
++        LeavesXWorldTicker.refreshWorlds(List.of());
++        assertFalse(LeavesXWorldTicker.isReady());
++
++        final AtomicInteger ticks = new AtomicInteger();
++        final BooleanSupplier haveTime = () -> true;
++        final boolean anyWorker = LeavesXWorldTicker.tickAllParallel(haveTime, (level, time) -> ticks.incrementAndGet());
++        assertFalse(anyWorker, "empty world list must run serially (no-op)");
++        assertEquals(0, ticks.get());
++    }
++
++    @Test
++    void serialFallbackWhenNotInitialized() {
++        LeavesXWorldTicker.configure(2);
++        final AtomicInteger ticks = new AtomicInteger();
++        final boolean anyWorker = LeavesXWorldTicker.tickAllParallel(() -> true, (level, time) -> ticks.incrementAndGet());
++        assertFalse(anyWorker, "uninitialized ticker must run serially");
++        assertEquals(0, ticks.get(), "no worlds configured means no tick callbacks");
++    }
++
++    @Test
++    void countersStartAtZeroAndAccumulate() {
++        assertEquals(0L, LeavesXWorldTicker.counters().parallelTicks() - LeavesXWorldTicker.counters().parallelTicks());
++        final long submitFailuresBefore = LeavesXWorldTicker.counters().submitFailures();
++        assertEquals(submitFailuresBefore, LeavesXWorldTicker.counters().submitFailures(), "counters must be stable without activity");
++    }
++
++    @Test
++    void shutdownIsIdempotent() {
++        LeavesXWorldTicker.refreshWorlds(Collections.emptyList());
++        LeavesXWorldTicker.shutdownExecutors();
++        LeavesXWorldTicker.shutdownExecutors();
++        assertFalse(LeavesXWorldTicker.isReady());
++    }
++
++    @Test
++    void strictSerialWorldsQueryIsCaseInsensitive() {
++        LeavesXRegionTicking.configure(new org.leavesx.leavesx.config.LeavesXConfig.RegionTickingSettings(
++            org.leavesx.leavesx.config.LeavesXConfig.RegionTickingSettings.Mode.WORLDS,
++            8, java.util.Arrays.asList("World"), 65_536, 25, 64, 0
++        ));
++        assertTrue(LeavesXRegionTicking.isStrictSerialWorld("WORLD"));
++        assertTrue(LeavesXRegionTicking.isStrictSerialWorld("world"));
++        assertFalse(LeavesXRegionTicking.isStrictSerialWorld("other"));
++        LeavesXRegionTicking.configure(org.leavesx.leavesx.config.LeavesXConfig.RegionTickingSettings.safeDefaults());
++    }
++}

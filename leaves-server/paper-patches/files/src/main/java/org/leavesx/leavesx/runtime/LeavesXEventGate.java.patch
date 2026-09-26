@@ -1,0 +1,266 @@
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXEventGate.java
+@@ -1,0 +_,263 @@
++package org.leavesx.leavesx.runtime;
++
++import java.util.ArrayDeque;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.concurrent.atomic.AtomicLong;
++import java.util.concurrent.locks.Condition;
++import java.util.concurrent.locks.Lock;
++import java.util.concurrent.locks.ReentrantLock;
++import org.bukkit.event.Event;
++
++/**
++ * Hands synchronous Bukkit events fired from LeavesX world worker threads over to the server
++ * thread, preserving invariant A: plugin code runs only on the server thread.
++ *
++ * <p>A world worker thread that fires a synchronous event enqueues it and blocks until the server
++ * thread pumps the queue during its barrier wait; the worker then continues with the event result.
++ * The server thread pumps whenever it waits for world ticks, so gated events are dispatched inside
++ * the same tick. When regionized ticking is off (or the calling thread is the server thread) the
++ * gate is transparent: {@link #deferFromWorldThread(Event)} returns {@code false} and the caller
++ * proceeds with the vanilla dispatch path.</p>
++ *
++ * <p>Nothing in this class references Folia API. Events keep their original ordering per world
++ * worker; cross-worker interleaving follows arrival order, which matches the parallel simulation
++ * semantics documented in the LeavesX regionized-ticking design.</p>
++ */
++public final class LeavesXEventGate {
++
++    private static final class Pending {
++        final Event event;
++        boolean done;
++        Throwable failure;
++
++        Pending(final Event event) {
++            this.event = event;
++        }
++    }
++
++    private static final Lock LOCK = new ReentrantLock();
++    private static final Condition ENQUEUED = LOCK.newCondition();
++    private static final Condition PUMPED = LOCK.newCondition();
++    private static final ArrayDeque<Pending> QUEUE = new ArrayDeque<>();
++    private static final AtomicLong DEFERRED = new AtomicLong();
++    private static final AtomicLong PUMPED_COUNT = new AtomicLong();
++    private static final AtomicLong TIMEOUTS = new AtomicLong();
++
++    private static final ThreadLocal<Boolean> WORLD_WORKER = ThreadLocal.withInitial(() -> Boolean.FALSE);
++    private static volatile boolean enabled;
++    private static volatile boolean closed;
++
++    private LeavesXEventGate() {
++    }
++
++    /**
++     * Enables or disables the gate. Enabled when regionized ticking runs world ticks on worker
++     * threads; disabled otherwise. Called on configuration apply and server shutdown.
++     */
++    public static void setEnabled(final boolean value) {
++        enabled = value;
++        if (value) {
++            reopen();
++        } else {
++            close();
++        }
++    }
++
++    /** Marks the current thread as a LeavesX world worker thread. */
++    public static void enterWorldThread() {
++        WORLD_WORKER.set(Boolean.TRUE);
++    }
++
++    /** Clears the world worker marker before the thread picks up non-world work. */
++    public static void exitWorldThread() {
++        WORLD_WORKER.set(Boolean.FALSE);
++    }
++
++    /** Returns whether the current thread is a LeavesX world worker thread. */
++    public static boolean isWorldTickThread() {
++        return WORLD_WORKER.get();
++    }
++
++    /**
++     * Returns {@code true} when the caller must consider the event handled: the current thread is
++     * a world worker thread, the gate is enabled, the event is synchronous, and it has been
++     * enqueued for the server thread. Returns {@code false} when the caller must continue with the
++     * vanilla synchronous dispatch (server thread, gate disabled, or asynchronous event).
++     */
++    public static boolean deferFromWorldThread(final Event event) {
++        if (!enabled || event == null || event.isAsynchronous() || !WORLD_WORKER.get()) {
++            return false;
++        }
++        final Pending pending = new Pending(event);
++        LOCK.lock();
++        try {
++            if (closed) {
++                // Server is shutting down; behave like the vanilla contract and fail loudly.
++                throw new IllegalStateException(event.getEventName() + " may only be triggered synchronously.");
++            }
++            QUEUE.addLast(pending);
++            DEFERRED.incrementAndGet();
++            ENQUEUED.signalAll();
++        } finally {
++            LOCK.unlock();
++        }
++        LOCK.lock();
++        try {
++            long waitNanos = 0L;
++            while (!pending.done) {
++                try {
++                    PUMPED.awaitNanos(50_000_000L); // 50 ms heartbeat keeps deadlocks recoverable
++                } catch (final InterruptedException interrupted) {
++                    Thread.currentThread().interrupt();
++                    throw new IllegalStateException("Interrupted while waiting for event dispatch", interrupted);
++                }
++                waitNanos += 50_000_000L;
++                if (!pending.done && waitNanos >= 10_000_000_000L && closed) {
++                    TIMEOUTS.incrementAndGet();
++                    throw new IllegalStateException(event.getEventName() + " was not dispatched before shutdown");
++                }
++            }
++            if (pending.failure != null) {
++                if (pending.failure instanceof RuntimeException runtime) {
++                    throw runtime;
++                }
++                throw new IllegalStateException("Event dispatch failed", pending.failure);
++            }
++        } finally {
++            LOCK.unlock();
++        }
++        return true;
++    }
++
++    /**
++     * Drains every queued event on the server thread. Must only be called by the server thread;
++     * each event is dispatched through the normal plugin manager path on the server thread.
++     * This does not isolate other ticking worlds. The queue is drained in one batch to minimize
++     * lock round-trips when many world threads parked on events in the same tick.
++     *
++     * @return the number of events dispatched
++     */
++    public static int pump() {
++        int dispatched = 0;
++        while (true) {
++            final Pending[] batch;
++            LOCK.lock();
++            try {
++                if (QUEUE.isEmpty()) {
++                    return dispatched;
++                }
++                batch = QUEUE.toArray(new Pending[0]);
++                QUEUE.clear();
++            } finally {
++                LOCK.unlock();
++            }
++            for (final Pending pending : batch) {
++                try {
++                    dispatchOnServerThread(pending.event);
++                } catch (final Throwable failure) {
++                    LOCK.lock();
++                    try {
++                        // These events were removed from QUEUE, so close() cannot find them.
++                        // Fail every unprocessed entry before propagating; otherwise sibling
++                        // world workers remain parked forever on this abandoned batch.
++                        for (final Pending waiting : batch) {
++                            if (!waiting.done) {
++                                waiting.failure = failure;
++                                waiting.done = true;
++                            }
++                        }
++                        PUMPED.signalAll();
++                    } finally {
++                        LOCK.unlock();
++                    }
++                    throw failure;
++                }
++                LOCK.lock();
++                try {
++                    pending.done = true;
++                } finally {
++                    LOCK.unlock();
++                }
++                PUMPED_COUNT.incrementAndGet();
++                dispatched++;
++            }
++            LOCK.lock();
++            try {
++                PUMPED.signalAll();
++            } finally {
++                LOCK.unlock();
++            }
++        }
++    }
++
++    /** Returns the number of events currently waiting for the server thread. */
++    public static int pendingCount() {
++        LOCK.lock();
++        try {
++            return QUEUE.size();
++        } finally {
++            LOCK.unlock();
++        }
++    }
++
++    /** Drops queued events and wakes waiters during shutdown; late firers fail like vanilla. */
++    public static void close() {
++        LOCK.lock();
++        try {
++            closed = true;
++            // Fail every still-queued event immediately so blocked world workers wake with the
++            // same IllegalStateException the vanilla synchronous contract would produce.
++            for (final Pending pending : QUEUE) {
++                pending.failure = new IllegalStateException(
++                    pending.event.getEventName() + " was not dispatched before shutdown");
++                pending.done = true;
++            }
++            QUEUE.clear();
++            ENQUEUED.signalAll();
++            PUMPED.signalAll();
++        } finally {
++            LOCK.unlock();
++        }
++    }
++
++    /** Re-opens the gate after a close (configuration reload with mode disabled at runtime). */
++    public static void reopen() {
++        LOCK.lock();
++        try {
++            closed = false;
++        } finally {
++            LOCK.unlock();
++        }
++    }
++
++    private static void dispatchOnServerThread(final Event event) {
++        final org.bukkit.plugin.PluginManager manager = org.bukkit.Bukkit.getPluginManager();
++        if (manager != null) {
++            manager.callEvent(event);
++        }
++    }
++
++    /** Snapshot of gate counters for diagnostics. */
++    public record GateCounters(long deferred, long pumped, long timeouts) {
++    }
++
++    public static GateCounters counters() {
++        return new GateCounters(DEFERRED.get(), PUMPED_COUNT.get(), TIMEOUTS.get());
++    }
++
++    /** Test-only view: returns and clears the queue contents in FIFO order. */
++    static List<Event> drainQueuedForTest() {
++        LOCK.lock();
++        try {
++            final List<Event> events = new ArrayList<>(QUEUE.size());
++            for (final Pending pending : QUEUE) {
++                events.add(pending.event);
++            }
++            QUEUE.clear();
++            return events;
++        } finally {
++            LOCK.unlock();
++        }
++    }
++}

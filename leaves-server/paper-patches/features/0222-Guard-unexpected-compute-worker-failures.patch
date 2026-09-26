@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 3 Sep 2026 08:00:00 +0800
+Subject: [PATCH] Guard unexpected compute worker failures
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index bcb1c699e92054e13d04cd0d7498b0ace8a272f2..dcc7bd65cdde1a573f5fd6a5dfefe10beb1aef64 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -1256,6 +1256,11 @@ public final class LeavesXComputeExecutor {
+                     claimWidth = claimWidthFor(remainingRanges, rangesPerClaim);
+                     taskIndex = nextTask.getAndAdd(claimWidth);
+                 }
++            } catch (final Throwable unexpectedFailure) {
++                // A failure outside the per-range callback guards must not strand the latch. Claim every range that
++                // no worker has started yet; workers that already claimed a range still publish their own completion.
++                this.recordFailure(unexpectedFailure);
++                this.cancelRemainingWorkerRanges(nextTask, taskCount - 1, rangesPerClaim);
+             } finally {
+                 this.activeWorkers.decrementAndGet();
+                 this.workerRanges.addAndGet(ranges);
+@@ -1264,6 +1269,28 @@ public final class LeavesXComputeExecutor {
+             }
+         }
+ 
++        private void cancelRemainingWorkerRanges(
++            final AtomicInteger nextTask,
++            final int workerRangeLimit,
++            final int rangesPerClaim
++        ) {
++            while (true) {
++                final int remaining = workerRangeLimit - nextTask.get();
++                if (remaining <= 0) {
++                    return;
++                }
++                final int claimWidth = claimWidthFor(remaining, rangesPerClaim);
++                final int taskIndex = nextTask.getAndAdd(claimWidth);
++                if (taskIndex >= workerRangeLimit) {
++                    return;
++                }
++                final int claimEnd = Math.min(workerRangeLimit, taskIndex + claimWidth);
++                for (int claimedTask = taskIndex; claimedTask < claimEnd; claimedTask++) {
++                    this.workersDone.countDown();
++                }
++            }
++        }
++
+         private void runInlineWorker(final int taskIndex, final int startInclusive, final int endExclusive) {
+             final int active = (int)this.activeWorkers.incrementAndGet();
+             final int itemCount = endExclusive - startInclusive;

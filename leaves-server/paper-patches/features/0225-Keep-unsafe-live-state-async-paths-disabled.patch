@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 26 Sep 2026 00:20:00 +0800
+Subject: [PATCH] Keep unsafe live-state async paths behind safety gates
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -292,7 +292,7 @@ public final class LeavesXRuntime {
+     }
+ 
+     public static boolean asyncChunkSend() {
+-        return asyncSettings.chunkSendEnabled();
++        return false;
+     }
+ 
+     public static boolean asyncMobSpawning() {
+@@ -1091,6 +1091,11 @@ public final class LeavesXRuntime {
+         return enabled(LeavesXOptimization.CHUNK_NBT_LIST_CAPACITY);
+     }
+ 
++    /** POI encoding must remain on the tick thread until unload failures retain a retryable snapshot. */
++    public static boolean regionizedPoiSerialization() {
++        return false;
++    }
++
+     /** Returns whether uncontended ticket-queue scans may defer allocating their conflict list. */
+     public static boolean ticketQueueAllocationOptimization() {
+         return enabled(LeavesXOptimization.TICKET_QUEUE_ALLOCATION);
+@@ -1268,6 +1273,11 @@ public final class LeavesXRuntime {
+         return aiOptimizations && enabled(LeavesXOptimization.POI_SECTION_BITSET);
+     }
+ 
++    /** Returns whether villager job-site competitor scans may skip loading unloaded POI sections. */
++    public static boolean poiCompetitorScanNoLoadOptimization() {
++        return false;
++    }
++
+     /** Returns whether villager golem agreement counting may stop at the required threshold. */
+     public static boolean villagerGolemAgreementOptimization() {
+         return false;
+@@ -1285,7 +1295,7 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether unchanged follow ranges may retain their existing targeting conditions. */
+     public static boolean sensorFollowRangeCacheOptimization() {
+-        return aiOptimizations && enabled(LeavesXOptimization.SENSOR_FOLLOW_RANGE_CACHE);
++        return false;
+     }
+ 
+     /** Returns whether nearest-entity sensors may use the stable reusable distance sorter. */
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+@@ -36,6 +36,8 @@ public final class LeavesXAsyncRuntime {
+     private static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(60L);
+     private static final int MAX_GENERAL_THREADS = 16;
+     private static final int MAX_OWNED_TASKS_PER_DRAIN = 8;
++    // Live chunk state is not a detached packet snapshot yet.
++    private static final boolean CHUNK_SEND_EXPERIMENTAL = false;
+     private static final Object GLOBAL_ORDER_OWNER = new Object();
+     private static volatile Map<Workload, ExecutorState> executors = Map.of();
+     private static volatile boolean configured;
+@@ -87,7 +89,7 @@ public final class LeavesXAsyncRuntime {
+         final ThreadPoolExecutor executor
+     ) {
+         final int workers = executor.getMaximumPoolSize();
+-        if (settings.chunkSendEnabled()) {
++        if (CHUNK_SEND_EXPERIMENTAL && settings.chunkSendEnabled()) {
+             states.put(
+                 Workload.CHUNK_SEND,
+                 new ExecutorState(executor, settings.chunkSendQueueSize() + workers)
+@@ -358,7 +360,7 @@ public final class LeavesXAsyncRuntime {
+ 
+     static int generalThreadCount(final LeavesXConfig.AsyncSettings settings) {
+         int requestedThreads = 0;
+-        if (settings.chunkSendEnabled()) {
++        if (CHUNK_SEND_EXPERIMENTAL && settings.chunkSendEnabled()) {
+             requestedThreads += automaticThreads(0, 4);
+         }
+         if (settings.mobSpawningEnabled()) {
+@@ -390,7 +392,7 @@ public final class LeavesXAsyncRuntime {
+ 
+     private static int generalQueueSize(final LeavesXConfig.AsyncSettings settings) {
+         long queueSize = 0L;
+-        if (settings.chunkSendEnabled()) {
++        if (CHUNK_SEND_EXPERIMENTAL && settings.chunkSendEnabled()) {
+             queueSize += settings.chunkSendQueueSize();
+         }
+         if (settings.mobSpawningEnabled()) {

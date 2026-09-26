@@ -1,0 +1,99 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 17:32:17 +0800
+Subject: [PATCH] Cover activation beacon and tracking hot paths
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ActivationCandidateDeduplicationHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/ActivationCandidateDeduplicationHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f215eaf19a0f924538b88560cfa0dc410acc1788
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/ActivationCandidateDeduplicationHotPathTest.java
+@@ -0,0 +1,45 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import io.papermc.paper.entity.activation.ActivationRange;
++import java.io.IOException;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldInsnNode;
++import org.objectweb.asm.tree.InvokeDynamicInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Guards the per-tick activation candidate filter used before spatial query result allocation. */
++@Normal
++class ActivationCandidateDeduplicationHotPathTest {
++
++    @Test
++    void activationQueryFiltersEntitiesAlreadyVisitedThisTick() throws IOException {
++        final ClassNode owner = new ClassNode();
++        new ClassReader(ActivationRange.class.getName()).accept(owner, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        final MethodNode activate = owner.methods.stream()
++            .filter(method -> method.name.equals("activateEntities"))
++            .findFirst()
++            .orElseThrow();
++
++        assertTrue(java.util.stream.StreamSupport.stream(
++            java.util.Spliterators.spliteratorUnknownSize(activate.instructions.iterator(), 0), false
++        ).anyMatch(instruction -> instruction instanceof InvokeDynamicInsnNode dynamic
++            && dynamic.desc.endsWith("Ljava/util/function/Predicate;")));
++
++        final MethodNode filter = owner.methods.stream()
++            .filter(method -> method.name.startsWith("lambda$activateEntities"))
++            .filter(method -> java.util.stream.StreamSupport.stream(
++                java.util.Spliterators.spliteratorUnknownSize(method.instructions.iterator(), 0), false
++            ).anyMatch(instruction -> instruction instanceof FieldInsnNode field
++                && field.getOpcode() == Opcodes.GETFIELD && field.name.equals("activatedTick")))
++            .findFirst()
++            .orElseThrow();
++        assertFalse(filter.instructions.size() == 0);
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BeaconScanAllocationHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BeaconScanAllocationHotPathTest.java
+index 9fecc0429311f2acbfa4c906b05413046a4bb0cb..bd6a23eafa8bed5c02f686f35135c53f6970d9c6 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/BeaconScanAllocationHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/BeaconScanAllocationHotPathTest.java
+@@ -34,6 +34,18 @@ class BeaconScanAllocationHotPathTest {
+         assertNoArrayListAllocation(method(owner, "tick"));
+         assertTrue(callsMutableSetter(method(owner, "tick")));
+         assertTrue(callsMutableSetter(method(owner, "updateBase")));
++        final MethodNode applyEffects = method(owner, "applyEffects");
++        assertTrue(calls(applyEffects, "net/minecraft/world/level/Level", "leavesX$acquireEntityQueryBuffer"));
++        assertTrue(calls(applyEffects, "net/minecraft/world/level/Level$LeavesXEntityQueryBuffer", "close"));
++        assertFalse(applyEffects.tryCatchBlocks.isEmpty());
++    }
++
++    private static boolean calls(final MethodNode method, final String owner, final String name) {
++        return java.util.stream.StreamSupport.stream(
++            java.util.Spliterators.spliteratorUnknownSize(method.instructions.iterator(), 0), false
++        ).filter(MethodInsnNode.class::isInstance).map(MethodInsnNode.class::cast).anyMatch(call ->
++            call.owner.equals(owner) && call.name.equals(name)
++        );
+     }
+ 
+     private static void assertNoArrayListAllocation(final MethodNode method) {
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityTrackerSnapshotReuseHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityTrackerSnapshotReuseHotPathTest.java
+index 42388591e39d7294a87a28d28ba583ccbd7c8c99..cff2208dbd097976b3d1eadc4961ce837ce922e5 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/EntityTrackerSnapshotReuseHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityTrackerSnapshotReuseHotPathTest.java
+@@ -25,11 +25,13 @@ class EntityTrackerSnapshotReuseHotPathTest {
+ 
+         assertTrue(chunkMap.fields.stream().anyMatch(field -> field.name.equals("leavesX$trackerSnapshots")));
+         assertTrue(trackedEntity.fields.stream().anyMatch(field -> field.name.equals("leavesX$trackerSnapshot")));
++        assertTrue(chunkMap.fields.stream().anyMatch(field -> field.name.equals("leavesX$trackerPlayerFrame")));
+         assertTrue(snapshot.fields.stream().anyMatch(field ->
+-            field.name.equals("playerData") && field.desc.equals("[D")
++            field.name.equals("playerIndices") && field.desc.equals("[I")
+         ));
+         assertFalse(snapshot.fields.stream().anyMatch(field ->
+             field.name.equals("playerX") || field.name.equals("playerY") || field.name.equals("playerZ")
++                || field.name.equals("playerData") || field.name.equals("players")
+         ));
+ 
+         final MethodNode create = trackedEntity.methods.stream()

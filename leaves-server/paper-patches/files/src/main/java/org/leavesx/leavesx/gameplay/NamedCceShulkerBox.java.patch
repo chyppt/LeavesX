@@ -1,0 +1,32 @@
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/gameplay/NamedCceShulkerBox.java
+@@ -1,0 +_,29 @@
++package org.leavesx.leavesx.gameplay;
++
++import net.minecraft.network.chat.Component;
++import net.minecraft.world.level.block.entity.BlockEntity;
++import net.minecraft.world.level.block.entity.ShulkerBoxBlockEntity;
++import org.jspecify.annotations.Nullable;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++
++/** Matches the explicitly named shulker boxes that opt into CCE update suppression. */
++public final class NamedCceShulkerBox {
++
++    public static final String TRIGGER_NAME = "更新抑制器";
++
++    private NamedCceShulkerBox() {
++    }
++
++    /** Returns whether this block entity is an enabled, exactly named CCE trigger. */
++    public static boolean matches(final @Nullable BlockEntity blockEntity) {
++        if (!LeavesXRuntime.namedCceShulkerBoxes()
++            || !(blockEntity instanceof ShulkerBoxBlockEntity shulkerBox)) {
++            return false;
++        }
++        return matchesName(shulkerBox.getCustomName());
++    }
++
++    static boolean matchesName(final @Nullable Component name) {
++        return name != null && TRIGGER_NAME.equals(name.getString());
++    }
++}

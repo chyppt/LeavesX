@@ -5,7 +5,7 @@ Subject: [PATCH] Add explicit player name placeholders to lifecycle messages
 
 
 diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
-index d5e92401b..e14be57ea 100644
+index d5e92401bd638f679d79c1dd7d1119e0a0273526..e14be57ead1ec67a1c4aba3faf9d2ac18ba4eeeb 100644
 --- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
 +++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
 @@ -454,8 +454,8 @@ public final class LeavesXConfigWriter {
@@ -20,7 +20,7 @@ index d5e92401b..e14be57ea 100644
          comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
          comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
 diff --git a/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java b/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
-index 2d5ae4361..1423d1ccd 100644
+index 2d5ae43610f6309b012e53aca899b68f8cb1c941..1423d1ccd2d4c0eaf007ea3f547e07748f185a9d 100644
 --- a/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
 +++ b/src/main/java/org/leavesx/leavesx/presentation/LeavesXPlayerPresentation.java
 @@ -89,12 +89,21 @@ public final class LeavesXPlayerPresentation {
@@ -47,7 +47,7 @@ index 2d5ae4361..1423d1ccd 100644
       * Parses both the documented MiniMessage syntax and legacy Minecraft color codes.
       *
 diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
-index 661415868..5b1ca41bf 100644
+index 661415868724dfde40a9ce841bf83c4542925eb2..5b1ca41bfa4d959e76060e96cffdd78e50911a91 100644
 --- a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
 +++ b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
 @@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;

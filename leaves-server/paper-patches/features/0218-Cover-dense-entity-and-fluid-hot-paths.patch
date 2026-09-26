@@ -1,0 +1,145 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 18:22:04 +0800
+Subject: [PATCH] Cover dense entity and fluid hot paths
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java
+index 5a22e700414877611d261b32e552260e22c577f6..f781e4bb5087044a85f4c39d8cd6354bb9bc8eae 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityCollisionHotPathTest.java
+@@ -4,10 +4,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertThrows;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
++import ca.spottedleaf.moonrise.patches.collisions.CollisionUtil;
+ import java.io.IOException;
+ import java.util.Arrays;
+ import java.util.List;
+ import net.minecraft.world.entity.Entity;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.level.Level;
+ import net.minecraft.world.phys.AABB;
+ import net.minecraft.world.phys.Vec3;
+ import org.bukkit.support.environment.Normal;
+@@ -92,6 +95,50 @@ class EntityCollisionHotPathTest {
+         );
+     }
+ 
++    @Test
++    void denseEntityPushQueriesReuseTheReentrantResultBuffer() throws IOException {
++        final List<MethodInsnNode> calls = methodNodes(LivingEntity.class, "pushEntities").stream()
++            .flatMap(method -> Arrays.stream(method.instructions.toArray()))
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("net/minecraft/world/level/Level")
++                && call.name.equals("leavesX$acquireEntityQueryBuffer")
++        ));
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("net/minecraft/world/level/Level$LeavesXEntityQueryBuffer")
++                && call.name.equals("query")
++        ));
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("net/minecraft/world/level/Level$LeavesXEntityQueryBuffer")
++                && call.name.equals("close")
++        ));
++        assertFalse(calls.stream().anyMatch(call ->
++            call.owner.equals("net/minecraft/world/level/Level") && call.name.equals("getPushableEntities")
++        ));
++    }
++
++    @Test
++    void blockCollisionLoopSnapshotsPaletteDataOncePerSection() throws IOException {
++        final List<MethodInsnNode> calls = methodNodes(CollisionUtil.class, "getCollisionsForBlocksOrWorldBorder").stream()
++            .flatMap(method -> Arrays.stream(method.instructions.toArray()))
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toList();
++
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("net/minecraft/world/level/chunk/PalettedContainer")
++                && call.name.equals("leavesX$getData")
++        ));
++        assertTrue(calls.stream().anyMatch(call ->
++            call.owner.equals("net/minecraft/world/level/chunk/PalettedContainer")
++                && call.name.equals("leavesX$get")
++                && call.desc.contains("PalettedContainer$Data")
++        ));
++    }
++
+     private static List<MethodNode> methodNodes(final Class<?> owner, final String methodName) throws IOException {
+         final ClassNode classNode = classNode(owner);
+         final List<MethodNode> methods = classNode.methods.stream()
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityFluidInteractionHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityFluidInteractionHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..13d9f593cea203a59c1bdda86e706303758cf8e1
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityFluidInteractionHotPathTest.java
+@@ -0,0 +1,64 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import net.minecraft.world.entity.EntityFluidInteraction;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldInsnNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++@Normal
++class EntityFluidInteractionHotPathTest {
++
++    @Test
++    void vanillaFluidTrackersAndScanPositionAreCachedPerEntity() throws IOException {
++        final ClassNode owner = classNode();
++        assertTrue(owner.fields.stream().anyMatch(field -> field.name.equals("leavesX$waterTracker")));
++        assertTrue(owner.fields.stream().anyMatch(field -> field.name.equals("leavesX$lavaTracker")));
++        assertTrue(owner.fields.stream().anyMatch(field ->
++            field.name.equals("leavesX$scanPosition")
++                && field.desc.equals("Lnet/minecraft/core/BlockPos$MutableBlockPos;")
++        ));
++    }
++
++    @Test
++    void updateAvoidsMapTraversalAndPerLavaBlockPositionCopies() throws IOException {
++        final MethodNode update = method(classNode(), "update");
++        final MethodInsnNode[] calls = Arrays.stream(update.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++
++        assertFalse(Arrays.stream(calls).anyMatch(call ->
++            call.owner.equals("java/util/Map") && (call.name.equals("values") || call.name.equals("entrySet"))
++        ));
++        assertFalse(Arrays.stream(calls).anyMatch(call ->
++            call.owner.equals("net/minecraft/core/BlockPos$MutableBlockPos") && call.name.equals("immutable")
++        ));
++        assertTrue(Arrays.stream(update.instructions.toArray())
++            .filter(FieldInsnNode.class::isInstance)
++            .map(FieldInsnNode.class::cast)
++            .anyMatch(field -> field.name.equals("leavesX$scanPosition")));
++    }
++
++    private static ClassNode classNode() throws IOException {
++        final ClassNode owner = new ClassNode(Opcodes.ASM9);
++        new ClassReader(EntityFluidInteraction.class.getName()).accept(owner, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return owner;
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name) {
++        return owner.methods.stream()
++            .filter(method -> method.name.equals(name))
++            .findFirst()
++            .orElseThrow(() -> new AssertionError("Missing method " + owner.name + '#' + name));
++    }
++}

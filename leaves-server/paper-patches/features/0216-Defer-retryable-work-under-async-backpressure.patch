@@ -1,0 +1,122 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 17:51:33 +0800
+Subject: [PATCH] Defer retryable work under async backpressure
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+index a8e77300ff02d3cad493f29c1663613f7c4aedaa..4502f3cdf0884126341391b5ff1b68b54fbbb152 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+@@ -160,6 +160,37 @@ public final class LeavesXAsyncRuntime {
+         }
+     }
+ 
++    /**
++     * Attempts asynchronous submission without moving rejected work onto the caller.
++     *
++     * <p>This is intended for retryable producers such as chunk sending, where leaving the item in its existing
++     * queue is safer for tick latency than performing an expensive complete fallback immediately.</p>
++     *
++     * @return a completion future, or {@code null} when the producer should retry later
++     */
++    public static <T> CompletableFuture<T> trySubmitValue(final Workload workload, final Supplier<T> task) {
++        Objects.requireNonNull(workload, "workload");
++        Objects.requireNonNull(task, "task");
++        final ExecutorState state = executors.get(workload);
++        if (state == null || !state.reserve()) {
++            if (state != null) {
++                state.rejected.incrementAndGet();
++            }
++            return null;
++        }
++
++        final CompletableFuture<T> completion = new CompletableFuture<>();
++        try {
++            state.executor.execute(() -> runValueTask(state, task, completion));
++            state.submitted.incrementAndGet();
++            return completion;
++        } catch (final RejectedExecutionException rejected) {
++            state.release();
++            state.rejected.incrementAndGet();
++            return null;
++        }
++    }
++
+     /**
+      * Submits work to an identity-owned lane.
+      *
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java
+index 2c92682ab75f294ebb8b943f2079029e2db8ebc0..809db15527919dd90fa9310c3c9f60f09ffac780 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java
+@@ -2,6 +2,7 @@ package org.leavesx.leavesx.runtime;
+ 
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNull;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import java.util.ArrayList;
+@@ -11,6 +12,7 @@ import java.util.concurrent.CompletableFuture;
+ import java.util.concurrent.CountDownLatch;
+ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.atomic.AtomicInteger;
++import java.util.concurrent.atomic.AtomicBoolean;
+ import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.Test;
+ import org.leavesx.leavesx.config.LeavesXConfig;
+@@ -111,6 +113,53 @@ class LeavesXAsyncRuntimeTest {
+         assertEquals(0L, metrics.failedTasks());
+     }
+ 
++    @Test
++    void retryableSubmissionNeverRunsRejectedChunkWorkOnCaller() throws Exception {
++        final LeavesXConfig.AsyncSettings chunkSettings = new LeavesXConfig.AsyncSettings(
++            true, 64, false, false, 0, 64, 30, false, 64, false, 0, 64
++        );
++        LeavesXAsyncRuntime.configure(chunkSettings);
++        final int workers = LeavesXAsyncRuntime.generalThreadCount(chunkSettings);
++        final CountDownLatch workersStarted = new CountDownLatch(workers);
++        final CountDownLatch releaseWorkers = new CountDownLatch(1);
++        final List<CompletableFuture<Void>> blockers = new ArrayList<>(workers);
++        for (int index = 0; index < workers; index++) {
++            blockers.add(LeavesXAsyncRuntime.submitOrRun(
++                LeavesXAsyncRuntime.Workload.CHUNK_SEND,
++                () -> {
++                    workersStarted.countDown();
++                    try {
++                        releaseWorkers.await();
++                    } catch (final InterruptedException interruption) {
++                        Thread.currentThread().interrupt();
++                    }
++                }
++            ));
++        }
++        assertTrue(workersStarted.await(5L, TimeUnit.SECONDS));
++        for (int index = 0; index < 64; index++) {
++            LeavesXAsyncRuntime.submitOrRun(LeavesXAsyncRuntime.Workload.CHUNK_SEND, () -> { });
++        }
++
++        final AtomicBoolean ranOnCaller = new AtomicBoolean();
++        assertNull(LeavesXAsyncRuntime.trySubmitValue(
++            LeavesXAsyncRuntime.Workload.CHUNK_SEND,
++            () -> {
++                ranOnCaller.set(true);
++                return null;
++            }
++        ));
++        assertFalse(ranOnCaller.get());
++
++        releaseWorkers.countDown();
++        CompletableFuture.allOf(blockers.toArray(CompletableFuture[]::new)).join();
++        final LeavesXAsyncRuntime.Metrics metrics = LeavesXAsyncRuntime.metrics(
++            LeavesXAsyncRuntime.Workload.CHUNK_SEND
++        );
++        assertTrue(metrics.rejectedTasks() >= 1L);
++        assertEquals(0L, metrics.callerRuns());
++    }
++
+     @Test
+     void sameOwnerIsStrictlySerialAndFifo() throws Exception {
+         LeavesXAsyncRuntime.configure(settings(false, true, true));

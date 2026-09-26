@@ -73,7 +73,6 @@ run
 
 # Local LeavesX runtime configuration
 /leavesx.yml
-/leavesx-compatibility.yml
 
 !gradle/wrapper/gradle-wrapper.jar
 !scripts/*.sh

@@ -1,0 +1,92 @@
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/runtime/PoiBatchScanRoutingTest.java
+@@ -1,0 +_,89 @@
++package org.leavesx.leavesx.runtime;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.lang.reflect.Method;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.List;
++import java.util.stream.Stream;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/**
++ * Structural guards for the beta7 POI batch-scan re-routes: the bed/home AI paths must go
++ * through the batched PoiAccess entry without suppressing Paper's POI loads.
++ */
++public class PoiBatchScanRoutingTest {
++
++    private static byte[] classBytes(final Class<?> type) throws Exception {
++        final String resource = type.getName().replace('.', '/') + ".class";
++        try (var in = type.getClassLoader().getResourceAsStream(resource)) {
++            assertTrue(in != null, "class resource missing: " + resource);
++            return in.readAllBytes();
++        }
++    }
++
++    private static List<MethodInsnNode> invocations(final MethodNode method) {
++        final java.util.List<MethodInsnNode> calls = new java.util.ArrayList<>();
++        for (final var insn : method.instructions) {
++            if (insn instanceof MethodInsnNode node) {
++                calls.add(node);
++            }
++        }
++        return calls;
++    }
++
++    private static MethodNode method(final ClassNode node, final String name) {
++        return node.methods.stream().filter(m -> m.name.equals(name)).findFirst().orElseThrow();
++    }
++
++    private static ClassNode classNode(final Class<?> type) throws Exception {
++        final ClassNode node = new ClassNode();
++        new ClassReader(classBytes(type)).accept(node, 0);
++        return node;
++    }
++
++    @Test
++    void bedSensorUsesBatchedScan() throws Exception {
++        final ClassNode node = classNode(
++            net.minecraft.world.entity.ai.sensing.NearestBedSensor.class);
++        final MethodNode doTick = method(node, "doTick");
++        final List<MethodInsnNode> calls = invocations(doTick);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("findAnyPoiPositions")
++            && call.owner.endsWith("poi_lookup/PoiAccess")), "bed sensor must use PoiAccess.findAnyPoiPositions");
++        assertTrue(calls.stream().noneMatch(call -> call.name.equals("findAllWithType")),
++            "bed sensor must not use the per-call stream path");
++    }
++
++    @Test
++    void setClosestHomeUsesBatchedScan() throws Exception {
++        final ClassNode node = classNode(
++            net.minecraft.world.entity.ai.behavior.SetClosestHomeAsWalkTarget.class);
++        final MethodNode trigger = node.methods.stream()
++            .filter(m -> m.name.equals("lambda$create$0") || m.name.startsWith("lambda$"))
++            .findFirst().orElseThrow();
++        final List<MethodInsnNode> calls = invocations(trigger);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("findAnyPoiPositions")
++            && call.owner.endsWith("poi_lookup/PoiAccess")), "home behavior must use PoiAccess.findAnyPoiPositions");
++    }
++
++    @Test
++    void competitorScanTypeLookupIsConfigGated() throws Exception {
++        final ClassNode node = classNode(
++            net.minecraft.world.entity.ai.behavior.PoiCompetitorScan.class);
++        final MethodNode lambda = node.methods.stream()
++            .filter(m -> m.name.startsWith("lambda$"))
++            .findFirst().orElseThrow();
++        final List<MethodInsnNode> calls = invocations(lambda);
++
++        assertTrue(calls.stream().anyMatch(call -> call.name.equals("poiCompetitorScanNoLoadOptimization")),
++            "competitor scan must consult LeavesXRuntime.poiCompetitorScanNoLoadOptimization");
++    }
++}

@@ -1,0 +1,24 @@
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/gameplay/QuickShulkerBoxTest.java
+@@ -1,0 +_,21 @@
++package org.leavesx.leavesx.gameplay;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import net.minecraft.world.item.ItemStack;
++import net.minecraft.world.item.Items;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++@Normal
++class QuickShulkerBoxTest {
++
++    @Test
++    void acceptsOnlyOneRealShulkerBox() {
++        assertTrue(QuickShulkerBox.isSafeSource(new ItemStack(Items.SHULKER_BOX)));
++        assertTrue(QuickShulkerBox.isSafeSource(new ItemStack(Items.RED_SHULKER_BOX)));
++        assertFalse(QuickShulkerBox.isSafeSource(new ItemStack(Items.CHEST)));
++        assertFalse(QuickShulkerBox.isSafeSource(new ItemStack(Items.SHULKER_BOX, 2)));
++    }
++}

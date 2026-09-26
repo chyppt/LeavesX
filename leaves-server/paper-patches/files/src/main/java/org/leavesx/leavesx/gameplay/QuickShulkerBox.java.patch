@@ -1,0 +1,210 @@
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/gameplay/QuickShulkerBox.java
+@@ -1,0 +_,207 @@
++package org.leavesx.leavesx.gameplay;
++
++import java.util.OptionalInt;
++import net.minecraft.core.component.DataComponents;
++import net.minecraft.server.level.ServerPlayer;
++import net.minecraft.sounds.SoundEvents;
++import net.minecraft.sounds.SoundSource;
++import net.minecraft.world.InteractionHand;
++import net.minecraft.world.SimpleContainer;
++import net.minecraft.world.SimpleMenuProvider;
++import net.minecraft.world.entity.player.Inventory;
++import net.minecraft.world.entity.player.Player;
++import net.minecraft.world.inventory.ContainerInput;
++import net.minecraft.world.inventory.ShulkerBoxMenu;
++import net.minecraft.world.inventory.Slot;
++import net.minecraft.world.item.BlockItem;
++import net.minecraft.world.item.ItemStack;
++import net.minecraft.world.item.component.ItemContainerContents;
++import net.minecraft.world.level.block.ShulkerBoxBlock;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++
++/** Opens a held shulker box through a source-bound menu without cloning its item contents. */
++public final class QuickShulkerBox {
++
++    private static final int CONTAINER_SIZE = 27;
++
++    private QuickShulkerBox() {
++    }
++
++    /**
++     * Opens the shulker box held in {@code hand} when it is safe to expose as an item-backed container.
++     *
++     * <p>The source stack remains in its inventory slot and that slot is locked by the menu. Every content mutation is
++     * serialized back to the same stack immediately. If a plugin or command replaces the source stack, the menu becomes
++     * invalid and stops accepting changes instead of restoring a second item.</p>
++     */
++    public static boolean tryOpen(final ServerPlayer player, final InteractionHand hand) {
++        if (!LeavesXRuntime.quickOpenShulkerBoxes()) {
++            return false;
++        }
++
++        final ItemStack source = player.getItemInHand(hand);
++        if (!isSafeSource(source)) {
++            return false;
++        }
++
++        final int sourceSlot = hand == InteractionHand.MAIN_HAND
++            ? player.getInventory().getSelectedSlot()
++            : Inventory.SLOT_OFFHAND;
++        final SourceBackedContainer container = new SourceBackedContainer(player, sourceSlot, source);
++        final OptionalInt opened = player.openMenu(new SimpleMenuProvider(
++            (containerId, inventory, ignored) -> new SourceLockedMenu(containerId, inventory, container),
++            source.getHoverName()
++        ));
++        if (opened.isEmpty()) {
++            return false;
++        }
++
++        if (player.containerMenu instanceof SourceLockedMenu menu && menu.owns(container)) {
++            player.level().playSound(
++                null,
++                player.blockPosition(),
++                SoundEvents.SHULKER_BOX_OPEN,
++                SoundSource.BLOCKS,
++                0.5F,
++                1.0F
++            );
++        }
++        return true;
++    }
++
++    static boolean isSafeSource(final ItemStack stack) {
++        if (stack.getCount() != 1
++            || !(stack.getItem() instanceof BlockItem blockItem)
++            || !(blockItem.getBlock() instanceof ShulkerBoxBlock)
++            || stack.has(DataComponents.CONTAINER_LOOT)
++            || stack.has(DataComponents.BLOCK_ENTITY_DATA)) {
++            return false;
++        }
++        return stack.getOrDefault(DataComponents.CONTAINER, ItemContainerContents.EMPTY).items.size() <= CONTAINER_SIZE;
++    }
++
++    private static final class SourceBackedContainer extends SimpleContainer {
++
++        private final ServerPlayer owner;
++        private final Inventory inventory;
++        private final int sourceSlot;
++        private final ItemStack source;
++
++        private SourceBackedContainer(
++            final ServerPlayer owner,
++            final int sourceSlot,
++            final ItemStack source
++        ) {
++            super(CONTAINER_SIZE);
++            this.owner = owner;
++            this.inventory = owner.getInventory();
++            this.sourceSlot = sourceSlot;
++            this.source = source;
++            source.getOrDefault(DataComponents.CONTAINER, ItemContainerContents.EMPTY).copyInto(this.items);
++        }
++
++        private boolean ownsSource() {
++            return LeavesXRuntime.quickOpenShulkerBoxes()
++                && this.inventory.getItem(this.sourceSlot) == this.source
++                && isSafeSource(this.source);
++        }
++
++        private boolean isSourceSlot(final Slot slot) {
++            return slot.container == this.inventory && slot.slot == this.sourceSlot;
++        }
++
++        private boolean isSourceSwapButton(final int button) {
++            return button == this.sourceSlot;
++        }
++
++        @Override
++        public boolean stillValid(final Player player) {
++            return player == this.owner && this.ownsSource();
++        }
++
++        @Override
++        public void setChanged() {
++            if (!this.ownsSource()) {
++                return;
++            }
++            this.source.set(DataComponents.CONTAINER, ItemContainerContents.fromItems(this.items));
++            this.inventory.setChanged();
++        }
++
++        private void flush() {
++            this.setChanged();
++        }
++    }
++
++    private static final class SourceLockedMenu extends ShulkerBoxMenu {
++
++        private final Inventory inventory;
++        private final SourceBackedContainer container;
++
++        private SourceLockedMenu(
++            final int containerId,
++            final Inventory inventory,
++            final SourceBackedContainer container
++        ) {
++            super(containerId, inventory, container);
++            this.inventory = inventory;
++            this.container = container;
++        }
++
++        private boolean owns(final SourceBackedContainer expected) {
++            return this.container == expected;
++        }
++
++        private boolean isSourceSlot(final int slotIndex) {
++            return slotIndex >= 0
++                && slotIndex < this.slots.size()
++                && this.container.isSourceSlot(this.slots.get(slotIndex));
++        }
++
++        @Override
++        public void clicked(
++            final int slotIndex,
++            final int button,
++            final ContainerInput input,
++            final Player player
++        ) {
++            if (!this.container.ownsSource()
++                || this.isSourceSlot(slotIndex)
++                || input == ContainerInput.SWAP && this.container.isSourceSwapButton(button)) {
++                return;
++            }
++            super.clicked(slotIndex, button, input, player);
++        }
++
++        @Override
++        public ItemStack quickMoveStack(final Player player, final int slotIndex) {
++            return this.isSourceSlot(slotIndex) ? ItemStack.EMPTY : super.quickMoveStack(player, slotIndex);
++        }
++
++        @Override
++        public boolean canDragTo(final Slot slot) {
++            return !this.container.isSourceSlot(slot) && super.canDragTo(slot);
++        }
++
++        @Override
++        public boolean canTakeItemForPickAll(final ItemStack carried, final Slot target) {
++            return !this.container.isSourceSlot(target) && super.canTakeItemForPickAll(carried, target);
++        }
++
++        @Override
++        public void removed(final Player player) {
++            this.container.flush();
++            super.removed(player);
++            if (player == this.inventory.player) {
++                player.level().playSound(
++                    null,
++                    player.blockPosition(),
++                    SoundEvents.SHULKER_BOX_CLOSE,
++                    SoundSource.BLOCKS,
++                    0.5F,
++                    1.0F
++                );
++            }
++        }
++    }
++}

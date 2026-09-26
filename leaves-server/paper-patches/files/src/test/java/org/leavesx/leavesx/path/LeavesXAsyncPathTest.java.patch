@@ -1,0 +1,60 @@
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/path/LeavesXAsyncPathTest.java
+@@ -1,0 +_,57 @@
++package org.leavesx.leavesx.path;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.util.List;
++import java.util.Set;
++import java.util.concurrent.CompletableFuture;
++import net.minecraft.core.BlockPos;
++import net.minecraft.world.level.pathfinder.Node;
++import net.minecraft.world.level.pathfinder.Path;
++import org.junit.jupiter.api.Test;
++import org.bukkit.support.environment.Normal;
++
++@Normal
++class LeavesXAsyncPathTest {
++
++    @Test
++    void pendingPathDoesNotPretendToBeFinished() {
++        final CompletableFuture<Path> future = new CompletableFuture<>();
++        final LeavesXAsyncPath path = new LeavesXAsyncPath(Set.of(BlockPos.ZERO), future);
++
++        assertFalse(path.isProcessed());
++        assertFalse(path.isDone());
++        assertTrue(path.hasSameTargets(Set.of(BlockPos.ZERO)));
++    }
++
++    @Test
++    void completedPathDelegatesWithoutChangingNodeOrder() {
++        final Node first = new Node(1, 2, 3);
++        final Node second = new Node(4, 5, 6);
++        final Path result = new Path(List.of(first, second), new BlockPos(4, 5, 6), true);
++        final LeavesXAsyncPath path = new LeavesXAsyncPath(
++            Set.of(new BlockPos(4, 5, 6)),
++            CompletableFuture.completedFuture(result)
++        );
++
++        assertTrue(path.isProcessed());
++        assertEquals(result, path.resolvedPath());
++        assertEquals(2, path.getNodeCount());
++        assertEquals(first, path.getNode(0));
++        assertTrue(path.canReach());
++    }
++
++    @Test
++    void failedPathIsDiscardedAsOneCompleteResult() {
++        final CompletableFuture<Path> future = new CompletableFuture<>();
++        future.completeExceptionally(new IllegalStateException("test failure"));
++        final LeavesXAsyncPath path = new LeavesXAsyncPath(Set.of(BlockPos.ZERO), future);
++
++        assertTrue(path.isProcessed());
++        assertNull(path.resolvedPath());
++        assertTrue(path.isDone());
++    }
++}

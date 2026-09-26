@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 17:42:08 +0800
+Subject: [PATCH] Honor dense monster target scan intervals
+
+
+diff --git a/net/minecraft/world/entity/Mob.java b/net/minecraft/world/entity/Mob.java
+index a087eb1f3918d051687cc7917c9b0f713ab0ff2f..d65fa06fc8437122c8eb91fa4b8e38a67b885f7e 100644
+--- a/net/minecraft/world/entity/Mob.java
++++ b/net/minecraft/world/entity/Mob.java
+@@ -882,10 +882,10 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+             this.goalSelector.tick();
+             profiler.pop();
+         } else {
+-            // Keep target acquisition and running goals alive while spreading expensive candidate selection across
+-            // ticks. A targetless dense monster can therefore still finish movement/attack goals normally.
++            // Keep already-running target and movement goals alive while deferring new candidate scans to the
++            // entity-staggered full pass. This is the optional dense-farm policy's configured behavior.
+             profiler.push("targetSelector");
+-            this.targetSelector.tick();
++            this.targetSelector.tickRunningGoals(false);
+             profiler.pop();
+             profiler.push("goalSelector");
+             this.goalSelector.tickRunningGoals(false);

@@ -1,0 +1,145 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 25 Sep 2026 23:50:00 +0800
+Subject: [PATCH] Release transient entity tracker snapshots after each tick
+
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1169,62 +1170,75 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+     ) {
+         final int entityCount = trackerEntities.size();
+         final Entity[] entities = trackerEntities.getRawDataUnchecked();
+-        this.leavesX$trackerPlayerFrame.prepare(this.level.players());
+-        if (this.leavesX$trackerSnapshots.length < entityCount) {
+-            this.leavesX$trackerSnapshots = java.util.Arrays.copyOf(
+-                this.leavesX$trackerSnapshots,
+-                Math.max(entityCount, this.leavesX$trackerSnapshots.length << 1)
+-            );
+-        }
+-        final LeavesXTrackerSnapshot[] snapshots = this.leavesX$trackerSnapshots;
+-        for (int index = 0; index < entityCount; index++) {
+-            final Entity entity = entities[index];
+-            final ChunkMap.TrackedEntity tracker =
+-                ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
+-            snapshots[index] = tracker == null
+-                ? null
+-                : tracker.leavesX$createTrackerSnapshot(
+-                    ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkData().nearbyPlayers
++        try {
++            this.leavesX$trackerPlayerFrame.prepare(this.level.players());
++            if (this.leavesX$trackerSnapshots.length < entityCount) {
++                this.leavesX$trackerSnapshots = java.util.Arrays.copyOf(
++                    this.leavesX$trackerSnapshots,
++                    Math.max(entityCount, this.leavesX$trackerSnapshots.length << 1)
+                 );
+-        }
+-
+-        final int completedPartitions = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRangesWithCount(
+-            org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
+-            entityCount,
+-            256,
+-            64,
+-            (taskIndex, start, end) -> {
+-                for (int index = start; index < end; index++) {
++            }
++            final LeavesXTrackerSnapshot[] snapshots = this.leavesX$trackerSnapshots;
++            for (int index = 0; index < entityCount; index++) {
++                final Entity entity = entities[index];
++                final ChunkMap.TrackedEntity tracker =
++                    ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
++                snapshots[index] = tracker == null
++                    ? null
++                    : tracker.leavesX$createTrackerSnapshot(
++                        ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkData().nearbyPlayers
++                    );
++            }
++
++            final int completedPartitions = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRangesWithCount(
++                org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
++                entityCount,
++                256,
++                64,
++                (taskIndex, start, end) -> {
++                    for (int index = start; index < end; index++) {
++                        final LeavesXTrackerSnapshot snapshot = snapshots[index];
++                        if (snapshot != null) snapshot.computeRanges();
++                    }
++                }
++            );
++            if (completedPartitions == 0) {
++                // All workers have finished. Recompute this tick's active prefix, never the unused array capacity.
++                for (int index = 0; index < entityCount; index++) {
+                     final LeavesXTrackerSnapshot snapshot = snapshots[index];
+                     if (snapshot != null) snapshot.computeRanges();
+                 }
+             }
+-        );
+-        if (completedPartitions == 0) {
+-            // A failed range may have written part of its private result. Recompute every snapshot before committing
+-            // so the main thread never observes a mixture of old and new range decisions.
+-            for (final LeavesXTrackerSnapshot snapshot : snapshots) {
+-                if (snapshot != null) snapshot.computeRanges();
+-            }
+-        }
+ 
+-        for (int index = 0; index < entityCount; index++) {
+-            final LeavesXTrackerSnapshot snapshot = snapshots[index];
+-            if (snapshot == null) {
+-                continue;
+-            }
+-            final ChunkMap.TrackedEntity tracker = snapshot.tracker;
+-            final Entity entity = snapshot.entity;
+-            if (((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity() != tracker) {
+-                continue;
++            for (int index = 0; index < entityCount; index++) {
++                final LeavesXTrackerSnapshot snapshot = snapshots[index];
++                if (snapshot == null) {
++                    continue;
++                }
++                final ChunkMap.TrackedEntity tracker = snapshot.tracker;
++                final Entity entity = snapshot.entity;
++                if (((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity() != tracker) {
++                    continue;
++                }
++                tracker.leavesX$applyTrackerSnapshot(snapshot);
++                if (tracker.moonrise$hasPlayers()
++                    || ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkStatus().isOrAfter(FullChunkStatus.ENTITY_TICKING)) {
++                    tracker.serverEntity.sendChanges();
++                }
+             }
+-            tracker.leavesX$applyTrackerSnapshot(snapshot);
+-            if (tracker.moonrise$hasPlayers()
+-                || ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkStatus().isOrAfter(FullChunkStatus.ENTITY_TICKING)) {
+-                tracker.serverEntity.sendChanges();
++            return true;
++        } finally {
++            // Keep reusable primitive buffers, not references to removed entities, players or nearby chunks.
++            // This also covers preparation/commit failures and the last parallel tick before switching to serial.
++            for (final LeavesXTrackerSnapshot snapshot : this.leavesX$trackerSnapshots) {
++                if (snapshot != null) {
++                    snapshot.chunk = null;
++                    snapshot.playerCount = 0;
++                }
+             }
++            java.util.Arrays.fill(this.leavesX$trackerSnapshots, null);
++            this.leavesX$trackerPlayerFrame.clear();
+         }
+-        return true;
+     }
+     // Paper end - optimise entity tracker
+ 
+@@ -1821,6 +1835,12 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             return index;
+         }
+ 
++        private void clear() {
++            // Preparation may fail before overwriting every slot left by the previous frame.
++            java.util.Arrays.fill(this.players, null);
++            this.size = 0;
++        }
++
+         private void capture(final int index, final ServerPlayer player, final double viewDistance) {
+             this.players[index] = player;
+             final int offset = index * COMPONENTS;

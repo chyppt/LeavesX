@@ -147,7 +147,7 @@ try {
             $process.StandardInput.WriteLine('leavesx config')
             $process.StandardInput.Flush()
         }
-        if ($line -match 'Leaves .* LeavesX .*') {
+        if ($line -match 'Leaves 配置重载完成|Leaves configuration reloaded|Leaves .* LeavesX .*') {
             $sawReload = $true
         }
         if ($line -match 'TNT/.+[:：].*') {

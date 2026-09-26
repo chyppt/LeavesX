@@ -1,0 +1,201 @@
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXEventGateTest.java
+@@ -1,0 +_,198 @@
++package org.leavesx.leavesx.runtime;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.util.List;
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicBoolean;
++import java.util.concurrent.atomic.AtomicInteger;
++import java.util.function.BooleanSupplier;
++import org.bukkit.event.Event;
++import org.bukkit.event.HandlerList;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++
++@Normal
++public class LeavesXEventGateTest {
++
++    /** Minimal concrete synchronous event for gate tests. */
++    public static final class MarkerEvent extends Event {
++        private static final HandlerList HANDLERS = new HandlerList();
++
++        public MarkerEvent() {
++            super(false);
++        }
++
++        MarkerEvent(final boolean async) {
++            super(async);
++        }
++
++        @Override
++        public HandlerList getHandlers() {
++            return HANDLERS;
++        }
++
++        public static HandlerList getHandlerList() {
++            return HANDLERS;
++        }
++    }
++
++    @AfterEach
++    void resetGate() {
++        LeavesXEventGate.setEnabled(false);
++        LeavesXEventGate.exitWorldThread();
++        LeavesXEventGate.reopen();
++        assertEquals(0, LeavesXEventGate.pendingCount(), "gate must be empty after each test");
++    }
++
++    @Test
++    void gateIsTransparentWhenDisabled() {
++        final MarkerEvent event = new MarkerEvent();
++        assertFalse(LeavesXEventGate.deferFromWorldThread(event), "disabled gate must not defer");
++        assertEquals(0, LeavesXEventGate.pendingCount());
++    }
++
++    @Test
++    void gateIsTransparentOnServerThreadMarker() {
++        LeavesXEventGate.setEnabled(true);
++        // No enterWorldThread() call: the current thread is not marked as a world worker.
++        final MarkerEvent event = new MarkerEvent();
++        assertFalse(LeavesXEventGate.deferFromWorldThread(event), "server-thread events must not defer");
++        assertEquals(0, LeavesXEventGate.pendingCount());
++    }
++
++    @Test
++    void deferredEventIsQueuedAndPumpedInOrder() throws Exception {
++        LeavesXEventGate.setEnabled(true);
++        final AtomicBoolean handled = new AtomicBoolean(false);
++        final Thread worker = new Thread(() -> {
++            LeavesXEventGate.enterWorldThread();
++            try {
++                LeavesXEventGate.deferFromWorldThread(new MarkerEvent());
++                handled.set(true);
++            } finally {
++                LeavesXEventGate.exitWorldThread();
++            }
++        }, "gate-worker");
++        worker.start();
++        // Wait until the event is queued, then pump it from the "server thread".
++        while (LeavesXEventGate.pendingCount() == 0) {
++            Thread.yield();
++        }
++        assertEquals(1, LeavesXEventGate.pump());
++        worker.join(5_000L);
++        assertFalse(worker.isAlive(), "worker must unblock after pump");
++        assertTrue(handled.get());
++        assertEquals(0, LeavesXEventGate.pendingCount());
++    }
++
++    @Test
++    void pumpDispatchesQueuedEventsThroughPluginManager() throws Exception {
++        LeavesXEventGate.setEnabled(true);
++        final AtomicInteger fired = new AtomicInteger();
++        final org.bukkit.plugin.RegisteredListener registration = new org.bukkit.plugin.RegisteredListener(
++            new org.bukkit.event.Listener() { },
++            (listener, event) -> fired.incrementAndGet(),
++            org.bukkit.event.EventPriority.NORMAL,
++            new io.papermc.paper.plugin.PaperTestPlugin("LeavesXGateTest"),
++            false
++        );
++        MarkerEvent.getHandlerList().register(registration);
++        // The gate is blocking: a worker parks on each submit until the server thread pumps it,
++        // so two workers each submit one event and both queue entries exist before pumping.
++        final CountDownLatch unblocked = new CountDownLatch(2);
++        final Thread worker1 = new Thread(() -> {
++            LeavesXEventGate.enterWorldThread();
++            try {
++                LeavesXEventGate.deferFromWorldThread(new MarkerEvent());
++            } finally {
++                LeavesXEventGate.exitWorldThread();
++                unblocked.countDown();
++            }
++        }, "gate-worker-a");
++        final Thread worker2 = new Thread(() -> {
++            LeavesXEventGate.enterWorldThread();
++            try {
++                LeavesXEventGate.deferFromWorldThread(new MarkerEvent());
++            } finally {
++                LeavesXEventGate.exitWorldThread();
++                unblocked.countDown();
++            }
++        }, "gate-worker-b");
++        worker1.start();
++        worker2.start();
++        while (LeavesXEventGate.pendingCount() < 2) {
++            Thread.yield();
++        }
++        assertEquals(2, LeavesXEventGate.pump());
++        assertEquals(2, fired.get(), "pump must dispatch through the plugin manager");
++        assertTrue(unblocked.await(5, TimeUnit.SECONDS), "both workers must unblock after the pump");
++        worker1.join(5_000L);
++        worker2.join(5_000L);
++        MarkerEvent.getHandlerList().unregisterAll();
++    }
++
++    @Test
++    void closeWakesBlockedWorkersWithFailure() throws Exception {
++        LeavesXEventGate.setEnabled(true);
++        final AtomicBoolean failed = new AtomicBoolean(false);
++        final Thread worker = new Thread(() -> {
++            LeavesXEventGate.enterWorldThread();
++            try {
++                LeavesXEventGate.deferFromWorldThread(new MarkerEvent());
++            } catch (final IllegalStateException expected) {
++                failed.set(true);
++            } finally {
++                LeavesXEventGate.exitWorldThread();
++            }
++        }, "gate-worker-close");
++        worker.start();
++        while (LeavesXEventGate.pendingCount() == 0) {
++            Thread.yield();
++        }
++        LeavesXEventGate.close();
++        worker.join(5_000L);
++        assertTrue(failed.get(), "close must fail the blocked worker like the vanilla sync contract");
++        LeavesXEventGate.reopen();
++    }
++
++    @Test
++    void asynchronousEventsAreNeverDeferred() {
++        LeavesXEventGate.setEnabled(true);
++        final Event async = new MarkerEvent(true);
++        LeavesXEventGate.enterWorldThread();
++        try {
++            assertFalse(LeavesXEventGate.deferFromWorldThread(async), "async events must not defer");
++        } finally {
++            LeavesXEventGate.exitWorldThread();
++        }
++    }
++
++    @Test
++    void countersTrackDeferredAndPumped() throws Exception {
++        final long deferredBefore = LeavesXEventGate.counters().deferred();
++        final long pumpedBefore = LeavesXEventGate.counters().pumped();
++        LeavesXEventGate.setEnabled(true);
++        final Thread worker = new Thread(() -> {
++            LeavesXEventGate.enterWorldThread();
++            try {
++                LeavesXEventGate.deferFromWorldThread(new MarkerEvent());
++            } finally {
++                LeavesXEventGate.exitWorldThread();
++            }
++        }, "gate-worker-counters");
++        worker.start();
++        while (LeavesXEventGate.pendingCount() == 0) {
++            Thread.yield();
++        }
++        LeavesXEventGate.pump();
++        worker.join(5_000L);
++        assertEquals(deferredBefore + 1, LeavesXEventGate.counters().deferred());
++        assertEquals(pumpedBefore + 1, LeavesXEventGate.counters().pumped());
++    }
++}

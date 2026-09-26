@@ -1,0 +1,19 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 17:59:57 +0800
+Subject: [PATCH] Document deferred chunk send backpressure
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 5ba44ff2f48ed9da7917205915fcb6c6daaf575b..af3f7499e4491e132e9e98a08dd30ac4b17f735a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -507,7 +507,7 @@ public final class LeavesXConfigWriter {
+         comments.put("messages.quit", "自定义退出提示；支持 <player>、<name>、<display_name>、%player_name% 和颜色代码。默认：空，使用原版提示。");
+         comments.put("messages.core-prefix", "服务端核心提示的统一前缀，例如假人创建成功或配置重载提示；支持 MiniMessage 和 &/§ 颜色代码。默认：空。");
+         comments.put("async.chunk-send.enabled", "是否异步打包区块数据；多人进服、传送或高速飞行时可降低主线程负载。默认：true。");
+-        comments.put("async.chunk-send.queue-size", "异步区块发送最多排队任务数；队列满时回到主线程完整处理。默认：256。");
++        comments.put("async.chunk-send.queue-size", "异步区块发送最多排队任务数；队列满时延后重试，不阻塞主线程。默认：256。");
+         comments.put("async.mob-spawning", "是否异步计算生物生成统计；需同时开启 Paper 的 per-player-mob-spawns。默认：true。");
+         comments.put("async.pathfinding.enabled", "是否异步计算生物寻路；结果按实体代次校验后在主线程使用。默认：true。");
+         comments.put("async.pathfinding.threads", "寻路为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");

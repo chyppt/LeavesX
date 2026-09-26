@@ -29,9 +29,10 @@ index bb1eb278710b94aeafd92d58ac44d733cdd83b2b..8b9441a212f0713e9043bb2bd6dfffc9
  
      @Override
 diff --git a/net/minecraft/world/item/enchantment/Enchantment.java b/net/minecraft/world/item/enchantment/Enchantment.java
+index c485971aebcea25911ec4ac8be7c5c74d970964b..86c62f669f1b898feb4ede873cc5aa2bb8d3f08d 100644
 --- a/net/minecraft/world/item/enchantment/Enchantment.java
 +++ b/net/minecraft/world/item/enchantment/Enchantment.java
-@@ -208,9 +208,13 @@ public record Enchantment(Component description, Enchantment.EnchantmentDefiniti
+@@ -206,9 +206,13 @@ public record Enchantment(Component description, Enchantment.EnchantmentDefiniti
      }
  
      public boolean isImmuneToDamage(final ServerLevel serverLevel, final int enchantmentLevel, final Entity victim, final DamageSource source) {
@@ -46,7 +47,7 @@ diff --git a/net/minecraft/world/item/enchantment/Enchantment.java b/net/minecra
              if (filteredEffect.matches(context)) {
                  return true;
              }
-@@ -412,8 +416,12 @@ public record Enchantment(Component description, Enchantment.EnchantmentDefiniti
+@@ -410,8 +414,12 @@ public record Enchantment(Component description, Enchantment.EnchantmentDefiniti
      }
  
      public void tick(final ServerLevel serverLevel, final int enchantmentLevel, final EnchantedItemInUse item, final Entity entity) {

@@ -16,6 +16,7 @@ import org.jetbrains.annotations.NotNull;
 import org.leavesmc.leaves.bot.BotList;
 import org.leavesmc.leaves.bot.ServerBot;
 import org.leavesmc.leaves.command.bot.BotCommand;
+import org.leavesmc.leaves.command.bot.PlayerCommand;
 import org.leavesmc.leaves.command.leaves.LeavesCommand;
 import org.leavesmc.leaves.config.GlobalConfigManager;
 import org.leavesmc.leaves.config.annotations.GlobalConfig;
@@ -96,6 +97,7 @@ public final class LeavesConfig {
         initialized = true;
 
         LeavesCommand.INSTANCE.register();
+        PlayerCommand.syncRegistration();
     }
 
     public static void reload() {
@@ -151,6 +153,7 @@ public final class LeavesConfig {
                             BotCommand.INSTANCE.unregister();
                             BotList.INSTANCE.removeAll();
                         }
+                        PlayerCommand.syncRegistration(value);
                     }
                 }
             }

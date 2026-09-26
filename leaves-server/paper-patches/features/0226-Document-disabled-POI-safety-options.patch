@@ -1,0 +1,18 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 26 Sep 2026 00:20:00 +0800
+Subject: [PATCH] Document disabled POI options and their defaults
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -518,6 +518,8 @@ public final class LeavesXConfigWriter {
+         comments.put("async.entity-tracker.enabled", "是否并行计算实体追踪变化；发包、事件和追踪关系提交仍在主线程。默认：true。");
+         comments.put("async.entity-tracker.threads", "实体追踪为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");
+         comments.put("async.entity-tracker.queue-size", "实体追踪计算最多排队任务数；队列满时回到主线程。默认：1024。");
++        comments.put("performance.chunk.poi-async-serialization", "暂不可用：异步编码失败时可能丢失床和工作站数据；当前仍在 Tick 线程编码、异步写盘。默认：false。");
++        comments.put("performance.ai.poi-competitor-scan-no-load", "暂不可用：村民竞争扫描保留原版 POI 加载行为，避免漏判工作站。默认：false。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
