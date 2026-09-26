@@ -5,7 +5,7 @@ Subject: [PATCH] Reuse container opener recount scans for bate52
 
 
 diff --git a/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java b/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
-index 52737172ccfa0c7c977e4f2fe1db242e0bb92d25..45cac88755c1aefd64b2b8ef63adf7913678e3e8 100644
+index 52737172..45cac887 100644
 --- a/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
 +++ b/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
 @@ -123,14 +123,19 @@ public abstract class ContainerOpenersCounter {

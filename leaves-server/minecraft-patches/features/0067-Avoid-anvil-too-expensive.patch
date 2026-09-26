@@ -5,7 +5,7 @@ Subject: [PATCH] Avoid anvil too expensive
 
 
 diff --git a/net/minecraft/world/inventory/AnvilMenu.java b/net/minecraft/world/inventory/AnvilMenu.java
-index a577225f59bb562b860cb90db72b4d658a69956f..8a9edac9ab3de0e5f024493b2f7dacf80d2976c4 100644
+index a577225f..8a9edac9 100644
 --- a/net/minecraft/world/inventory/AnvilMenu.java
 +++ b/net/minecraft/world/inventory/AnvilMenu.java
 @@ -267,7 +267,7 @@ public class AnvilMenu extends ItemCombinerMenu {

@@ -5,7 +5,7 @@ Subject: [PATCH] Restore villager vanilla AI compatibility for beta128
 
 
 diff --git a/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java b/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
-index e0ac326513f5028664a06f81bee27b4aee8671f4..4086e37fef9d951ccc151a57913599abd6a5a0f3 100644
+index 9f21d175..09c1363e 100644
 --- a/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
 +++ b/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
 @@ -1,5 +1,6 @@
@@ -57,10 +57,10 @@ index e0ac326513f5028664a06f81bee27b4aee8671f4..4086e37fef9d951ccc151a57913599ab
          this.playSound(SoundEvents.ZOMBIFIED_PIGLIN_ANGRY, this.getSoundVolume() * 2.0F, this.getVoicePitch() * 1.8F);
      }
 diff --git a/net/minecraft/world/entity/npc/villager/Villager.java b/net/minecraft/world/entity/npc/villager/Villager.java
-index 349c1c1cb0454d6a21e6ff103ef1acbae2f9d228..a93392ed880b3410fc26e27823f263ca26f6283d 100644
+index 0f77a3db..82280948 100644
 --- a/net/minecraft/world/entity/npc/villager/Villager.java
 +++ b/net/minecraft/world/entity/npc/villager/Villager.java
-@@ -247,19 +247,26 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+@@ -238,19 +238,26 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
      // Paper start - EAR 2
      @Override
      public void inactiveTick() {
@@ -98,7 +98,7 @@ index 349c1c1cb0454d6a21e6ff103ef1acbae2f9d228..a93392ed880b3410fc26e27823f263ca
      }
      // Paper end - EAR 2
  
-@@ -313,12 +320,17 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+@@ -304,12 +311,17 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
  
      @Override
      public void tick() {

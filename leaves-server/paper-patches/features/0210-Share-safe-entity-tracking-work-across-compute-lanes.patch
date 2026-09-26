@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 16:30:00 +0800
+Subject: [PATCH] Share safe entity tracking work across compute lanes
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 8653275bb43f68b480d144ec0fe478a5f4533411..f3e87201269e039e69615e1cde82d30cbddc36b1 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -605,14 +605,14 @@ public final class LeavesXComputeExecutor {
+ 
+     private static boolean supportsAdaptiveScheduling(final Workload workload) {
+         return switch (workload) {
+-            case AI_TARGET_SORT, AI_TARGET_SELECT, ENTITY_ACTIVATION, MOB_SPAWN_COUNTING -> true;
++            case AI_TARGET_SORT, AI_TARGET_SELECT, ENTITY_ACTIVATION, ENTITY_TRACKING, MOB_SPAWN_COUNTING -> true;
+             case UNSPECIFIED, AI_TARGET_MERGE -> false;
+         };
+     }
+ 
+     private static boolean supportsAdaptivePartitioning(final Workload workload) {
+         return switch (workload) {
+-            case AI_TARGET_SORT, AI_TARGET_SELECT, ENTITY_ACTIVATION -> true;
++            case AI_TARGET_SORT, AI_TARGET_SELECT, ENTITY_ACTIVATION, ENTITY_TRACKING -> true;
+             case UNSPECIFIED, AI_TARGET_MERGE, MOB_SPAWN_COUNTING -> false;
+         };
+     }
+@@ -879,6 +879,7 @@ public final class LeavesXComputeExecutor {
+         AI_TARGET_MERGE("AI 排序归并"),
+         AI_TARGET_SELECT("AI 目标选择"),
+         ENTITY_ACTIVATION("实体激活范围"),
++        ENTITY_TRACKING("实体追踪计算"),
+         MOB_SPAWN_COUNTING("刷怪统计");
+ 
+         private final String displayName;
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index 83175e122f975b722ce01a3a6c2b02d18f3eac48..6142afa6a7dbae6a4e11fb3ee48915bfba147a5b 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -210,6 +210,37 @@ public class LeavesXComputeExecutorTest {
+         }
+     }
+ 
++    @Test
++    void entityTrackingUsesTheSharedComputeWorkers() {
++        LeavesXComputeExecutor.configure(4, 64);
++        final AtomicIntegerArray counts = new AtomicIntegerArray(512);
++
++        final int partitions = LeavesXComputeExecutor.invokeRangesWithCount(
++            LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
++            counts.length(),
++            256,
++            64,
++            (taskIndex, start, end) -> {
++                for (int index = start; index < end; index++) {
++                    counts.incrementAndGet(index);
++                }
++            }
++        );
++
++        assertTrue(partitions > 1);
++        for (int index = 0; index < counts.length(); index++) {
++            assertEquals(1, counts.get(index));
++        }
++        assertEquals(
++            1L,
++            LeavesXComputeExecutor.metrics().workloads().stream()
++                .filter(workload -> workload.workload() == LeavesXComputeExecutor.Workload.ENTITY_TRACKING)
++                .findFirst()
++                .orElseThrow()
++                .parallelInvocations()
++        );
++    }
++
+     @Test
+     void limitsLaneCountWhenEachWorkerWouldReceiveTooLittleWork() {
+         assertEquals(1, LeavesXComputeExecutor.taskCountFor(127, 8, 64));

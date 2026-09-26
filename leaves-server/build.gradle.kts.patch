@@ -10,7 +10,7 @@
      `maven-publish`
      idea
 -    id("io.papermc.paperweight.core")
--    id("io.papermc.fill.gradle") version "1.0.11"
+-    id("io.papermc.fill.gradle") version "1.0.12"
 +    id("org.leavesmc.leavesweight.core") // Leaves - build change
  }
  
@@ -18,7 +18,7 @@
 +val leavesMavenPublicUrl = "https://repo.leavesmc.org/snapshots/" // Leaves - build change
  
  dependencies {
-     mache("io.papermc:mache:26.1.2+build.3")
+     mache("io.papermc:mache:26.2+build.1")
 -    paperclip("io.papermc:paperclip:3.0.4")
 +    leavesclip("org.leavesmc:leavesclip:3.0.10") // Leaves - build change
  }
@@ -41,7 +41,7 @@
 +    // Leaves end - build change
 +
      updatingMinecraft {
-         // oldPaperCommit = "711c5de2b05df39b72c44ff54e9f9381f8d153cb"
+         // oldPaperCommit = "d4fe85375af18bfa88f44d7c1e6a61904ae550cc"
      }
 @@ -31,6 +_,7 @@
      libraryRepositories.addAll(
@@ -96,11 +96,11 @@
 +        exclude(group = "com.google.guava", module = "guava")
 +    }
 +    // Leaves end - leaves plugin
-     implementation("ca.spottedleaf:concurrentutil:0.0.10")
+     implementation("ca.spottedleaf:leafpile:1.2.0")
      implementation("org.jline:jline-terminal-ffm:3.27.1") // use ffm on java 22+
      implementation("org.jline:jline-terminal-jni:3.27.1") // fall back to jni on java 21
-@@ -159,26 +_,36 @@
-     implementation("me.lucko:spark-paper:1.10.152")
+@@ -159,26 +_,38 @@
+     implementation("me.lucko:spark-paper:1.10.180")
  }
  
 +// Leaves start - hide irrelevant compilation warnings
@@ -123,7 +123,9 @@
 -        val buildTime = providers.environmentVariable("BUILD_STARTED_AT").map(Instant::parse).orElse(Instant.EPOCH).get()
 +        val buildTime = Instant.now() // Leaves - always use build time
          val gitHash = git.exec(providers, "rev-parse", "--short=7", "HEAD").get().trim()
-         val implementationVersion = "$mcVersion-${build ?: "DEV"}-$gitHash"
+-        val implementationVersion = "$mcVersion-${build ?: "DEV"}-$gitHash"
++        val leavesXVersion = rootProject.providers.gradleProperty("leavesXVersion").get()
++        val implementationVersion = "$mcVersion-$leavesXVersion-${build ?: "local"}-$gitHash"
          val date = git.exec(providers, "show", "-s", "--format=%ci", gitHash).get().trim()
          val gitBranch = git.exec(providers, "rev-parse", "--abbrev-ref", "HEAD").get().trim()
          attributes(
@@ -131,6 +133,7 @@
 -            "Implementation-Title" to "Paper",
 +            "Implementation-Title" to "LeavesX",
              "Implementation-Version" to implementationVersion,
++            "LeavesX-Version" to leavesXVersion,
              "Implementation-Vendor" to date,
 -            "Specification-Title" to "Paper",
 +            "Specification-Title" to "LeavesX",

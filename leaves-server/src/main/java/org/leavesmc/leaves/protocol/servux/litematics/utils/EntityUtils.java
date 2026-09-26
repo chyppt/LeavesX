@@ -19,7 +19,7 @@ public class EntityUtils {
     @Nullable
     private static Entity createEntityFromNBTSingle(CompoundTag nbt, Level world) {
         try {
-            Optional<Entity> optional = EntityType.create(TagFactory.input(nbt), world, EntitySpawnReason.LOAD);
+            Optional<Entity> optional = EntityType.create(TagFactory.input(nbt), world, new net.minecraft.world.entity.EntitySpawnRequest(EntitySpawnReason.LOAD, false));
 
             if (optional.isPresent()) {
                 Entity entity = optional.get();

@@ -1,14 +1,14 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: violetc <58360096+s-yh-china@users.noreply.github.com>
 Date: Wed, 27 Jul 2022 15:30:34 +0800
-Subject: [PATCH] Add fakeplayer api
+Subject: [PATCH 03/10] Add fakeplayer api
 
 
 diff --git a/src/main/java/org/bukkit/Bukkit.java b/src/main/java/org/bukkit/Bukkit.java
-index de21023e1e0ea9d22f6beb8ef50715809c10058a..986a34b5b7872ba964f2f9cdd735439d91973557 100644
+index 823a75649..6997c8cf4 100644
 --- a/src/main/java/org/bukkit/Bukkit.java
 +++ b/src/main/java/org/bukkit/Bukkit.java
-@@ -3006,4 +3006,15 @@ public final class Bukkit {
+@@ -3005,4 +3005,15 @@ public final class Bukkit {
      public static void restart() {
          server.restart();
      }
@@ -25,10 +25,10 @@ index de21023e1e0ea9d22f6beb8ef50715809c10058a..986a34b5b7872ba964f2f9cdd735439d
 +    // Leaves end - Bot API
  }
 diff --git a/src/main/java/org/bukkit/Server.java b/src/main/java/org/bukkit/Server.java
-index dd8ad5976eb413f049245a4f37bd94b3e41829de..1a81b53408cd20af750d507fab8d037de389f450 100644
+index a8e67888e..42d097c41 100644
 --- a/src/main/java/org/bukkit/Server.java
 +++ b/src/main/java/org/bukkit/Server.java
-@@ -2780,4 +2780,13 @@ public interface Server extends PluginMessageRecipient, net.kyori.adventure.audi
+@@ -2774,4 +2774,13 @@ public interface Server extends PluginMessageRecipient, net.kyori.adventure.audi
       */
      void allowPausing(@NotNull org.bukkit.plugin.Plugin plugin, boolean value);
      // Paper end - API to check if the server is sleeping

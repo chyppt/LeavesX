@@ -5,7 +5,7 @@ Subject: [PATCH] Shave snow layers
 
 
 diff --git a/net/minecraft/world/item/ShovelItem.java b/net/minecraft/world/item/ShovelItem.java
-index e1cc616833885022b1e4a1f9d7ba68df16dedecf..a6b4a2f09a1ee7a094d6a4478a150501008edf60 100644
+index e1cc6168..a6b4a2f0 100644
 --- a/net/minecraft/world/item/ShovelItem.java
 +++ b/net/minecraft/world/item/ShovelItem.java
 @@ -44,6 +44,26 @@ public class ShovelItem extends Item {

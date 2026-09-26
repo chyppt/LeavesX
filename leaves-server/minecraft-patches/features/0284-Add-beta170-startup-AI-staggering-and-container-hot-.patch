@@ -5,10 +5,10 @@ Subject: [PATCH] Add beta170 startup AI staggering and container hot paths
 
 
 diff --git a/net/minecraft/world/entity/Mob.java b/net/minecraft/world/entity/Mob.java
-index bc1d421be36e36100468dee7eff88d3c221008cf..28b1f22862cd1c0e65e9cedcb467098e2c9fc2ed 100644
+index ee309af6..c44d88ba 100644
 --- a/net/minecraft/world/entity/Mob.java
 +++ b/net/minecraft/world/entity/Mob.java
-@@ -58,6 +58,7 @@ import net.minecraft.world.entity.ai.navigation.PathNavigation;
+@@ -61,6 +61,7 @@ import net.minecraft.world.entity.ai.navigation.PathNavigation;
  import net.minecraft.world.entity.ai.sensing.Sensing;
  import net.minecraft.world.entity.item.ItemEntity;
  import net.minecraft.world.entity.monster.Enemy;
@@ -16,7 +16,7 @@ index bc1d421be36e36100468dee7eff88d3c221008cf..28b1f22862cd1c0e65e9cedcb467098e
  import net.minecraft.world.entity.player.Player;
  import net.minecraft.world.entity.vehicle.boat.AbstractBoat;
  import net.minecraft.world.item.Item;
-@@ -83,6 +84,7 @@ import net.minecraft.world.level.pathfinder.Path;
+@@ -87,6 +88,7 @@ import net.minecraft.world.level.pathfinder.Path;
  import net.minecraft.world.level.pathfinder.PathType;
  import net.minecraft.world.level.storage.ValueInput;
  import net.minecraft.world.level.storage.ValueOutput;
@@ -24,7 +24,7 @@ index bc1d421be36e36100468dee7eff88d3c221008cf..28b1f22862cd1c0e65e9cedcb467098e
  import net.minecraft.world.level.storage.loot.LootParams;
  import net.minecraft.world.level.storage.loot.LootTable;
  import net.minecraft.world.level.storage.loot.parameters.LootContextParamSets;
-@@ -102,6 +104,7 @@ import org.bukkit.event.entity.EntityUnleashEvent;
+@@ -106,6 +108,7 @@ import org.bukkit.event.entity.EntityUnleashEvent;
  
  public abstract class Mob extends LivingEntity implements Targeting, EquipmentUser, Leashable {
      private static final EntityDataAccessor<Byte> DATA_MOB_FLAGS_ID = SynchedEntityData.defineId(Mob.class, EntityDataSerializers.BYTE);
@@ -32,16 +32,17 @@ index bc1d421be36e36100468dee7eff88d3c221008cf..28b1f22862cd1c0e65e9cedcb467098e
      private static final int MOB_FLAG_NO_AI = 1;
      private static final int MOB_FLAG_LEFTHANDED = 2;
      private static final int MOB_FLAG_AGGRESSIVE = 4;
-@@ -150,6 +153,8 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+@@ -154,6 +157,9 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+     private BlockPos homePosition = BlockPos.ZERO;
      private int homeRadius = -1;
      public boolean aware = true; // CraftBukkit
-     public net.kyori.adventure.util.TriState despawnInPeacefulOverride = net.kyori.adventure.util.TriState.NOT_SET; // Paper - allow changing despawnInPeaceful
++    public net.kyori.adventure.util.TriState despawnInPeacefulOverride = net.kyori.adventure.util.TriState.NOT_SET; // Paper - allow changing despawnInPeaceful
 +    private long leavesXDenseMonsterAiNextCheckTick = Long.MIN_VALUE;
 +    private boolean leavesXDenseMonsterAiActive;
  
      protected Mob(final EntityType<? extends Mob> type, final Level level) {
          super(type, level);
-@@ -846,7 +851,16 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+@@ -854,7 +860,16 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
          profiler.push("sensing");
          this.sensing.tick();
          profiler.pop();
@@ -58,7 +59,7 @@ index bc1d421be36e36100468dee7eff88d3c221008cf..28b1f22862cd1c0e65e9cedcb467098e
          if (idBasedTickCount % 2 != 0 && this.tickCount > 1) {
              profiler.push("targetSelector");
              this.targetSelector.tickRunningGoals(false);
-@@ -854,13 +868,27 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+@@ -862,13 +877,27 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
              profiler.push("goalSelector");
              this.goalSelector.tickRunningGoals(false);
              profiler.pop();
@@ -87,7 +88,7 @@ index bc1d421be36e36100468dee7eff88d3c221008cf..28b1f22862cd1c0e65e9cedcb467098e
          }
  
          profiler.push("navigation");
-@@ -880,6 +908,41 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+@@ -888,6 +917,41 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
          profiler.pop();
      }
  
@@ -130,7 +131,7 @@ index bc1d421be36e36100468dee7eff88d3c221008cf..28b1f22862cd1c0e65e9cedcb467098e
      }
  
 diff --git a/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java b/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
-index 98ffefe0ae6512ef6dee5b729227cda7701ba688..b25429e12a664c06d029de3aa41eaa04f2cec021 100644
+index 98ffefe0..b25429e1 100644
 --- a/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
 +++ b/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
 @@ -16,6 +16,11 @@ public abstract class ContainerOpenersCounter {
@@ -199,7 +200,7 @@ index 98ffefe0ae6512ef6dee5b729227cda7701ba688..b25429e12a664c06d029de3aa41eaa04
          return this.openCount;
      }
 diff --git a/net/minecraft/world/level/block/entity/HopperBlockEntity.java b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
-index 40e3ab792220066739dd4392c9e2cd0c8961e9fe..c10980ddbd767fdd63c90ba1ba8bd509a796e7b8 100644
+index a05ac6b7..7dd62b23 100644
 --- a/net/minecraft/world/level/block/entity/HopperBlockEntity.java
 +++ b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
 @@ -186,6 +186,18 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
@@ -282,7 +283,7 @@ index 40e3ab792220066739dd4392c9e2cd0c8961e9fe..c10980ddbd767fdd63c90ba1ba8bd509
                  for (ItemEntity entity : org.leavesmc.leaves.LeavesConfig.performance.sleepingBlockEntity ? lithiumGetInputItemEntities(level, hopper) : getItemsAtAndAbove(level, hopper)) { // Leaves - Lithium Sleeping Block Entity
                      if (addItem(hopper, entity)) {
                          return true;
-@@ -937,17 +983,38 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
+@@ -935,17 +981,38 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
          }
      }
  

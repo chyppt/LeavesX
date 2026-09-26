@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize villager gossip scans for bate27
 
 
 diff --git a/net/minecraft/world/entity/ai/gossip/GossipContainer.java b/net/minecraft/world/entity/ai/gossip/GossipContainer.java
-index c56d55bab1b4704a26ced328bf25180e76f5080d..f717af74d277f772ad76b1223565c321b672b338 100644
+index c56d55ba..f717af74 100644
 --- a/net/minecraft/world/entity/ai/gossip/GossipContainer.java
 +++ b/net/minecraft/world/entity/ai/gossip/GossipContainer.java
 @@ -127,7 +127,9 @@ public class GossipContainer {

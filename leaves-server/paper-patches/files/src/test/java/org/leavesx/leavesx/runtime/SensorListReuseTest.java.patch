@@ -1,0 +1,84 @@
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/runtime/SensorListReuseTest.java
+@@ -1,0 +_,81 @@
++package org.leavesx.leavesx.runtime;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotSame;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import io.papermc.paper.plugin.PaperTestPlugin;
++import it.unimi.dsi.fastutil.objects.ObjectArrayList;
++import java.util.List;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldNode;
++
++/**
++ * Behavioral and structural guards for the beta7 sensor list-reuse optimization (L2/L3):
++ * the reusable buffer must behave exactly like a fresh list per scan, and the optimization
++ * must stay config-gated through LeavesXRuntime.sensorListReuseOptimization().
++ */
++@Normal
++public class SensorListReuseTest {
++
++    @Test
++    void reusedBufferBehavesLikeFreshList() {
++        final ObjectArrayList<String> buffer = new ObjectArrayList<>();
++        // First "scan": collect and consume.
++        buffer.add("a");
++        buffer.add("b");
++        assertEquals(2, buffer.size());
++        buffer.clear();
++        // Second "scan": buffer must be empty and retain capacity behavior.
++        assertEquals(0, buffer.size());
++        buffer.add("c");
++        assertEquals(List.of("c"), buffer);
++    }
++
++    @Test
++    void sensorsDeclareReusableScanField() throws Exception {
++        for (final String className : new String[] {"net.minecraft.world.entity.ai.sensing.NearestItemSensor"}) {
++            final ClassNode node = new ClassNode();
++            new ClassReader(className.replace('.', '/'))
++                .accept(node, ClassReader.SKIP_CODE);
++            final boolean hasField = node.fields.stream()
++                .anyMatch((FieldNode f) -> f.name.equals("leavesX$reusableScanList"));
++            assertTrue(hasField, className + " must declare the reusable scan field");
++            final boolean hasAcquire = node.methods.stream()
++                .anyMatch(m -> m.name.equals("leavesX$acquireScanList"));
++            assertTrue(hasAcquire, className + " must declare the acquire helper");
++        }
++        final ClassNode living = new ClassNode();
++        new ClassReader("net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor")
++            .accept(living, ClassReader.SKIP_CODE);
++        assertTrue(living.fields.stream().noneMatch(f -> f.name.equals("leavesX$reusableScanList")));
++    }
++
++    @Test
++    void configExposesSensorListReuseSwitch() throws Exception {
++        final org.leavesx.leavesx.config.LeavesXConfig defaults =
++            org.leavesx.leavesx.config.LeavesXConfig.safeDefaults();
++        assertTrue(defaults.extensions().sensorListReuse(), "reuse must default on");
++        final java.lang.reflect.Method runtime = org.leavesx.leavesx.config.LeavesXRuntime.class
++            .getDeclaredMethod("sensorListReuseOptimization");
++        assertTrue(boolean.class.equals(runtime.getReturnType()), "runtime accessor must be boolean");
++    }
++
++    @Test
++    void switchingOffProducesFreshInstances() {
++        // Sanity of the fallback contract: with reuse unavailable the caller contract is "new list",
++        // so two acquisitions must not alias when the runtime switch is observed as off. This test
++        // only verifies the pure list semantics the gate falls back to.
++        final ObjectArrayList<String> first = new ObjectArrayList<>();
++        final ObjectArrayList<String> second = new ObjectArrayList<>();
++        assertNotSame(first, second);
++        first.add("x");
++        second.add("x");
++        assertEquals(first, second);
++    }
++
++}

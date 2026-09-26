@@ -5,10 +5,10 @@ Subject: [PATCH] Fix trapdoor feature
 
 
 diff --git a/net/minecraft/world/level/block/TrapDoorBlock.java b/net/minecraft/world/level/block/TrapDoorBlock.java
-index 91e1bdc83d8e582ecf76a6e04c60dd67528eb41b..35cf9480d33202b6cf47f0d9d61b58ee67bb8601 100644
+index 614f70a5..5b915965 100644
 --- a/net/minecraft/world/level/block/TrapDoorBlock.java
 +++ b/net/minecraft/world/level/block/TrapDoorBlock.java
-@@ -138,6 +138,7 @@ public class TrapDoorBlock extends HorizontalDirectionalBlock implements SimpleW
+@@ -134,6 +134,7 @@ public class TrapDoorBlock extends HorizontalDirectionalBlock implements SimpleW
                      return;
                  }
                  // Paper end - Call BlockRedstoneEvent
@@ -16,7 +16,7 @@ index 91e1bdc83d8e582ecf76a6e04c60dd67528eb41b..35cf9480d33202b6cf47f0d9d61b58ee
                  // Paper start - break redstone on trapdoors early
                  boolean open = state.getValue(TrapDoorBlock.OPEN) != signal;
                  // note: this must run before any state for this block/its neighbours are written to the world
-@@ -156,8 +157,9 @@ public class TrapDoorBlock extends HorizontalDirectionalBlock implements SimpleW
+@@ -152,8 +153,9 @@ public class TrapDoorBlock extends HorizontalDirectionalBlock implements SimpleW
                          }
                      }
                  }

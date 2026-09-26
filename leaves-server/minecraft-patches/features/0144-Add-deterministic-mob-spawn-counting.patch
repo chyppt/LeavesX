@@ -5,10 +5,10 @@ Subject: [PATCH] Add deterministic mob spawn counting
 
 
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index d7795d0d87f1a67e2d0ed1bd47d67f680b8d2021..37b51ceb8410534e86647cbe6ecddde59fcbc5c9 100644
+index a151c47e..7a7b655c 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -1118,6 +1118,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1092,6 +1092,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
          LOGGER.info("Waiting for all RegionFile I/O tasks to complete...");
          ca.spottedleaf.moonrise.patches.chunk_system.io.MoonriseRegionFileIO.flush((MinecraftServer)(Object)this);
          LOGGER.info("All RegionFile I/O tasks to complete");
@@ -17,7 +17,7 @@ index d7795d0d87f1a67e2d0ed1bd47d67f680b8d2021..37b51ceb8410534e86647cbe6ecddde5
              ca.spottedleaf.moonrise.common.util.MoonriseCommon.haltExecutors();
          }
 diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
-index 902df7cbb0465868048dbf04904651d49c4a1975..cb5a3a53bb04802acd3cba897bc0e29a404b2baf 100644
+index c735242c..e4a0f27f 100644
 --- a/net/minecraft/server/level/ChunkMap.java
 +++ b/net/minecraft/server/level/ChunkMap.java
 @@ -240,20 +240,25 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
@@ -50,7 +50,7 @@ index 902df7cbb0465868048dbf04904651d49c4a1975..cb5a3a53bb04802acd3cba897bc0e29a
      }
  
 diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
-index 396ab3cdcf6f726ce7133395bb39594ef4b1c011..1454b8933c47fd5a657be0a16161217afd55c1b3 100644
+index 075e2943..a352fad6 100644
 --- a/net/minecraft/server/level/ServerChunkCache.java
 +++ b/net/minecraft/server/level/ServerChunkCache.java
 @@ -552,9 +552,13 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
@@ -90,7 +90,7 @@ index 396ab3cdcf6f726ce7133395bb39594ef4b1c011..1454b8933c47fd5a657be0a16161217a
          final LevelChunk chunk, final long timeDiff, final List<MobCategory> spawningCategories, final NaturalSpawner.SpawnState spawnCookie
      ) {
 diff --git a/net/minecraft/world/level/LocalMobCapCalculator.java b/net/minecraft/world/level/LocalMobCapCalculator.java
-index 34ff3aed2dd9c0f051680433700b19c35341dfa3..80223f40c3d1e975068e163099fad2ad466c43ae 100644
+index 34ff3aed..80223f40 100644
 --- a/net/minecraft/world/level/LocalMobCapCalculator.java
 +++ b/net/minecraft/world/level/LocalMobCapCalculator.java
 @@ -25,8 +25,13 @@ public class LocalMobCapCalculator {
@@ -127,7 +127,7 @@ index 34ff3aed2dd9c0f051680433700b19c35341dfa3..80223f40c3d1e975068e163099fad2ad
              // Leaves end - store mob counts in an array
          }
 diff --git a/net/minecraft/world/level/NaturalSpawner.java b/net/minecraft/world/level/NaturalSpawner.java
-index dd91c1e5ef80aa3710adcf95cfb22bba7b5ca2c9..3acd52772fe3547b9a41f51d2fb08e27552eec34 100644
+index bd142cb8..c9949b0e 100644
 --- a/net/minecraft/world/level/NaturalSpawner.java
 +++ b/net/minecraft/world/level/NaturalSpawner.java
 @@ -121,6 +121,23 @@ public final class NaturalSpawner {

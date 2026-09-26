@@ -5,10 +5,10 @@ Subject: [PATCH] Short-circuit occupied bed villager queries for bate53
 
 
 diff --git a/net/minecraft/world/level/block/BedBlock.java b/net/minecraft/world/level/block/BedBlock.java
-index 3ab00a55523bb4ab79c346df5c83993cecb3154c..32a6161de46c96ea47f24281c22e4c60d60d380c 100644
+index 543380ca..5d094bcb 100644
 --- a/net/minecraft/world/level/block/BedBlock.java
 +++ b/net/minecraft/world/level/block/BedBlock.java
-@@ -159,6 +159,15 @@ public class BedBlock extends HorizontalDirectionalBlock implements EntityBlock
+@@ -157,6 +157,15 @@ public class BedBlock extends HorizontalDirectionalBlock {
      // CraftBukkit end
  
      private boolean kickVillagerOutOfBed(final Level level, final BlockPos pos) {

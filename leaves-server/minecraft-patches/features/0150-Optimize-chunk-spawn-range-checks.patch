@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize chunk spawn range checks
 
 
 diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
-index cb5a3a53bb04802acd3cba897bc0e29a404b2baf..64a9eb4c86f26e8ed86d83fbcac03eaff4f1fd23 100644
+index e4a0f27f..7090adba 100644
 --- a/net/minecraft/server/level/ChunkMap.java
 +++ b/net/minecraft/server/level/ChunkMap.java
-@@ -726,18 +726,38 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -727,18 +727,38 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
          final int len = players.size();
  
          Objects.checkFromIndexSize(0, len, raw.length);
@@ -56,7 +56,7 @@ index cb5a3a53bb04802acd3cba897bc0e29a404b2baf..64a9eb4c86f26e8ed86d83fbcac03eaf
  
          return false;
      }
-@@ -818,21 +838,43 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -819,21 +839,43 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
          final int len = players.size();
  
          Objects.checkFromIndexSize(0, len, raw.length);
@@ -112,7 +112,7 @@ index cb5a3a53bb04802acd3cba897bc0e29a404b2baf..64a9eb4c86f26e8ed86d83fbcac03eaf
  
          return false;
          // Paper end - chunk tick iteration optimisation
-@@ -853,17 +895,35 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -854,17 +896,35 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
          final int len = players.size();
  
          Objects.checkFromIndexSize(0, len, raw.length);
@@ -156,7 +156,7 @@ index cb5a3a53bb04802acd3cba897bc0e29a404b2baf..64a9eb4c86f26e8ed86d83fbcac03eaf
  
          return ret == null ? new ArrayList<>() : ret;
          // Paper end - chunk tick iteration optimisation
-@@ -878,6 +938,18 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -879,6 +939,18 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
          return distanceToChunk < range; // Spigot
      }
  

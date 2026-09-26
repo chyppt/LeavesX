@@ -26,10 +26,10 @@ This patch is Powered by CrystalCarpetAddition(https://github.com/Crystal0404/Cr
  */
 
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 4ca24f14d4fc6897fb6615eea8c8e26bd64847bd..bfbfb46522a43f85706e15baf4eb373400edbadc 100644
+index 3e216696..9872a464 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -204,7 +204,7 @@ public abstract class Entity
+@@ -201,7 +201,7 @@ public abstract class Entity
      // Paper end - Share random for entities to make them more random
      public org.bukkit.event.entity.CreatureSpawnEvent.@Nullable SpawnReason spawnReason; // Paper - Entity#getEntitySpawnReason
  
@@ -38,7 +38,7 @@ index 4ca24f14d4fc6897fb6615eea8c8e26bd64847bd..bfbfb46522a43f85706e15baf4eb3734
  
      public org.bukkit.craftbukkit.entity.CraftEntity getBukkitEntity() {
          if (this.bukkitEntity == null) {
-@@ -4064,7 +4064,7 @@ public abstract class Entity
+@@ -4139,7 +4139,7 @@ public abstract class Entity
  
      public @Nullable Entity teleport(TeleportTransition transition) { // Paper - remove param final
          // Paper start - Fix item duplication and teleport issues
@@ -47,7 +47,7 @@ index 4ca24f14d4fc6897fb6615eea8c8e26bd64847bd..bfbfb46522a43f85706e15baf4eb3734
              LOGGER.warn("Illegal Entity Teleport {} to {}:{}", this, transition.newLevel(), transition.position(), new Throwable());
              return null;
          }
-@@ -4181,7 +4181,7 @@ public abstract class Entity
+@@ -4255,7 +4255,7 @@ public abstract class Entity
          newEntity.restoreFrom(this);
          this.removeAfterChangingDimensions();
          newEntity.teleportSetPosition(PositionMoveRotation.of(this), PositionMoveRotation.of(transition), transition.relatives());
@@ -56,7 +56,7 @@ index 4ca24f14d4fc6897fb6615eea8c8e26bd64847bd..bfbfb46522a43f85706e15baf4eb3734
  
          for (Entity newPassenger : newPassengers) {
              newPassenger.startRiding(newEntity, true, false);
-@@ -4294,6 +4294,7 @@ public abstract class Entity
+@@ -4375,6 +4375,7 @@ public abstract class Entity
      }
  
      public boolean canTeleport(final Level from, final Level to) {
@@ -65,10 +65,10 @@ index 4ca24f14d4fc6897fb6615eea8c8e26bd64847bd..bfbfb46522a43f85706e15baf4eb3734
          if (!this.isAlive() || !this.valid) return false; // Paper - Fix item duplication and teleport issues
          if (from.dimension() == Level.END && to.dimension() == Level.OVERWORLD) {
 diff --git a/net/minecraft/world/entity/Mob.java b/net/minecraft/world/entity/Mob.java
-index 85cc3228091ba769e79297c924549a7daaf1fff8..df73fdd8affd0a20c1ca456b02c8f31a872f25d4 100644
+index fe3e3d3c..905a73fe 100644
 --- a/net/minecraft/world/entity/Mob.java
 +++ b/net/minecraft/world/entity/Mob.java
-@@ -404,6 +404,16 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+@@ -408,6 +408,16 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
          if (!this.level().isClientSide() && this.tickCount % 5 == 0) {
              this.updateControlFlags();
          }
@@ -86,7 +86,7 @@ index 85cc3228091ba769e79297c924549a7daaf1fff8..df73fdd8affd0a20c1ca456b02c8f31a
  
      protected void updateControlFlags() {
 diff --git a/net/minecraft/world/entity/PortalProcessor.java b/net/minecraft/world/entity/PortalProcessor.java
-index 7ec15f3d3a770e1e9e2fbac29dd38e947bb07091..60ed93e7b834e7bce21e4d8d826d9fba99aff952 100644
+index 7ec15f3d..60ed93e7 100644
 --- a/net/minecraft/world/entity/PortalProcessor.java
 +++ b/net/minecraft/world/entity/PortalProcessor.java
 @@ -7,7 +7,7 @@ import net.minecraft.world.level.portal.TeleportTransition;

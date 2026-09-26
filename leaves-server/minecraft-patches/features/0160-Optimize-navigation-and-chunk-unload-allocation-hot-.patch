@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize navigation and chunk unload allocation hot paths
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
-index 28010217bc9255e525a238cec10f7c7720540ce5..a89cc17a817ba796234865421c0e19decb89a40e 100644
+index b34bd8c6..2d146a36 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 @@ -1196,10 +1196,15 @@ public final class ChunkHolderManager {
@@ -44,10 +44,10 @@ index 28010217bc9255e525a238cec10f7c7720540ce5..a89cc17a817ba796234865421c0e19de
  
      public enum TicketOperationType {
 diff --git a/net/minecraft/world/entity/ai/navigation/PathNavigation.java b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
-index ab0fe98ea774904b5e7b33d104c70d652c0835e5..0ef220b57ae5b415b782a7b77dd1332c799067d8 100644
+index 8702da04..b6c0ae8f 100644
 --- a/net/minecraft/world/entity/ai/navigation/PathNavigation.java
 +++ b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
-@@ -331,6 +331,66 @@ public abstract class PathNavigation {
+@@ -333,6 +333,66 @@ public abstract class PathNavigation {
              return false;
          }
  
@@ -114,7 +114,7 @@ index ab0fe98ea774904b5e7b33d104c70d652c0835e5..0ef220b57ae5b415b782a7b77dd1332c
          Vec3 currentNode = Vec3.atBottomCenterOf(this.path.getNextNodePos());
          if (!mobPosition.closerThan(currentNode, 2.0)) {
              return false;
-@@ -372,14 +432,36 @@ public abstract class PathNavigation {
+@@ -374,14 +434,36 @@ public abstract class PathNavigation {
          }
  
          if (this.path != null && !this.path.isDone()) {

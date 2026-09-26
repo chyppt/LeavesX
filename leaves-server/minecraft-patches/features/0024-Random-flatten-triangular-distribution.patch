@@ -6,7 +6,7 @@ Subject: [PATCH] Random flatten triangular distribution
 This patch is Powered by Carpet-TIS-Addition(https://github.com/plusls/Carpet-TIS-Addition)
 
 diff --git a/net/minecraft/util/RandomSource.java b/net/minecraft/util/RandomSource.java
-index 664c1b3008b62c533b8e3302baa994ed0c135c42..2b78e41133de91c28db40a2620662c2295d23b2a 100644
+index 664c1b30..2b78e411 100644
 --- a/net/minecraft/util/RandomSource.java
 +++ b/net/minecraft/util/RandomSource.java
 @@ -56,13 +56,25 @@ public interface RandomSource {

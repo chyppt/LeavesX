@@ -5,10 +5,10 @@ Subject: [PATCH] Apply technical mode during dedicated server startup
 
 
 diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
-index a02d4f4c7241ebff526964035d7ae327cf4a7b0a..205d34267222ac85777f0376c6326fd69eb4bc4a 100644
+index 487ddc2c..e296a2c3 100644
 --- a/net/minecraft/server/dedicated/DedicatedServer.java
 +++ b/net/minecraft/server/dedicated/DedicatedServer.java
-@@ -291,6 +291,9 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+@@ -252,6 +252,9 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
          this.server.spark.registerCommandBeforePlugins(this.server); // Paper - spark
  
          org.leavesmc.leaves.LeavesConfig.init((java.io.File) options.valueOf("leaves-settings")); // Leaves - Server Config

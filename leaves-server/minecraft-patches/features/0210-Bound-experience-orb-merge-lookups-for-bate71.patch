@@ -5,10 +5,10 @@ Subject: [PATCH] Bound experience orb merge lookups for bate71
 
 
 diff --git a/net/minecraft/world/entity/ExperienceOrb.java b/net/minecraft/world/entity/ExperienceOrb.java
-index 906ff12a8bcccc30b08bb31988883a57196a40d0..cf57b011f046c040be06ddf19ce8c50caeac702c 100644
+index 5f964761..e8f02caf 100644
 --- a/net/minecraft/world/entity/ExperienceOrb.java
 +++ b/net/minecraft/world/entity/ExperienceOrb.java
-@@ -271,15 +271,25 @@ public class ExperienceOrb extends Entity {
+@@ -276,15 +276,25 @@ public class ExperienceOrb extends Entity {
          // Paper - TODO some other event for this kind of merge
          AABB box = AABB.ofSize(pos, 1.0, 1.0, 1.0);
          int id = level.getRandom().nextInt(io.papermc.paper.configuration.GlobalConfiguration.get().misc.xpOrbGroupsPerArea.or(ORB_GROUPS_PER_AREA)); // Paper - Configure how many orb groups per area
@@ -41,10 +41,10 @@ index 906ff12a8bcccc30b08bb31988883a57196a40d0..cf57b011f046c040be06ddf19ce8c50c
  
      private boolean canMerge(final ExperienceOrb orb) {
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index 414a11bda2f619de30c9c4e2addd5bee9dca1c9d..72dbb090de0f10d7a61c25866e20941697200fa7 100644
+index ae750eb0..95d1ddba 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
-@@ -211,6 +211,8 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -212,6 +212,8 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
          ThreadLocal.withInitial(LeavesXFirstEntityQueryBuffer::new);
      private static final ThreadLocal<LeavesXFirstEntityQueryBuffer> LEAVESX_FIRST_UNTYPED_ENTITY_QUERY_BUFFER =
          ThreadLocal.withInitial(LeavesXFirstEntityQueryBuffer::new);
@@ -53,7 +53,7 @@ index 414a11bda2f619de30c9c4e2addd5bee9dca1c9d..72dbb090de0f10d7a61c25866e209416
      private static final ThreadLocal<LeavesXFirstEntityQueryBuffer> LEAVESX_UNIQUE_ENTITY_QUERY_BUFFER =
          ThreadLocal.withInitial(LeavesXFirstEntityQueryBuffer::new);
      private static final ThreadLocal<LeavesXEntityQueryBuffer> LEAVESX_ENTITY_QUERY_BUFFER =
-@@ -357,6 +359,28 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -358,6 +360,28 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
          }
      }
  

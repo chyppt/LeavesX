@@ -5,10 +5,10 @@ Subject: [PATCH] Reuse hard-collision query storage for beta149
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java b/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
-index 3dcb3f7a4828b9cb74fa5f0c1c6dcc7371bb8fdc..dd052a2abf21ac323dc73be41a6d7ae9ad4d6ddd 100644
+index 6e94231f..d18300a7 100644
 --- a/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
 +++ b/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
-@@ -2096,31 +2096,45 @@ public final class CollisionUtil {
+@@ -2097,31 +2097,45 @@ public final class CollisionUtil {
          // Vanilla for hard collisions has this backwards, and they expand by +epsilon but this causes terrible problems
          // specifically with boat collisions.
          aabb = aabb.inflate(-COLLISION_EPSILON, -COLLISION_EPSILON, -COLLISION_EPSILON);
@@ -74,7 +74,7 @@ index 3dcb3f7a4828b9cb74fa5f0c1c6dcc7371bb8fdc..dd052a2abf21ac323dc73be41a6d7ae9
  
      public static boolean getCollisions(final Level world, final Entity entity, final AABB aabb,
 diff --git a/net/minecraft/world/level/EntityGetter.java b/net/minecraft/world/level/EntityGetter.java
-index 85ee9caf3bc2ad31f715f941868e0c7ff2cfe146..23a477a9ab6ce9597b0497a6b800c090413403d3 100644
+index 85ee9caf..23a477a9 100644
 --- a/net/minecraft/world/level/EntityGetter.java
 +++ b/net/minecraft/world/level/EntityGetter.java
 @@ -87,28 +87,42 @@ public interface EntityGetter extends ca.spottedleaf.moonrise.patches.chunk_syst
@@ -136,10 +136,10 @@ index 85ee9caf3bc2ad31f715f941868e0c7ff2cfe146..23a477a9ab6ce9597b0497a6b800c090
      }
  
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index 46cb1fb7f086c26c98be16776a31d26eaadb687c..e9367b47aade862c6378063ac1f38d39d30c4943 100644
+index c2fc6d8b..e450650b 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
-@@ -432,6 +432,21 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -433,6 +433,21 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
          return ret;
      }
  
@@ -161,7 +161,7 @@ index 46cb1fb7f086c26c98be16776a31d26eaadb687c..e9367b47aade862c6378063ac1f38d39
      @Override
      public LevelChunk moonrise$getFullChunkIfLoaded(final int chunkX, final int chunkZ) {
          return (LevelChunk)this.getChunkSource().getChunk(chunkX, chunkZ, ChunkStatus.FULL, false);
-@@ -2444,6 +2459,18 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -2449,6 +2464,18 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
              return this.results;
          }
  

@@ -5,7 +5,7 @@ Subject: [PATCH] Reuse ticket conflict coordinates for beta116
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
-index 49c272c85cd662d7d358d38464e1b0c59e7e8caf..f83fe905021900260cefcd7c02201d10ea2502c9 100644
+index 49c272c8..f83fe905 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
 @@ -375,6 +375,10 @@ public abstract class ThreadedTicketLevelPropagator {

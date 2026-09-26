@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize enchantment slot matching for bate30
 
 
 diff --git a/net/minecraft/world/item/enchantment/Enchantment.java b/net/minecraft/world/item/enchantment/Enchantment.java
-index 0d981b86fa7ee8713e2a419fc2f377defbc2ed9c..eadfbe8992951286b0d21a4d6291d7cf06e21a5a 100644
+index 0d981b86..eadfbe89 100644
 --- a/net/minecraft/world/item/enchantment/Enchantment.java
 +++ b/net/minecraft/world/item/enchantment/Enchantment.java
 @@ -124,9 +124,23 @@ public record Enchantment(Component description, Enchantment.EnchantmentDefiniti

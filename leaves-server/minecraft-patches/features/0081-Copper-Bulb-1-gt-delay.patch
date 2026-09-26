@@ -5,7 +5,7 @@ Subject: [PATCH] Copper Bulb 1 gt delay
 
 
 diff --git a/net/minecraft/world/level/block/CopperBulbBlock.java b/net/minecraft/world/level/block/CopperBulbBlock.java
-index ebc44c7adf15ea8a67b4253a18eafe2c9eadb3e2..265b62c651222950c79ed8a3c6ad9d66ff88eb97 100644
+index ebc44c7a..265b62c6 100644
 --- a/net/minecraft/world/level/block/CopperBulbBlock.java
 +++ b/net/minecraft/world/level/block/CopperBulbBlock.java
 @@ -33,7 +33,13 @@ public class CopperBulbBlock extends Block {

@@ -5,10 +5,10 @@ Subject: [PATCH] Cache block entity ticker positions safely
 
 
 diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
-index 892a3d92e784e7b0d58977282a44d57c7a899e50..e7d69147e72c735844ccc5cef601f40217e181f5 100644
+index 130d7072..a1c95d9f 100644
 --- a/net/minecraft/world/level/chunk/LevelChunk.java
 +++ b/net/minecraft/world/level/chunk/LevelChunk.java
-@@ -1031,21 +1031,23 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -1029,21 +1029,23 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
  
      public static class RebindableTickingBlockEntityWrapper implements TickingBlockEntity { // Leaves - default -> public
          public TickingBlockEntity ticker; // Leaves - private -> public
@@ -41,7 +41,7 @@ index 892a3d92e784e7b0d58977282a44d57c7a899e50..e7d69147e72c735844ccc5cef601f402
              if (ticker instanceof BoundTickingBlockEntity<?> boundTicker) {
                  this.blockEntityReference = boundTicker.blockEntity;
              } else {
-@@ -1060,7 +1062,8 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -1058,7 +1060,8 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
  
          @Override
          public boolean isRemoved() {
@@ -51,7 +51,7 @@ index 892a3d92e784e7b0d58977282a44d57c7a899e50..e7d69147e72c735844ccc5cef601f402
                  return this.blockEntityReference.isRemoved();
              }
              return this.ticker.isRemoved();
-@@ -1068,6 +1071,9 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -1066,6 +1069,9 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
  
          @Override
          public BlockPos getPos() {

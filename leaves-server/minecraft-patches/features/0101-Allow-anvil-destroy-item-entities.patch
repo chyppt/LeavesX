@@ -5,10 +5,10 @@ Subject: [PATCH] Allow anvil destroy item entities
 
 
 diff --git a/net/minecraft/world/entity/item/FallingBlockEntity.java b/net/minecraft/world/entity/item/FallingBlockEntity.java
-index ed39910d6db6613006577d5aa37a6d483d386e3b..2afbaf3418e7dd35d10e853ddbe2da25043f3aa8 100644
+index 3e46afc4..8641fae4 100644
 --- a/net/minecraft/world/entity/item/FallingBlockEntity.java
 +++ b/net/minecraft/world/entity/item/FallingBlockEntity.java
-@@ -281,7 +281,7 @@ public class FallingBlockEntity extends Entity {
+@@ -282,7 +282,7 @@ public class FallingBlockEntity extends Entity {
              return false;
          }
  

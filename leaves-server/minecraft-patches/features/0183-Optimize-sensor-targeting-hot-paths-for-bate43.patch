@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize sensor targeting hot paths for bate43
 
 
 diff --git a/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java b/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
-index 8e8f4474bec023a5f22af369ace8235b313298e9..130599dca015085e7363506dfd18408e2b651781 100644
+index 8e8f4474..130599dc 100644
 --- a/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
 +++ b/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
 @@ -3,6 +3,7 @@ package net.minecraft.world.entity.ai.memory;
@@ -81,7 +81,7 @@ index 8e8f4474bec023a5f22af369ace8235b313298e9..130599dca015085e7363506dfd18408e
  
      public static NearestVisibleLivingEntities empty() {
 diff --git a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
-index 0d8a670580528a8dda89f935869d88ac05f024ec..e1440c54b5c17ff342fc8e299a6441e42b93abbd 100644
+index 0d8a6705..e1440c54 100644
 --- a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
 @@ -29,6 +29,7 @@ public class PlayerSensor extends Sensor<LivingEntity> {
@@ -118,7 +118,7 @@ index 0d8a670580528a8dda89f935869d88ac05f024ec..e1440c54b5c17ff342fc8e299a6441e4
                  }
              }
 diff --git a/net/minecraft/world/entity/ai/sensing/Sensor.java b/net/minecraft/world/entity/ai/sensing/Sensor.java
-index 8386e433dd1906bb45f8f5c9bfcd1425289ef91e..be94d55875bfb4ea2e7a99d6ff57152fe8c00c45 100644
+index 745f26d3..24c0dff4 100644
 --- a/net/minecraft/world/entity/ai/sensing/Sensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/Sensor.java
 @@ -26,6 +26,8 @@ public abstract class Sensor<E extends LivingEntity> {

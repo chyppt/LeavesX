@@ -5,10 +5,10 @@ Subject: [PATCH] Cache block entity ticker metadata for beta140
 
 
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index c6eb9e97fa53e0fc02fb8f72e7c93b52a7b0a599..46cb1fb7f086c26c98be16776a31d26eaadb687c 100644
+index 1a50199e..c2fc6d8b 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
-@@ -1734,7 +1734,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -1739,7 +1739,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
                      toRemove.add(ticker); // Paper - Fix MC-117075 use removeAll
                  }
                  // LeavesX end - indexed removals are naturally sorted by this forward scan
@@ -17,7 +17,7 @@ index c6eb9e97fa53e0fc02fb8f72e7c93b52a7b0a599..46cb1fb7f086c26c98be16776a31d26e
                  ticker.tick();
                  // Paper start - rewrite chunk system
                  if ((++tickedEntities & 7) == 0) {
-@@ -1809,11 +1809,15 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -1814,11 +1814,15 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
          return null;
      }
  
@@ -36,7 +36,7 @@ index c6eb9e97fa53e0fc02fb8f72e7c93b52a7b0a599..46cb1fb7f086c26c98be16776a31d26e
      // Leaves end - Lithium Sleeping Block Entity
  
 diff --git a/net/minecraft/world/level/block/entity/TickingBlockEntity.java b/net/minecraft/world/level/block/entity/TickingBlockEntity.java
-index 28e3b73507b988f7234cbf29c4024c88180d0aef..da6225a2566b52a3fd3c4273ea0b28cb67e5c2cc 100644
+index 28e3b735..da6225a2 100644
 --- a/net/minecraft/world/level/block/entity/TickingBlockEntity.java
 +++ b/net/minecraft/world/level/block/entity/TickingBlockEntity.java
 @@ -1,6 +1,7 @@
@@ -64,7 +64,7 @@ index 28e3b73507b988f7234cbf29c4024c88180d0aef..da6225a2566b52a3fd3c4273ea0b28cb
      String getType();
  }
 diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
-index c5a799a2c63eb16677684a6bc8030adb04f29d14..54f8b64262398b684a6826570688ffbd0933f1f1 100644
+index 8c78e73f..afd5f348 100644
 --- a/net/minecraft/world/level/chunk/LevelChunk.java
 +++ b/net/minecraft/world/level/chunk/LevelChunk.java
 @@ -522,10 +522,15 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
@@ -84,7 +84,7 @@ index c5a799a2c63eb16677684a6bc8030adb04f29d14..54f8b64262398b684a6826570688ffbd
              );
      }
  
-@@ -950,25 +955,39 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -948,25 +953,39 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
          private final T blockEntity;
          private final BlockEntityTicker<T> ticker;
          private final BlockPos cachedPos;
@@ -131,7 +131,7 @@ index c5a799a2c63eb16677684a6bc8030adb04f29d14..54f8b64262398b684a6826570688ffbd
                              this.ticker.tick(LevelChunk.this.level, pos, blockState, this.blockEntity);
                              this.loggedInvalidBlockState = false;
                              // Paper start - Remove the Block Entity if it's invalid
-@@ -1012,8 +1031,16 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -1010,8 +1029,16 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
              return this.cachedPos;
          }
  
@@ -148,7 +148,7 @@ index c5a799a2c63eb16677684a6bc8030adb04f29d14..54f8b64262398b684a6826570688ffbd
              return this.blockEntity.typeHolder().getRegisteredName();
          }
  
-@@ -1039,6 +1066,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -1037,6 +1064,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
          // LeavesX start - cache immutable ticker state used by every block-entity tick
          private @Nullable BlockEntity blockEntityReference;
          private BlockPos cachedPos;
@@ -156,7 +156,7 @@ index c5a799a2c63eb16677684a6bc8030adb04f29d14..54f8b64262398b684a6826570688ffbd
          // LeavesX end - cache immutable ticker state used by every block-entity tick
  
          private RebindableTickingBlockEntityWrapper(final TickingBlockEntity ticker) {
-@@ -1053,6 +1081,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -1051,6 +1079,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
              // Refresh every derived value together so sleeping and removed ticker rebinds cannot leave stale state.
              this.ticker = ticker;
              this.cachedPos = ticker.getPos();
@@ -164,7 +164,7 @@ index c5a799a2c63eb16677684a6bc8030adb04f29d14..54f8b64262398b684a6826570688ffbd
              if (ticker instanceof BoundTickingBlockEntity<?> boundTicker) {
                  this.blockEntityReference = boundTicker.blockEntity;
              } else {
-@@ -1082,6 +1111,14 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -1080,6 +1109,14 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
              return this.ticker.getPos();
          }
  

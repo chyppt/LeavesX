@@ -5,7 +5,7 @@ Subject: [PATCH] Add bate20 rolling workload instrumentation
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
-index a89cc17a817ba796234865421c0e19decb89a40e..522ca4174b3eb5c3b57ab776720b304feae57c29 100644
+index 2d146a36..ba498ceb 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 @@ -82,6 +82,7 @@ public final class ChunkHolderManager {
@@ -55,10 +55,10 @@ index a89cc17a817ba796234865421c0e19decb89a40e..522ca4174b3eb5c3b57ab776720b304f
              return true;
          } finally {
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index 445e73a96461568e2dee49eaa8bf5039744ef07a..322a8e00668de4ab4541d95243f14cc66ce1171e 100644
+index 35f6d71c..0a49a82e 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -1661,6 +1661,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1635,6 +1635,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
  
          this.ticksUntilAutosave--;
          // Paper start - Incremental chunk and player saving
@@ -66,7 +66,7 @@ index 445e73a96461568e2dee49eaa8bf5039744ef07a..322a8e00668de4ab4541d95243f14cc6
          int playerSaveInterval = io.papermc.paper.configuration.GlobalConfiguration.get().playerAutoSave.rate;
          if (playerSaveInterval < 0) {
              playerSaveInterval = this.autosavePeriod;
-@@ -1685,6 +1686,10 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1659,6 +1660,10 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
              this.isSaving = false;
          }
          Profiler.get().pop();
@@ -77,7 +77,7 @@ index 445e73a96461568e2dee49eaa8bf5039744ef07a..322a8e00668de4ab4541d95243f14cc6
          // Paper end - Incremental chunk and player saving
  
          ProfilerFiller profiler = Profiler.get();
-@@ -1713,7 +1718,12 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1687,7 +1692,12 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
          profiler.push("tick");
          this.tickFrame.start();
          // Paper - improve tick loop - moved into runAllTasksAtTickStart
@@ -90,7 +90,7 @@ index 445e73a96461568e2dee49eaa8bf5039744ef07a..322a8e00668de4ab4541d95243f14cc6
          this.tickServer(sprinting ? () -> false : this::haveTime);
          // Paper start - rewrite chunk system
          final Throwable crash = this.chunkSystemCrash;
-@@ -1803,6 +1813,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1777,6 +1787,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
      protected void tickChildren(final BooleanSupplier haveTime) {
          ProfilerFiller profiler = Profiler.get();
          this.getPlayerList().getPlayers().forEach(playerx -> playerx.connection.suspendFlushing());
@@ -98,7 +98,7 @@ index 445e73a96461568e2dee49eaa8bf5039744ef07a..322a8e00668de4ab4541d95243f14cc6
          this.server.getScheduler().mainThreadHeartbeat(); // CraftBukkit
          // Paper start - optimise Folia entity scheduler
          ((io.papermc.paper.threadedregions.scheduler.FoliaGlobalRegionScheduler)org.bukkit.Bukkit.getGlobalRegionScheduler()).tick();
-@@ -1815,6 +1826,11 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1789,6 +1800,11 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
          }
          // Paper end - optimise Folia entity scheduler
          // Paper end - Folia scheduler API
@@ -110,7 +110,7 @@ index 445e73a96461568e2dee49eaa8bf5039744ef07a..322a8e00668de4ab4541d95243f14cc6
          io.papermc.paper.adventure.providers.ClickCallbackProviderImpl.ADVENTURE_CLICK_MANAGER.handleQueue(this.tickCount); // Paper
          io.papermc.paper.adventure.providers.ClickCallbackProviderImpl.DIALOG_CLICK_MANAGER.handleQueue(this.tickCount); // Paper
          profiler.push("commandFunctions");
-@@ -1848,8 +1864,13 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1822,8 +1838,13 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
  
          profiler.push("levels");
          this.updateEffectiveRespawnData();
@@ -124,7 +124,7 @@ index 445e73a96461568e2dee49eaa8bf5039744ef07a..322a8e00668de4ab4541d95243f14cc6
          for (ServerLevel level : this.getAllLevels()) {
              level.hasPhysicsEvent = org.bukkit.event.block.BlockPhysicsEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - BlockPhysicsEvent
              level.hasEntityMoveEvent = io.papermc.paper.event.entity.EntityMoveEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - Add EntityMoveEvent
-@@ -1880,12 +1901,27 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1854,12 +1875,27 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
              level.explosionDensityCache.clear(); // Paper - Optimize explosions
          }
          this.isIteratingOverLevels = false; // Paper - Throw exception on world create while being ticked
@@ -152,7 +152,7 @@ index 445e73a96461568e2dee49eaa8bf5039744ef07a..322a8e00668de4ab4541d95243f14cc6
          this.debugSubscribers.tick();
          if (this.tickRateManager.runsNormally()) {
              profiler.popPush("gameTests");
-@@ -1901,13 +1937,22 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1875,13 +1911,22 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
          for (Runnable tickable : this.tickables) {
              tickable.run();
          }
@@ -176,10 +176,10 @@ index 445e73a96461568e2dee49eaa8bf5039744ef07a..322a8e00668de4ab4541d95243f14cc6
          profiler.pop();
          this.serverActivityMonitor.tick();
 diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
-index e7d69147e72c735844ccc5cef601f40217e181f5..83a4cad650cf8fb08970843f15661c38a6971253 100644
+index a1c95d9f..9efdd1c5 100644
 --- a/net/minecraft/world/level/chunk/LevelChunk.java
 +++ b/net/minecraft/world/level/chunk/LevelChunk.java
-@@ -641,6 +641,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -640,6 +640,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
          // Paper start
          this.loadedTicketLevel = true;
          // Paper end
@@ -187,7 +187,7 @@ index e7d69147e72c735844ccc5cef601f40217e181f5..83a4cad650cf8fb08970843f15661c38
          org.bukkit.Server server = this.level.getCraftServer();
          // Paper - rewrite chunk system
          if (server != null) {
-@@ -690,6 +691,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -689,6 +690,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
          // Paper start
          this.loadedTicketLevel = false;
          // Paper end

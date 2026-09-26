@@ -5,7 +5,7 @@ Subject: [PATCH] Old raid behavior
 
 
 diff --git a/net/minecraft/world/effect/BadOmenMobEffect.java b/net/minecraft/world/effect/BadOmenMobEffect.java
-index f58b10c7dec0d2b7dc2b3d1198539b74d13038f3..ee49b2bdf1bbf6a53940099d1b84a99b278d84e3 100644
+index f58b10c7..ee49b2bd 100644
 --- a/net/minecraft/world/effect/BadOmenMobEffect.java
 +++ b/net/minecraft/world/effect/BadOmenMobEffect.java
 @@ -22,6 +22,11 @@ class BadOmenMobEffect extends MobEffect {
@@ -21,10 +21,10 @@ index f58b10c7dec0d2b7dc2b3d1198539b74d13038f3..ee49b2bdf1bbf6a53940099d1b84a99b
              if (raid == null || raid.getRaidOmenLevel() < raid.getMaxRaidOmenLevel()) {
                  player.addEffect(new MobEffectInstance(MobEffects.RAID_OMEN, 600, amplification));
 diff --git a/net/minecraft/world/entity/raid/Raid.java b/net/minecraft/world/entity/raid/Raid.java
-index bd40c5fecbf449d0774b3ce68c471916fc494154..efc3ee641a99bc6cbbce70997eb30d8df57950ee 100644
+index 16d789ff..e297062a 100644
 --- a/net/minecraft/world/entity/raid/Raid.java
 +++ b/net/minecraft/world/entity/raid/Raid.java
-@@ -261,7 +261,7 @@ public class Raid {
+@@ -262,7 +262,7 @@ public class Raid {
      }
  
      public boolean absorbRaidOmen(final ServerPlayer player) {
@@ -33,7 +33,7 @@ index bd40c5fecbf449d0774b3ce68c471916fc494154..efc3ee641a99bc6cbbce70997eb30d8d
          if (effect == null) {
              return false;
          }
-@@ -338,7 +338,13 @@ public class Raid {
+@@ -339,7 +339,13 @@ public class Raid {
                          }
  
                          if (shouldTryToFindSpawnPos) {
@@ -48,7 +48,7 @@ index bd40c5fecbf449d0774b3ce68c471916fc494154..efc3ee641a99bc6cbbce70997eb30d8d
                          }
  
                          if (this.raidCooldownTicks == 300 || this.raidCooldownTicks % 20 == 0) {
-@@ -393,7 +399,14 @@ public class Raid {
+@@ -394,7 +400,14 @@ public class Raid {
                  int attempt = 0;
  
                  while (this.shouldSpawnGroup()) {
@@ -64,7 +64,7 @@ index bd40c5fecbf449d0774b3ce68c471916fc494154..efc3ee641a99bc6cbbce70997eb30d8d
                      if (spawnPos != null) {
                          this.started = true;
                          this.spawnGroup(level, spawnPos);
-@@ -405,7 +418,7 @@ public class Raid {
+@@ -406,7 +419,7 @@ public class Raid {
                          attempt++;
                      }
  
@@ -73,7 +73,7 @@ index bd40c5fecbf449d0774b3ce68c471916fc494154..efc3ee641a99bc6cbbce70997eb30d8d
                          org.bukkit.craftbukkit.event.CraftEventFactory.callRaidStopEvent(level, this, org.bukkit.event.raid.RaidStopEvent.Reason.UNSPAWNABLE); // CraftBukkit
                          this.stop();
                          break;
-@@ -700,7 +713,7 @@ public class Raid {
+@@ -701,7 +714,7 @@ public class Raid {
              int spawnX = this.center.getX() + Mth.floor(Mth.cos(angle) * 32.0F * howFar) + this.random.nextInt(3) * Mth.floor(howFar);
              int spawnZ = this.center.getZ() + Mth.floor(Mth.sin(angle) * 32.0F * howFar) + this.random.nextInt(3) * Mth.floor(howFar);
              int spawnY = level.getHeight(Heightmap.Types.WORLD_SURFACE, spawnX, spawnZ);
@@ -82,7 +82,7 @@ index bd40c5fecbf449d0774b3ce68c471916fc494154..efc3ee641a99bc6cbbce70997eb30d8d
                  spawnPos.set(spawnX, spawnY, spawnZ);
                  if (!level.isVillage(spawnPos) || secondsRemaining <= 7) {
                      int delta = 10;
-@@ -878,4 +891,42 @@ public class Raid {
+@@ -879,4 +892,42 @@ public class Raid {
              this.spawnsPerWaveBeforeBonus = spawnsPerWaveBeforeBonus;
          }
      }
@@ -126,10 +126,10 @@ index bd40c5fecbf449d0774b3ce68c471916fc494154..efc3ee641a99bc6cbbce70997eb30d8d
 +    // Leaves end - old FindSpawnPosition
  }
 diff --git a/net/minecraft/world/entity/raid/Raider.java b/net/minecraft/world/entity/raid/Raider.java
-index cf689dae6978577970e39bf3004be551b4908cd1..b1eee52a4149cb509a3c64514894fa521ec090e1 100644
+index 9d242f24..c1fefecd 100644
 --- a/net/minecraft/world/entity/raid/Raider.java
 +++ b/net/minecraft/world/entity/raid/Raider.java
-@@ -128,6 +128,42 @@ public abstract class Raider extends PatrollingMonster {
+@@ -129,6 +129,42 @@ public abstract class Raider extends PatrollingMonster {
  
                  raidWhenKilled.removeFromRaid(serverLevel, this, false);
              }

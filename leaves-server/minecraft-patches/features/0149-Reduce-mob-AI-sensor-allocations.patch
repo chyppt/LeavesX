@@ -5,7 +5,7 @@ Subject: [PATCH] Reduce mob AI sensor allocations
 
 
 diff --git a/net/minecraft/world/entity/ai/behavior/GateBehavior.java b/net/minecraft/world/entity/ai/behavior/GateBehavior.java
-index 3adfb334068d3722329f91011c41d5e59b1956c9..8104fffc4368429dac7817f09f3ce0568b25e955 100644
+index 3adfb334..8104fffc 100644
 --- a/net/minecraft/world/entity/ai/behavior/GateBehavior.java
 +++ b/net/minecraft/world/entity/ai/behavior/GateBehavior.java
 @@ -85,9 +85,24 @@ public class GateBehavior<E extends LivingEntity> implements BehaviorControl<E>
@@ -35,32 +35,32 @@ index 3adfb334068d3722329f91011c41d5e59b1956c9..8104fffc4368429dac7817f09f3ce056
  
      @Override
 diff --git a/net/minecraft/world/entity/ai/sensing/GolemSensor.java b/net/minecraft/world/entity/ai/sensing/GolemSensor.java
-index 730b372e46d75e43a553b49dad41cc2d2f7510ee..f5d1f7d01a520709e4c5b7fd98e0e76cce660025 100644
+index 6bdc94f4..98b4a50a 100644
 --- a/net/minecraft/world/entity/ai/sensing/GolemSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/GolemSensor.java
 @@ -33,7 +33,19 @@ public class GolemSensor extends Sensor<LivingEntity> {
      public static void checkForNearbyGolem(final LivingEntity body) {
          Optional<List<LivingEntity>> livingEntitiesMemory = body.getBrain().getMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES);
          if (!livingEntitiesMemory.isEmpty()) {
--            boolean golemPresent = livingEntitiesMemory.get().stream().anyMatch(entity -> entity.is(EntityType.IRON_GOLEM));
+-            boolean golemPresent = livingEntitiesMemory.get().stream().anyMatch(entity -> entity.is(EntityTypes.IRON_GOLEM));
 +            final boolean golemPresent;
 +            if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
 +                boolean found = false;
 +                for (final LivingEntity entity : livingEntitiesMemory.get()) {
-+                    if (entity.is(EntityType.IRON_GOLEM)) {
++                    if (entity.is(EntityTypes.IRON_GOLEM)) {
 +                        found = true;
 +                        break;
 +                    }
 +                }
 +                golemPresent = found;
 +            } else {
-+                golemPresent = livingEntitiesMemory.get().stream().anyMatch(entity -> entity.is(EntityType.IRON_GOLEM));
++                golemPresent = livingEntitiesMemory.get().stream().anyMatch(entity -> entity.is(EntityTypes.IRON_GOLEM));
 +            }
              if (golemPresent) {
                  golemDetected(body);
              }
 diff --git a/net/minecraft/world/entity/ai/sensing/MobSensor.java b/net/minecraft/world/entity/ai/sensing/MobSensor.java
-index ac9c50d680814b5752f7c712633555d587633598..9213da1da0d3f19b3da92c94fc424818d7543fb0 100644
+index ac9c50d6..9213da1d 100644
 --- a/net/minecraft/world/entity/ai/sensing/MobSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/MobSensor.java
 @@ -46,7 +46,19 @@ public class MobSensor<T extends LivingEntity> extends Sensor<T> {
@@ -85,7 +85,7 @@ index ac9c50d680814b5752f7c712633555d587633598..9213da1da0d3f19b3da92c94fc424818
                  this.mobDetected(body);
              }
 diff --git a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
-index 22f58ba0bce5db69c7bcea76d40bac6079f5581a..0d8a670580528a8dda89f935869d88ac05f024ec 100644
+index 22f58ba0..0d8a6705 100644
 --- a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
 @@ -1,6 +1,8 @@
@@ -164,7 +164,7 @@ index 22f58ba0bce5db69c7bcea76d40bac6079f5581a..0d8a670580528a8dda89f935869d88ac
          brain.setMemory(MemoryModuleType.NEAREST_VISIBLE_ATTACKABLE_PLAYER, visibleAttackablePlayers.isEmpty() ? null : visibleAttackablePlayers.get(0));
      }
 diff --git a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
-index f0dc4231b79e4f02416917dacce978121ec6d7e2..c5834f7d58b45148122f8c9267186bd8bddeed87 100644
+index f0dc4231..c5834f7d 100644
 --- a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
 @@ -1,6 +1,7 @@
@@ -217,7 +217,7 @@ index f0dc4231b79e4f02416917dacce978121ec6d7e2..c5834f7d58b45148122f8c9267186bd8
              Player player = players.get(0);
              // CraftBukkit start
 diff --git a/net/minecraft/world/entity/npc/villager/Villager.java b/net/minecraft/world/entity/npc/villager/Villager.java
-index ffce96f260b7677500125dd771b354add9d2db43..5931a187dcffdbf8c3001ddaae3b7123bd2fac78 100644
+index 968b2a38..eb9362c2 100644
 --- a/net/minecraft/world/entity/npc/villager/Villager.java
 +++ b/net/minecraft/world/entity/npc/villager/Villager.java
 @@ -849,7 +849,17 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re

@@ -5,7 +5,7 @@ Subject: [PATCH] Short-circuit first-match entity queries for bate46
 
 
 diff --git a/net/minecraft/world/entity/monster/warden/WardenSpawnTracker.java b/net/minecraft/world/entity/monster/warden/WardenSpawnTracker.java
-index 859a1daaf26f1228869826124c9d0717cb9a743f..5211f091849b39feacdb9aefa8643c081aa0960e 100644
+index 85974a2f..e29a42b8 100644
 --- a/net/minecraft/world/entity/monster/warden/WardenSpawnTracker.java
 +++ b/net/minecraft/world/entity/monster/warden/WardenSpawnTracker.java
 @@ -94,7 +94,9 @@ public class WardenSpawnTracker {
@@ -20,10 +20,10 @@ index 859a1daaf26f1228869826124c9d0717cb9a743f..5211f091849b39feacdb9aefa8643c08
  
      private static List<ServerPlayer> getNearbyPlayers(final ServerLevel level, final BlockPos pos) {
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index dfd9482ed1b0b422a8e3657c4f2d80dde8fc0e9f..6fdd832b0d249992020bed1f8dbf5c8fd6b8a68c 100644
+index c0b48692..54c517c9 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
-@@ -206,6 +206,9 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -207,6 +207,9 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
      public abstract ResourceKey<net.minecraft.world.level.dimension.LevelStem> getTypeKey();
  
      // Paper start - rewrite chunk system
@@ -33,7 +33,7 @@ index dfd9482ed1b0b422a8e3657c4f2d80dde8fc0e9f..6fdd832b0d249992020bed1f8dbf5c8f
      private ca.spottedleaf.moonrise.patches.chunk_system.level.entity.EntityLookup entityLookup;
      private final ca.spottedleaf.concurrentutil.map.concurrent.longs.ConcurrentChainedLong2ReferenceHashTable<ca.spottedleaf.moonrise.patches.chunk_system.level.chunk.ChunkData> chunkData = new ca.spottedleaf.concurrentutil.map.concurrent.longs.ConcurrentChainedLong2ReferenceHashTable<>();
  
-@@ -232,7 +235,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -233,7 +236,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
          return ret;
      }
  
@@ -42,7 +42,7 @@ index dfd9482ed1b0b422a8e3657c4f2d80dde8fc0e9f..6fdd832b0d249992020bed1f8dbf5c8f
      public final <T extends Entity> void leavesX$getEntitiesOfClass(
          final Class<T> entityClass,
          final AABB boundingBox,
-@@ -243,7 +246,47 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -244,7 +247,47 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
          ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemLevel)this)
              .moonrise$getEntityLookup().getEntities(entityClass, null, boundingBox, into, predicate);
      }
@@ -91,7 +91,7 @@ index dfd9482ed1b0b422a8e3657c4f2d80dde8fc0e9f..6fdd832b0d249992020bed1f8dbf5c8f
  
      @Override
      public final List<Entity> moonrise$getHardCollidingEntities(final Entity entity, final AABB box, final Predicate<? super Entity> predicate) {
-@@ -2215,6 +2258,27 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -2220,6 +2263,27 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
  
      public abstract LevelEntityGetter<Entity> getEntities();
  
@@ -120,7 +120,7 @@ index dfd9482ed1b0b422a8e3657c4f2d80dde8fc0e9f..6fdd832b0d249992020bed1f8dbf5c8f
      public long nextSubTickCount() {
          return this.subTickCount++;
 diff --git a/net/minecraft/world/level/block/ButtonBlock.java b/net/minecraft/world/level/block/ButtonBlock.java
-index e8282ec25d025bdd19463e6a8b6bc4e488bbfae8..e7070f79982d1b030b55be2d524672a49060da26 100644
+index 8cb247b4..b4b4d91a 100644
 --- a/net/minecraft/world/level/block/ButtonBlock.java
 +++ b/net/minecraft/world/level/block/ButtonBlock.java
 @@ -189,9 +189,18 @@ public class ButtonBlock extends FaceAttachedHorizontalDirectionalBlock {

@@ -6,7 +6,7 @@ Subject: [PATCH] Avoid Class#isAssignableFrom call in ClassInstanceMultiMap
 This patch is Powered by Gale(https://github.com/GaleMC/Gale)
 
 diff --git a/net/minecraft/util/ClassInstanceMultiMap.java b/net/minecraft/util/ClassInstanceMultiMap.java
-index 021457d7676356ee9d5c7ba174206ba190adc1eb..a0f9cd52b458ba815387496a8a3a34512b0a874f 100644
+index 021457d7..a0f9cd52 100644
 --- a/net/minecraft/util/ClassInstanceMultiMap.java
 +++ b/net/minecraft/util/ClassInstanceMultiMap.java
 @@ -55,12 +55,24 @@ public class ClassInstanceMultiMap<T> extends AbstractCollection<T> {

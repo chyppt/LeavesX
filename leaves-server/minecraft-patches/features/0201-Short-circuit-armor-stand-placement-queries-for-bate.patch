@@ -5,18 +5,18 @@ Subject: [PATCH] Short-circuit armor stand placement queries for bate62
 
 
 diff --git a/net/minecraft/world/item/ArmorStandItem.java b/net/minecraft/world/item/ArmorStandItem.java
-index 62b2da0f028d21f6f759bb13acaf0ed62c673386..3c29a4132e5e919cae57a507dc285a2f4165ce52 100644
+index 9ed039c3..8e0ac575 100644
 --- a/net/minecraft/world/item/ArmorStandItem.java
 +++ b/net/minecraft/world/item/ArmorStandItem.java
-@@ -36,7 +36,10 @@ public class ArmorStandItem extends Item {
+@@ -37,7 +37,10 @@ public class ArmorStandItem extends Item {
          ItemStack itemStack = context.getItemInHand();
          Vec3 pos = Vec3.atBottomCenterOf(blockPos);
-         AABB box = EntityType.ARMOR_STAND.getDimensions().makeBoundingBox(pos.x(), pos.y(), pos.z());
+         AABB box = EntityTypes.ARMOR_STAND.getDimensions().makeBoundingBox(pos.x(), pos.y(), pos.z());
 -        if (level.noCollision(null, box) && level.getEntities(null, box).isEmpty()) {
 +        if (level.noCollision(null, box)
 +            && (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()
 +                ? !level.leavesX$hasEntity(null, box, net.minecraft.world.entity.EntitySelector.NO_SPECTATORS)
 +                : level.getEntities(null, box).isEmpty())) {
              if (level instanceof ServerLevel serverLevel) {
-                 Consumer<ArmorStand> entityConfig = EntityType.createDefaultStackConfig(serverLevel, itemStack, context.getPlayer());
-                 ArmorStand entity = EntityType.ARMOR_STAND.create(serverLevel, entityConfig, blockPos, EntitySpawnReason.SPAWN_ITEM_USE, true, true);
+                 PostSpawnProcessor<ArmorStand> entityConfig = EntityType.createDefaultStackConfig(serverLevel, itemStack, context.getPlayer());
+                 ArmorStand entity = EntityTypes.ARMOR_STAND.create(serverLevel, entityConfig, blockPos, EntitySpawnReason.SPAWN_ITEM_USE, true, true);

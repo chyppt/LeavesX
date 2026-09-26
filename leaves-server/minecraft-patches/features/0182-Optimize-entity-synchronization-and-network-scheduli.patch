@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize entity synchronization and network scheduling
 
 
 diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Connection.java
-index 3eaa80c31a7465a91688480a991dc999cd6c8874..b33bff50bcec1faf4b7fc3a62da38c8a449c2fd7 100644
+index 7de18731..d121789a 100644
 --- a/net/minecraft/network/Connection.java
 +++ b/net/minecraft/network/Connection.java
-@@ -127,6 +127,7 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+@@ -128,6 +128,7 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
      public boolean isPending = true;
      public boolean queueImmunity;
      // Paper end - Optimize network
@@ -16,7 +16,7 @@ index 3eaa80c31a7465a91688480a991dc999cd6c8874..b33bff50bcec1faf4b7fc3a62da38c8a
  
      public Connection(final PacketFlow receiving) {
          this.receiving = receiving;
-@@ -136,6 +137,10 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+@@ -137,6 +138,10 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
      public void channelActive(final ChannelHandlerContext ctx) throws Exception {
          super.channelActive(ctx);
          this.channel = ctx.channel();
@@ -27,7 +27,7 @@ index 3eaa80c31a7465a91688480a991dc999cd6c8874..b33bff50bcec1faf4b7fc3a62da38c8a
          this.address = this.channel.remoteAddress();
          this.preparing = false; // Spigot
          if (this.delayedDisconnect != null) {
-@@ -442,10 +447,17 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+@@ -484,10 +489,17 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
  
      private void sendPacket(final Packet<?> packet, final @Nullable ChannelFutureListener listener, final boolean flush) {
          this.sentPackets++;
@@ -48,10 +48,10 @@ index 3eaa80c31a7465a91688480a991dc999cd6c8874..b33bff50bcec1faf4b7fc3a62da38c8a
      }
  
 diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
-index 64e14a0ffd0756ea99b5f4664db0ced64f6cb6bc..f9863ec2f50dcb738641301a7fcc16f3f9d99aea 100644
+index 54485159..c8143a53 100644
 --- a/net/minecraft/server/level/ServerEntity.java
 +++ b/net/minecraft/server/level/ServerEntity.java
-@@ -167,38 +167,48 @@ public class ServerEntity {
+@@ -172,38 +172,48 @@ public class ServerEntity {
                  boolean pos = positionChanged || this.tickCount % 60 == 0;
                  boolean sentPosition = false;
                  boolean sentRotation = false;
@@ -114,9 +114,9 @@ index 64e14a0ffd0756ea99b5f4664db0ced64f6cb6bc..f9863ec2f50dcb738641301a7fcc16f3
 -                }
 -                // Leaves end - dont send useless entity packets
  
-                 if (this.entity.needsSync || this.trackDelta || this.entity instanceof LivingEntity && ((LivingEntity)this.entity).isFallFlying()) {
+                 if (this.entity.needsSync || this.trackDelta || this.entity instanceof LivingEntity livingEntity && livingEntity.isFallFlying()) {
                      Vec3 movement = this.entity.getDeltaMovement();
-@@ -310,20 +320,21 @@ public class ServerEntity {
+@@ -315,20 +325,21 @@ public class ServerEntity {
          this.positionCodec.setBase(this.entity.position());
      }
  

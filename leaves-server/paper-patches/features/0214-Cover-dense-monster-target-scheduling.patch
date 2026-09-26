@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 17:41:55 +0800
+Subject: [PATCH] Cover dense monster target scheduling
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/DenseMonsterAiDispatchHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/DenseMonsterAiDispatchHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3ebe019301341de46e7287b0ce733600ea953ccb
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/DenseMonsterAiDispatchHotPathTest.java
+@@ -0,0 +1,36 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import java.io.IOException;
++import net.minecraft.world.entity.Mob;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Ensures the optional dense-farm path advances running goals without rescanning new targets every tick. */
++@Normal
++class DenseMonsterAiDispatchHotPathTest {
++
++    @Test
++    void deferredDensePassUsesRunningGoalTicksForBothSelectors() throws IOException {
++        final ClassNode owner = new ClassNode();
++        new ClassReader(Mob.class.getName()).accept(owner, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        final MethodNode serverAiStep = owner.methods.stream()
++            .filter(method -> method.name.equals("serverAiStep"))
++            .findFirst()
++            .orElseThrow();
++
++        final long runningOnlyCalls = java.util.stream.StreamSupport.stream(
++            java.util.Spliterators.spliteratorUnknownSize(serverAiStep.instructions.iterator(), 0), false
++        ).filter(MethodInsnNode.class::isInstance).map(MethodInsnNode.class::cast).filter(call ->
++            call.owner.equals("net/minecraft/world/entity/ai/goal/GoalSelector")
++                && call.name.equals("tickRunningGoals")
++        ).count();
++
++        assertEquals(4L, runningOnlyCalls);
++    }
++}

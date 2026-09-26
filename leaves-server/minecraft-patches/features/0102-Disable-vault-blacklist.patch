@@ -5,10 +5,10 @@ Subject: [PATCH] Disable vault blacklist
 
 
 diff --git a/net/minecraft/world/level/block/entity/vault/VaultServerData.java b/net/minecraft/world/level/block/entity/vault/VaultServerData.java
-index f732f660d6a7639bbdc2b35f0a8d9c828b07a418..d4fbc7e6c03c3d6bf27f7640f1d9420f9231a3bd 100644
+index fe482c2f..21432f06 100644
 --- a/net/minecraft/world/level/block/entity/vault/VaultServerData.java
 +++ b/net/minecraft/world/level/block/entity/vault/VaultServerData.java
-@@ -57,7 +57,7 @@ public class VaultServerData {
+@@ -59,7 +59,7 @@ public class VaultServerData {
      }
  
      boolean hasRewardedPlayer(final Player player) {
@@ -17,7 +17,7 @@ index f732f660d6a7639bbdc2b35f0a8d9c828b07a418..d4fbc7e6c03c3d6bf27f7640f1d9420f
      }
  
      @VisibleForTesting
-@@ -66,6 +66,7 @@ public class VaultServerData {
+@@ -68,6 +68,7 @@ public class VaultServerData {
          addToRewardedPlayers(player.getUUID());
      }
      public boolean addToRewardedPlayers(final java.util.UUID player) {
@@ -26,7 +26,7 @@ index f732f660d6a7639bbdc2b35f0a8d9c828b07a418..d4fbc7e6c03c3d6bf27f7640f1d9420f
      // Paper end - Vault API
          if (this.rewardedPlayers.size() > 128) {
 diff --git a/net/minecraft/world/level/block/entity/vault/VaultSharedData.java b/net/minecraft/world/level/block/entity/vault/VaultSharedData.java
-index 877dbe309089df9ffb27ebbe3af527feb75d97a6..d34b24db92627e5e53b5eb31c2b71ba7f8e80c0e 100644
+index 41154db0..302bf0be 100644
 --- a/net/minecraft/world/level/block/entity/vault/VaultSharedData.java
 +++ b/net/minecraft/world/level/block/entity/vault/VaultSharedData.java
 @@ -70,8 +70,8 @@ public class VaultSharedData {

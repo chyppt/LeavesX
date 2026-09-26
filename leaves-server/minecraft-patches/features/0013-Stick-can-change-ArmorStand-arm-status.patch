@@ -5,10 +5,10 @@ Subject: [PATCH] Stick can change ArmorStand arm status
 
 
 diff --git a/net/minecraft/world/entity/decoration/ArmorStand.java b/net/minecraft/world/entity/decoration/ArmorStand.java
-index f42fd10847a1dfbcbb2790aa90da4a49585e25a8..11f15d4c9a0c4e9e4fd115bddcd947e8b5fa5b47 100644
+index 9e4293c6..c9921927 100644
 --- a/net/minecraft/world/entity/decoration/ArmorStand.java
 +++ b/net/minecraft/world/entity/decoration/ArmorStand.java
-@@ -236,6 +236,13 @@ public class ArmorStand extends LivingEntity {
+@@ -237,6 +237,13 @@ public class ArmorStand extends LivingEntity {
                  return InteractionResult.SUCCESS_SERVER;
              }
          } else {

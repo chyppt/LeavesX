@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Thu, 3 Sep 2026 08:05:00 +0800
+Subject: [PATCH] Test concurrent uneven compute batches
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index e8110bd6c9386259603680b3d1c0930d5b0b7033..4ea8812b4d2acfa5e8bcf53b35b81c9007d9fb4b 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -796,4 +796,75 @@ public class LeavesXComputeExecutorTest {
+         assertEquals(13, claim.startInclusive());
+         assertEquals(15, claim.endExclusive());
+     }
++
++    @Test
++    void concurrentUnevenBatchesNeverDeadlockLoseOrDuplicateRanges() throws Exception {
++        final int[] workerCounts = {2, 4, 6};
++        final LeavesXComputeExecutor.Workload[] workloads = {
++            LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++            LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
++            LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION,
++            LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
++            LeavesXComputeExecutor.Workload.MOB_SPAWN_COUNTING
++        };
++
++        for (final int workers : workerCounts) {
++            LeavesXComputeExecutor.configure(workers, 16, true);
++            final int callers = 4;
++            final int roundsPerCaller = 250;
++            final ExecutorService callerPool = Executors.newFixedThreadPool(callers);
++            @SuppressWarnings("unchecked")
++            final Future<Void>[] results = new Future[callers];
++            try {
++                for (int callerIndex = 0; callerIndex < callers; callerIndex++) {
++                    final int callerSeed = callerIndex;
++                    results[callerIndex] = callerPool.submit(() -> {
++                        for (int round = 0; round < roundsPerCaller; round++) {
++                            // Varying the remainder around the lane count repeatedly exercises 1-4 range tails.
++                            final int size = 33 + Math.floorMod(round * 17 + callerSeed * 11, 61);
++                            final int currentRound = round;
++                            final AtomicIntegerArray counts = new AtomicIntegerArray(size);
++                            final LeavesXComputeExecutor.Workload workload = workloads[
++                                Math.floorMod(round + callerSeed, workloads.length)
++                            ];
++                            final int partitions = LeavesXComputeExecutor.invokeRangesWithCount(
++                                workload,
++                                size,
++                                1,
++                                1,
++                                (taskIndex, start, end) -> {
++                                    if (((taskIndex + currentRound) & 3) == 0) {
++                                        Thread.yield();
++                                    }
++                                    for (int index = start; index < end; index++) {
++                                        counts.incrementAndGet(index);
++                                    }
++                                }
++                            );
++                            assertTrue(partitions > 0, "synthetic pure computation must complete");
++                            for (int index = 0; index < size; index++) {
++                                assertEquals(
++                                    1,
++                                    counts.get(index),
++                                    "workers=" + workers + ", caller=" + callerSeed + ", round=" + round
++                                        + ", index=" + index
++                                );
++                            }
++                        }
++                        return null;
++                    });
++                }
++                for (final Future<Void> result : results) {
++                    result.get(5L, TimeUnit.SECONDS);
++                }
++                final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
++                assertEquals(0L, metrics.failedInvocations());
++                assertEquals(0, metrics.reservedTasks(), "all worker reservations must be released");
++                assertEquals(0, metrics.queuedTasks(), "all worker submissions must be drained");
++            } finally {
++                callerPool.shutdownNow();
++                LeavesXComputeExecutor.shutdown();
++            }
++        }
++    }
+ }

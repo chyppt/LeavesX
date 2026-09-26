@@ -5,7 +5,7 @@ Subject: [PATCH] Batch light and chunk lifecycle allocations for beta165
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
-index ff437bedbba4ec0a22b37665d013873331b145cb..09cd93aabd7fc2cf96ef37a9fe1cbc388c9a8c44 100644
+index 7d22e953..f6dea4fe 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 @@ -89,6 +89,13 @@ public final class ChunkHolderManager {
@@ -103,7 +103,7 @@ index ff437bedbba4ec0a22b37665d013873331b145cb..09cd93aabd7fc2cf96ef37a9fe1cbc38
      }
  
 diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
-index 889e871e02305c495bc8327bf66f277e0098ace3..ec8a0f4e8badf2762d2b145aec75162aa1298685 100644
+index 6e79eaca..0976e16b 100644
 --- a/net/minecraft/server/level/ServerChunkCache.java
 +++ b/net/minecraft/server/level/ServerChunkCache.java
 @@ -74,6 +74,13 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon

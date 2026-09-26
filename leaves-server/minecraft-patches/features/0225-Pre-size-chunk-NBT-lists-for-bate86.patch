@@ -5,7 +5,7 @@ Subject: [PATCH] Pre-size chunk NBT lists for bate86
 
 
 diff --git a/net/minecraft/world/level/chunk/storage/SerializableChunkData.java b/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
-index 109b6cf540733d62675ec5d50538aeaeb518cf7d..bb856dd42608fc36b1df813454caae02ad25ac0c 100644
+index 109b6cf5..bb856dd4 100644
 --- a/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
 +++ b/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
 @@ -574,6 +574,7 @@ public record SerializableChunkData(

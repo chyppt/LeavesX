@@ -5,7 +5,7 @@ Subject: [PATCH] Skip empty inside-block effect collector flushes for beta109
 
 
 diff --git a/net/minecraft/world/entity/InsideBlockEffectApplier.java b/net/minecraft/world/entity/InsideBlockEffectApplier.java
-index fc7cfc75e3e5c274f01498e4afd8693236b4e394..3ab552509e1858bc484c6afff00beee8e6a6af50 100644
+index fc7cfc75..3ab55250 100644
 --- a/net/minecraft/world/entity/InsideBlockEffectApplier.java
 +++ b/net/minecraft/world/entity/InsideBlockEffectApplier.java
 @@ -7,6 +7,7 @@ import java.util.Map;

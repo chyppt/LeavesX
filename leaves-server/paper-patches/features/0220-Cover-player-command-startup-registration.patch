@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 19:38:35 +0800
+Subject: [PATCH] Cover player command startup registration
+
+
+diff --git a/src/test/java/org/leavesx/leavesx/command/PlayerCommandRegistrationTest.java b/src/test/java/org/leavesx/leavesx/command/PlayerCommandRegistrationTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..41d4f2a61bcce69f734526080c101a237ea35957
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/command/PlayerCommandRegistrationTest.java
+@@ -0,0 +1,42 @@
++package org.leavesx.leavesx.command;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import java.util.Arrays;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.leavesmc.leaves.command.bot.PlayerCommand;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++@Normal
++class PlayerCommandRegistrationTest {
++
++    @Test
++    void startupConflictCheckDoesNotRequireALifecycleDispatcherContext() throws IOException {
++        final ClassNode owner = new ClassNode(Opcodes.ASM9);
++        new ClassReader(PlayerCommand.class.getName()).accept(owner, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        final MethodNode sync = owner.methods.stream()
++            .filter(method -> method.name.equals("syncRegistration") && method.desc.equals("(Z)V"))
++            .findFirst()
++            .orElseThrow();
++        final MethodInsnNode[] calls = Arrays.stream(sync.instructions.toArray())
++            .filter(MethodInsnNode.class::isInstance)
++            .map(MethodInsnNode.class::cast)
++            .toArray(MethodInsnNode[]::new);
++
++        assertTrue(Arrays.stream(calls).anyMatch(call ->
++            call.owner.equals("io/papermc/paper/command/brigadier/PaperCommands")
++                && call.name.equals("getDispatcherInternal")
++        ));
++        assertFalse(Arrays.stream(calls).anyMatch(call ->
++            call.owner.equals("io/papermc/paper/command/brigadier/PaperCommands")
++                && call.name.equals("getDispatcher")
++        ));
++    }
++}

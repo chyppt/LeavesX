@@ -1,0 +1,256 @@
+# 配置版本，请勿修改。默认：81。
+config-version: 81
+# 性能优化：按功能分组，关闭开关可使用原处理逻辑。
+performance:
+  ai:
+    # 减少 AI 和村民 POI 搜索的重复计算。默认：true。
+    enabled: true
+    animal-idle-goals:
+      # 降低动物空闲游走和环顾频率，会改变空闲行为。默认：false。
+      enabled: false
+      # 动物空闲行为间隔倍数，仅在上一项开启时生效。默认：2。
+      interval-multiplier: 2
+    dense-monsters:
+      # 怪物在小范围大量聚集且没有攻击目标时降低目标选择频率。默认：false。
+      enabled: false
+      # 重新检查局部怪物密度的间隔，单位为 Tick。默认：20。
+      check-interval-ticks: 20
+      # 密集且无目标时完整选择 AI 目标的间隔，单位为 Tick。默认：4。
+      goal-interval-ticks: 4
+      # 范围内达到此数量才降低怪物 AI 频率。默认：32。
+      minimum-entities: 32
+      # 统计怪物密度的水平和垂直范围，单位为方块。默认：8。
+      nearby-radius: 8
+    # 优化山羊和青蛙准备长跳时的候选位置构建，关闭后使用原版构建。默认：true。
+    long-jump-candidates: true
+    # 减少寻路重建和临时对象开销。默认：true。
+    pathfinding: true
+    # 优化山羊蓄力冲撞时的起点排序与筛选，关闭后使用原版流程。默认：true。
+    ram-position-selection: true
+    # 村民 Tick 使用原版 AI、目标检测和寻路，保障恐慌与刷铁机行为。默认：true。
+    villager-compatibility: true
+    # 优化村民领取职业时的职业查找，关闭后使用原版查找。默认：true。
+    villager-profession-assignment: true
+  blocks:
+    # 减少漏斗等方块实体每刻创建的临时对象。默认：true。
+    block-entities: true
+    # 复用容器同步的临时副本，减少背包和箱子操作时的内存分配。默认：true。
+    container-copy-reuse: true
+    # 加快区块卸载时清理方块实体更新项。默认：true。
+    ticker-removal: true
+  cache-biome:
+    # 用少量缓存内存减少群系计算；保持精确群系边界，插件修改群系后立即生效。默认：true。
+    enabled: true
+    # 进度条件检查使用群系计算缓存。默认：true。
+    advancements: true
+    # 刷怪检查使用群系计算缓存。默认：true。
+    mob-spawning: true
+  chunks:
+    unloading:
+      # 有 tick 余量时加快处理积压的区块卸载。默认：true。
+      enabled: true
+      # 达到此积压数量后提高卸载速度。默认：1000。
+      backlog-threshold: 1000
+      # 加速卸载时的最大处理量。默认：500。
+      maximum-per-tick: 500
+      # 加速卸载时的起始处理量。默认：100。
+      minimum-per-tick: 100
+  entities:
+    # 物品堆满后停止无用合并扫描。默认：true。
+    item-merge: true
+    # 只查一个实体时立即停止搜索并复用临时列表。默认：true。
+    queries: true
+    # 减少实体装备等状态检查的临时对象。默认：true。
+    state-checks: true
+  events:
+    # 没有监听器时跳过事件对象创建。默认：true。
+    skip-empty-events: true
+  faster-random-generator:
+    # 更换运行时随机算法，天气、作物等随机结果会改变，依赖 RNG 序列的装置可能受影响；不改地形和史莱姆区块，需重启。默认：false。
+    enabled: false
+  lithium:
+    # 启用 Lithium 的空闲实体和漏斗槽位优化；关闭后走原检查逻辑。默认：true。
+    enabled: true
+  memory:
+    # 缓存不变的碰撞结果。默认：true。
+    immutable-caches: true
+    # 缓存资源名称和哈希值。默认：true。
+    resource-identifiers: true
+  network:
+    # 合并网络 flush，减少系统调用。默认：true。
+    flush-consolidation: true
+    # 加快网络整数编码，不改变数据内容。默认：true。
+    optimized-varint: true
+  # 玩家未跨区块且视距未变时跳过重复的范围更新，保留碰撞和潜行检查。默认：true。
+  optimize-player-movement: true
+  # 用少量坐标缓存减少随机刻开销；不降频，不改生长概率、执行顺序和随机数序列。默认：true。
+  optimize-random-tick: true
+  # 仅减少动力和激活铁轨查电开销，不批量改写轨道，保留传播范围、更新顺序和红石事件。默认：false。
+  optimized-powered-rails: false
+  spawning:
+    # 减少刷怪统计的临时对象和重复遍历。默认：true。
+    enabled: true
+    # 减少刷怪范围判断的重复计算。默认：true。
+    chunk-range: true
+  startup:
+    ai:
+      # 启动前几秒分批执行生物 AI，降低重启瞬间的寻路尖峰。默认：true。
+      enabled: true
+      # 启动阶段每 Tick 最多完整执行的普通生物 AI 数；兼容模式下村民不受此限制。默认：16。
+      entities-per-tick: 16
+      # 启动分批 AI 持续的 Tick 数。默认：40。
+      warmup-ticks: 40
+  use-virtual-thread:
+    # 异步聊天使用虚拟线程；依赖固定聊天线程的插件可能不兼容，聊天事件流程不变，需重启。默认：false。
+    async-chat-executor: false
+    # 异步插件任务使用虚拟线程；依赖固定线程的插件可能不兼容，同步任务不变，需重启。默认：false。
+    bukkit-async-scheduler: false
+# 异步任务：区块打包、刷怪统计、追踪计算和玩家存档。
+async:
+  # 后台准备山羊和青蛙的长跳候选位置；保持候选顺序、随机抽取及跳跃时机，共用计算池。默认：true。
+  ai-candidates: true
+  chunk-send:
+    # 是否异步打包区块数据；多人进服、传送或高速飞行时可降低主线程负载。默认：true。
+    enabled: true
+    # 异步区块发送最多排队任务数；队列满时延后重试，不阻塞主线程。默认：256。
+    queue-size: 256
+  entity-tracker:
+    # 是否并行计算实体追踪变化；发包、事件和追踪关系提交仍在主线程。默认：true。
+    enabled: true
+    # 实体追踪计算最多排队任务数；队列满时回到主线程。默认：1024。
+    queue-size: 1024
+    # 实体追踪为共享计算池提供的线程数，0 为自动，最多 16。默认：0。
+    threads: 0
+  # 区块打包使用独立队列，避免进服或传送时堵住寻路计算；线程总预算不增加，需重启。默认：true。
+  isolate-chunk-packing: true
+  # 是否异步计算生物生成统计；需同时开启 Paper 的 per-player-mob-spawns。默认：true。
+  mob-spawning: true
+  pathfinding:
+    # 允许快照寻路使用工作线程；需同时打开对应的快照开关，陆地和飞行寻路仍在主线程。默认：true。
+    enabled: true
+    # 通用计算线程空闲保留时间，单位为秒。默认：60。
+    keepalive-seconds: 60
+    # 寻路线程队列容量；水中快照另有内存上限，队列或快照名额用完时主线程完整计算。默认：1024。
+    queue-size: 1024
+    # 寻路为共享计算池提供的线程数，0 为自动，最多 16。默认：0。
+    threads: 0
+    # 实验性水中寻路：完整路径搜索在后台完成，可能延后一刻或数刻开始移动；地形变化或搜索越界时主线程重算，陆地、飞行和自定义导航不受影响。默认：false。
+    water-snapshot: false
+  playerdata-save:
+    # 是否异步保存玩家数据；采集玩家状态仍在主线程，同一玩家按顺序保存。默认：true。
+    enabled: true
+    # 后台压缩玩家存档，减少自动保存卡顿；需要启用异步玩家保存，同一玩家仍按顺序保存。默认：true。
+    compression: true
+    # 玩家数据写入最多排队任务数；队列满时等待空位，不会让新存档越过旧存档。默认：1024。
+    queue-size: 1024
+# 计算线程：控制线程数量和任务达到多大规模时并行。
+parallelism:
+  ai-target-search:
+    # 多线程计算大量 AI 目标的距离。默认：true。
+    enabled: true
+    # AI 候选达到此数量才使用多线程。默认：256。
+    minimum-candidates: 256
+    # 每个 AI 计算分片至少处理的候选数。默认：128。
+    minimum-items-per-worker: 128
+  entity-activation:
+    # 允许超大实体激活批次使用多线程。默认：true。
+    enabled: true
+    # 激活实体达到此数量才使用多线程。默认：2048。
+    minimum-entities: 2048
+    # 每个激活计算分片至少处理的实体数。默认：512。
+    minimum-items-per-worker: 512
+  # 每个计算分片至少处理的项目数。默认：64。
+  minimum-items-per-worker: 64
+  # 实验性：仅并行普通生物的大批简单碰撞盒计算，小批量走原流程；不处理村民、TNT和复杂形状，实际收益取决于场景。默认：false。
+  mob-collision-math: false
+  mob-spawning:
+    # 允许超大规模刷怪计数使用多线程。默认：true。
+    enabled: true
+    # 实体达到此数量才并行统计刷怪。默认：2048。
+    minimum-entities: 2048
+  # 启动时预热计算线程，减少重启后第一次并行任务的延迟。默认：true。
+  prestart-workers: true
+  # LeavesX 纯计算线程数，0 为自动。默认：0。
+  workers: 0
+# 区域化并行 Tick：并行模拟、串行可见；off 为现有单线程流水线，任何版本可无损回退。
+regionized-ticking:
+  # 区域化并行 Tick 总开关。off 为单线程流水线；worlds/regions 为实验性，出问题改回 off。需重启。默认：off。
+  mode: off
+  # 空间间隔小于该区块数的加载分量合并为同一区域，仅 regions 模式使用。默认：8。
+  merge-radius-chunks: 8
+  # 钉在服务器线程 Tick 的世界名（大小写不敏感），供不兼容插件混合部署。默认：[]。
+  strict-serial-worlds: []
+  # 跨区域意图队列上限；溢出时该区域本 Tick 串行重放。默认：65536。
+  intent-queue-size: 65536
+  # 屏障等待占 Tick 预算比例持续超过该值时超时区域自动降级，0 关闭。默认：25。
+  auto-degrade-barrier-percent: 25
+  # 单 Tick 内串行重放累计超过该次数自动降档（regions→worlds→off），0 关闭。默认：64。
+  auto-degrade-replay-threshold: 64
+  # 并行世界/区域线程上限，0 为自动（CPU-1，不超过世界数）。默认：0。
+  threads: 0
+diagnostics:
+  # 是否启用 /leavesx 性能诊断命令。默认：true。
+  command-enabled: true
+  # 实体类型和热点默认显示数量。默认：10。
+  default-result-limit: 10
+  # 性能变化统计最近多少秒。默认：60。
+  rolling-window-seconds: 60
+  # 记录超过多少毫秒的同步插件任务。默认：2。
+  slow-plugin-task-ms: 2
+features:
+  # 铁砧命名为“更新抑制器”的潜影盒可触发 CCE 更新抑制。默认：false。
+  named-cce-shulker-boxes: false
+  # 主手或副手拿潜影盒右键空气时直接打开。默认：false。
+  quick-open-shulker-boxes: false
+  # 新世界使用独立安全种子保护结构和资源分布；不改已有世界，需重启。默认：false。
+  secure-seed: false
+  # 开启后，旁观者且 spectators_generate_chunks=false 时不加载或观察区块，按无玩家处理。默认：false。
+  spectator-no-chunk-loading: false
+fakeplayer:
+  # 是否启用 Carpet 风格的 /player 假人控制命令。默认：false。
+  carpet-player-command: false
+  # 只清理压缩 NBT 已确认损坏的假人登记；缺世界、世界未加载或缺文件都会保留。默认：true。
+  clean-invalid-resident-bots: true
+  # 假人头顶和 TAB 显示前缀；默认加入退出提示不带前缀。支持 MiniMessage 和 &/§ 颜色代码。默认：[假人]。
+  display-prefix: '[假人]'
+  # 假人用户名包含这些文字时禁止创建，大小写不敏感；空列表不限制。默认：[]。
+  forbidden-name-contains: []
+  role:
+    # 是否启用假人作用显示。作用只显示在头顶和 TAB，不改变真实用户名。默认：false。
+    enabled: false
+    # 是否只允许中文作用；关闭后允许普通文字。默认：false。
+    chinese-only: false
+    # 作用是否支持 & 或 § 颜色代码；颜色代码不计入长度。默认：true。
+    color-codes: true
+    # 是否限制作用长度。默认：true。
+    length-limited: true
+    # 作用允许的最大字符数。默认：4。
+    max-length: 4
+    # 是否强制创建假人时填写作用；仅在作用显示开启时生效。默认：false。
+    required: false
+    wrapper:
+      # 是否在作用外显示包裹符号。默认：true。
+      enabled: true
+      # 作用左侧包裹符号。默认：[。
+      left: '['
+      # 作用右侧包裹符号。默认：]。
+      right: ']'
+  startup-restore:
+    # 启动时分批恢复常驻假人，降低重启瞬间的区块和实体尖峰。默认：false。
+    enabled: false
+    # 启动分批恢复时每 Tick 最多恢复的假人数。默认：1。
+    per-tick: 1
+messages:
+  # 服务端核心提示的统一前缀，例如假人创建成功或配置重载提示；支持 MiniMessage 和 &/§ 颜色代码。默认：空。
+  core-prefix: ''
+  # 自定义进入提示；支持 <player>、<name>、<display_name>、%player_name% 和颜色代码。默认：空，使用原版提示。
+  join: ''
+  # 自定义退出提示；支持 <player>、<name>、<display_name>、%player_name% 和颜色代码。默认：空，使用原版提示。
+  quit: ''
+console-messages:
+  # 是否显示碰撞模式自动转换提示。默认：false。
+  show-collision-conversion-warning: false
+  # 是否显示离线模式安全警告。默认：false。
+  show-offline-mode-warning: false
+  # 是否显示使用 root 或管理员启动的警告。默认：false。
+  show-root-admin-warning: false

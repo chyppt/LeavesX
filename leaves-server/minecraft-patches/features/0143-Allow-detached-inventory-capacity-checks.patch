@@ -5,7 +5,7 @@ Subject: [PATCH] Allow detached inventory capacity checks
 
 
 diff --git a/net/minecraft/world/entity/player/Inventory.java b/net/minecraft/world/entity/player/Inventory.java
-index 47e1a18cc7fee51971a113fa4d6f4f8f2e45d736..686eefc6d710a544e18287ed34e156a00012d82f 100644
+index 47e1a18c..686eefc6 100644
 --- a/net/minecraft/world/entity/player/Inventory.java
 +++ b/net/minecraft/world/entity/player/Inventory.java
 @@ -179,7 +179,7 @@ public class Inventory implements Container, Nameable {

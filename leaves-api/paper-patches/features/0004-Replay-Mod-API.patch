@@ -1,14 +1,14 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Lumine1909 <133463833+Lumine1909@users.noreply.github.com>
 Date: Sat, 17 May 2025 17:36:22 +0800
-Subject: [PATCH] Replay Mod API
+Subject: [PATCH 04/10] Replay Mod API
 
 
 diff --git a/src/main/java/org/bukkit/Bukkit.java b/src/main/java/org/bukkit/Bukkit.java
-index 986a34b5b7872ba964f2f9cdd735439d91973557..77f8f93b2402630150cfddb66694a861103d7f58 100644
+index 6997c8cf4..37b2231a7 100644
 --- a/src/main/java/org/bukkit/Bukkit.java
 +++ b/src/main/java/org/bukkit/Bukkit.java
-@@ -3017,4 +3017,10 @@ public final class Bukkit {
+@@ -3016,4 +3016,10 @@ public final class Bukkit {
          return server.getBotManager();
      }
      // Leaves end - Bot API
@@ -20,10 +20,10 @@ index 986a34b5b7872ba964f2f9cdd735439d91973557..77f8f93b2402630150cfddb66694a861
 +    // Leaves end - Photographer API
  }
 diff --git a/src/main/java/org/bukkit/Server.java b/src/main/java/org/bukkit/Server.java
-index 1a81b53408cd20af750d507fab8d037de389f450..471297bd2c74430a2b4a5b7bb93521326e1a2a9d 100644
+index 42d097c41..f343cba49 100644
 --- a/src/main/java/org/bukkit/Server.java
 +++ b/src/main/java/org/bukkit/Server.java
-@@ -2789,4 +2789,6 @@ public interface Server extends PluginMessageRecipient, net.kyori.adventure.audi
+@@ -2783,4 +2783,6 @@ public interface Server extends PluginMessageRecipient, net.kyori.adventure.audi
       */
      @NotNull org.leavesmc.leaves.entity.bot.BotManager getBotManager();
      // Leaves end - Bot API

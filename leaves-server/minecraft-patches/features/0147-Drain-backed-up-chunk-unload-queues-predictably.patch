@@ -5,7 +5,7 @@ Subject: [PATCH] Drain backed up chunk unload queues predictably
 
 
 diff --git a/ca/spottedleaf/moonrise/paper/PaperHooks.java b/ca/spottedleaf/moonrise/paper/PaperHooks.java
-index e1e032e709193b5a8008d69b748bc54bc660eb64..e39a3cb0f5500ded217fd2cbf2240a93f79eb996 100644
+index 2c996781..533abcac 100644
 --- a/ca/spottedleaf/moonrise/paper/PaperHooks.java
 +++ b/ca/spottedleaf/moonrise/paper/PaperHooks.java
 @@ -217,6 +217,26 @@ public class PaperHooks extends BaseChunkSystemHooks implements PlatformHooks {
@@ -35,15 +35,8 @@ index e1e032e709193b5a8008d69b748bc54bc660eb64..e39a3cb0f5500ded217fd2cbf2240a93
      @Override
      public boolean configFixMC159283() {
          return io.papermc.paper.configuration.GlobalConfiguration.get().misc.fixFarEndTerrainGeneration;
-@@ -308,4 +328,4 @@ public class PaperHooks extends BaseChunkSystemHooks implements PlatformHooks {
-     public boolean addTicketForEnderPearls(final ServerLevel world) {
-         return !world.paperConfig().misc.legacyEnderPearlBehavior;
-     }
--}
-\ No newline at end of file
-+}
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java b/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
-index 7dda31a98de2ddf0ca7a520ae48025fc96754011..323b5339cbd1062106dfe7f360c4f2222d9c18c1 100644
+index 7dda31a9..323b5339 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
 @@ -16,6 +16,9 @@ public final class ChunkUnloadQueue {
@@ -140,7 +133,7 @@ index 7dda31a98de2ddf0ca7a520ae48025fc96754011..323b5339cbd1062106dfe7f360c4f222
  
              final JsonArray coordinates = new JsonArray();
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
-index 05d374f679919d082064e8f2bb363a419bc9648e..4dfccf6a3e1f891dfca866e4c6a579884db3f8f1 100644
+index e4188203..a9907562 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 @@ -1156,24 +1156,8 @@ public final class ChunkHolderManager {

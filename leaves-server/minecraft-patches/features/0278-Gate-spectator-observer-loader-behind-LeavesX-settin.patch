@@ -5,7 +5,7 @@ Subject: [PATCH] Gate spectator observer loader behind LeavesX setting
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
-index 6849e7db1d724b167aee6e2cab7960333ce8a3e8..4b95569b85ee333a46bc57b4ba58f1779b6e159a 100644
+index 91bd1372..20fb8eba 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
 @@ -189,7 +189,8 @@ public final class RegionizedPlayerChunkLoader {

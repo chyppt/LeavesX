@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize block entity type validation for beta108
 
 
 diff --git a/net/minecraft/world/entity/ai/Brain.java b/net/minecraft/world/entity/ai/Brain.java
-index 7385725258c889000763a16618347b0bdfdd8436..30a7a71feb3232a29300eb38c70d7e6c9532bb66 100644
+index 115bda02..7e69b54a 100644
 --- a/net/minecraft/world/entity/ai/Brain.java
 +++ b/net/minecraft/world/entity/ai/Brain.java
 @@ -239,6 +239,12 @@ public class Brain<E extends LivingEntity> {
@@ -22,7 +22,7 @@ index 7385725258c889000763a16618347b0bdfdd8436..30a7a71feb3232a29300eb38c70d7e6c
          MemorySlot<U> slot = this.getMemorySlotIfPresent(type);
          return slot == null ? null : Optional.ofNullable(slot.value());
 diff --git a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
-index 1b9ad07d96a8a6cd63e3cbcd7878561f8372f584..63a5eb93e7d6d3f34882c233fa70fff3de89392b 100644
+index 1b9ad07d..63a5eb93 100644
 --- a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
 @@ -55,7 +55,7 @@ public class PlayerSensor extends Sensor<LivingEntity> {
@@ -35,7 +35,7 @@ index 1b9ad07d96a8a6cd63e3cbcd7878561f8372f584..63a5eb93e7d6d3f34882c233fa70fff3
          final List<Player> visiblePlayers;
          if (optimizeAllocations) {
 diff --git a/net/minecraft/world/level/block/Block.java b/net/minecraft/world/level/block/Block.java
-index dd8f3cf2c637eac3d565f0a133a2be4143a0ec6b..691b541068f50fd551b1cd90a4ebf9f09d0ac6f4 100644
+index bdb42ce6..a427a467 100644
 --- a/net/minecraft/world/level/block/Block.java
 +++ b/net/minecraft/world/level/block/Block.java
 @@ -57,6 +57,7 @@ import net.minecraft.world.level.LevelAccessor;
@@ -46,7 +46,7 @@ index dd8f3cf2c637eac3d565f0a133a2be4143a0ec6b..691b541068f50fd551b1cd90a4ebf9f0
  import net.minecraft.world.level.block.state.BlockBehaviour;
  import net.minecraft.world.level.block.state.BlockState;
  import net.minecraft.world.level.block.state.StateDefinition;
-@@ -115,6 +116,9 @@ public class Block extends BlockBehaviour implements ItemLike {
+@@ -112,6 +113,9 @@ public class Block extends BlockBehaviour implements ItemLike {
      public static final int UPDATE_LIMIT = 512;
      protected final StateDefinition<Block, BlockState> stateDefinition;
      private BlockState defaultBlockState;
@@ -57,11 +57,11 @@ index dd8f3cf2c637eac3d565f0a133a2be4143a0ec6b..691b541068f50fd551b1cd90a4ebf9f0
      public final boolean isDestroyable() {
          return io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.allowPermanentBlockBreakExploits ||
 diff --git a/net/minecraft/world/level/block/entity/BlockEntityType.java b/net/minecraft/world/level/block/entity/BlockEntityType.java
-index 278fe5fe0e99ba4d42e2eec88007edd04fd8e5cf..7b9d24b1202f7b103eb8877728a85e9963fdc7b8 100644
+index 960dca72..546235eb 100644
 --- a/net/minecraft/world/level/block/entity/BlockEntityType.java
 +++ b/net/minecraft/world/level/block/entity/BlockEntityType.java
-@@ -290,6 +290,15 @@ public class BlockEntityType<T extends BlockEntity> {
-     private BlockEntityType(final BlockEntityType.BlockEntitySupplier<? extends T> factory, final Set<Block> validBlocks) {
+@@ -17,6 +17,15 @@ public class BlockEntityType<T extends BlockEntity> {
+     public BlockEntityType(final BlockEntityType.BlockEntitySupplier<? extends T> factory, final Set<Block> validBlocks) {
          this.factory = factory;
          this.validBlocks = validBlocks;
 +        // LeavesX - populate immutable registry metadata once instead of hashing the valid-block set on every check.
@@ -76,7 +76,7 @@ index 278fe5fe0e99ba4d42e2eec88007edd04fd8e5cf..7b9d24b1202f7b103eb8877728a85e99
      }
  
      public T create(final BlockPos worldPosition, final BlockState blockState) {
-@@ -297,7 +306,15 @@ public class BlockEntityType<T extends BlockEntity> {
+@@ -24,7 +33,15 @@ public class BlockEntityType<T extends BlockEntity> {
      }
  
      public boolean isValid(final BlockState state) {

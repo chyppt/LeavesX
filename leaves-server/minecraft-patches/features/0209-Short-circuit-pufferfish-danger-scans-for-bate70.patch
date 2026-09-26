@@ -5,7 +5,7 @@ Subject: [PATCH] Short-circuit pufferfish danger scans for bate70
 
 
 diff --git a/net/minecraft/world/entity/animal/fish/Pufferfish.java b/net/minecraft/world/entity/animal/fish/Pufferfish.java
-index 9981452e2dda0675defd279c4460031dae5fd25f..e255ddeff1898c46a4a207fa37d0724531d78de4 100644
+index ad7bdb7f..e1ca4d07 100644
 --- a/net/minecraft/world/entity/animal/fish/Pufferfish.java
 +++ b/net/minecraft/world/entity/animal/fish/Pufferfish.java
 @@ -26,6 +26,7 @@ import net.minecraft.world.item.Items;
@@ -16,7 +16,7 @@ index 9981452e2dda0675defd279c4460031dae5fd25f..e255ddeff1898c46a4a207fa37d07245
  
  public class Pufferfish extends AbstractFish {
      private static final EntityDataAccessor<Integer> PUFF_STATE = SynchedEntityData.defineId(Pufferfish.class, EntityDataSerializers.INT);
-@@ -209,16 +210,25 @@ public class Pufferfish extends AbstractFish {
+@@ -206,16 +207,25 @@ public class Pufferfish extends AbstractFish {
  
          @Override
          public boolean canUse() {

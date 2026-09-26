@@ -5,16 +5,13 @@ Subject: [PATCH] Fix EntityPortalExitEvent logic
 
 
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 0ddca33c4161c18786f0cf855d25cd16da9dc420..44e87fc070a5602b5f8834a9ae057824f0188499 100644
+index b5803102..aa01c208 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -4093,19 +4093,21 @@ public abstract class Entity
-                 );
-                 event.callEvent();
+@@ -4170,14 +4170,15 @@ public abstract class Entity
  
-+                // Leaves start - fix
                  // Only change the target if actually needed, since we reset relative flags
--                if (event.isCancelled() || !to.equals(event.getTo()) || !after.equals(event.getAfter())) {
+                 if (event.isCancelled() || !to.equals(event.getTo()) || !after.equals(event.getAfter())) {
 -                    if (event.isCancelled() || event.getTo() == null) {
 -                        org.bukkit.World toWorld = to.getWorld();
 -                        to = event.getFrom().clone();
@@ -22,7 +19,7 @@ index 0ddca33c4161c18786f0cf855d25cd16da9dc420..44e87fc070a5602b5f8834a9ae057824
 -                        velocity = org.bukkit.craftbukkit.util.CraftVector.toVec3(event.getBefore());
 -                    } else {
 -                        to = event.getTo().clone();
-+                if (event.isCancelled() || (!to.equals(event.getTo()) || !after.equals(event.getAfter()))) {
++                    // Leaves - cancelling a portal exit keeps the entity in its original world.
 +                    if (!event.isCancelled()) {
 +                        if (event.getTo() != null) {
 +                            to = event.getTo().clone();
@@ -32,9 +29,5 @@ index 0ddca33c4161c18786f0cf855d25cd16da9dc420..44e87fc070a5602b5f8834a9ae057824
 +                        to = event.getFrom().clone();
 +                        velocity = Vec3.ZERO;
                      }
-                     transition = new TeleportTransition(((org.bukkit.craftbukkit.CraftWorld) to.getWorld()).getHandle(), org.bukkit.craftbukkit.util.CraftLocation.toVec3(to), velocity, to.getYaw(), to.getPitch(), transition.missingRespawnBlock(), transition.asPassenger(), Set.of(), transition.postTeleportTransition(), transition.cause());
+                     transition = transition.withChangedLocation(to).withRelatives(Set.of()).withVelocity(velocity);
                  }
-+                // Leaves end - fix
-             }
-             if (this.isRemoved()) {
-                 return null;

@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize entity tick diagnostic state for bate91
 
 
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index 7c01649594603f01942380e0f2764cd5e8cc1fab..63cda129ff1faa2a4a30ee2b29d8f67ebdbff742 100644
+index 0d065206..95357091 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -1409,13 +1409,31 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -1424,13 +1424,31 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
  
          return ret;
      }
@@ -41,7 +41,7 @@ index 7c01649594603f01942380e0f2764cd5e8cc1fab..63cda129ff1faa2a4a30ee2b29d8f67e
                  currentlyTickingEntity.lazySet(entity);
              }
              // Paper end - log detailed entity tick information
-@@ -1437,7 +1455,9 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -1452,7 +1470,9 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
          }
          // Paper start - log detailed entity tick information
          } finally {

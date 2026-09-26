@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize Sensing cache for bate97
 
 
 diff --git a/net/minecraft/world/entity/ai/sensing/Sensing.java b/net/minecraft/world/entity/ai/sensing/Sensing.java
-index 0da4d7d500e4297457081b4c83862296c9b92e72..c5680187232b65e2b896fa187a4fa78eea77ef8d 100644
+index 0da4d7d5..c5680187 100644
 --- a/net/minecraft/world/entity/ai/sensing/Sensing.java
 +++ b/net/minecraft/world/entity/ai/sensing/Sensing.java
 @@ -1,41 +1,64 @@

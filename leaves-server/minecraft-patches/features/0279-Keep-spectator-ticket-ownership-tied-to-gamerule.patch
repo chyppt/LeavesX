@@ -5,7 +5,7 @@ Subject: [PATCH] Keep spectator ticket ownership tied to gamerule
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
-index 4b95569b85ee333a46bc57b4ba58f1779b6e159a..44c9dccc00d1bdd8190f6442510a01f0eb0a1820 100644
+index 20fb8eba..bd4eff5b 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
 @@ -189,8 +189,7 @@ public final class RegionizedPlayerChunkLoader {

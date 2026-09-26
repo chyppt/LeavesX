@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize light update packet assembly for beta120
 
 
 diff --git a/net/minecraft/network/protocol/game/ClientboundLightUpdatePacketData.java b/net/minecraft/network/protocol/game/ClientboundLightUpdatePacketData.java
-index a6971411d035f1fd759c8348320c6b43d65ce957..97ec50f09b74db2c9942cb8bdb03e589d1223edf 100644
+index a6971411..97ec50f0 100644
 --- a/net/minecraft/network/protocol/game/ClientboundLightUpdatePacketData.java
 +++ b/net/minecraft/network/protocol/game/ClientboundLightUpdatePacketData.java
 @@ -2,6 +2,7 @@ package net.minecraft.network.protocol.game;

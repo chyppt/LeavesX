@@ -5,7 +5,7 @@ Subject: [PATCH] Defer empty chunk extra-packet lists for beta122
 
 
 diff --git a/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java b/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
-index 3a18aa0a018d8a0a0abc37bd3e01c6118a49a283..a3c4107a1f978786b3a9022ebabce08e74064ad4 100644
+index 3a18aa0a..a3c4107a 100644
 --- a/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
 +++ b/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
 @@ -19,6 +19,7 @@ import net.minecraft.network.FriendlyByteBuf;

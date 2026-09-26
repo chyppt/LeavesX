@@ -5,10 +5,10 @@ Subject: [PATCH] Add LeavesX slow tick sampling hooks
 
 
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index 37b51ceb8410534e86647cbe6ecddde59fcbc5c9..445e73a96461568e2dee49eaa8bf5039744ef07a 100644
+index 7a7b655c..35f6d71c 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -1638,7 +1638,13 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1612,7 +1612,13 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
                  // Paper end - avoid issues with certain tasks not processing during sleep
                  this.server.spark.executeMainThreadTasks(); // Paper - spark
                  this.tickConnection();
@@ -23,7 +23,7 @@ index 37b51ceb8410534e86647cbe6ecddde59fcbc5c9..445e73a96461568e2dee49eaa8bf5039
                  return;
              }
          }
-@@ -1686,6 +1692,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1660,6 +1666,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
          // Paper start - Server Tick Events
          long endTime = System.nanoTime();
          long remaining = this.nextTickTimeNanos - endTime;
@@ -31,7 +31,7 @@ index 37b51ceb8410534e86647cbe6ecddde59fcbc5c9..445e73a96461568e2dee49eaa8bf5039
          new com.destroystokyo.paper.event.server.ServerTickEndEvent(this.tickCount, ((double)(endTime - this.currentTickStart) / 1000000D), remaining).callEvent();
          // Paper end - Server Tick Events
          this.server.spark.tickEnd(((double)(endTime - this.currentTickStart) / 1000000D)); // Paper - spark
-@@ -1701,6 +1708,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1675,6 +1682,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
      }
  
      protected void processPacketsAndTick(final boolean sprinting) {

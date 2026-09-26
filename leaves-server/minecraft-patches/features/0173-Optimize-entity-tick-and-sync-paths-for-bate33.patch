@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize entity tick and sync paths for bate33
 
 
 diff --git a/net/minecraft/network/syncher/SynchedEntityData.java b/net/minecraft/network/syncher/SynchedEntityData.java
-index 0075164bf057271d63a8b97473aa5c41c03eac91..9e019e1e0ed8dc4cb773e45de5124af2675d460b 100644
+index 0075164b..9e019e1e 100644
 --- a/net/minecraft/network/syncher/SynchedEntityData.java
 +++ b/net/minecraft/network/syncher/SynchedEntityData.java
 @@ -20,6 +20,7 @@ public class SynchedEntityData {
@@ -54,16 +54,16 @@ index 0075164bf057271d63a8b97473aa5c41c03eac91..9e019e1e0ed8dc4cb773e45de5124af2
          for (SynchedEntityData.DataItem<?> dataItem : this.itemsById) {
              if (dataItem.isDirty()) {
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 350c523a9a5e359c9b9cf617e2898d080f5d1268..35428a14f217c2f51e4592edb948ebe991131ae9 100644
+index de3d03bb..5c09ff9b 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
-@@ -956,30 +956,33 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -958,29 +958,32 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
  
      protected void tickEffects() {
          if (this.level() instanceof ServerLevel serverLevel) {
 -            Iterator<Holder<MobEffect>> iterator = this.activeEffects.keySet().iterator();
 -
--            this.isTickingEffects = true; // CraftBukkit
+-            this.tickingEffects = true; // CraftBukkit
 -            try {
 -                while (iterator.hasNext()) {
 -                    Holder<MobEffect> mobEffect = iterator.next();
@@ -76,7 +76,7 @@ index 350c523a9a5e359c9b9cf617e2898d080f5d1268..35428a14f217c2f51e4592edb948ebe9
 +            if (!org.leavesx.leavesx.config.LeavesXRuntime.entityStateOptimizations() || !this.activeEffects.isEmpty()) {
 +                Iterator<Holder<MobEffect>> iterator = this.activeEffects.keySet().iterator();
 +
-+                this.isTickingEffects = true; // CraftBukkit
++                this.tickingEffects = true; // CraftBukkit
 +                try {
 +                    while (iterator.hasNext()) {
 +                        Holder<MobEffect> mobEffect = iterator.next();
@@ -103,9 +103,8 @@ index 350c523a9a5e359c9b9cf617e2898d080f5d1268..35428a14f217c2f51e4592edb948ebe9
                  }
 -            } catch (ConcurrentModificationException var6) {
              }
- 
              // CraftBukkit start
-+            // Keep cleanup outside the empty-effects guard so queued plugin changes and exception recovery remain intact.
-             this.isTickingEffects = false;
-             for (ProcessableEffect effect : this.effectsToProcess) {
-                 if (effect.effect != null) {
++            // Keep cleanup outside the empty-effects guard so queued plugin changes remain intact.
+             this.tickingEffects = false;
+             Runnable task;
+             while ((task = this.deferredEffectUpdates.poll()) != null) {

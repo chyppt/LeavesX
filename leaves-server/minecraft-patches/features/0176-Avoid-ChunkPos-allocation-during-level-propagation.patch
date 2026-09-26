@@ -5,7 +5,7 @@ Subject: [PATCH] Avoid ChunkPos allocation during level propagation
 
 
 diff --git a/net/minecraft/server/level/ChunkTracker.java b/net/minecraft/server/level/ChunkTracker.java
-index ad96b720b4897e6057286bfa4e3ea1c60bedf1c4..fedcbfd0c3a70c4cc7aa3e17ff279b0e0ddd7a3f 100644
+index ad96b720..fedcbfd0 100644
 --- a/net/minecraft/server/level/ChunkTracker.java
 +++ b/net/minecraft/server/level/ChunkTracker.java
 @@ -16,9 +16,10 @@ public abstract class ChunkTracker extends DynamicGraphMinFixedPoint {

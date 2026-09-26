@@ -5,7 +5,7 @@ Subject: [PATCH] Configurable MC-59471
 
 
 diff --git a/net/minecraft/world/level/block/TripWireHookBlock.java b/net/minecraft/world/level/block/TripWireHookBlock.java
-index ad7a8c082c20b1ad30c520a94e9f902986ed6030..cf6dcbffcef94bed19b89c252b602dd04d646d84 100644
+index 9d08ce61..14bfa86f 100644
 --- a/net/minecraft/world/level/block/TripWireHookBlock.java
 +++ b/net/minecraft/world/level/block/TripWireHookBlock.java
 @@ -200,10 +200,17 @@ public class TripWireHookBlock extends Block {

@@ -5,7 +5,7 @@ Subject: [PATCH] Compact SimpleBitStorage metadata for beta183
 
 
 diff --git a/net/minecraft/util/SimpleBitStorage.java b/net/minecraft/util/SimpleBitStorage.java
-index 738dd4eb25208d853ca89ee78046b41b5bb45a91..16c4fb1cb47e50b6a5a83125574f803839546835 100644
+index 7648aeab..b7efd3c5 100644
 --- a/net/minecraft/util/SimpleBitStorage.java
 +++ b/net/minecraft/util/SimpleBitStorage.java
 @@ -5,208 +5,11 @@ import org.apache.commons.lang3.Validate;

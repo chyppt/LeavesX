@@ -6,10 +6,10 @@ Subject: [PATCH] Optimize sun burn tick
 This patch is Powered by Gale(https://github.com/GaleMC/Gale)
 
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 983370f37b744eb43c3d9c3edd1eb99e545250d7..36f6265e6a23522042d5893ded486fd307abe6b7 100644
+index 2c819037..66ee9e8d 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -2213,11 +2213,23 @@ public abstract class Entity
+@@ -2299,11 +2299,23 @@ public abstract class Entity
  
      @Deprecated
      public float getLightLevelDependentMagicValue() {
@@ -34,10 +34,10 @@ index 983370f37b744eb43c3d9c3edd1eb99e545250d7..36f6265e6a23522042d5893ded486fd3
          this.absSnapTo(x, y, z);
          this.absSnapRotationTo(yRot, xRot);
 diff --git a/net/minecraft/world/entity/Mob.java b/net/minecraft/world/entity/Mob.java
-index 3bbf67d96f687b7275a4e496f0d25018ff4890c7..b03745b65eede6b9e12aa61906df050ea1370325 100644
+index 4787c22a..fe3e3d3c 100644
 --- a/net/minecraft/world/entity/Mob.java
 +++ b/net/minecraft/world/entity/Mob.java
-@@ -592,8 +592,27 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+@@ -579,8 +579,27 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
          }
      }
  

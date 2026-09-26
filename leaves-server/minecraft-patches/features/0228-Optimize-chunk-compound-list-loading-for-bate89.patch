@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize chunk compound list loading for bate89
 
 
 diff --git a/net/minecraft/world/level/chunk/storage/SerializableChunkData.java b/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
-index bb856dd42608fc36b1df813454caae02ad25ac0c..d721738c7725782f2f19ad7650ca44240b6f3205 100644
+index bb856dd4..d721738c 100644
 --- a/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
 +++ b/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
 @@ -1,5 +1,6 @@

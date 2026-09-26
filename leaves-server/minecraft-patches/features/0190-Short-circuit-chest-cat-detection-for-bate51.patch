@@ -5,7 +5,7 @@ Subject: [PATCH] Short-circuit chest cat detection for bate51
 
 
 diff --git a/net/minecraft/world/level/block/ChestBlock.java b/net/minecraft/world/level/block/ChestBlock.java
-index dbb571be36b26baae2d79293e79cb09d9ce240cd..c3398e70c332ed210fdfcb9fb96e55b2f10c0695 100644
+index 51e62398..e777dd7b 100644
 --- a/net/minecraft/world/level/block/ChestBlock.java
 +++ b/net/minecraft/world/level/block/ChestBlock.java
 @@ -7,6 +7,7 @@ import java.util.List;
@@ -16,7 +16,7 @@ index dbb571be36b26baae2d79293e79cb09d9ce240cd..c3398e70c332ed210fdfcb9fb96e55b2
  import java.util.function.Supplier;
  import net.minecraft.core.BlockPos;
  import net.minecraft.core.Direction;
-@@ -74,6 +75,7 @@ public class ChestBlock extends AbstractChestBlock<ChestBlockEntity> implements
+@@ -75,6 +76,7 @@ public class ChestBlock extends AbstractChestBlock<ChestBlockEntity> implements
      public static final int EVENT_SET_OPEN_COUNT = 1;
      private static final VoxelShape SHAPE = Block.column(14.0, 0.0, 14.0);
      private static final Map<Direction, VoxelShape> HALF_SHAPES = Shapes.rotateHorizontal(Block.boxZ(14.0, 0.0, 14.0, 0.0, 15.0));
@@ -24,7 +24,7 @@ index dbb571be36b26baae2d79293e79cb09d9ce240cd..c3398e70c332ed210fdfcb9fb96e55b2
      private final SoundEvent openSound;
      private final SoundEvent closeSound;
      private static final DoubleBlockCombiner.Combiner<ChestBlockEntity, Optional<Container>> CHEST_COMBINER = new DoubleBlockCombiner.Combiner<ChestBlockEntity, Optional<Container>>() {
-@@ -361,13 +363,18 @@ public class ChestBlock extends AbstractChestBlock<ChestBlockEntity> implements
+@@ -362,13 +364,18 @@ public class ChestBlock extends AbstractChestBlock<ChestBlockEntity> implements
  
      private static boolean isCatSittingOnChest(final LevelAccessor level, final BlockPos pos) {
          // Paper start - Option to disable chest cat detection

@@ -5,7 +5,7 @@ Subject: [PATCH] Fix stacked container destroyed drop
 
 
 diff --git a/net/minecraft/world/item/ItemUtils.java b/net/minecraft/world/item/ItemUtils.java
-index cc266f88ea6d02e4bc1bb4299d83710559b0c535..9c8fd293420dd87d48ea7e4a1a5abf2a4884a2d0 100644
+index cc266f88..9c8fd293 100644
 --- a/net/minecraft/world/item/ItemUtils.java
 +++ b/net/minecraft/world/item/ItemUtils.java
 @@ -42,6 +42,17 @@ public class ItemUtils {

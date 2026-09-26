@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize natural spawn accounting for bate13
 
 
 diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
-index 64a9eb4c86f26e8ed86d83fbcac03eaff4f1fd23..7598999570911615a51fb85e42320f05d8c34a76 100644
+index 7090adba..1d998972 100644
 --- a/net/minecraft/server/level/ChunkMap.java
 +++ b/net/minecraft/server/level/ChunkMap.java
 @@ -245,13 +245,22 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
@@ -32,7 +32,7 @@ index 64a9eb4c86f26e8ed86d83fbcac03eaff4f1fd23..7598999570911615a51fb85e42320f05
          if (inRange == null) {
              return;
          }
-@@ -881,9 +890,16 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -882,9 +891,16 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
      }
  
      public List<ServerPlayer> getPlayersCloseForSpawning(final ChunkPos pos) {
@@ -51,7 +51,7 @@ index 64a9eb4c86f26e8ed86d83fbcac03eaff4f1fd23..7598999570911615a51fb85e42320f05
          );
          if (players == null) {
              return new ArrayList<>();
-@@ -897,8 +913,8 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -898,8 +914,8 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
          Objects.checkFromIndexSize(0, len, raw.length);
          // LeavesX start - reuse the chunk center and avoid a temporary position vector per player
          if (org.leavesx.leavesx.config.LeavesXRuntime.chunkSpawnRangeOptimization()) {
@@ -62,7 +62,7 @@ index 64a9eb4c86f26e8ed86d83fbcac03eaff4f1fd23..7598999570911615a51fb85e42320f05
              for (int i = 0; i < len; ++i) {
                  final ServerPlayer player = raw[i];
                  if (playerIsCloseEnoughForSpawningFast(player, chunkCenterX, chunkCenterZ, 16384.0D)) { // Spigot
-@@ -911,6 +927,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -912,6 +928,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
                  }
              }
          } else {
@@ -71,7 +71,7 @@ index 64a9eb4c86f26e8ed86d83fbcac03eaff4f1fd23..7598999570911615a51fb85e42320f05
                  final ServerPlayer player = raw[i];
                  if (this.playerIsCloseEnoughForSpawning(player, pos, 16384.0D)) { // Spigot
 diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
-index 1454b8933c47fd5a657be0a16161217afd55c1b3..9f2260b0d1a49bbd865498d8305cc74727fac3cc 100644
+index a352fad6..e61dd03d 100644
 --- a/net/minecraft/server/level/ServerChunkCache.java
 +++ b/net/minecraft/server/level/ServerChunkCache.java
 @@ -68,6 +68,7 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
@@ -117,7 +117,7 @@ index 1454b8933c47fd5a657be0a16161217afd55c1b3..9f2260b0d1a49bbd865498d8305cc747
  
      private void tickSpawningChunk(
 diff --git a/net/minecraft/world/level/LocalMobCapCalculator.java b/net/minecraft/world/level/LocalMobCapCalculator.java
-index 80223f40c3d1e975068e163099fad2ad466c43ae..0813c0e56511a9b086b301b5913a88482fc90a14 100644
+index 80223f40..0813c0e5 100644
 --- a/net/minecraft/world/level/LocalMobCapCalculator.java
 +++ b/net/minecraft/world/level/LocalMobCapCalculator.java
 @@ -20,23 +20,38 @@ public class LocalMobCapCalculator {
@@ -179,7 +179,7 @@ index 80223f40c3d1e975068e163099fad2ad466c43ae..0813c0e56511a9b086b301b5913a8848
              this.add(category, 1);
 diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minecraft/world/level/MobSpawnCountAccumulator.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..c28779891799e20fb456721b8c269010d52325b5
+index 00000000..c2877989
 --- /dev/null
 +++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
 @@ -0,0 +1,89 @@
@@ -273,7 +273,7 @@ index 0000000000000000000000000000000000000000..c28779891799e20fb456721b8c269010
 +    }
 +}
 diff --git a/net/minecraft/world/level/MobSpawnCounting.java b/net/minecraft/world/level/MobSpawnCounting.java
-index 38fedd6179b080e220ac5cc8c66e6f8238d23ef0..4804185d0ad37b12865e5858ea08b46c94f13bb5 100644
+index 38fedd61..4804185d 100644
 --- a/net/minecraft/world/level/MobSpawnCounting.java
 +++ b/net/minecraft/world/level/MobSpawnCounting.java
 @@ -8,6 +8,7 @@ import net.minecraft.core.BlockPos;
@@ -653,7 +653,7 @@ index 38fedd6179b080e220ac5cc8c66e6f8238d23ef0..4804185d0ad37b12865e5858ea08b46c
 \ No newline at end of file
 +}
 diff --git a/net/minecraft/world/level/NaturalSpawner.java b/net/minecraft/world/level/NaturalSpawner.java
-index 3acd52772fe3547b9a41f51d2fb08e27552eec34..050f20253431b8a1c0f82462554faab8653bcbf0 100644
+index c9949b0e..eca311cc 100644
 --- a/net/minecraft/world/level/NaturalSpawner.java
 +++ b/net/minecraft/world/level/NaturalSpawner.java
 @@ -121,15 +121,24 @@ public final class NaturalSpawner {
@@ -686,7 +686,7 @@ index 3acd52772fe3547b9a41f51d2fb08e27552eec34..050f20253431b8a1c0f82462554faab8
              spawnableChunkCount,
              result.mobCounts(),
 diff --git a/net/minecraft/world/level/PotentialCalculator.java b/net/minecraft/world/level/PotentialCalculator.java
-index 9c1a66858b77ab5faaa3ae420d99a3baf6c7435b..2db3eabe946a7a75baab4e2c580fa698985239eb 100644
+index 9c1a6685..2db3eabe 100644
 --- a/net/minecraft/world/level/PotentialCalculator.java
 +++ b/net/minecraft/world/level/PotentialCalculator.java
 @@ -1,16 +1,25 @@

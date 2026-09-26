@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize entity AI short-circuit checks for bate26
 
 
 diff --git a/net/minecraft/world/entity/ai/behavior/InteractWithDoor.java b/net/minecraft/world/entity/ai/behavior/InteractWithDoor.java
-index 8ab7f9d3ae6f4fd4dbad9a7149f0db96d19d3909..e1fab145e6f74b25235f70a53d898f06d138c2ab 100644
+index 8ab7f9d3..e1fab145 100644
 --- a/net/minecraft/world/entity/ai/behavior/InteractWithDoor.java
 +++ b/net/minecraft/world/entity/ai/behavior/InteractWithDoor.java
 @@ -11,6 +11,7 @@ import net.minecraft.core.BlockPos;
@@ -60,7 +60,7 @@ index 8ab7f9d3ae6f4fd4dbad9a7149f0db96d19d3909..e1fab145e6f74b25235f70a53d898f06
      private static boolean isMobComingThroughDoor(final Brain<?> otherBrain, final BlockPos doorPos) {
          if (!otherBrain.hasMemoryValue(MemoryModuleType.PATH)) {
 diff --git a/net/minecraft/world/entity/ai/behavior/PlayTagWithOtherKids.java b/net/minecraft/world/entity/ai/behavior/PlayTagWithOtherKids.java
-index daa4697092252502b57c2940178559dcbc519d5a..7e165a2625fb14bad80e2240d470351daffc6d6f 100644
+index daa46970..7e165a26 100644
 --- a/net/minecraft/world/entity/ai/behavior/PlayTagWithOtherKids.java
 +++ b/net/minecraft/world/entity/ai/behavior/PlayTagWithOtherKids.java
 @@ -15,6 +15,7 @@ import net.minecraft.world.entity.ai.memory.MemoryModuleType;

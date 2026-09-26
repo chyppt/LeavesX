@@ -5,7 +5,7 @@ Subject: [PATCH] Avoid small natural-spawn dispatch overhead
 
 
 diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minecraft/world/level/MobSpawnCountAccumulator.java
-index 0000000000000000000000000000000000000000..1111111111111111111111111111111111111111 100644
+index cbc16e16..1b2c71b7 100644
 --- a/net/minecraft/world/level/MobSpawnCountAccumulator.java
 +++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
 @@ -29,7 +29,9 @@ final class MobSpawnCountAccumulator {

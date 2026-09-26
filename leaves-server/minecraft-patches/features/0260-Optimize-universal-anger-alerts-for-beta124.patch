@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize universal anger alerts for beta124
 
 
 diff --git a/net/minecraft/world/entity/ai/goal/target/ResetUniversalAngerTargetGoal.java b/net/minecraft/world/entity/ai/goal/target/ResetUniversalAngerTargetGoal.java
-index 24c0c32eb105da2e945ff6d2bb77423bac56b649..f4d2f82a9de4c8152c4d219c1c36489b1b20f0b7 100644
+index 1f36514f..74af2c50 100644
 --- a/net/minecraft/world/entity/ai/goal/target/ResetUniversalAngerTargetGoal.java
 +++ b/net/minecraft/world/entity/ai/goal/target/ResetUniversalAngerTargetGoal.java
 @@ -37,16 +37,28 @@ public class ResetUniversalAngerTargetGoal<T extends Mob & NeutralMob> extends G

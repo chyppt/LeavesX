@@ -5,10 +5,10 @@ Subject: [PATCH] Bound comparator item frame queries for bate50
 
 
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index 73fa10730519421476af3fca33a638c62dfe9f08..a83f31d454b0d5ffffc08c22fe83ee0515410d12 100644
+index d35b99e6..c7f78f84 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
-@@ -209,6 +209,8 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -210,6 +210,8 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
      // LeavesX - one reusable result slot per calling thread; nested calls allocate a private fallback.
      private static final ThreadLocal<LeavesXFirstEntityQueryBuffer> LEAVESX_FIRST_ENTITY_QUERY_BUFFER =
          ThreadLocal.withInitial(LeavesXFirstEntityQueryBuffer::new);
@@ -17,7 +17,7 @@ index 73fa10730519421476af3fca33a638c62dfe9f08..a83f31d454b0d5ffffc08c22fe83ee05
      private static final ThreadLocal<LeavesXEntityQueryBuffer> LEAVESX_ENTITY_QUERY_BUFFER =
          ThreadLocal.withInitial(() -> new LeavesXEntityQueryBuffer(true));
      private ca.spottedleaf.moonrise.patches.chunk_system.level.entity.EntityLookup entityLookup;
-@@ -272,6 +274,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -273,6 +275,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
      }
  
      /** Returns the first entity in the same deterministic order as {@link #getEntitiesOfClass}. */
@@ -25,7 +25,7 @@ index 73fa10730519421476af3fca33a638c62dfe9f08..a83f31d454b0d5ffffc08c22fe83ee05
      public final <T extends Entity> @Nullable T leavesX$getFirstEntityOfClass(
          final Class<T> entityClass,
          final AABB boundingBox,
-@@ -297,6 +300,32 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -298,6 +301,32 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
          }
      }
  
@@ -58,7 +58,7 @@ index 73fa10730519421476af3fca33a638c62dfe9f08..a83f31d454b0d5ffffc08c22fe83ee05
      public final <T extends Entity> @Nullable T leavesX$getFirstEntityOfClass(
          final Class<T> entityClass,
          final AABB boundingBox
-@@ -2281,7 +2310,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -2286,7 +2315,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
      /** Reusable one-result storage with an allocation fallback for nested queries on the same thread. */
      private static final class LeavesXFirstEntityQueryBuffer {
  
@@ -68,10 +68,10 @@ index 73fa10730519421476af3fca33a638c62dfe9f08..a83f31d454b0d5ffffc08c22fe83ee05
  
          private boolean acquire() {
 diff --git a/net/minecraft/world/level/block/ComparatorBlock.java b/net/minecraft/world/level/block/ComparatorBlock.java
-index b228132bf447dcfcc5a2d31de3603a9bb5424299..c77a59da6f2720a23cb0ad9f9fce85b58e7da50d 100644
+index 4c7279f5..9a6a10a0 100644
 --- a/net/minecraft/world/level/block/ComparatorBlock.java
 +++ b/net/minecraft/world/level/block/ComparatorBlock.java
-@@ -121,11 +121,12 @@ public class ComparatorBlock extends DiodeBlock implements EntityBlock {
+@@ -120,11 +120,12 @@ public class ComparatorBlock extends DiodeBlock implements EntityBlock {
      }
  
      private @Nullable ItemFrame getItemFrame(final Level level, final Direction direction, final BlockPos tPos) {

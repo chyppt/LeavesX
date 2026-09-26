@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 16:31:00 +0800
+Subject: [PATCH] Use shared compute lanes for tracking and spawn snapshots
+
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index 264d70ba..0dcf432f 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1219,28 +1219,24 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             }
+         }
+ 
+-        final int workers = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 4));
+-        final int rangeSize = Math.max(64, (entityCount + workers - 1) / workers);
+-        final java.util.ArrayList<java.util.concurrent.CompletableFuture<Void>> futures = new java.util.ArrayList<>(workers);
+-        for (int start = 0; start < entityCount; start += rangeSize) {
+-            final int from = start;
+-            final int to = Math.min(entityCount, start + rangeSize);
+-            futures.add(org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.submitOrRun(
+-                org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.ENTITY_TRACKER,
+-                () -> {
+-                    for (int index = from; index < to; index++) {
+-                        final LeavesXTrackerSnapshot snapshot = snapshots[index];
+-                        if (snapshot != null) snapshot.computeRanges();
+-                    }
++        final int completedPartitions = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRangesWithCount(
++            org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
++            entityCount,
++            256,
++            64,
++            (taskIndex, start, end) -> {
++                for (int index = start; index < end; index++) {
++                    final LeavesXTrackerSnapshot snapshot = snapshots[index];
++                    if (snapshot != null) snapshot.computeRanges();
+                 }
+-            ));
+-        }
+-
+-        try {
+-            java.util.concurrent.CompletableFuture.allOf(futures.toArray(java.util.concurrent.CompletableFuture[]::new)).join();
+-        } catch (final Throwable failure) {
+-            LOGGER.error("LeavesX async entity-tracker range computation failed; rerunning the full Moonrise tracker path", failure);
+-            return false;
++            }
++        );
++        if (completedPartitions == 0) {
++            // A failed range may have written part of its private result. Recompute every snapshot before committing
++            // so the main thread never observes a mixture of old and new range decisions.
++            for (final LeavesXTrackerSnapshot snapshot : snapshots) {
++                if (snapshot != null) snapshot.computeRanges();
++            }
+         }
+ 
+         for (int index = 0; index < entityCount; index++) {
+diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
+index 6c73d067..a72a1b6a 100644
+--- a/net/minecraft/server/level/ServerChunkCache.java
++++ b/net/minecraft/server/level/ServerChunkCache.java
+@@ -674,7 +674,9 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+             );
+             this.leavesX$asyncSpawnCounting = org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.submitValueOrRun(
+                 org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.MOB_SPAWNING,
+-                () -> MobSpawnCounting.compute(prepared, false)
++                // The prepared input contains only frozen primitive data. Let the shared compute pool split a large
++                // snapshot while this asynchronous world lane remains its caller and owns the final merge.
++                () -> MobSpawnCounting.compute(prepared, true)
+             );
+         }
+         return this.lastSpawnState;

@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize mob despawn range lookups for beta117
 
 
 diff --git a/net/minecraft/world/entity/Mob.java b/net/minecraft/world/entity/Mob.java
-index d9228faf17c565d395a6990e1df6ed59ba468104..bc1d421be36e36100468dee7eff88d3c221008cf 100644
+index 905a73fe..ee309af6 100644
 --- a/net/minecraft/world/entity/Mob.java
 +++ b/net/minecraft/world/entity/Mob.java
-@@ -803,8 +803,9 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+@@ -811,8 +811,9 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
              Entity player = this.level().findNearbyPlayer(this, -1.0, EntitySelector.PLAYER_AFFECTS_SPAWNING); // Paper - Affects Spawning API
              if (player != null) {
                  // Paper start - Configurable despawn distances

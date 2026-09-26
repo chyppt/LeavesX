@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 17:51:47 +0800
+Subject: [PATCH] Use world-wide activation snapshots for large worlds
+
+
+diff --git a/io/papermc/paper/entity/activation/ActivationRange.java b/io/papermc/paper/entity/activation/ActivationRange.java
+index 972eb064..24ba4a32 100644
+--- a/io/papermc/paper/entity/activation/ActivationRange.java
++++ b/io/papermc/paper/entity/activation/ActivationRange.java
+@@ -148,6 +148,24 @@ public final class ActivationRange {
+         final int worldHeight = world.getHeight();
+         final boolean tickMarkers = world.paperConfig().entities.markers.tick;
+         final List<? extends Player> players = world.players();
++        if (ActivationRangeSnapshot.activateWorld(
++            (net.minecraft.server.level.ServerLevel)world,
++            players,
++            config.ignoreSpectatorActivation,
++            tickMarkers,
++            currentTick,
++            worldHeight,
++            maxRange,
++            miscActivationRange,
++            raiderActivationRange,
++            animalActivationRange,
++            monsterActivationRange,
++            waterActivationRange,
++            flyingActivationRange,
++            villagerActivationRange
++        )) {
++            return;
++        }
+         // Overlapping player ranges can return the same entity several times in one tick. Paper's activation loop
+         // already ignores those later visits; rejecting them in the spatial query avoids repeated list insertion,
+         // snapshotting and AABB checks without changing which entities become active.

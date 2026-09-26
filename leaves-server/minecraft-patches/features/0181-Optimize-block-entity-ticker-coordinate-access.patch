@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize block entity ticker coordinate access
 
 
 diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
-index 83a4cad650cf8fb08970843f15661c38a6971253..c5a799a2c63eb16677684a6bc8030adb04f29d14 100644
+index 9efdd1c5..8c78e73f 100644
 --- a/net/minecraft/world/level/chunk/LevelChunk.java
 +++ b/net/minecraft/world/level/chunk/LevelChunk.java
-@@ -949,28 +949,31 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -947,28 +947,31 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
      private class BoundTickingBlockEntity<T extends BlockEntity> implements TickingBlockEntity {
          private final T blockEntity;
          private final BlockEntityTicker<T> ticker;
@@ -43,7 +43,7 @@ index 83a4cad650cf8fb08970843f15661c38a6971253..c5a799a2c63eb16677684a6bc8030adb
                              if (!this.loggedInvalidBlockState) {
                              // Paper end - Remove the Block Entity if it's invalid
                              this.loggedInvalidBlockState = true;
-@@ -1006,7 +1009,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -1004,7 +1007,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
  
          @Override
          public BlockPos getPos() {

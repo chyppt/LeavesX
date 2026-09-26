@@ -5,10 +5,10 @@ Subject: [PATCH] RNG Fishing
 
 
 diff --git a/net/minecraft/world/entity/projectile/FishingHook.java b/net/minecraft/world/entity/projectile/FishingHook.java
-index 2d79dbb3e9667e810004cab440c7027800434c84..922b1d45144d78688a153235fec76016dc9cdca7 100644
+index a0194604..db16a5ec 100644
 --- a/net/minecraft/world/entity/projectile/FishingHook.java
 +++ b/net/minecraft/world/entity/projectile/FishingHook.java
-@@ -522,7 +522,7 @@ public class FishingHook extends Projectile {
+@@ -523,7 +523,7 @@ public class FishingHook extends Projectile {
                      .withLuck(this.luck + owner.getLuck())
                      .create(LootContextParamSets.FISHING);
                  LootTable lootTable = this.level().getServer().reloadableRegistries().getLootTable(BuiltInLootTables.FISHING);

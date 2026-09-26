@@ -5,7 +5,7 @@ Subject: [PATCH] Decode section propagation center once
 
 
 diff --git a/net/minecraft/server/level/SectionTracker.java b/net/minecraft/server/level/SectionTracker.java
-index 117f2bc37d36bd8ca3d9a997c7e58d5b3b48df2e..90a5a832749d990bcf887ef166bbaf29ae607055 100644
+index 117f2bc3..90a5a832 100644
 --- a/net/minecraft/server/level/SectionTracker.java
 +++ b/net/minecraft/server/level/SectionTracker.java
 @@ -11,10 +11,14 @@ public abstract class SectionTracker extends DynamicGraphMinFixedPoint {

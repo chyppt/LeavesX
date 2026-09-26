@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize frog tongue target lookup for beta125
 
 
 diff --git a/net/minecraft/world/entity/animal/frog/Frog.java b/net/minecraft/world/entity/animal/frog/Frog.java
-index ef9f543aea1e88e1f81d888c7b21aeac934f102b..6cb2d15502848b6bf3b1d21435df380a6c0f4510 100644
+index d7d82165..0cae58a7 100644
 --- a/net/minecraft/world/entity/animal/frog/Frog.java
 +++ b/net/minecraft/world/entity/animal/frog/Frog.java
-@@ -114,7 +114,18 @@ public class Frog extends Animal {
+@@ -115,7 +115,18 @@ public class Frog extends Animal {
      }
  
      public Optional<Entity> getTongueTarget() {

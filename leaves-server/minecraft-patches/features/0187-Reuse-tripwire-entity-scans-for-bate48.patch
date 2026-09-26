@@ -5,10 +5,10 @@ Subject: [PATCH] Reuse tripwire entity scans for bate48
 
 
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index 6fdd832b0d249992020bed1f8dbf5c8fd6b8a68c..73fa10730519421476af3fca33a638c62dfe9f08 100644
+index 54c517c9..d35b99e6 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
-@@ -209,6 +209,8 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -210,6 +210,8 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
      // LeavesX - one reusable result slot per calling thread; nested calls allocate a private fallback.
      private static final ThreadLocal<LeavesXFirstEntityQueryBuffer> LEAVESX_FIRST_ENTITY_QUERY_BUFFER =
          ThreadLocal.withInitial(LeavesXFirstEntityQueryBuffer::new);
@@ -17,7 +17,7 @@ index 6fdd832b0d249992020bed1f8dbf5c8fd6b8a68c..73fa10730519421476af3fca33a638c6
      private ca.spottedleaf.moonrise.patches.chunk_system.level.entity.EntityLookup entityLookup;
      private final ca.spottedleaf.concurrentutil.map.concurrent.longs.ConcurrentChainedLong2ReferenceHashTable<ca.spottedleaf.moonrise.patches.chunk_system.level.chunk.ChunkData> chunkData = new ca.spottedleaf.concurrentutil.map.concurrent.longs.ConcurrentChainedLong2ReferenceHashTable<>();
  
-@@ -247,6 +249,28 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -248,6 +250,28 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
              .moonrise$getEntityLookup().getEntities(entityClass, null, boundingBox, into, predicate);
      }
  
@@ -46,7 +46,7 @@ index 6fdd832b0d249992020bed1f8dbf5c8fd6b8a68c..73fa10730519421476af3fca33a638c6
      /** Returns the first entity in the same deterministic order as {@link #getEntitiesOfClass}. */
      public final <T extends Entity> @Nullable T leavesX$getFirstEntityOfClass(
          final Class<T> entityClass,
-@@ -1891,13 +1915,9 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -1896,13 +1920,9 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
  
      @Override
      public List<Entity> getEntities(final @Nullable Entity except, final AABB bb, final Predicate<? super Entity> selector) {
@@ -61,7 +61,7 @@ index 6fdd832b0d249992020bed1f8dbf5c8fd6b8a68c..73fa10730519421476af3fca33a638c6
  
          return ret;
          // Paper end - rewrite chunk system
-@@ -2279,6 +2299,46 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -2284,6 +2304,46 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
          }
      }
  
@@ -109,7 +109,7 @@ index 6fdd832b0d249992020bed1f8dbf5c8fd6b8a68c..73fa10730519421476af3fca33a638c6
      public long nextSubTickCount() {
          return this.subTickCount++;
 diff --git a/net/minecraft/world/level/block/TripWireBlock.java b/net/minecraft/world/level/block/TripWireBlock.java
-index 50a70afc257deaddd8224b5f18077eba21664f8a..a77582c9997c6054d69af106deab753edf051c35 100644
+index 14c4c55b..b5aea275 100644
 --- a/net/minecraft/world/level/block/TripWireBlock.java
 +++ b/net/minecraft/world/level/block/TripWireBlock.java
 @@ -187,9 +187,15 @@ public class TripWireBlock extends Block {

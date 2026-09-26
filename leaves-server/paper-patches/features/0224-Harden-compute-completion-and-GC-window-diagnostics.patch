@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Fri, 25 Sep 2026 23:50:00 +0800
+Subject: [PATCH] Harden compute completion and flag truncated GC windows
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -207,7 +219,8 @@ public final class LeavesXCommand extends Command {
+             "近 " + windowSeconds + " 秒 GC",
+             gc.windowCollections() + " 次事件 / STW " + gc.windowPauseCollections() + " 次，"
+                 + oneDecimal(gc.windowPauseNanos() / 1_000_000.0D) + " ms / 最长 "
+-                + oneDecimal(gc.maximumPauseNanos() / 1_000_000.0D) + " ms",
++                + oneDecimal(gc.maximumPauseNanos() / 1_000_000.0D) + " ms"
++                + (gc.windowTruncated() ? "（记录已达上限，窗口数据不完整）" : ""),
+             gc.maximumPauseNanos() >= TimeUnit.MILLISECONDS.toNanos(50L) ? NamedTextColor.RED : NamedTextColor.GRAY
+         ));
+         sender.sendMessage(Component.text("排查：/leavesx all | villagers | activity | tickets | plugins | stalls | memory", NamedTextColor.GRAY));
+@@ -657,6 +670,7 @@ public final class LeavesXCommand extends Command {
+             "堆内存 " + formatUsage(heap),
+             "近窗 GC " + gc.windowCollections() + " 次 / STW " + gc.windowPauseCollections() + " 次",
+             "最长暂停 " + oneDecimal(gc.maximumPauseNanos() / 1_000_000.0D) + " ms"
++                + (gc.windowTruncated() ? "（窗口数据不完整）" : "")
+         ));
+ 
+         final List<LeavesXTickDiagnostics.SlowTick> slowTicks = LeavesXTickDiagnostics.recent(2);
+@@ -863,7 +877,8 @@ public final class LeavesXCommand extends Command {
+             "近 " + windowSeconds + " 秒 GC",
+             gc.windowCollections() + " 次事件 / STW " + gc.windowPauseCollections() + " 次，"
+                 + oneDecimal(gc.windowPauseNanos() / 1_000_000.0D) + " ms / 最长 "
+-                + oneDecimal(gc.maximumPauseNanos() / 1_000_000.0D) + " ms",
++                + oneDecimal(gc.maximumPauseNanos() / 1_000_000.0D) + " ms"
++                + (gc.windowTruncated() ? "（记录已达上限，窗口数据不完整）" : ""),
+             gc.maximumPauseNanos() >= TimeUnit.MILLISECONDS.toNanos(50L) ? NamedTextColor.RED : NamedTextColor.AQUA
+         ));
+         if (gc.concurrentGcNanos() > 0L) {
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -1422,6 +1426,15 @@ public final class LeavesXComputeExecutor {
+             boolean interrupted = false;
+             int idleSpins = 0;
+             while (this.workersDone.getCount() > 0L) {
++                if (this.workerBatchesDone.getCount() == 0L) {
++                    // An unexpected worker failure may leave an already-claimed range unaccounted for.
++                    // Only abandon the range latch after every submitted batch has published completion: no
++                    // worker can then mutate the result while the caller performs a complete recomputation.
++                    if (this.workersDone.getCount() > 0L) {
++                        this.recordFailure(new IllegalStateException("Compute batches finished with incomplete ranges"));
++                    }
++                    break;
++                }
+                 // Avoid an atomic update when all overflow ranges have already been claimed by workers.
+                 final int availableTask = nextTask.get();
+                 if (availableTask >= workerRangeLimit) {
+diff --git a/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXGcDiagnostics.java b/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXGcDiagnostics.java
+--- a/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXGcDiagnostics.java
++++ b/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXGcDiagnostics.java
+@@ -147,6 +147,7 @@ public final class LeavesXGcDiagnostics {
+         private final int capacity;
+         private final ArrayDeque<GcPause> events;
+         private long previousAfterUsed = -1L;
++        private long newestEvictedObservation = Long.MIN_VALUE;
+ 
+         Recorder(final int capacity) {
+             if (capacity < 1) {
+@@ -162,7 +163,10 @@ public final class LeavesXGcDiagnostics {
+             final long allocatedBytes = estimateAllocatedBytes(this.previousAfterUsed, pause.beforeUsed());
+             this.previousAfterUsed = pause.afterUsed();
+             if (this.events.size() == this.capacity) {
+-                this.events.removeFirst();
++                // GC notification threads can arrive out of timestamp order; retain the latest lost observation.
++                this.newestEvictedObservation = Math.max(
++                    this.newestEvictedObservation, this.events.removeFirst().observedNanos()
++                );
+             }
+             this.events.addLast(new GcPause(
+                 pause.observedNanos(),
+@@ -226,6 +230,7 @@ public final class LeavesXGcDiagnostics {
+                 concurrentNanos,
+                 reclaimedBytes,
+                 estimatedAllocatedBytes,
++                this.newestEvictedObservation >= cutoff,
+                 lastEvent
+             );
+         }
+@@ -294,6 +299,7 @@ public final class LeavesXGcDiagnostics {
+         long concurrentGcNanos,
+         long reclaimedBytes,
+         long estimatedAllocatedBytes,
++        boolean windowTruncated,
+         GcPause lastPause
+     ) {
+ 
+diff --git a/src/test/java/org/leavesx/leavesx/diagnostics/LeavesXGcDiagnosticsTest.java b/src/test/java/org/leavesx/leavesx/diagnostics/LeavesXGcDiagnosticsTest.java
+--- a/src/test/java/org/leavesx/leavesx/diagnostics/LeavesXGcDiagnosticsTest.java
++++ b/src/test/java/org/leavesx/leavesx/diagnostics/LeavesXGcDiagnosticsTest.java
+@@ -65,4 +65,15 @@ class LeavesXGcDiagnosticsTest {
+         assertEquals(1, snapshot.windowCollections());
+         assertEquals(20L, snapshot.windowPauseNanos());
+     }
++
++    @Test
++    void reportsTruncationOnlyWhileEvictedEventsOverlapTheWindow() {
++        final LeavesXGcDiagnostics.Recorder recorder = new LeavesXGcDiagnostics.Recorder(1);
++        recorder.record(new LeavesXGcDiagnostics.RawPause(10L, 10L, 20L, "old", "end", "test", 10L, 5L));
++        assertFalse(recorder.snapshot(30L, 25L, 1L, 10L, 1, 1).windowTruncated());
++
++        recorder.record(new LeavesXGcDiagnostics.RawPause(30L, 30L, 50L, "old", "end", "test", 15L, 5L));
++        assertTrue(recorder.snapshot(35L, 25L, 2L, 30L, 1, 1).windowTruncated());
++        assertFalse(recorder.snapshot(36L, 25L, 2L, 30L, 1, 1).windowTruncated());
++    }
+ }

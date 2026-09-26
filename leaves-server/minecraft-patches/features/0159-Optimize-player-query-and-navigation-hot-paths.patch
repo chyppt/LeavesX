@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize player query and navigation hot paths
 
 
 diff --git a/net/minecraft/world/entity/ai/navigation/PathNavigation.java b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
-index 1eb0afab932c3828a1f19861994b63b247df0fbb..ab0fe98ea774904b5e7b33d104c70d652c0835e5 100644
+index 862224df..8702da04 100644
 --- a/net/minecraft/world/entity/ai/navigation/PathNavigation.java
 +++ b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
-@@ -299,13 +299,28 @@ public abstract class PathNavigation {
+@@ -299,15 +299,30 @@ public abstract class PathNavigation {
      protected void followThePath() {
          Vec3 mobPos = this.getTempMobPos();
          this.maxDistanceToWaypoint = this.mob.getBbWidth() > 0.75F ? this.mob.getBbWidth() / 2.0F : 0.75F - this.mob.getBbWidth() / 2.0F;
@@ -16,7 +16,9 @@ index 1eb0afab932c3828a1f19861994b63b247df0fbb..ab0fe98ea774904b5e7b33d104c70d65
 -        double xDistance = Math.abs(this.mob.getX() - (currentNodePos.getX() + 0.5));
 -        double yDistance = Math.abs(this.mob.getY() - currentNodePos.getY());
 -        double zDistance = Math.abs(this.mob.getZ() - (currentNodePos.getZ() + 0.5));
--        boolean isCloseEnoughToCurrentNode = xDistance < this.maxDistanceToWaypoint && zDistance < this.maxDistanceToWaypoint && yDistance < 1.0;
+-        boolean isCloseEnoughToCurrentNode = xDistance < this.maxDistanceToWaypoint
+-            && zDistance < this.maxDistanceToWaypoint
+-            && yDistance < this.getMaxVerticalDistanceToWaypoint();
 -        if (isCloseEnoughToCurrentNode || this.canCutCorner(this.path.getNextNode().type) && this.shouldTargetNextNodeInDirection(mobPos)) {
 -            this.path.advance();
 +        if (org.leavesx.leavesx.config.LeavesXRuntime.pathfindingOptimizations()) {
@@ -27,7 +29,7 @@ index 1eb0afab932c3828a1f19861994b63b247df0fbb..ab0fe98ea774904b5e7b33d104c70d65
 +            final double zDistance = Math.abs(this.mob.getZ() - (currentNode.z + 0.5));
 +            final boolean isCloseEnoughToCurrentNode = xDistance < this.maxDistanceToWaypoint
 +                && zDistance < this.maxDistanceToWaypoint
-+                && yDistance < 1.0;
++                && yDistance < this.getMaxVerticalDistanceToWaypoint();
 +            if (isCloseEnoughToCurrentNode || this.canCutCorner(currentNode.type) && this.shouldTargetNextNodeInDirection(mobPos)) {
 +                this.path.advance();
 +            }
@@ -37,14 +39,16 @@ index 1eb0afab932c3828a1f19861994b63b247df0fbb..ab0fe98ea774904b5e7b33d104c70d65
 +            double xDistance = Math.abs(this.mob.getX() - (currentNodePos.getX() + 0.5));
 +            double yDistance = Math.abs(this.mob.getY() - currentNodePos.getY());
 +            double zDistance = Math.abs(this.mob.getZ() - (currentNodePos.getZ() + 0.5));
-+            boolean isCloseEnoughToCurrentNode = xDistance < this.maxDistanceToWaypoint && zDistance < this.maxDistanceToWaypoint && yDistance < 1.0;
++            boolean isCloseEnoughToCurrentNode = xDistance < this.maxDistanceToWaypoint
++                && zDistance < this.maxDistanceToWaypoint
++                && yDistance < this.getMaxVerticalDistanceToWaypoint();
 +            if (isCloseEnoughToCurrentNode || this.canCutCorner(this.path.getNextNode().type) && this.shouldTargetNextNodeInDirection(mobPos)) {
 +                this.path.advance();
 +            }
          }
  
          this.doStuckDetection(mobPos);
-@@ -457,6 +472,14 @@ public abstract class PathNavigation {
+@@ -459,6 +474,14 @@ public abstract class PathNavigation {
              return false;
          } else if (this.path != null && !this.path.isDone() && this.path.getNodeCount() != 0) {
              Node target = this.path.getEndNode();
@@ -60,7 +64,7 @@ index 1eb0afab932c3828a1f19861994b63b247df0fbb..ab0fe98ea774904b5e7b33d104c70d65
              return pos.closerToCenterThan(middlePos, this.path.getNodeCount() - this.path.getNextNodeIndex());
          } else {
 diff --git a/net/minecraft/world/level/EntityGetter.java b/net/minecraft/world/level/EntityGetter.java
-index cc938f43c4a5e947ed87ca2001cbaca4084bf64c..25216f2c2c35ad089c9bea04c05d21e2b7de5798 100644
+index cc938f43..25216f2c 100644
 --- a/net/minecraft/world/level/EntityGetter.java
 +++ b/net/minecraft/world/level/EntityGetter.java
 @@ -119,20 +119,55 @@ public interface EntityGetter extends ca.spottedleaf.moonrise.patches.chunk_syst

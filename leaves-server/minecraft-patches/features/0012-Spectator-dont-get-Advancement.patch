@@ -5,10 +5,10 @@ Subject: [PATCH] Spectator dont get Advancement
 
 
 diff --git a/net/minecraft/server/PlayerAdvancements.java b/net/minecraft/server/PlayerAdvancements.java
-index f2536d631b041c01b98fa60c50cffbe1623ca327..562b444743c3cdcb9f27f55627d5e0eff5717f67 100644
+index cdafcb72..b6030a62 100644
 --- a/net/minecraft/server/PlayerAdvancements.java
 +++ b/net/minecraft/server/PlayerAdvancements.java
-@@ -173,6 +173,11 @@ public class PlayerAdvancements {
+@@ -171,6 +171,11 @@ public class PlayerAdvancements {
              return false;
          }
          // Leaves end - bot can't get advancement

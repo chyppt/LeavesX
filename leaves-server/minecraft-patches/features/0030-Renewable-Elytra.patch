@@ -6,7 +6,7 @@ Subject: [PATCH] Renewable Elytra
 This patch is Powered by Carpet-TIS-Addition(https://github.com/plusls/Carpet-TIS-Addition)
 
 diff --git a/net/minecraft/world/entity/monster/Phantom.java b/net/minecraft/world/entity/monster/Phantom.java
-index 6cc9c6c04985a0b63ee509659ffe6dbe2921915e..3218438c476a11ffcd3f03a9e5ac2c1492b80305 100644
+index 6130c477..8854ba4a 100644
 --- a/net/minecraft/world/entity/monster/Phantom.java
 +++ b/net/minecraft/world/entity/monster/Phantom.java
 @@ -228,6 +228,20 @@ public class Phantom extends Mob implements Enemy {

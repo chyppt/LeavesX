@@ -5,10 +5,10 @@ Subject: [PATCH] Container open passthrough
 
 
 diff --git a/net/minecraft/world/entity/decoration/ItemFrame.java b/net/minecraft/world/entity/decoration/ItemFrame.java
-index 9cc2af3db862fdfa45a67ef4b9c49581d7d69d36..47b20e61a32f68df7344f6376a820aba6fe3885a 100644
+index 4d0d58d5..1e221b00 100644
 --- a/net/minecraft/world/entity/decoration/ItemFrame.java
 +++ b/net/minecraft/world/entity/decoration/ItemFrame.java
-@@ -396,6 +396,16 @@ public class ItemFrame extends HangingEntity {
+@@ -397,6 +397,16 @@ public class ItemFrame extends HangingEntity {
          }
  
          if (!player.level().isClientSide()) {
@@ -26,10 +26,10 @@ index 9cc2af3db862fdfa45a67ef4b9c49581d7d69d36..47b20e61a32f68df7344f6376a820aba
                  if (hasHeldItem && !this.isRemoved()) {
                      MapItemSavedData data = MapItem.getSavedData(itemStack, this.level());
 diff --git a/net/minecraft/world/level/block/SignBlock.java b/net/minecraft/world/level/block/SignBlock.java
-index 32ddf56263e3882616a6d7ee45fe26f53d85eda4..a6739ae08a7d77f3009bc2044a9fbfaa50467623 100644
+index cd9164c3..a971953f 100644
 --- a/net/minecraft/world/level/block/SignBlock.java
 +++ b/net/minecraft/world/level/block/SignBlock.java
-@@ -112,6 +112,18 @@ public abstract class SignBlock extends BaseEntityBlock implements SimpleWaterlo
+@@ -113,6 +113,18 @@ public abstract class SignBlock extends BaseEntityBlock implements SimpleWaterlo
                      } else {
                          return InteractionResult.TRY_WITH_EMPTY_HAND;
                      }
@@ -48,7 +48,7 @@ index 32ddf56263e3882616a6d7ee45fe26f53d85eda4..a6739ae08a7d77f3009bc2044a9fbfaa
                  } else {
                      return InteractionResult.TRY_WITH_EMPTY_HAND;
                  }
-@@ -136,6 +148,25 @@ public abstract class SignBlock extends BaseEntityBlock implements SimpleWaterlo
+@@ -137,6 +149,25 @@ public abstract class SignBlock extends BaseEntityBlock implements SimpleWaterlo
                      return InteractionResult.SUCCESS_SERVER;
                  } else if (executedClickCommand) {
                      return InteractionResult.SUCCESS_SERVER;

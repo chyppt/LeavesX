@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize village AI traversal for bate25
 
 
 diff --git a/net/minecraft/world/entity/ai/behavior/BehaviorUtils.java b/net/minecraft/world/entity/ai/behavior/BehaviorUtils.java
-index f744ecd20dc70786311a7162b52aa4ceca0717db..e45d6ff017858d042e78252e28b8be3b21ca3840 100644
+index f744ecd2..e45d6ff0 100644
 --- a/net/minecraft/world/entity/ai/behavior/BehaviorUtils.java
 +++ b/net/minecraft/world/entity/ai/behavior/BehaviorUtils.java
 @@ -113,6 +113,9 @@ public class BehaviorUtils {
@@ -58,7 +58,7 @@ index f744ecd20dc70786311a7162b52aa4ceca0717db..e45d6ff017858d042e78252e28b8be3b
          if (body.getMainHandItem().getItem() instanceof ProjectileWeaponItem weapon && body.canUseNonMeleeWeapon(body.getMainHandItem())) {
              int maxAllowedDistance = weapon.getDefaultProjectileRange() - projectileAttackRangeMargin;
 diff --git a/net/minecraft/world/entity/ai/behavior/YieldJobSite.java b/net/minecraft/world/entity/ai/behavior/YieldJobSite.java
-index 09cc0f75c0dea7d9ef9caf9b1f14f46e4da84375..c03b6f99c702f2137036854ea233687144d10b1f 100644
+index 09cc0f75..c03b6f99 100644
 --- a/net/minecraft/world/entity/ai/behavior/YieldJobSite.java
 +++ b/net/minecraft/world/entity/ai/behavior/YieldJobSite.java
 @@ -13,6 +13,7 @@ import net.minecraft.world.entity.ai.village.poi.PoiType;

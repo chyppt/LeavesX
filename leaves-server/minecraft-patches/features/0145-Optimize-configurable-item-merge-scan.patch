@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize configurable item merge scan
 
 
 diff --git a/net/minecraft/world/entity/item/ItemEntity.java b/net/minecraft/world/entity/item/ItemEntity.java
-index 746ed53bff37859d6dea3a23c716d462f1cc50ff..0ea8edfc05c3534a3ec93c8a300a8abc2e79930a 100644
+index 18f36e7c..534cb02c 100644
 --- a/net/minecraft/world/entity/item/ItemEntity.java
 +++ b/net/minecraft/world/entity/item/ItemEntity.java
-@@ -284,6 +284,16 @@ public class ItemEntity extends Entity implements TraceableEntity, ChangePublish
+@@ -280,6 +280,16 @@ public class ItemEntity extends Entity implements TraceableEntity, ChangePublish
                      if (this.isRemoved()) {
                          break;
                      }

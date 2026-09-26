@@ -6,7 +6,7 @@ Subject: [PATCH] Dont respond ping before start fully
 This patch is Powered by Gale(https://github.com/GaleMC/Gale)
 
 diff --git a/net/minecraft/server/network/ServerStatusPacketListenerImpl.java b/net/minecraft/server/network/ServerStatusPacketListenerImpl.java
-index fc7b0b1dd054bddd830983b7f07a92169c886518..c813e4ab59ce059ffaa281b72cf27c14ff141344 100644
+index fc7b0b1d..c813e4ab 100644
 --- a/net/minecraft/server/network/ServerStatusPacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerStatusPacketListenerImpl.java
 @@ -37,6 +37,12 @@ public class ServerStatusPacketListenerImpl implements ServerStatusPacketListene

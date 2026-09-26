@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize Brain tick traversal for bate96
 
 
 diff --git a/net/minecraft/world/entity/ai/Brain.java b/net/minecraft/world/entity/ai/Brain.java
-index 8fdad6b165a958142711ba1b0f09a78716334b5f..7326468da70cc751b88f8c38d1c44b4c0d171beb 100644
+index 69418cc5..fc60370b 100644
 --- a/net/minecraft/world/entity/ai/Brain.java
 +++ b/net/minecraft/world/entity/ai/Brain.java
 @@ -39,6 +39,9 @@ public class Brain<E extends LivingEntity> {

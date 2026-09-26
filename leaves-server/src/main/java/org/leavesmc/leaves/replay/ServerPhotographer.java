@@ -65,7 +65,7 @@ public class ServerPhotographer extends ServerPlayer {
 
         photographer.recorder.start();
         getServer().getPlayerList().placeNewPhotographer(photographer.recorder, photographer, world);
-        photographer.level().chunkSource.move(photographer);
+            photographer.level().getChunkSource().move(photographer);
         photographer.setInvisible(true);
         photographers.add(photographer);
 
@@ -83,7 +83,7 @@ public class ServerPhotographer extends ServerPlayer {
 
         if (getServer().getTickCount() % 10 == 0) {
             connection.resetPosition();
-            this.level().chunkSource.move(this);
+            this.level().getChunkSource().move(this);
         }
 
         if (this.followPlayer != null) {

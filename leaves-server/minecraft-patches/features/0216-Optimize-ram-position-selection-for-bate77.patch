@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize ram position selection for bate77
 
 
 diff --git a/net/minecraft/world/entity/ai/behavior/PrepareRamNearestTarget.java b/net/minecraft/world/entity/ai/behavior/PrepareRamNearestTarget.java
-index 818d7882a4d7001a9d8f90516b7368e89a5689a0..98c4af188483ec8be457fabcb87e89661bf688f2 100644
+index 818d7882..98c4af18 100644
 --- a/net/minecraft/world/entity/ai/behavior/PrepareRamNearestTarget.java
 +++ b/net/minecraft/world/entity/ai/behavior/PrepareRamNearestTarget.java
 @@ -161,12 +161,39 @@ public class PrepareRamNearestTarget<E extends PathfinderMob> extends Behavior<E

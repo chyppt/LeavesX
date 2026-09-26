@@ -5,7 +5,7 @@ Subject: [PATCH] Short-circuit occupied POI bed queries for bate54
 
 
 diff --git a/net/minecraft/world/entity/ai/behavior/ValidateNearbyPoi.java b/net/minecraft/world/entity/ai/behavior/ValidateNearbyPoi.java
-index bd4fab6ad4404a758c7dbb690c32390038c8fb32..f147b8c5362ec90a89c49f2da9869d175c7c08ee 100644
+index bd4fab6a..f147b8c5 100644
 --- a/net/minecraft/world/entity/ai/behavior/ValidateNearbyPoi.java
 +++ b/net/minecraft/world/entity/ai/behavior/ValidateNearbyPoi.java
 @@ -48,6 +48,9 @@ public class ValidateNearbyPoi {

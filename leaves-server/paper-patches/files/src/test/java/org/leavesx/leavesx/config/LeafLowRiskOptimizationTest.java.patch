@@ -1,0 +1,43 @@
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/config/LeafLowRiskOptimizationTest.java
+@@ -1,0 +_,40 @@
++package org.leavesx.leavesx.config;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import java.lang.reflect.Method;
++import java.nio.file.Path;
++import net.minecraft.world.level.biome.BiomeManager;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++import org.spongepowered.configurate.CommentedConfigurationNode;
++import org.bukkit.support.environment.Normal;
++
++@Normal
++class LeafLowRiskOptimizationTest {
++
++    @AfterEach
++    void restoreDefaults() {
++        LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++    }
++
++    @Test
++    void biomeFiddleLookupIsBitExactForEveryEntry() throws Exception {
++        final Method getFiddle = BiomeManager.class.getDeclaredMethod("getFiddle", long.class);
++        getFiddle.setAccessible(true);
++        final double[] fallback = new double[1024];
++
++        final CommentedConfigurationNode node = CommentedConfigurationNode.root();
++        node.node("config-version").raw(LeavesXConfig.CURRENT_CONFIG_VERSION);
++        node.node(LeavesXOptimization.BIOME_ZOOM_LOOKUP_TABLES.nodePath()).raw(false);
++        LeavesXRuntime.publish(LeavesXConfigLoader.fromNode(node, Path.of("lookup-fallback.yml")));
++        for (int index = 0; index < fallback.length; index++) {
++            fallback[index] = (double)getFiddle.invoke(null, (long)index << 24);
++        }
++
++        LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
++        for (int index = 0; index < fallback.length; index++) {
++            assertEquals(fallback[index], (double)getFiddle.invoke(null, (long)index << 24), 0.0D);
++        }
++    }
++}

@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize POI visited-section tracking for beta118
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
-index cd6b407b05a3c09598636520bd247e489a40db50..eed5f026625a96355f9e89c0ab916af0bb87fc1a 100644
+index cd6b407b..eed5f026 100644
 --- a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
 +++ b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
 @@ -6,7 +6,6 @@ import com.mojang.datafixers.util.Pair;

@@ -5,7 +5,7 @@ Subject: [PATCH] Short-circuit parrot follow target scans for bate60
 
 
 diff --git a/net/minecraft/world/entity/ai/goal/FollowMobGoal.java b/net/minecraft/world/entity/ai/goal/FollowMobGoal.java
-index 6730ebdc27b28ab43ca297f7314cb0c51521fa7f..3a7dd0bdb07d6094e3bee325483d9dc3fa2e5e28 100644
+index 6730ebdc..3a7dd0bd 100644
 --- a/net/minecraft/world/entity/ai/goal/FollowMobGoal.java
 +++ b/net/minecraft/world/entity/ai/goal/FollowMobGoal.java
 @@ -14,6 +14,7 @@ import org.jspecify.annotations.Nullable;

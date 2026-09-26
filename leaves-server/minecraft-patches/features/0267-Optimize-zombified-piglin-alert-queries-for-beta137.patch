@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize zombified piglin alert queries for beta137
 
 
 diff --git a/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java b/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
-index 4086e37fef9d951ccc151a57913599abd6a5a0f3..d5c63a95c4db4ea4ca684b126ee3438f3afd94a2 100644
+index 09c1363e..e98e0f0e 100644
 --- a/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
 +++ b/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
 @@ -144,12 +144,24 @@ public class ZombifiedPiglin extends Zombie implements NeutralMob {
@@ -37,10 +37,10 @@ index 4086e37fef9d951ccc151a57913599abd6a5a0f3..d5c63a95c4db4ea4ca684b126ee3438f
              .filter(other -> other != this)
              .filter(other -> other.getTarget() == null)
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index 93ddf17eaf694577fbb7b4f78dcd0c2eaa62cef8..c6eb9e97fa53e0fc02fb8f72e7c93b52a7b0a599 100644
+index ced340c8..1a50199e 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
-@@ -2440,6 +2440,20 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -2445,6 +2445,20 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
              return this.results;
          }
  

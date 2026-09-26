@@ -5,7 +5,7 @@ Subject: [PATCH] Short-circuit enderman placement occupancy checks for bate56
 
 
 diff --git a/net/minecraft/world/entity/monster/EnderMan.java b/net/minecraft/world/entity/monster/EnderMan.java
-index 0cbc93e016cbc184b56fa2762b886e0fe772c1df..52b5cebb9cb65a4c1f1ff769c01daa5061df6e05 100644
+index 0cbc93e0..52b5cebb 100644
 --- a/net/minecraft/world/entity/monster/EnderMan.java
 +++ b/net/minecraft/world/entity/monster/EnderMan.java
 @@ -22,6 +22,7 @@ import net.minecraft.util.TimeUtil;
@@ -30,10 +30,10 @@ index 0cbc93e016cbc184b56fa2762b886e0fe772c1df..52b5cebb9cb65a4c1f1ff769c01daa50
      }
  
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index aeb0fea05b751d1c95537e9786ba945f17c9603e..414a11bda2f619de30c9c4e2addd5bee9dca1c9d 100644
+index e2817f0b..ae750eb0 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
-@@ -209,6 +209,8 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -210,6 +210,8 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
      // LeavesX - one reusable result slot per calling thread; nested calls allocate a private fallback.
      private static final ThreadLocal<LeavesXFirstEntityQueryBuffer> LEAVESX_FIRST_ENTITY_QUERY_BUFFER =
          ThreadLocal.withInitial(LeavesXFirstEntityQueryBuffer::new);
@@ -42,7 +42,7 @@ index aeb0fea05b751d1c95537e9786ba945f17c9603e..414a11bda2f619de30c9c4e2addd5bee
      private static final ThreadLocal<LeavesXFirstEntityQueryBuffer> LEAVESX_UNIQUE_ENTITY_QUERY_BUFFER =
          ThreadLocal.withInitial(LeavesXFirstEntityQueryBuffer::new);
      private static final ThreadLocal<LeavesXEntityQueryBuffer> LEAVESX_ENTITY_QUERY_BUFFER =
-@@ -333,6 +335,50 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -334,6 +336,50 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
          return this.leavesX$getFirstEntityOfClass(entityClass, boundingBox, EntitySelector.NO_SPECTATORS);
      }
  

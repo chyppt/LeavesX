@@ -5,7 +5,7 @@ Subject: [PATCH] Defer expiring ticket buffers for bate88
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
-index 522ca4174b3eb5c3b57ab776720b304feae57c29..3b782eab5a834227fdc26bcfb0c00dc2c31b424b 100644
+index ba498ceb..e3568d68 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 @@ -829,12 +829,18 @@ public final class ChunkHolderManager {

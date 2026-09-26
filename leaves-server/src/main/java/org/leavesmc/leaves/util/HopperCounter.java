@@ -232,7 +232,7 @@ public class HopperCounter {
         entry(Items.GHAST_TEAR, Blocks.WHITE_WOOL),
         entry(Items.PHANTOM_MEMBRANE, Blocks.BONE_BLOCK),
         entry(Items.EGG, Blocks.BONE_BLOCK),
-        entry(Items.COPPER_INGOT, Blocks.COPPER_BLOCK),
+        entry(Items.COPPER_INGOT, Blocks.COPPER_BLOCK.weathering().unaffected()),
         entry(Items.AMETHYST_SHARD, Blocks.AMETHYST_BLOCK)
     );
 

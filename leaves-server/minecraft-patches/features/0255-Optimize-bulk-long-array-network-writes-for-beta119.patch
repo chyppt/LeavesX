@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize bulk long-array network writes for beta119
 
 
 diff --git a/net/minecraft/network/FriendlyByteBuf.java b/net/minecraft/network/FriendlyByteBuf.java
-index 12cd230ebe97dab655f8546948f06b93f0babf1f..491e7a8f35c26c1a447aa4991955bb1b4295abad 100644
+index 12cd230e..491e7a8f 100644
 --- a/net/minecraft/network/FriendlyByteBuf.java
 +++ b/net/minecraft/network/FriendlyByteBuf.java
 @@ -21,6 +21,8 @@ import it.unimi.dsi.fastutil.ints.IntList;

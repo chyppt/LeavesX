@@ -5,7 +5,7 @@ Subject: [PATCH] Disable check out-of-order command
 
 
 diff --git a/net/minecraft/network/chat/SignedMessageChain.java b/net/minecraft/network/chat/SignedMessageChain.java
-index 9395c6a58ba37fb00c492065b8045f54de0a2246..0e86909d6c56eceda449656428aa8adfd8c3b370 100644
+index 9395c6a5..0e86909d 100644
 --- a/net/minecraft/network/chat/SignedMessageChain.java
 +++ b/net/minecraft/network/chat/SignedMessageChain.java
 @@ -49,7 +49,7 @@ public class SignedMessageChain {

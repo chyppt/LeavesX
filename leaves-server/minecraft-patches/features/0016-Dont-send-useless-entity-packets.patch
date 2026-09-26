@@ -6,10 +6,10 @@ Subject: [PATCH] Dont send useless entity packets
 This patch is Powered by Purpur(https://github.com/PurpurMC/Purpur)
 
 diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
-index 5fad52157fc22755196ce9eaddaa2bc23c5bb86b..7372220d71f8f7c4aafd607b8a23ab18fbf5a256 100644
+index 60af8292..a0a38800 100644
 --- a/net/minecraft/server/level/ServerEntity.java
 +++ b/net/minecraft/server/level/ServerEntity.java
-@@ -194,6 +194,11 @@ public class ServerEntity {
+@@ -199,6 +199,11 @@ public class ServerEntity {
                      sentPosition = true;
                      sentRotation = true;
                  }
@@ -19,9 +19,9 @@ index 5fad52157fc22755196ce9eaddaa2bc23c5bb86b..7372220d71f8f7c4aafd607b8a23ab18
 +                }
 +                // Leaves end - dont send useless entity packets
  
-                 if (this.entity.needsSync || this.trackDelta || this.entity instanceof LivingEntity && ((LivingEntity)this.entity).isFallFlying()) {
+                 if (this.entity.needsSync || this.trackDelta || this.entity instanceof LivingEntity livingEntity && livingEntity.isFallFlying()) {
                      Vec3 movement = this.entity.getDeltaMovement();
-@@ -300,6 +305,21 @@ public class ServerEntity {
+@@ -305,6 +310,21 @@ public class ServerEntity {
          this.positionCodec.setBase(this.entity.position());
      }
  

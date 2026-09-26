@@ -5,7 +5,7 @@ Subject: [PATCH] Add fine-grained optimization controls for bate78
 
 
 diff --git a/net/minecraft/core/dispenser/EquipmentDispenseItemBehavior.java b/net/minecraft/core/dispenser/EquipmentDispenseItemBehavior.java
-index df3076ed292f72878b122127634a695214b9a049..9c157be13c271309765984c22de6bac27e47d252 100644
+index df3076ed..9c157be1 100644
 --- a/net/minecraft/core/dispenser/EquipmentDispenseItemBehavior.java
 +++ b/net/minecraft/core/dispenser/EquipmentDispenseItemBehavior.java
 @@ -27,7 +27,7 @@ public class EquipmentDispenseItemBehavior extends DefaultDispenseItemBehavior {
@@ -18,10 +18,10 @@ index df3076ed292f72878b122127634a695214b9a049..9c157be13c271309765984c22de6bac2
                  LivingEntity.class, new AABB(pos), entity -> entity.canEquipWithDispenser(dispensed)
              );
 diff --git a/net/minecraft/world/entity/ExperienceOrb.java b/net/minecraft/world/entity/ExperienceOrb.java
-index cf57b011f046c040be06ddf19ce8c50caeac702c..c8dc203c3411736b859ada25fcae30a8e56e89cf 100644
+index e8f02caf..5faf6507 100644
 --- a/net/minecraft/world/entity/ExperienceOrb.java
 +++ b/net/minecraft/world/entity/ExperienceOrb.java
-@@ -272,7 +272,7 @@ public class ExperienceOrb extends Entity {
+@@ -277,7 +277,7 @@ public class ExperienceOrb extends Entity {
          AABB box = AABB.ofSize(pos, 1.0, 1.0, 1.0);
          int id = level.getRandom().nextInt(io.papermc.paper.configuration.GlobalConfiguration.get().misc.xpOrbGroupsPerArea.or(ORB_GROUPS_PER_AREA)); // Paper - Configure how many orb groups per area
          final ExperienceOrb orb;
@@ -31,7 +31,7 @@ index cf57b011f046c040be06ddf19ce8c50caeac702c..c8dc203c3411736b859ada25fcae30a8
                  EntityTypeTest.forClass(ExperienceOrb.class), box, orbx -> canMerge(orbx, id, value)
              );
 diff --git a/net/minecraft/world/entity/ai/behavior/ValidateNearbyPoi.java b/net/minecraft/world/entity/ai/behavior/ValidateNearbyPoi.java
-index f147b8c5362ec90a89c49f2da9869d175c7c08ee..24fcdc9b554d783a044800d16af7b8c6b701e74f 100644
+index f147b8c5..24fcdc9b 100644
 --- a/net/minecraft/world/entity/ai/behavior/ValidateNearbyPoi.java
 +++ b/net/minecraft/world/entity/ai/behavior/ValidateNearbyPoi.java
 @@ -48,7 +48,7 @@ public class ValidateNearbyPoi {
@@ -44,7 +44,7 @@ index f147b8c5362ec90a89c49f2da9869d175c7c08ee..24fcdc9b554d783a044800d16af7b8c6
          }
          List<Villager> villagers = poiLevel.getEntitiesOfClass(Villager.class, new AABB(poiPos), LivingEntity::isSleeping);
 diff --git a/net/minecraft/world/entity/ai/goal/FollowMobGoal.java b/net/minecraft/world/entity/ai/goal/FollowMobGoal.java
-index 3a7dd0bdb07d6094e3bee325483d9dc3fa2e5e28..43816c49767b28f83c651fef2c045d440992fb3e 100644
+index 3a7dd0bd..43816c49 100644
 --- a/net/minecraft/world/entity/ai/goal/FollowMobGoal.java
 +++ b/net/minecraft/world/entity/ai/goal/FollowMobGoal.java
 @@ -39,7 +39,7 @@ public class FollowMobGoal extends Goal {
@@ -57,7 +57,7 @@ index 3a7dd0bdb07d6094e3bee325483d9dc3fa2e5e28..43816c49767b28f83c651fef2c045d44
                  Mob.class, this.mob.getBoundingBox().inflate(this.areaSize), this.visibleFollowPredicate
              );
 diff --git a/net/minecraft/world/entity/ai/goal/FollowPlayerRiddenEntityGoal.java b/net/minecraft/world/entity/ai/goal/FollowPlayerRiddenEntityGoal.java
-index e8f3fabb494a776a02cfc68eac91162a7da1fcad..59401716378b7cd2163bfd72fbf4e9844f0bf6cb 100644
+index e8f3fabb..59401716 100644
 --- a/net/minecraft/world/entity/ai/goal/FollowPlayerRiddenEntityGoal.java
 +++ b/net/minecraft/world/entity/ai/goal/FollowPlayerRiddenEntityGoal.java
 @@ -31,7 +31,7 @@ public class FollowPlayerRiddenEntityGoal extends Goal {
@@ -79,7 +79,7 @@ index e8f3fabb494a776a02cfc68eac91162a7da1fcad..59401716378b7cd2163bfd72fbf4e984
                  this.entityTypeToFollow, this.mob.getBoundingBox().inflate(5.0), LEAVESX_PLAYER_RIDDEN_ENTITY
              );
 diff --git a/net/minecraft/world/entity/ai/sensing/BreezeAttackEntitySensor.java b/net/minecraft/world/entity/ai/sensing/BreezeAttackEntitySensor.java
-index 027746a72d0b19edd59bcd303f5ec659770223e3..e46fb8367e7a6b73fcf280aa0fb9c1d124b88e48 100644
+index 027746a7..e46fb836 100644
 --- a/net/minecraft/world/entity/ai/sensing/BreezeAttackEntitySensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/BreezeAttackEntitySensor.java
 @@ -23,7 +23,7 @@ public class BreezeAttackEntitySensor extends NearestLivingEntitySensor<Breeze>
@@ -92,10 +92,10 @@ index 027746a72d0b19edd59bcd303f5ec659770223e3..e46fb8367e7a6b73fcf280aa0fb9c1d1
              LivingEntity nearestAttackable = null;
              if (nearbyMemory.isPresent()) {
 diff --git a/net/minecraft/world/entity/ai/sensing/VillagerHostilesSensor.java b/net/minecraft/world/entity/ai/sensing/VillagerHostilesSensor.java
-index bf7db290e4b95c562a0d4698afcffc09c939b3cc..d7ff6ead43d98371ecc7c018d1b5a8c16c96efba 100644
+index 4cd257f0..c86324dc 100644
 --- a/net/minecraft/world/entity/ai/sensing/VillagerHostilesSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/VillagerHostilesSensor.java
-@@ -23,7 +23,7 @@ public class VillagerHostilesSensor extends NearestVisibleLivingEntitySensor {
+@@ -24,7 +24,7 @@ public class VillagerHostilesSensor extends NearestVisibleLivingEntitySensor {
  
      @Override
      protected boolean isMatchingEntity(final ServerLevel level, final LivingEntity body, final LivingEntity mob) {
@@ -105,7 +105,7 @@ index bf7db290e4b95c562a0d4698afcffc09c939b3cc..d7ff6ead43d98371ecc7c018d1b5a8c1
              return distance != null && mob.distanceToSqr(body) <= distance * distance;
          }
 diff --git a/net/minecraft/world/entity/ai/sensing/WardenEntitySensor.java b/net/minecraft/world/entity/ai/sensing/WardenEntitySensor.java
-index a5ad3e5bc19236cc06354a68742b1fce4cc4bbf4..c54ea41c1d1e001473ad333036730353b54c4365 100644
+index 0544e7c4..0be9127e 100644
 --- a/net/minecraft/world/entity/ai/sensing/WardenEntitySensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/WardenEntitySensor.java
 @@ -33,7 +33,7 @@ public class WardenEntitySensor extends NearestLivingEntitySensor<Warden> {
@@ -118,10 +118,10 @@ index a5ad3e5bc19236cc06354a68742b1fce4cc4bbf4..c54ea41c1d1e001473ad333036730353
                  return Optional.empty();
              }
 diff --git a/net/minecraft/world/entity/animal/dolphin/Dolphin.java b/net/minecraft/world/entity/animal/dolphin/Dolphin.java
-index 0a6681e316e28db7d2bda2852619e3c74cd217a8..c26deccd605fbb6914597d35f36bfb5efef38e1f 100644
+index 09954d7d..512e61c0 100644
 --- a/net/minecraft/world/entity/animal/dolphin/Dolphin.java
 +++ b/net/minecraft/world/entity/animal/dolphin/Dolphin.java
-@@ -565,7 +565,7 @@ public class Dolphin extends AgeableWaterCreature {
+@@ -574,7 +574,7 @@ public class Dolphin extends AgeableWaterCreature {
          }
  
          private @Nullable ItemEntity findNearbyItem() {
@@ -131,10 +131,10 @@ index 0a6681e316e28db7d2bda2852619e3c74cd217a8..c26deccd605fbb6914597d35f36bfb5e
                      ItemEntity.class,
                      Dolphin.this.getBoundingBox().inflate(8.0, 8.0, 8.0),
 diff --git a/net/minecraft/world/entity/animal/feline/Cat.java b/net/minecraft/world/entity/animal/feline/Cat.java
-index 06f67b12fdf02a9951294bc4451ee79c98e443b5..a4cea5c47a7f60f601e9ec2c8ff8dff4918ec215 100644
+index 08a55f73..26b2d7b8 100644
 --- a/net/minecraft/world/entity/animal/feline/Cat.java
 +++ b/net/minecraft/world/entity/animal/feline/Cat.java
-@@ -309,7 +309,7 @@ public class Cat extends TamableAnimal {
+@@ -321,7 +321,7 @@ public class Cat extends TamableAnimal {
          if (this.isLying()) {
              BlockPos catPos = this.blockPosition();
              final AABB sleepingPlayerArea = new AABB(catPos).inflate(2.0, 2.0, 2.0);
@@ -143,7 +143,7 @@ index 06f67b12fdf02a9951294bc4451ee79c98e443b5..a4cea5c47a7f60f601e9ec2c8ff8dff4
                  this.isLyingOnTopOfSleepingPlayer = this.level()
                      .leavesX$getFirstEntityOfClass(Player.class, sleepingPlayerArea, Player::isSleeping) != null;
              } else {
-@@ -562,7 +562,7 @@ public class Cat extends TamableAnimal {
+@@ -574,7 +574,7 @@ public class Cat extends TamableAnimal {
  
          private boolean spaceIsOccupied() {
              final AABB occupiedArea = new AABB(this.goalPos).inflate(2.0);
@@ -153,10 +153,10 @@ index 06f67b12fdf02a9951294bc4451ee79c98e443b5..a4cea5c47a7f60f601e9ec2c8ff8dff4
                      Cat.class,
                      occupiedArea,
 diff --git a/net/minecraft/world/entity/animal/fish/Pufferfish.java b/net/minecraft/world/entity/animal/fish/Pufferfish.java
-index e255ddeff1898c46a4a207fa37d0724531d78de4..6c12be70a7c18e44dbde3e847bac86785f495ae9 100644
+index e1ca4d07..3174f549 100644
 --- a/net/minecraft/world/entity/animal/fish/Pufferfish.java
 +++ b/net/minecraft/world/entity/animal/fish/Pufferfish.java
-@@ -212,7 +212,7 @@ public class Pufferfish extends AbstractFish {
+@@ -209,7 +209,7 @@ public class Pufferfish extends AbstractFish {
          public boolean canUse() {
              final Level level = this.fish.level();
              final AABB dangerArea = this.fish.getBoundingBox().inflate(2.0);
@@ -166,10 +166,10 @@ index e255ddeff1898c46a4a207fa37d0724531d78de4..6c12be70a7c18e44dbde3e847bac8678
                  return level.leavesX$getFirstEntityOfClass(
                      LivingEntity.class, dangerArea, this::isDangerousTarget
 diff --git a/net/minecraft/world/entity/animal/fox/Fox.java b/net/minecraft/world/entity/animal/fox/Fox.java
-index e5287c37f3de2d9a57dfbfc9f94bc865fd31ce6d..83d93c6b665dc223a21a0d98576e898559494e19 100644
+index aa49fdf0..303901e6 100644
 --- a/net/minecraft/world/entity/animal/fox/Fox.java
 +++ b/net/minecraft/world/entity/animal/fox/Fox.java
-@@ -1310,7 +1310,7 @@ public class Fox extends Animal {
+@@ -1305,7 +1305,7 @@ public class Fox extends Animal {
          }
  
          private @Nullable ItemEntity findNearbyItem() {
@@ -179,10 +179,10 @@ index e5287c37f3de2d9a57dfbfc9f94bc865fd31ce6d..83d93c6b665dc223a21a0d98576e8985
                      ItemEntity.class,
                      Fox.this.getBoundingBox().inflate(8.0, 8.0, 8.0),
 diff --git a/net/minecraft/world/entity/animal/panda/Panda.java b/net/minecraft/world/entity/animal/panda/Panda.java
-index bd9a2ae967e54294bb7aed62c61c3e4a4be001ef..239aabcf6ae8ba2113a80fca40d1fa32fc28eaa9 100644
+index c1505461..ba3baa15 100644
 --- a/net/minecraft/world/entity/animal/panda/Panda.java
 +++ b/net/minecraft/world/entity/animal/panda/Panda.java
-@@ -1063,7 +1063,7 @@ public class Panda extends Animal {
+@@ -1058,7 +1058,7 @@ public class Panda extends Animal {
                  && Panda.this.getUnhappyCounter() <= 0
                  && (
                      !Panda.this.getItemBySlot(EquipmentSlot.MAINHAND).isEmpty()
@@ -191,7 +191,7 @@ index bd9a2ae967e54294bb7aed62c61c3e4a4be001ef..239aabcf6ae8ba2113a80fca40d1fa32
                              ? Panda.this.level().leavesX$getFirstEntityOfClass(
                                  ItemEntity.class,
                                  Panda.this.getBoundingBox().inflate(6.0, 6.0, 6.0),
-@@ -1093,7 +1093,7 @@ public class Panda extends Animal {
+@@ -1088,7 +1088,7 @@ public class Panda extends Animal {
          public void start() {
              if (Panda.this.getItemBySlot(EquipmentSlot.MAINHAND).isEmpty()) {
                  final ItemEntity item;
@@ -201,7 +201,7 @@ index bd9a2ae967e54294bb7aed62c61c3e4a4be001ef..239aabcf6ae8ba2113a80fca40d1fa32
                          ItemEntity.class,
                          Panda.this.getBoundingBox().inflate(8.0, 8.0, 8.0),
 diff --git a/net/minecraft/world/entity/monster/EnderMan.java b/net/minecraft/world/entity/monster/EnderMan.java
-index 52b5cebb9cb65a4c1f1ff769c01daa5061df6e05..1aa80d510cd0d66420c1abdedd7c8d438bd66e1f 100644
+index 52b5cebb..1aa80d51 100644
 --- a/net/minecraft/world/entity/monster/EnderMan.java
 +++ b/net/minecraft/world/entity/monster/EnderMan.java
 @@ -528,7 +528,7 @@ public class EnderMan extends Monster implements NeutralMob {
@@ -214,10 +214,10 @@ index 52b5cebb9cb65a4c1f1ff769c01daa5061df6e05..1aa80d510cd0d66420c1abdedd7c8d43
                          this.enderman, AABB.unitCubeFromLowerCorner(Vec3.atLowerCornerOf(pos)), EntitySelector.NO_SPECTATORS
                      )
 diff --git a/net/minecraft/world/entity/monster/Shulker.java b/net/minecraft/world/entity/monster/Shulker.java
-index cad35a9ccad1624a71a20e5e08759db9228c897a..b920736716717fcf86af56440d7701ee0e3de6d7 100644
+index 60ec7251..0a5d4971 100644
 --- a/net/minecraft/world/entity/monster/Shulker.java
 +++ b/net/minecraft/world/entity/monster/Shulker.java
-@@ -457,7 +457,7 @@ public class Shulker extends AbstractGolem implements Enemy {
+@@ -469,7 +469,7 @@ public class Shulker extends AbstractGolem implements Enemy {
          if (!this.isClosed() && this.teleportSomewhere()) {
              final AABB duplicationArea = oldAabb.inflate(OTHER_SHULKER_SCAN_RADIUS);
              final int shulkerCount;
@@ -225,9 +225,9 @@ index cad35a9ccad1624a71a20e5e08759db9228c897a..b920736716717fcf86af56440d7701ee
 +            if (org.leavesx.leavesx.config.LeavesXRuntime.shulkerDuplicationDensityOptimization()) {
                  try (net.minecraft.world.level.Level.LeavesXEntityQueryBuffer scan = net.minecraft.world.level.Level.leavesX$acquireEntityQueryBuffer()) {
                      shulkerCount = scan.countUpTo(
-                         this.level(), EntityType.SHULKER, duplicationArea, Entity::isAlive, OTHER_SHULKER_LIMIT + 1
+                         this.level(), EntityTypes.SHULKER, duplicationArea, Entity::isAlive, OTHER_SHULKER_LIMIT + 1
 diff --git a/net/minecraft/world/entity/monster/warden/WardenSpawnTracker.java b/net/minecraft/world/entity/monster/warden/WardenSpawnTracker.java
-index 5211f091849b39feacdb9aefa8643c081aa0960e..4346efdeef70e3880fd9c6db1659f12540e853ce 100644
+index e29a42b8..d94bf2de 100644
 --- a/net/minecraft/world/entity/monster/warden/WardenSpawnTracker.java
 +++ b/net/minecraft/world/entity/monster/warden/WardenSpawnTracker.java
 @@ -94,7 +94,7 @@ public class WardenSpawnTracker {
@@ -240,10 +240,10 @@ index 5211f091849b39feacdb9aefa8643c081aa0960e..4346efdeef70e3880fd9c6db1659f125
              : !level.getEntitiesOfClass(Warden.class, areaToCheck).isEmpty();
      }
 diff --git a/net/minecraft/world/entity/monster/zombie/Zombie.java b/net/minecraft/world/entity/monster/zombie/Zombie.java
-index e0023761e3e002d47bacea504e8c30a7d3f921bb..fbacb950aec9be22b516903d9a889d02df7bedf3 100644
+index 8512a3f6..dd4efd2d 100644
 --- a/net/minecraft/world/entity/monster/zombie/Zombie.java
 +++ b/net/minecraft/world/entity/monster/zombie/Zombie.java
-@@ -515,7 +515,7 @@ public class Zombie extends Monster {
+@@ -517,7 +517,7 @@ public class Zombie extends Monster {
                      if (random.nextFloat() < 0.05) {
                          final AABB chickenArea = this.getBoundingBox().inflate(5.0, 3.0, 5.0);
                          final Chicken chicken;
@@ -253,10 +253,10 @@ index e0023761e3e002d47bacea504e8c30a7d3f921bb..fbacb950aec9be22b516903d9a889d02
                              chicken = queryLevel.leavesX$getFirstEntityOfClass(
                                  Chicken.class, chickenArea, EntitySelector.ENTITY_NOT_BEING_RIDDEN
 diff --git a/net/minecraft/world/entity/npc/CatSpawner.java b/net/minecraft/world/entity/npc/CatSpawner.java
-index 1984e1ead1664fd01a41b5dd0622bd5be51f7e1c..ec8f8ff4df98af9aed43ef5e4dca5946744d7981 100644
+index 17f67b46..04618a6c 100644
 --- a/net/minecraft/world/entity/npc/CatSpawner.java
 +++ b/net/minecraft/world/entity/npc/CatSpawner.java
-@@ -52,7 +52,7 @@ public class CatSpawner implements CustomSpawner {
+@@ -53,7 +53,7 @@ public class CatSpawner implements CustomSpawner {
      }
  
      private void spawnInVillage(final ServerLevel serverLevel, final BlockPos spawnPos) {
@@ -265,7 +265,7 @@ index 1984e1ead1664fd01a41b5dd0622bd5be51f7e1c..ec8f8ff4df98af9aed43ef5e4dca5946
              ? serverLevel.getPoiManager().leavesX$hasAtLeastInRange(
                  poi -> poi.is(PoiTypes.HOME), spawnPos, VILLAGE_RADIUS, PoiManager.Occupancy.IS_OCCUPIED, REQUIRED_OCCUPIED_HOMES
              )
-@@ -62,7 +62,7 @@ public class CatSpawner implements CustomSpawner {
+@@ -63,7 +63,7 @@ public class CatSpawner implements CustomSpawner {
          if (enoughOccupiedHomes) {
              final AABB catArea = new AABB(spawnPos).inflate(VILLAGE_RADIUS, 8.0, VILLAGE_RADIUS);
              final int catCount;
@@ -274,7 +274,7 @@ index 1984e1ead1664fd01a41b5dd0622bd5be51f7e1c..ec8f8ff4df98af9aed43ef5e4dca5946
                  try (Level.LeavesXEntityQueryBuffer scan = Level.leavesX$acquireEntityQueryBuffer()) {
                      catCount = scan.countUpTo(
                          serverLevel,
-@@ -84,7 +84,7 @@ public class CatSpawner implements CustomSpawner {
+@@ -85,7 +85,7 @@ public class CatSpawner implements CustomSpawner {
  
      private void spawnInHut(final ServerLevel level, final BlockPos spawnPos) {
          final AABB catArea = new AABB(spawnPos).inflate(HUT_RADIUS, 8.0, HUT_RADIUS);
@@ -284,12 +284,12 @@ index 1984e1ead1664fd01a41b5dd0622bd5be51f7e1c..ec8f8ff4df98af9aed43ef5e4dca5946
              : !level.getEntitiesOfClass(Cat.class, catArea).isEmpty();
          if (!hasCat) {
 diff --git a/net/minecraft/world/item/ArmorStandItem.java b/net/minecraft/world/item/ArmorStandItem.java
-index 3c29a4132e5e919cae57a507dc285a2f4165ce52..8b2362a29490303f9a317d5b3583b364c7881055 100644
+index 8e0ac575..da8b5ad1 100644
 --- a/net/minecraft/world/item/ArmorStandItem.java
 +++ b/net/minecraft/world/item/ArmorStandItem.java
-@@ -37,7 +37,7 @@ public class ArmorStandItem extends Item {
+@@ -38,7 +38,7 @@ public class ArmorStandItem extends Item {
          Vec3 pos = Vec3.atBottomCenterOf(blockPos);
-         AABB box = EntityType.ARMOR_STAND.getDimensions().makeBoundingBox(pos.x(), pos.y(), pos.z());
+         AABB box = EntityTypes.ARMOR_STAND.getDimensions().makeBoundingBox(pos.x(), pos.y(), pos.z());
          if (level.noCollision(null, box)
 -            && (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()
 +            && (org.leavesx.leavesx.config.LeavesXRuntime.armorStandPlacementOptimization()
@@ -297,7 +297,7 @@ index 3c29a4132e5e919cae57a507dc285a2f4165ce52..8b2362a29490303f9a317d5b3583b364
                  : level.getEntities(null, box).isEmpty())) {
              if (level instanceof ServerLevel serverLevel) {
 diff --git a/net/minecraft/world/item/BottleItem.java b/net/minecraft/world/item/BottleItem.java
-index 8ae24b26e473dc2a326f91af9391d587a2244b6c..3c8b1418d776223ada3a5dcbe0459fd8ad5f5048 100644
+index a8b6f890..ab1234eb 100644
 --- a/net/minecraft/world/item/BottleItem.java
 +++ b/net/minecraft/world/item/BottleItem.java
 @@ -31,7 +31,7 @@ public class BottleItem extends Item {
@@ -310,10 +310,10 @@ index 8ae24b26e473dc2a326f91af9391d587a2244b6c..3c8b1418d776223ada3a5dcbe0459fd8
          } else {
              final List<AreaEffectCloud> clouds = level.getEntitiesOfClass(
 diff --git a/net/minecraft/world/level/BaseSpawner.java b/net/minecraft/world/level/BaseSpawner.java
-index d004072fa180a553fe382d5e9912aa4a07e0ab6b..4a30f5ecceaf8bb2189c0fee74b41dbb01f75251 100644
+index 5bd257c0..84d7f22c 100644
 --- a/net/minecraft/world/level/BaseSpawner.java
 +++ b/net/minecraft/world/level/BaseSpawner.java
-@@ -161,7 +161,7 @@ public abstract class BaseSpawner {
+@@ -167,7 +167,7 @@ public abstract class BaseSpawner {
                                  pos.getX(), pos.getY(), pos.getZ(), pos.getX() + 1, pos.getY() + 1, pos.getZ() + 1
                              ).inflate(this.spawnRange);
                              final int nearBy;
@@ -323,10 +323,10 @@ index d004072fa180a553fe382d5e9912aa4a07e0ab6b..4a30f5ecceaf8bb2189c0fee74b41dbb
                                      nearBy = scan.countUpTo(
                                          level,
 diff --git a/net/minecraft/world/level/block/BedBlock.java b/net/minecraft/world/level/block/BedBlock.java
-index 32a6161de46c96ea47f24281c22e4c60d60d380c..312c65b1ac90c92f9f02ff324082c2dc28d7fa7c 100644
+index 5d094bcb..0b5bf5e2 100644
 --- a/net/minecraft/world/level/block/BedBlock.java
 +++ b/net/minecraft/world/level/block/BedBlock.java
-@@ -159,7 +159,7 @@ public class BedBlock extends HorizontalDirectionalBlock implements EntityBlock
+@@ -157,7 +157,7 @@ public class BedBlock extends HorizontalDirectionalBlock {
      // CraftBukkit end
  
      private boolean kickVillagerOutOfBed(final Level level, final BlockPos pos) {
@@ -336,7 +336,7 @@ index 32a6161de46c96ea47f24281c22e4c60d60d380c..312c65b1ac90c92f9f02ff324082c2dc
              if (sleepingVillager == null) {
                  return false;
 diff --git a/net/minecraft/world/level/block/ButtonBlock.java b/net/minecraft/world/level/block/ButtonBlock.java
-index e7070f79982d1b030b55be2d524672a49060da26..65ddfe5fde189759c7986e83f7a40cc1d6e6dc72 100644
+index b4b4d91a..ebd2f77d 100644
 --- a/net/minecraft/world/level/block/ButtonBlock.java
 +++ b/net/minecraft/world/level/block/ButtonBlock.java
 @@ -194,7 +194,7 @@ public class ButtonBlock extends FaceAttachedHorizontalDirectionalBlock {
@@ -349,10 +349,10 @@ index e7070f79982d1b030b55be2d524672a49060da26..65ddfe5fde189759c7986e83f7a40cc1
              } else {
                  final java.util.List<AbstractArrow> arrows = level.getEntitiesOfClass(AbstractArrow.class, searchBox);
 diff --git a/net/minecraft/world/level/block/ChestBlock.java b/net/minecraft/world/level/block/ChestBlock.java
-index c3398e70c332ed210fdfcb9fb96e55b2f10c0695..12169e15dfca448f19c0c022002a67518ed1028b 100644
+index e777dd7b..d8a6eeae 100644
 --- a/net/minecraft/world/level/block/ChestBlock.java
 +++ b/net/minecraft/world/level/block/ChestBlock.java
-@@ -369,7 +369,7 @@ public class ChestBlock extends AbstractChestBlock<ChestBlockEntity> implements
+@@ -370,7 +370,7 @@ public class ChestBlock extends AbstractChestBlock<ChestBlockEntity> implements
          }
          // Paper end - Option to disable chest cat detection
          final AABB searchBox = new AABB(pos.getX(), pos.getY() + 1, pos.getZ(), pos.getX() + 1, pos.getY() + 2, pos.getZ() + 1);
@@ -362,10 +362,10 @@ index c3398e70c332ed210fdfcb9fb96e55b2f10c0695..12169e15dfca448f19c0c022002a6751
          }
          final List<Cat> cats = level.getEntitiesOfClass(Cat.class, searchBox);
 diff --git a/net/minecraft/world/level/block/ComparatorBlock.java b/net/minecraft/world/level/block/ComparatorBlock.java
-index c77a59da6f2720a23cb0ad9f9fce85b58e7da50d..c7e27b4f250a5f8eb67bd0ac6f88cb3c99858cc6 100644
+index 9a6a10a0..dec1a435 100644
 --- a/net/minecraft/world/level/block/ComparatorBlock.java
 +++ b/net/minecraft/world/level/block/ComparatorBlock.java
-@@ -123,7 +123,7 @@ public class ComparatorBlock extends DiodeBlock implements EntityBlock {
+@@ -122,7 +122,7 @@ public class ComparatorBlock extends DiodeBlock implements EntityBlock {
      private @Nullable ItemFrame getItemFrame(final Level level, final Direction direction, final BlockPos tPos) {
          final AABB searchBox = new AABB(tPos.getX(), tPos.getY(), tPos.getZ(), tPos.getX() + 1, tPos.getY() + 1, tPos.getZ() + 1);
          final java.util.function.Predicate<ItemFrame> directionSelector = entity -> entity.getDirection() == direction;
@@ -375,7 +375,7 @@ index c77a59da6f2720a23cb0ad9f9fce85b58e7da50d..c7e27b4f250a5f8eb67bd0ac6f88cb3c
          }
          final List<ItemFrame> itemFrames = level.getEntitiesOfClass(ItemFrame.class, searchBox, directionSelector);
 diff --git a/net/minecraft/world/level/block/DetectorRailBlock.java b/net/minecraft/world/level/block/DetectorRailBlock.java
-index b52c374b1f3c644b75e26645fde0233bc6a10f5d..e3cbae0dbd0f8a6993353e42c367fc8e40c5c7cb 100644
+index 6bf43932..f2a6902a 100644
 --- a/net/minecraft/world/level/block/DetectorRailBlock.java
 +++ b/net/minecraft/world/level/block/DetectorRailBlock.java
 @@ -183,7 +183,7 @@ public class DetectorRailBlock extends BaseRailBlock {
@@ -388,7 +388,7 @@ index b52c374b1f3c644b75e26645fde0233bc6a10f5d..e3cbae0dbd0f8a6993353e42c367fc8e
          }
          final List<T> entities = level.getEntitiesOfClass(type, searchBox, containerEntitySelector);
 diff --git a/net/minecraft/world/level/block/PressurePlateBlock.java b/net/minecraft/world/level/block/PressurePlateBlock.java
-index d57912c7a2983f9cd551fa5ee29794588e282513..0b3444d07ad411e9bb5b1c44846142d3f929b890 100644
+index d57912c7..0b3444d0 100644
 --- a/net/minecraft/world/level/block/PressurePlateBlock.java
 +++ b/net/minecraft/world/level/block/PressurePlateBlock.java
 @@ -46,7 +46,7 @@ public class PressurePlateBlock extends BasePressurePlateBlock {
@@ -401,7 +401,7 @@ index d57912c7a2983f9cd551fa5ee29794588e282513..0b3444d07ad411e9bb5b1c44846142d3
                  return this.getSignalStrength(level, pos, scan.query(level, searchBox, entityClass));
              }
 diff --git a/net/minecraft/world/level/block/TripWireBlock.java b/net/minecraft/world/level/block/TripWireBlock.java
-index a77582c9997c6054d69af106deab753edf051c35..59e6b707f1f755ff7b3b45daccdd244149ffe92e 100644
+index b5aea275..12b08b40 100644
 --- a/net/minecraft/world/level/block/TripWireBlock.java
 +++ b/net/minecraft/world/level/block/TripWireBlock.java
 @@ -189,7 +189,7 @@ public class TripWireBlock extends Block {
@@ -414,7 +414,7 @@ index a77582c9997c6054d69af106deab753edf051c35..59e6b707f1f755ff7b3b45daccdd2441
                  this.checkPressed(level, pos, scan.query(level, null, searchBox, net.minecraft.world.entity.EntitySelector.NO_SPECTATORS));
              }
 diff --git a/net/minecraft/world/level/block/WeightedPressurePlateBlock.java b/net/minecraft/world/level/block/WeightedPressurePlateBlock.java
-index ccf6ae0012a4587c6a7d4be0336473f2fd27d3f9..ca78a491de4f149c51b7924fc13399722794d90e 100644
+index ccf6ae00..ca78a491 100644
 --- a/net/minecraft/world/level/block/WeightedPressurePlateBlock.java
 +++ b/net/minecraft/world/level/block/WeightedPressurePlateBlock.java
 @@ -40,7 +40,7 @@ public class WeightedPressurePlateBlock extends BasePressurePlateBlock {
@@ -427,7 +427,7 @@ index ccf6ae0012a4587c6a7d4be0336473f2fd27d3f9..ca78a491de4f149c51b7924fc1339972
                  return this.getSignalStrength(level, pos, scan.query(level, searchBox, Entity.class));
              }
 diff --git a/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java b/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
-index 45cac88755c1aefd64b2b8ef63adf7913678e3e8..98ffefe0ae6512ef6dee5b729227cda7701ba688 100644
+index 45cac887..98ffefe0 100644
 --- a/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
 +++ b/net/minecraft/world/level/block/entity/ContainerOpenersCounter.java
 @@ -124,7 +124,7 @@ public abstract class ContainerOpenersCounter {
@@ -440,7 +440,7 @@ index 45cac88755c1aefd64b2b8ef63adf7913678e3e8..98ffefe0ae6512ef6dee5b729227cda7
          } else {
              final List<ContainerUser> containerUsers = this.getEntitiesWithContainerOpen(level, pos);
 diff --git a/net/minecraft/world/level/block/entity/HopperBlockEntity.java b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
-index a011dd97c293aa89ae12dfd19f5ee2d5d3bb2e5f..40e3ab792220066739dd4392c9e2cd0c8961e9fe 100644
+index e985fb6c..a05ac6b7 100644
 --- a/net/minecraft/world/level/block/entity/HopperBlockEntity.java
 +++ b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
 @@ -605,7 +605,7 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen

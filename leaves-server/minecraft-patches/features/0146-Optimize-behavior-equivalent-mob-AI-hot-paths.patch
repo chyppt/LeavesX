@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize behavior-equivalent mob AI hot paths
 
 
 diff --git a/net/minecraft/world/entity/ai/goal/GoalSelector.java b/net/minecraft/world/entity/ai/goal/GoalSelector.java
-index 1ddf8796d14d472bec48546f25ac4583d483c8e9..37dd98b83a91d67d69122578deda81fb9ca92a27 100644
+index 0439543f..1a708089 100644
 --- a/net/minecraft/world/entity/ai/goal/GoalSelector.java
 +++ b/net/minecraft/world/entity/ai/goal/GoalSelector.java
 @@ -91,7 +91,18 @@ public class GoalSelector {
@@ -29,7 +29,7 @@ index 1ddf8796d14d472bec48546f25ac4583d483c8e9..37dd98b83a91d67d69122578deda81fb
          profiler.push("goalUpdate");
  
 diff --git a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
-index 3578ece216827fd5d8c1206c689fc608e97b50df..fe724c70f8ea95264f4ef5be60794da78494d3e7 100644
+index 3578ece2..fe724c70 100644
 --- a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
 @@ -18,7 +18,37 @@ public class NearestLivingEntitySensor<T extends LivingEntity> extends Sensor<T>
@@ -72,7 +72,7 @@ index 3578ece216827fd5d8c1206c689fc608e97b50df..fe724c70f8ea95264f4ef5be60794da7
          brain.setMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES, livingEntities);
          brain.setMemory(MemoryModuleType.NEAREST_VISIBLE_LIVING_ENTITIES, new NearestVisibleLivingEntities(level, body, livingEntities));
 diff --git a/net/minecraft/world/entity/ai/targeting/TargetingConditions.java b/net/minecraft/world/entity/ai/targeting/TargetingConditions.java
-index 832260c9b2adabd715545ea7e4c0b4c6d4a13d68..5bce0a05827f0d4aad3738a38050aef4c6aa5ea6 100644
+index 832260c9..5bce0a05 100644
 --- a/net/minecraft/world/entity/ai/targeting/TargetingConditions.java
 +++ b/net/minecraft/world/entity/ai/targeting/TargetingConditions.java
 @@ -79,12 +79,35 @@ public class TargetingConditions {

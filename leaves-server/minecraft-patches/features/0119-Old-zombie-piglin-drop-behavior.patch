@@ -5,7 +5,7 @@ Subject: [PATCH] Old zombie piglin drop behavior
 
 
 diff --git a/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java b/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
-index fb72d1a79705f023e6e4b22ee26391623b931ab0..e0ac326513f5028664a06f81bee27b4aee8671f4 100644
+index a8063693..9f21d175 100644
 --- a/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
 +++ b/net/minecraft/world/entity/monster/zombie/ZombifiedPiglin.java
 @@ -113,6 +113,9 @@ public class ZombifiedPiglin extends Zombie implements NeutralMob {

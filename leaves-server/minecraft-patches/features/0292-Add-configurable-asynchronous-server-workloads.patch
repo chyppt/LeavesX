@@ -1,0 +1,1128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 11:19:10 +0800
+Subject: [PATCH] Add configurable asynchronous server workloads
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+index bd4eff5b..a8876e22 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+@@ -17,6 +17,7 @@ import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkTaskSchedule
+ import ca.spottedleaf.moonrise.patches.chunk_system.ticket.ChunkSystemTicketType;
+ import ca.spottedleaf.moonrise.patches.chunk_system.util.ParallelSearchRadiusIteration;
+ import com.google.gson.JsonObject;
++import com.mojang.logging.LogUtils;
+ import it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap;
+ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+ import it.unimi.dsi.fastutil.longs.LongArrayList;
+@@ -25,6 +26,7 @@ import it.unimi.dsi.fastutil.longs.LongHeapPriorityQueue;
+ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+ import net.minecraft.network.protocol.Packet;
+ import net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket;
++import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
+ import net.minecraft.network.protocol.game.ClientboundSetChunkCacheCenterPacket;
+ import net.minecraft.network.protocol.game.ClientboundSetChunkCacheRadiusPacket;
+ import net.minecraft.network.protocol.game.ClientboundSetSimulationDistancePacket;
+@@ -42,11 +44,15 @@ import net.minecraft.world.level.levelgen.BelowZeroRetrogen;
+ import java.lang.invoke.VarHandle;
+ import java.util.ArrayDeque;
+ import java.util.concurrent.TimeUnit;
++import java.util.concurrent.CompletableFuture;
+ import java.util.concurrent.atomic.AtomicLong;
+ import java.util.function.Function;
++import org.slf4j.Logger;
+ 
+ public final class RegionizedPlayerChunkLoader {
+ 
++    private static final Logger LOGGER = LogUtils.getLogger();
++
+     public static final TicketType PLAYER_TICKET         = ChunkSystemTicketType.create("chunk_system:player_ticket", Long::compareTo, 0L, TicketType.FLAG_LOADING | TicketType.FLAG_SIMULATION | TicketType.FLAG_KEEP_DIMENSION_ACTIVE);
+     public static final TicketType PLAYER_TICKET_DELAYED = ChunkSystemTicketType.create("chunk_system:player_ticket_delayed", Long::compareTo, 1L, TicketType.FLAG_LOADING | TicketType.FLAG_SIMULATION | TicketType.FLAG_KEEP_DIMENSION_ACTIVE);
+ 
+@@ -440,6 +446,9 @@ public final class RegionizedPlayerChunkLoader {
+ 
+         private final ArrayDeque<ChunkHolderManager.TicketOperation<?, ?>> delayedTicketOps = new ArrayDeque<>();
+         private final LongOpenHashSet sentChunks = new LongOpenHashSet();
++        private static final int MAX_ASYNC_CHUNK_SENDS_PER_PLAYER = 64;
++        private final LongOpenHashSet leavesX$pendingAsyncChunkKeys = new LongOpenHashSet();
++        private final ArrayDeque<LeavesXAsyncChunkPacket> leavesX$pendingAsyncChunkPackets = new ArrayDeque<>();
+         // Allocated only for read-only spectators. Normal players retain the original zero-overhead ticket path.
+         private final LongOpenHashSet observerPendingChunks;
+         private final Long2ObjectOpenHashMap<LevelChunk> observerSentChunkReferences;
+@@ -551,6 +560,92 @@ public final class RegionizedPlayerChunkLoader {
+             throw new IllegalStateException();
+         }
+ 
++        private boolean leavesX$scheduleAsyncChunk(final int chunkX, final int chunkZ, final LevelChunk chunk) {
++            if (this.leavesX$pendingAsyncChunkPackets.size() >= MAX_ASYNC_CHUNK_SENDS_PER_PLAYER) {
++                return false;
++            }
++            final long chunkKey = CoordinateUtils.getChunkKey(chunkX, chunkZ);
++            if (!this.leavesX$pendingAsyncChunkKeys.add(chunkKey)) {
++                return true;
++            }
++
++            final boolean shouldModify = this.world.chunkPacketBlockController.shouldModify(this.player, chunk);
++            final CompletableFuture<ClientboundLevelChunkWithLightPacket> packet =
++                org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.submitValueOrRun(
++                    org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.CHUNK_SEND,
++                    () -> PlayerChunkSender.prepareChunkPacket(this.world, chunk, shouldModify)
++                );
++            this.leavesX$pendingAsyncChunkPackets.addLast(new LeavesXAsyncChunkPacket(chunkKey, chunk, packet));
++            return true;
++        }
++
++        private void leavesX$drainAsyncChunks() {
++            while (!this.leavesX$pendingAsyncChunkPackets.isEmpty()) {
++                final LeavesXAsyncChunkPacket pending = this.leavesX$pendingAsyncChunkPackets.peekFirst();
++                if (!pending.packet().isDone()) {
++                    return;
++                }
++                this.leavesX$pendingAsyncChunkPackets.removeFirst();
++                this.leavesX$pendingAsyncChunkKeys.remove(pending.chunkKey());
++
++                final int chunkX = CoordinateUtils.getChunkX(pending.chunkKey());
++                final int chunkZ = CoordinateUtils.getChunkZ(pending.chunkKey());
++                final LevelChunk current = ((ChunkSystemLevel)this.world).moonrise$getFullChunkIfLoaded(chunkX, chunkZ);
++                if (this.removed || !this.wantChunkSent(chunkX, chunkZ) || current != pending.chunk()) {
++                    if (!this.removed && this.wantChunkSent(chunkX, chunkZ) && current != null) {
++                        this.sendQueue.enqueue(pending.chunkKey());
++                    }
++                    continue;
++                }
++
++                final ClientboundLevelChunkWithLightPacket packet;
++                try {
++                    packet = pending.packet().join();
++                } catch (final Throwable failure) {
++                    LOGGER.error(
++                        "LeavesX async chunk packet preparation failed for player {} at [{}, {}]; rebuilding on the tick thread",
++                        this.player.getScoreboardName(),
++                        chunkX,
++                        chunkZ,
++                        failure
++                    );
++                    this.leavesX$sendPreparedChunk(chunkX, chunkZ, current,
++                        PlayerChunkSender.prepareChunkPacket(
++                            this.world,
++                            current,
++                            this.world.chunkPacketBlockController.shouldModify(this.player, current)
++                        ));
++                    continue;
++                }
++                this.leavesX$sendPreparedChunk(chunkX, chunkZ, current, packet);
++            }
++        }
++
++        private void leavesX$sendPreparedChunk(
++            final int chunkX,
++            final int chunkZ,
++            final LevelChunk chunk,
++            final ClientboundLevelChunkWithLightPacket packet
++        ) {
++            final long chunkKey = CoordinateUtils.getChunkKey(chunkX, chunkZ);
++            if (!this.sentChunks.add(chunkKey)) {
++                return;
++            }
++            final ca.spottedleaf.moonrise.patches.chunk_system.scheduling.NewChunkHolder holder =
++                ((ChunkSystemServerLevel)this.world).moonrise$getChunkTaskScheduler().chunkHolderManager
++                    .getChunkHolder(chunkX, chunkZ);
++            if (holder == null || holder.vanillaChunkHolder.getChunkToSend() != chunk) {
++                this.sentChunks.remove(chunkKey);
++                if (this.wantChunkSent(chunkX, chunkZ)) {
++                    this.sendQueue.enqueue(chunkKey);
++                }
++                return;
++            }
++            ((ChunkSystemChunkHolder)holder.vanillaChunkHolder).moonrise$addReceivedChunk(this.player);
++            PlatformHooks.get().onChunkWatch(this.world, chunk, this.player);
++            PlayerChunkSender.sendPreparedChunk(this.player.connection, this.world, chunk, packet);
++        }
++
+         /**
+          * Returns a chunk that is already fully loaded and safe to send without scheduling work or adding a ticket.
+          */
+@@ -860,6 +955,7 @@ public final class RegionizedPlayerChunkLoader {
+                 this.updateObserverQueues(time);
+                 return;
+             }
++            this.leavesX$drainAsyncChunks();
+             // update rate limits
+             final double loadRate = this.getMaxChunkLoadRate();
+             final double genRate = this.getMaxChunkGenRate();
+@@ -1052,9 +1148,17 @@ public final class RegionizedPlayerChunkLoader {
+                         return;
+                     } // else: good to dequeue and send, fall through
+                 }
+-                this.sendQueue.dequeueLong();
+-
+-                this.sendChunk(pendingSendX, pendingSendZ);
++                if (org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.enabled(
++                    org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.CHUNK_SEND
++                )) {
++                    if (!this.leavesX$scheduleAsyncChunk(pendingSendX, pendingSendZ, chunk)) {
++                        break;
++                    }
++                    this.sendQueue.dequeueLong();
++                } else {
++                    this.sendQueue.dequeueLong();
++                    this.sendChunk(pendingSendX, pendingSendZ);
++                }
+ 
+                 if (this.removed) {
+                     // sendChunk may invoke plugin logic
+@@ -1062,6 +1166,8 @@ public final class RegionizedPlayerChunkLoader {
+                 }
+             }
+ 
++            this.leavesX$drainAsyncChunks();
++
+             this.flushDelayedTicketOps();
+         }
+ 
+@@ -1262,6 +1368,8 @@ public final class RegionizedPlayerChunkLoader {
+             }
+ 
+             this.sendQueue.clear();
++            this.leavesX$pendingAsyncChunkPackets.clear();
++            this.leavesX$pendingAsyncChunkKeys.clear();
+             this.tickingQueue.clear();
+             this.generatingQueue.clear();
+             this.genQueue.clear();
+@@ -1407,6 +1515,8 @@ public final class RegionizedPlayerChunkLoader {
+                 throw new IllegalStateException("Removing removed player chunk loader");
+             }
+             this.removed = true;
++            this.leavesX$pendingAsyncChunkPackets.clear();
++            this.leavesX$pendingAsyncChunkKeys.clear();
+             // sends the chunk unload packets
+             this.broadcastMap.remove();
+             if (this.observerOnly) {
+@@ -1444,5 +1554,12 @@ public final class RegionizedPlayerChunkLoader {
+         public LongOpenHashSet getSentChunksRaw() {
+             return this.sentChunks;
+         }
++
++        private record LeavesXAsyncChunkPacket(
++            long chunkKey,
++            LevelChunk chunk,
++            CompletableFuture<ClientboundLevelChunkWithLightPacket> packet
++        ) {
++        }
+     }
+ }
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+index 0a49a82e..2a5ee06a 100644
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -1070,6 +1070,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         this.saveAllChunks(false, true, false, true); // Paper - rewrite chunk system
+ 
+         this.isSaving = false;
++        org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.shutdown();
+         this.savedDataStorage.close();
+         this.resources.close();
+ 
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index 1d998972..264d70ba 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1172,11 +1172,95 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+                     || ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkStatus().isOrAfter(FullChunkStatus.ENTITY_TICKING)) {
+                     tracker.serverEntity.sendChanges();
+                 }
++        final ca.spottedleaf.moonrise.common.list.ReferenceList<net.minecraft.world.entity.Entity> trackerEntities = this.trackerEntities;
++        if (org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.enabled(
++            org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.ENTITY_TRACKER
++        ) && trackerEntities.size() >= 256 && !this.level.players().isEmpty()
++            && this.leavesX$parallelTrackerTick(trackerEntities)) {
++            return;
++        }
++        final Entity[] trackerEntitiesRaw = trackerEntities.getRawDataUnchecked();
++        for (int i = 0, len = trackerEntities.size(); i < len; ++i) {
++            final Entity entity = trackerEntitiesRaw[i];
++            final ChunkMap.TrackedEntity tracker = ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
++            if (tracker == null) {
++                continue;
++            }
++            ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerTrackedEntity)tracker).moonrise$tick(((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkData().nearbyPlayers);
++            if (((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerTrackedEntity)tracker).moonrise$hasPlayers()
++                || ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkStatus().isOrAfter(FullChunkStatus.ENTITY_TICKING)) {
++                tracker.serverEntity.sendChanges();
++            }
+             }
+         } finally {
+             this.iteratingTrackerEntities = false;
+         }
+     }
++
++    /**
++     * Parallelizes primitive range checks, then commits every tracking mutation in the original entity order.
++     * Workers read only primitive fields captured in the snapshots; world, entity, player, connection, plugin, and
++     * mutable tracking state are touched only while preparing or committing on the tick thread.
++     */
++    private boolean leavesX$parallelTrackerTick(
++        final ca.spottedleaf.moonrise.common.list.ReferenceList<Entity> trackerEntities
++    ) {
++        final int entityCount = trackerEntities.size();
++        final Entity[] entities = trackerEntities.getRawDataUnchecked();
++        final LeavesXTrackerSnapshot[] snapshots = new LeavesXTrackerSnapshot[entityCount];
++        for (int index = 0; index < entityCount; index++) {
++            final Entity entity = entities[index];
++            final ChunkMap.TrackedEntity tracker =
++                ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
++            if (tracker != null) {
++                snapshots[index] = tracker.leavesX$createTrackerSnapshot(
++                    ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkData().nearbyPlayers
++                );
++            }
++        }
++
++        final int workers = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 4));
++        final int rangeSize = Math.max(64, (entityCount + workers - 1) / workers);
++        final java.util.ArrayList<java.util.concurrent.CompletableFuture<Void>> futures = new java.util.ArrayList<>(workers);
++        for (int start = 0; start < entityCount; start += rangeSize) {
++            final int from = start;
++            final int to = Math.min(entityCount, start + rangeSize);
++            futures.add(org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.submitOrRun(
++                org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.ENTITY_TRACKER,
++                () -> {
++                    for (int index = from; index < to; index++) {
++                        final LeavesXTrackerSnapshot snapshot = snapshots[index];
++                        if (snapshot != null) snapshot.computeRanges();
++                    }
++                }
++            ));
++        }
++
++        try {
++            java.util.concurrent.CompletableFuture.allOf(futures.toArray(java.util.concurrent.CompletableFuture[]::new)).join();
++        } catch (final Throwable failure) {
++            LOGGER.error("LeavesX async entity-tracker range computation failed; rerunning the full Moonrise tracker path", failure);
++            return false;
++        }
++
++        for (int index = 0; index < entityCount; index++) {
++            final LeavesXTrackerSnapshot snapshot = snapshots[index];
++            if (snapshot == null) {
++                continue;
++            }
++            final ChunkMap.TrackedEntity tracker = snapshot.tracker;
++            final Entity entity = snapshot.entity;
++            if (((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity() != tracker) {
++                continue;
++            }
++            tracker.leavesX$applyTrackerSnapshot(snapshot);
++            if (tracker.moonrise$hasPlayers()
++                || ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkStatus().isOrAfter(FullChunkStatus.ENTITY_TICKING)) {
++                tracker.serverEntity.sendChanges();
++            }
++        }
++        return true;
++    }
+     // Paper end - optimise entity tracker
+ 
+     protected void tick() {
+@@ -1493,6 +1577,11 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+                         visibleToPlayer = deltaToPlayerY * deltaToPlayerY <= rangeY * rangeY;
+                     }
+                 }
++                this.leavesX$commitPlayerVisibility(player, visibleToPlayer);
++            }
++        }
++
++        private void leavesX$commitPlayerVisibility(final ServerPlayer player, boolean visibleToPlayer) {
+                 visibleToPlayer = visibleToPlayer
+                     && this.entity.broadcastToPlayer(player)
+                     && ChunkMap.this.isChunkTracked(player, this.entity.chunkPosition().x(), this.entity.chunkPosition().z());
+@@ -1526,6 +1615,78 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+                     }
+                     // Leaves end - render bot
+                 }
++        }
++
++        private LeavesXTrackerSnapshot leavesX$createTrackerSnapshot(
++            final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.TrackedChunk chunk
++        ) {
++            if (chunk == null) {
++                return LeavesXTrackerSnapshot.empty(this, this.entity, null, -1L);
++            }
++            final ca.spottedleaf.moonrise.common.list.ReferenceList<ServerPlayer> playerList =
++                chunk.getPlayers(ca.spottedleaf.moonrise.common.misc.NearbyPlayers.NearbyMapType.VIEW_DISTANCE);
++            if (playerList == null || playerList.size() == 0) {
++                return LeavesXTrackerSnapshot.empty(this, this.entity, chunk, chunk.getUpdateCount());
++            }
++
++            final int count = playerList.size();
++            final ServerPlayer[] players = java.util.Arrays.copyOf(playerList.getRawDataUnchecked(), count);
++            final double[] playerX = new double[count];
++            final double[] playerY = new double[count];
++            final double[] playerZ = new double[count];
++            final double[] horizontalRangeSquared = new double[count];
++            final int effectiveRange = this.getEffectiveRange();
++            for (int index = 0; index < count; index++) {
++                final ServerPlayer player = players[index];
++                playerX[index] = player.getX();
++                playerY[index] = player.getY();
++                playerZ[index] = player.getZ();
++                final double range = Math.min(effectiveRange, ChunkMap.this.getPlayerViewDistance(player) * 16);
++                horizontalRangeSquared[index] = range * range;
++            }
++            final double rangeY = ChunkMap.this.level.paperConfig().entities.trackingRangeY.enabled
++                ? ChunkMap.this.level.paperConfig().entities.trackingRangeY.get(this.entity, -1)
++                : -1.0;
++            return new LeavesXTrackerSnapshot(
++                this,
++                this.entity,
++                this.entity.getX(),
++                this.entity.getY(),
++                this.entity.getZ(),
++                chunk,
++                chunk.getUpdateCount(),
++                players,
++                playerX,
++                playerY,
++                playerZ,
++                horizontalRangeSquared,
++                rangeY
++            );
++        }
++
++        private void leavesX$applyTrackerSnapshot(final LeavesXTrackerSnapshot snapshot) {
++            if (snapshot.players.length == 0) {
++                this.moonrise$clearPlayers();
++                return;
++            }
++            final long previousUpdate = this.lastChunkUpdate;
++            final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.TrackedChunk previousChunk = this.lastTrackedChunk;
++            this.lastChunkUpdate = snapshot.chunkUpdate;
++            this.lastTrackedChunk = snapshot.chunk;
++
++            for (int index = 0; index < snapshot.players.length; index++) {
++                final ServerPlayer player = snapshot.players[index];
++                if (player != this.entity) {
++                    this.leavesX$commitPlayerVisibility(player, snapshot.inRange[index]);
++                }
++            }
++            if (previousUpdate != snapshot.chunkUpdate || previousChunk != snapshot.chunk) {
++                for (final ServerPlayerConnection connection : new java.util.ArrayList<>(this.seenBy)) {
++                    final ServerPlayer player = connection.getPlayer();
++                    if (!snapshot.containsPlayer(player)) {
++                        this.removePlayer(player);
++                    }
++                }
+             }
+         }
+ 
+@@ -1560,4 +1721,85 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             }
+         }
+     }
++
++    private static final class LeavesXTrackerSnapshot {
++
++        private final ChunkMap.TrackedEntity tracker;
++        private final Entity entity;
++        private final double entityX;
++        private final double entityY;
++        private final double entityZ;
++        private final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.@Nullable TrackedChunk chunk;
++        private final long chunkUpdate;
++        private final ServerPlayer[] players;
++        private final double[] playerX;
++        private final double[] playerY;
++        private final double[] playerZ;
++        private final double[] horizontalRangeSquared;
++        private final double rangeY;
++        private final boolean[] inRange;
++
++        private LeavesXTrackerSnapshot(
++            final ChunkMap.TrackedEntity tracker,
++            final Entity entity,
++            final double entityX,
++            final double entityY,
++            final double entityZ,
++            final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.@Nullable TrackedChunk chunk,
++            final long chunkUpdate,
++            final ServerPlayer[] players,
++            final double[] playerX,
++            final double[] playerY,
++            final double[] playerZ,
++            final double[] horizontalRangeSquared,
++            final double rangeY
++        ) {
++            this.tracker = tracker;
++            this.entity = entity;
++            this.entityX = entityX;
++            this.entityY = entityY;
++            this.entityZ = entityZ;
++            this.chunk = chunk;
++            this.chunkUpdate = chunkUpdate;
++            this.players = players;
++            this.playerX = playerX;
++            this.playerY = playerY;
++            this.playerZ = playerZ;
++            this.horizontalRangeSquared = horizontalRangeSquared;
++            this.rangeY = rangeY;
++            this.inRange = new boolean[players.length];
++        }
++
++        private static LeavesXTrackerSnapshot empty(
++            final ChunkMap.TrackedEntity tracker,
++            final Entity entity,
++            final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.@Nullable TrackedChunk chunk,
++            final long chunkUpdate
++        ) {
++            return new LeavesXTrackerSnapshot(
++                tracker, entity, entity.getX(), entity.getY(), entity.getZ(), chunk, chunkUpdate,
++                new ServerPlayer[0], new double[0], new double[0], new double[0], new double[0], -1.0
++            );
++        }
++
++        private void computeRanges() {
++            for (int index = 0; index < this.players.length; index++) {
++                final double deltaX = this.playerX[index] - this.entityX;
++                final double deltaZ = this.playerZ[index] - this.entityZ;
++                boolean visible = deltaX * deltaX + deltaZ * deltaZ <= this.horizontalRangeSquared[index];
++                if (visible && this.rangeY >= 0.0) {
++                    final double deltaY = this.playerY[index] - this.entityY;
++                    visible = deltaY * deltaY <= this.rangeY * this.rangeY;
++                }
++                this.inRange[index] = visible;
++            }
++        }
++
++        private boolean containsPlayer(final ServerPlayer player) {
++            for (final ServerPlayer candidate : this.players) {
++                if (candidate == player) return true;
++            }
++            return false;
++        }
++    }
+ }
+diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
+index b69d529f..6c73d067 100644
+--- a/net/minecraft/server/level/ServerChunkCache.java
++++ b/net/minecraft/server/level/ServerChunkCache.java
+@@ -36,6 +36,7 @@ import net.minecraft.world.level.ChunkPos;
+ import net.minecraft.world.level.Level;
+ import net.minecraft.world.level.LightLayer;
+ import net.minecraft.world.level.LocalMobCapCalculator;
++import net.minecraft.world.level.MobSpawnCounting;
+ import net.minecraft.world.level.NaturalSpawner;
+ import net.minecraft.world.level.TicketStorage;
+ import net.minecraft.world.level.chunk.ChunkAccess;
+@@ -84,6 +85,8 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+     private final Runnable leavesX$lightDrainTask = this::leavesX$drainLightUpdateBatch;
+     @VisibleForDebug
+     private NaturalSpawner.@Nullable SpawnState lastSpawnState;
++    private @Nullable CompletableFuture<MobSpawnCounting.Computed> leavesX$asyncSpawnCounting;
++    private boolean leavesX$asyncSpawnPrimed;
+     // Paper start
+     public final ca.spottedleaf.concurrentutil.map.concurrent.longs.ConcurrentChainedLong2ReferenceHashTable<net.minecraft.world.level.chunk.LevelChunk> fullChunks = new ca.spottedleaf.concurrentutil.map.concurrent.longs.ConcurrentChainedLong2ReferenceHashTable<>();
+     public int getFullChunksCount() {
+@@ -547,21 +550,17 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+         // Paper start - Optional per player mob spawns
+         NaturalSpawner.SpawnState spawnCookie;
+         if ((this.spawnFriendlies || this.spawnEnemies) && this.level.paperConfig().entities.spawning.perPlayerMobSpawns) { // don't count mobs when animals and monsters are disabled
+-            // re-set mob counts
+-            for (ServerPlayer player : this.level.players()) {
+-                // Paper start - per player mob spawning backoff
+-                for (int j = 0; j < ServerPlayer.MOBCATEGORY_TOTAL_ENUMS; j++) {
+-                    player.mobCounts[j] = 0;
+-
+-                    int newBackoff = player.mobBackoffCounts[j] - 1; // TODO make configurable bleed // TODO use nonlinear algorithm?
+-                    if (newBackoff < 0) {
+-                        newBackoff = 0;
+-                    }
+-                    player.mobBackoffCounts[j] = newBackoff;
+-                }
+-                // Paper end - per player mob spawning backoff
++            final boolean asyncMobSpawning = org.leavesx.leavesx.config.LeavesXRuntime.asyncMobSpawning()
++                && org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.enabled(
++                    org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.MOB_SPAWNING
++                );
++            this.leavesX$tickMobBackoff();
++            if (asyncMobSpawning) {
++                spawnCookie = this.leavesX$createAsyncNaturalSpawnState(chunkCount);
++            } else {
++                this.leavesX$resetPlayerMobCounts();
++                spawnCookie = this.createNaturalSpawnState(chunkCount, null, true);
+             }
+-            spawnCookie = this.createNaturalSpawnState(chunkCount, null, true);
+         } else {
+             spawnCookie = this.createNaturalSpawnState(
+                 chunkCount,
+@@ -620,6 +619,67 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+         profiler.pop();
+     }
+ 
++    private void leavesX$tickMobBackoff() {
++        for (final ServerPlayer player : this.level.players()) {
++            for (int category = 0; category < ServerPlayer.MOBCATEGORY_TOTAL_ENUMS; category++) {
++                player.mobBackoffCounts[category] = Math.max(0, player.mobBackoffCounts[category] - 1);
++            }
++        }
++    }
++
++    private void leavesX$resetPlayerMobCounts() {
++        for (final ServerPlayer player : this.level.players()) {
++            Arrays.fill(player.mobCounts, 0);
++        }
++    }
++
++    /**
++     * Uses the newest complete primitive count and starts at most one count for the next tick.
++     *
++     * <p>Live entities and chunks are frozen here on the tick thread. The worker only aggregates packed keys and
++     * category ordinals; player counters and the published spawn state are updated here after full completion.</p>
++     */
++    private NaturalSpawner.SpawnState leavesX$createAsyncNaturalSpawnState(final int chunkCount) {
++        if (!this.leavesX$asyncSpawnPrimed || this.lastSpawnState == null) {
++            this.leavesX$resetPlayerMobCounts();
++            this.lastSpawnState = this.createNaturalSpawnState(chunkCount, null, true);
++            this.leavesX$asyncSpawnPrimed = true;
++            return this.lastSpawnState;
++        }
++
++        final CompletableFuture<MobSpawnCounting.Computed> pending = this.leavesX$asyncSpawnCounting;
++        if (pending != null && pending.isDone()) {
++            try {
++                final MobSpawnCounting.Computed computed = pending.join();
++                this.leavesX$resetPlayerMobCounts();
++                final MobSpawnCounting.Result result = MobSpawnCounting.commit(computed, null);
++                this.lastSpawnState = NaturalSpawner.createStateFromComputed(chunkCount, result, null);
++            } catch (final Throwable failure) {
++                LOGGER.error("LeavesX async mob-spawn counting failed; recomputing the complete state on the server thread", failure);
++                this.leavesX$resetPlayerMobCounts();
++                this.lastSpawnState = this.createNaturalSpawnState(chunkCount, null, true);
++            } finally {
++                this.leavesX$asyncSpawnCounting = null;
++            }
++        }
++
++        if (this.leavesX$asyncSpawnCounting == null) {
++            final int entityCount = this.level.getEntityCount();
++            final MobSpawnCounting.Prepared prepared = MobSpawnCounting.prepare(
++                this.level.getAllEntities(),
++                this::getFullChunk,
++                false,
++                true,
++                entityCount
++            );
++            this.leavesX$asyncSpawnCounting = org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.submitValueOrRun(
++                org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.MOB_SPAWNING,
++                () -> MobSpawnCounting.compute(prepared, false)
++            );
++        }
++        return this.lastSpawnState;
++    }
++
+     private NaturalSpawner.SpawnState createNaturalSpawnState(
+         final int chunkCount,
+         final @Nullable LocalMobCapCalculator localMobCapCalculator,
+diff --git a/net/minecraft/server/network/PlayerChunkSender.java b/net/minecraft/server/network/PlayerChunkSender.java
+index 196c01fe..43897c1b 100644
+--- a/net/minecraft/server/network/PlayerChunkSender.java
++++ b/net/minecraft/server/network/PlayerChunkSender.java
+@@ -81,7 +81,26 @@ public class PlayerChunkSender {
+     public static void sendChunk(final ServerGamePacketListenerImpl connection, final ServerLevel level, final LevelChunk chunk) { // Paper - rewrite chunk system - public
+         // Paper start - Anti-Xray
+         final boolean shouldModify = level.chunkPacketBlockController.shouldModify(connection.player, chunk);
+-        connection.send(new ClientboundLevelChunkWithLightPacket(chunk, level.getLightEngine(), null, null, shouldModify));
++        sendPreparedChunk(connection, level, chunk, prepareChunkPacket(level, chunk, shouldModify));
++    }
++
++    /** Builds the immutable packet payload; the caller must have captured {@code shouldModify} on the tick thread. */
++    public static ClientboundLevelChunkWithLightPacket prepareChunkPacket(
++        final ServerLevel level,
++        final LevelChunk chunk,
++        final boolean shouldModify
++    ) {
++        return new ClientboundLevelChunkWithLightPacket(chunk, level.getLightEngine(), null, null, shouldModify);
++    }
++
++    /** Commits a fully prepared packet while retaining every Paper/Moonrise observable action on the tick thread. */
++    public static void sendPreparedChunk(
++        final ServerGamePacketListenerImpl connection,
++        final ServerLevel level,
++        final LevelChunk chunk,
++        final ClientboundLevelChunkWithLightPacket packet
++    ) {
++        connection.send(packet);
+         // Paper end - Anti-Xray
+         // Paper start - PlayerChunkLoadEvent
+         if (io.papermc.paper.event.packet.PlayerChunkLoadEvent.getHandlerList().getRegisteredListeners().length > 0) {
+diff --git a/net/minecraft/world/entity/ai/navigation/PathNavigation.java b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
+index 8aacb3c3..61702f89 100644
+--- a/net/minecraft/world/entity/ai/navigation/PathNavigation.java
++++ b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
+@@ -167,7 +167,13 @@ public abstract class PathNavigation {
+             return null;
+         }
+ 
+-        if (this.path != null && !this.path.isDone() && targets.contains(this.targetPos)) {
++        if (this.path instanceof org.leavesx.leavesx.path.LeavesXAsyncPath asyncPath
++            && !asyncPath.isProcessed()
++            && asyncPath.hasSameTargets(targets)) {
++            return this.path;
++        }
++        if (!(this.path instanceof org.leavesx.leavesx.path.LeavesXAsyncPath pending && !pending.isProcessed())
++            && this.path != null && !this.path.isDone() && targets.contains(this.targetPos)) {
+             return this.path;
+         }
+ 
+@@ -193,9 +199,35 @@ public abstract class PathNavigation {
+         BlockPos fromPos = above ? this.mob.blockPosition().above() : this.mob.blockPosition();
+         int radius = (int)(maxPathLength + radiusOffset);
+         PathNavigationRegion region = new PathNavigationRegion(this.level, fromPos.offset(-radius, -radius, -radius), fromPos.offset(radius, radius, radius));
+-        Path path = this.pathFinder.findPath(region, this.mob, targets, maxPathLength, reachRange, this.maxVisitedNodesMultiplier);
++        final Path path;
++        if (org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.enabled(
++            org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.PATHFINDING
++        ) && !(this.mob instanceof net.minecraft.world.entity.npc.villager.Villager
++            && org.leavesx.leavesx.config.LeavesXRuntime.villagerCompatibilityMode())) {
++            final Set<BlockPos> frozenTargets = Set.copyOf(targets);
++            final java.util.concurrent.CompletableFuture<Path> future =
++                org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.submitOwnedValueOrRun(
++                    org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.PATHFINDING,
++                    this.pathFinder,
++                    () -> {
++                        synchronized (this.pathFinder) {
++                            return this.pathFinder.findPath(
++                                region,
++                                this.mob,
++                                frozenTargets,
++                                maxPathLength,
++                                reachRange,
++                                this.maxVisitedNodesMultiplier
++                            );
++                        }
++                    }
++                );
++            path = new org.leavesx.leavesx.path.LeavesXAsyncPath(frozenTargets, future);
++        } else {
++            path = this.pathFinder.findPath(region, this.mob, targets, maxPathLength, reachRange, this.maxVisitedNodesMultiplier);
++        }
+         profiler.pop();
+-        if (path != null && path.getTarget() != null) {
++        if (path != null && path.isProcessed() && path.getTarget() != null) {
+             this.targetPos = path.getTarget();
+             this.reachRange = reachRange;
+             this.resetStuckTimeout();
+@@ -243,6 +275,12 @@ public abstract class PathNavigation {
+             return false;
+         }
+ 
++        if (!newPath.isProcessed()) {
++            this.path = newPath;
++            this.speedModifier = speedModifier;
++            return true;
++        }
++
+         if (!newPath.sameAs(this.path)) {
+             this.path = newPath;
+         }
+@@ -273,6 +311,20 @@ public abstract class PathNavigation {
+             this.recomputePath();
+         }
+ 
++        if (this.path != null && !this.path.isProcessed()) {
++            return;
++        }
++        if (this.path instanceof org.leavesx.leavesx.path.LeavesXAsyncPath asyncPath) {
++            final Path resolved = asyncPath.resolvedPath();
++            if (resolved == null) {
++                this.path = null;
++                return;
++            }
++            this.path = resolved;
++            this.targetPos = resolved.getTarget();
++            this.resetStuckTimeout();
++        }
++
+         if (!this.isDone()) {
+             if (this.canUpdatePath()) {
+                 this.followThePath();
+@@ -554,7 +606,7 @@ public abstract class PathNavigation {
+     public boolean shouldRecomputePath(final BlockPos pos) {
+         if (this.hasDelayedRecomputation) {
+             return false;
+-        } else if (this.path != null && !this.path.isDone() && this.path.getNodeCount() != 0) {
++        } else if (this.path != null && this.path.isProcessed() && !this.path.isDone() && this.path.getNodeCount() != 0) {
+             Node target = this.path.getEndNode();
+             if (org.leavesx.leavesx.config.LeavesXRuntime.navigationRecomputeDistanceOptimization()) {
+                 // LeavesX - retain the exact midpoint arithmetic while avoiding a temporary Vec3 allocation.
+diff --git a/net/minecraft/world/item/BlockItem.java b/net/minecraft/world/item/BlockItem.java
+index dd2ca0f6..37b40474 100644
+--- a/net/minecraft/world/item/BlockItem.java
++++ b/net/minecraft/world/item/BlockItem.java
+@@ -8,6 +8,7 @@ import net.minecraft.server.level.ServerPlayer;
+ import net.minecraft.server.permissions.Permissions;
+ import net.minecraft.sounds.SoundEvent;
+ import net.minecraft.sounds.SoundSource;
++import net.minecraft.world.InteractionHand;
+ import net.minecraft.world.InteractionResult;
+ import net.minecraft.world.entity.item.ItemEntity;
+ import net.minecraft.world.entity.player.Player;
+@@ -45,6 +46,16 @@ public class BlockItem extends Item {
+             : placeResult;
+     }
+ 
++    @Override
++    public InteractionResult use(final Level level, final Player player, final InteractionHand hand) {
++        if (this.block instanceof ShulkerBoxBlock
++            && player instanceof ServerPlayer serverPlayer
++            && org.leavesx.leavesx.gameplay.QuickShulkerBox.tryOpen(serverPlayer, hand)) {
++            return InteractionResult.SUCCESS;
++        }
++        return super.use(level, player, hand);
++    }
++
+     public InteractionResult place(final BlockPlaceContext placeContext) {
+         if (!this.getBlock().isEnabled(placeContext.getLevel().enabledFeatures())) {
+             return InteractionResult.FAIL;
+diff --git a/net/minecraft/world/level/MobSpawnCounting.java b/net/minecraft/world/level/MobSpawnCounting.java
+index 7d7641bb..b3d1480b 100644
+--- a/net/minecraft/world/level/MobSpawnCounting.java
++++ b/net/minecraft/world/level/MobSpawnCounting.java
+@@ -22,7 +22,7 @@ import org.jspecify.annotations.Nullable;
+  * packed chunk positions and category ordinals. Entity, chunk, player, plugin, and world objects remain on the tick
+  * thread, and every result is applied before spawning continues in the same tick.</p>
+  */
+-final class MobSpawnCounting {
++public final class MobSpawnCounting {
+ 
+     private static final int INITIAL_CAPACITY = 128;
+ 
+@@ -41,24 +41,48 @@ final class MobSpawnCounting {
+             return countSequentially(entities, chunkGetter, localMobCapCalculator, countMobs);
+         }
+ 
+-        final Snapshot snapshot = freezeInputs(
++        final Prepared prepared = prepare(
+             entities,
+             chunkGetter,
+             localMobCapCalculator != null,
+             countMobs,
+             expectedEntityCount
+         );
++        return commit(compute(prepared, parallelCounting), localMobCapCalculator);
++    }
++
++    /** Freezes every live-world value required by asynchronous spawn counting on the tick thread. */
++    public static Prepared prepare(
++        final Iterable<Entity> entities,
++        final NaturalSpawner.ChunkGetter chunkGetter,
++        final boolean countLocalMobs,
++        final boolean countPlayerMobs,
++        final int expectedEntityCount
++    ) {
++        return freezeInputs(entities, chunkGetter, countLocalMobs, countPlayerMobs, expectedEntityCount);
++    }
++
++    /** Aggregates only primitive snapshot arrays and is safe to execute on a LeavesX worker. */
++    public static Computed compute(final Prepared prepared, final boolean parallelCounting) {
+         final int minimumEntities = org.leavesx.leavesx.config.LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities();
+         final Long2ObjectOpenHashMap<int[]> localCounts = MobSpawnCountAccumulator.count(
+-            snapshot.localInputs(), parallelCounting, minimumEntities
++            prepared.localInputs(), parallelCounting, minimumEntities
+         );
+         final Long2ObjectOpenHashMap<int[]> playerCounts = MobSpawnCountAccumulator.count(
+-            snapshot.playerInputs(), parallelCounting, minimumEntities
++            prepared.playerInputs(), parallelCounting, minimumEntities
+         );
++        return new Computed(prepared, localCounts, playerCounts);
++    }
+ 
+-        applyLocalCounts(localCounts, localMobCapCalculator);
+-        applyPlayerCounts(playerCounts, snapshot.playerMobCounter());
+-        return new Result(snapshot.mobCounts(), snapshot.spawnPotential());
++    /** Applies a complete worker result on the tick thread and constructs the immutable spawn state inputs. */
++    public static Result commit(
++        final Computed computed,
++        final @Nullable LocalMobCapCalculator localMobCapCalculator
++    ) {
++        final Prepared prepared = computed.prepared();
++        applyLocalCounts(computed.localCounts(), localMobCapCalculator);
++        applyPlayerCounts(computed.playerCounts(), prepared.playerMobCounter());
++        return new Result(prepared.mobCounts(), prepared.spawnPotential());
+     }
+ 
+     /**
+@@ -129,7 +153,7 @@ final class MobSpawnCounting {
+         return new Result(mobCounts, spawnPotential);
+     }
+ 
+-    private static Snapshot freezeInputs(
++    private static Prepared freezeInputs(
+         final Iterable<Entity> entities,
+         final NaturalSpawner.ChunkGetter chunkGetter,
+         final boolean countLocalMobs,
+@@ -176,7 +200,7 @@ final class MobSpawnCounting {
+             });
+         }
+ 
+-        return new Snapshot(
++        return new Prepared(
+             builder.freezeLocal(),
+             builder.freezePlayers(),
+             playerMobCounter == null ? null : playerMobCounter[0],
+@@ -229,10 +253,10 @@ final class MobSpawnCounting {
+         ).value();
+     }
+ 
+-    record Result(Object2IntOpenHashMap<MobCategory> mobCounts, PotentialCalculator spawnPotential) {
++    public record Result(Object2IntOpenHashMap<MobCategory> mobCounts, PotentialCalculator spawnPotential) {
+     }
+ 
+-    private record Snapshot(
++    public record Prepared(
+         MobSpawnCountAccumulator.Inputs localInputs,
+         MobSpawnCountAccumulator.Inputs playerInputs,
+         @Nullable ChunkMap playerMobCounter,
+@@ -241,6 +265,13 @@ final class MobSpawnCounting {
+     ) {
+     }
+ 
++    public record Computed(
++        Prepared prepared,
++        Long2ObjectOpenHashMap<int[]> localCounts,
++        Long2ObjectOpenHashMap<int[]> playerCounts
++    ) {
++    }
++
+     private static final class SnapshotBuilder {
+ 
+         private final @Nullable DestinationBuilder local;
+diff --git a/net/minecraft/world/level/NaturalSpawner.java b/net/minecraft/world/level/NaturalSpawner.java
+index 6820dd64..1559dd1f 100644
+--- a/net/minecraft/world/level/NaturalSpawner.java
++++ b/net/minecraft/world/level/NaturalSpawner.java
+@@ -147,6 +147,20 @@ public final class NaturalSpawner {
+         );
+     }
+ 
++    /** Constructs a spawn state after an asynchronous primitive count has been committed on the tick thread. */
++    public static NaturalSpawner.SpawnState createStateFromComputed(
++        final int spawnableChunkCount,
++        final MobSpawnCounting.Result result,
++        final @Nullable LocalMobCapCalculator localMobCapCalculator
++    ) {
++        return new NaturalSpawner.SpawnState(
++            spawnableChunkCount,
++            result.mobCounts(),
++            result.spawnPotential(),
++            localMobCapCalculator
++        );
++    }
++
+     private static Biome getRoughBiome(final BlockPos pos, final ChunkAccess chunk) {
+         return chunk.getNoiseBiome(QuartPos.fromBlock(pos.getX()), QuartPos.fromBlock(pos.getY()), QuartPos.fromBlock(pos.getZ())).value();
+     }
+diff --git a/net/minecraft/world/level/biome/BiomeManager.java b/net/minecraft/world/level/biome/BiomeManager.java
+index c139f70b..c69b1cb6 100644
+--- a/net/minecraft/world/level/biome/BiomeManager.java
++++ b/net/minecraft/world/level/biome/BiomeManager.java
+@@ -12,6 +12,8 @@ public class BiomeManager {
+     private static final int ZOOM_BITS = 2;
+     private static final int ZOOM = 4;
+     private static final int ZOOM_MASK = 3;
++    private static final double[] QUART_OFFSETS = {0.0D, 0.25D, 0.5D, 0.75D};
++    private static final double[] FIDDLE_OFFSETS = createFiddleOffsets();
+     private final BiomeManager.NoiseBiomeSource noiseBiomeSource;
+     private final long biomeZoomSeed;
+ 
+@@ -35,9 +37,10 @@ public class BiomeManager {
+         int parentX = absX >> 2;
+         int parentY = absY >> 2;
+         int parentZ = absZ >> 2;
+-        double fractX = (absX & 3) / 4.0;
+-        double fractY = (absY & 3) / 4.0;
+-        double fractZ = (absZ & 3) / 4.0;
++        final boolean useLookupTables = org.leavesx.leavesx.config.LeavesXRuntime.biomeZoomLookupTablesOptimization();
++        double fractX = useLookupTables ? QUART_OFFSETS[absX & 3] : (absX & 3) / 4.0;
++        double fractY = useLookupTables ? QUART_OFFSETS[absY & 3] : (absY & 3) / 4.0;
++        double fractZ = useLookupTables ? QUART_OFFSETS[absZ & 3] : (absZ & 3) / 4.0;
+         int minI = 0;
+         double minFiddledDistance = Double.POSITIVE_INFINITY;
+ 
+@@ -101,7 +104,18 @@ public class BiomeManager {
+     }
+ 
+     private static double getFiddle(final long rval) {
+-        return (double)(((rval >> 24) & (1024 - 1)) - (1024/2)) * (0.9 / 1024.0); // Paper - avoid floorMod, fp division, and fp subtraction
++        final int index = (int)(rval >>> 24) & 1023;
++        return org.leavesx.leavesx.config.LeavesXRuntime.biomeZoomLookupTablesOptimization()
++            ? FIDDLE_OFFSETS[index]
++            : (double)(index - 512) * (0.9 / 1024.0); // Paper - avoid floorMod, fp division, and fp subtraction
++    }
++
++    private static double[] createFiddleOffsets() {
++        final double[] offsets = new double[1024];
++        for (int index = 0; index < offsets.length; index++) {
++            offsets[index] = (double)(index - 512) * (0.9 / 1024.0);
++        }
++        return offsets;
+     }
+ 
+     public interface NoiseBiomeSource {
+diff --git a/net/minecraft/world/level/biome/MobSpawnSettings.java b/net/minecraft/world/level/biome/MobSpawnSettings.java
+index 2f864982..fb7423d6 100644
+--- a/net/minecraft/world/level/biome/MobSpawnSettings.java
++++ b/net/minecraft/world/level/biome/MobSpawnSettings.java
+@@ -51,7 +51,9 @@ public class MobSpawnSettings {
+         final Map<EntityType<?>, MobSpawnSettings.MobSpawnCost> mobSpawnCosts
+     ) {
+         this.creatureGenerationProbability = creatureGenerationProbability;
+-        this.spawners = ImmutableMap.copyOf(spawners);
++        this.spawners = org.leavesx.leavesx.config.LeavesXRuntime.mobSpawnerEnumMapOptimization()
++            ? com.google.common.collect.Maps.immutableEnumMap(spawners)
++            : ImmutableMap.copyOf(spawners);
+         this.mobSpawnCosts = ImmutableMap.copyOf(mobSpawnCosts);
+     }
+ 
+diff --git a/net/minecraft/world/level/block/ShulkerBoxBlock.java b/net/minecraft/world/level/block/ShulkerBoxBlock.java
+index 0168a286..3911e76d 100644
+--- a/net/minecraft/world/level/block/ShulkerBoxBlock.java
++++ b/net/minecraft/world/level/block/ShulkerBoxBlock.java
+@@ -198,9 +198,19 @@ public class ShulkerBoxBlock extends BaseEntityBlock {
+     protected int getAnalogOutputSignal(final BlockState state, final Level level, final BlockPos pos, final Direction direction) {
+         // Leaves start - update suppression crash fix
+         try {
++            final BlockEntity blockEntity = level.getBlockEntity(pos);
++            if (org.leavesx.leavesx.gameplay.NamedCceShulkerBox.matches(blockEntity)) {
++                throw new org.leavesmc.leaves.util.UpdateSuppressionException(
++                    pos,
++                    level,
++                    this,
++                    null,
++                    new ClassCastException("LeavesX named CCE shulker box")
++                );
++            }
+             return org.leavesmc.leaves.LeavesConfig.modify.oldMC.updater.cceUpdateSuppression ?
+-                    AbstractContainerMenu.getRedstoneSignalFromContainer((net.minecraft.world.Container) level.getBlockEntity(pos)) : // Leaves - make cce happy(?)
+-                    AbstractContainerMenu.getRedstoneSignalFromBlockEntity(level.getBlockEntity(pos));
++                    AbstractContainerMenu.getRedstoneSignalFromContainer((net.minecraft.world.Container) blockEntity) : // Leaves - make cce happy(?)
++                    AbstractContainerMenu.getRedstoneSignalFromBlockEntity(blockEntity);
+         } catch (ClassCastException ex) {
+             if (org.leavesmc.leaves.LeavesConfig.modify.updateSuppressionCrashFix) {
+                 throw new org.leavesmc.leaves.util.UpdateSuppressionException(pos, null, this, null, ex);
+diff --git a/net/minecraft/world/level/pathfinder/Path.java b/net/minecraft/world/level/pathfinder/Path.java
+index ce536d07..318da7c9 100644
+--- a/net/minecraft/world/level/pathfinder/Path.java
++++ b/net/minecraft/world/level/pathfinder/Path.java
+@@ -11,7 +11,7 @@ import net.minecraft.world.entity.Entity;
+ import net.minecraft.world.phys.Vec3;
+ import org.jspecify.annotations.Nullable;
+ 
+-public final class Path {
++public class Path {
+     public static final StreamCodec<FriendlyByteBuf, Path> STREAM_CODEC = StreamCodec.of((output, value) -> value.writeToStream(output), Path::createFromStream);
+     public final List<Node> nodes;
+     private Path.@Nullable DebugData debugData;
+@@ -39,6 +39,11 @@ public final class Path {
+         return this.nextNodeIndex >= this.nodes.size();
+     }
+ 
++    /** Returns whether an asynchronous path has completed; ordinary paths are always complete. */
++    public boolean isProcessed() {
++        return true;
++    }
++
+     public @Nullable Node getEndNode() {
+         return !this.nodes.isEmpty() ? this.nodes.get(this.nodes.size() - 1) : null;
+     }
+diff --git a/net/minecraft/world/level/storage/PlayerDataStorage.java b/net/minecraft/world/level/storage/PlayerDataStorage.java
+index eddb6ebe..4d74ea48 100644
+--- a/net/minecraft/world/level/storage/PlayerDataStorage.java
++++ b/net/minecraft/world/level/storage/PlayerDataStorage.java
+@@ -2,12 +2,14 @@ package net.minecraft.world.level.storage;
+ 
+ import com.mojang.datafixers.DataFixer;
+ import com.mojang.logging.LogUtils;
++import java.io.ByteArrayOutputStream;
+ import java.io.File;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.nio.file.StandardCopyOption;
+ import java.time.ZonedDateTime;
+ import java.util.Optional;
++import java.util.UUID;
+ import net.minecraft.nbt.CompoundTag;
+ import net.minecraft.nbt.NbtAccounter;
+ import net.minecraft.nbt.NbtIo;
+@@ -35,15 +37,52 @@ public class PlayerDataStorage {
+         try (ProblemReporter.ScopedCollector reporter = new ProblemReporter.ScopedCollector(player.problemPath(), LOGGER)) {
+             TagValueOutput output = TagValueOutput.createWithContext(reporter, player.registryAccess());
+             player.saveWithoutId(output);
+-            Path playerDirPath = this.playerDir.toPath();
+-            Path tmpFile = Files.createTempFile(playerDirPath, player.getStringUUID() + "-", ".dat");
+             CompoundTag dataToStore = output.buildResult();
+-            NbtIo.writeCompressed(dataToStore, tmpFile);
+-            Path realFile = playerDirPath.resolve(player.getStringUUID() + ".dat");
+-            Path oldFile = playerDirPath.resolve(player.getStringUUID() + ".dat_old");
+-            Util.safeReplaceFile(realFile, tmpFile, oldFile);
++            this.save(player.getPlainTextName(), player.getUUID(), player.getStringUUID(), dataToStore);
+         } catch (Exception ignored) {
+-            LOGGER.warn("Failed to save player data for {}", player.getPlainTextName(), ignored); // Paper - Print exception
++            LOGGER.warn("Failed to encode player data for {}", player.getPlainTextName(), ignored); // Paper - Print exception
++        }
++    }
++
++    /** Encodes one immutable save image before handing disk I/O to the ordered LeavesX writer. */
++    public void save(final String playerName, final UUID uniqueId, final String stringId, final CompoundTag dataToStore) {
++        final byte[] encoded;
++        try (ByteArrayOutputStream output = new ByteArrayOutputStream(65_536)) {
++            NbtIo.writeCompressed(dataToStore, output);
++            encoded = output.toByteArray();
++        } catch (final Exception exception) {
++            LOGGER.warn("Failed to encode player data for {} ({})", playerName, uniqueId, exception);
++            return;
++        }
++
++        org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.submitKeyedOrRun(
++            org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE,
++            uniqueId,
++            () -> this.writeEncoded(playerName, stringId, encoded)
++        ).exceptionally(failure -> {
++            LOGGER.warn("Failed to save player data for {} ({})", playerName, uniqueId, failure);
++            return null;
++        });
++    }
++
++    private void writeEncoded(final String playerName, final String stringId, final byte[] encoded) {
++        Path temporaryFile = null;
++        try {
++            final Path playerDirPath = this.playerDir.toPath();
++            temporaryFile = Files.createTempFile(playerDirPath, stringId + "-", ".dat");
++            Files.write(temporaryFile, encoded);
++            final Path realFile = playerDirPath.resolve(stringId + ".dat");
++            final Path oldFile = playerDirPath.resolve(stringId + ".dat_old");
++            Util.safeReplaceFile(realFile, temporaryFile, oldFile);
++        } catch (final Exception exception) {
++            if (temporaryFile != null) {
++                try {
++                    Files.deleteIfExists(temporaryFile);
++                } catch (final Exception cleanupFailure) {
++                    exception.addSuppressed(cleanupFailure);
++                }
++            }
++            throw new IllegalStateException("Failed to save player data for " + playerName, exception);
+         }
+     }
+ 
+@@ -91,6 +130,12 @@ public class PlayerDataStorage {
+     }
+ 
+     public Optional<CompoundTag> load(final NameAndId nameAndId) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.asyncPlayerDataSave()) {
++            org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.awaitKey(
++                org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE,
++                nameAndId.id()
++            );
++        }
+         Optional<CompoundTag> optTag = this.load(nameAndId, ".dat");
+         if (optTag.isEmpty()) {
+             this.backup(nameAndId, ".dat");

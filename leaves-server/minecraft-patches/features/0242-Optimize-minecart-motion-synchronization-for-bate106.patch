@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize minecart motion synchronization for bate106
 
 
 diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
-index be080fbbc51f512eb8e8fc2e23ad2bb29b134469..a225038bb29189600daee6a50ece241402a19e12 100644
+index 31dc24dc..efa8c546 100644
 --- a/net/minecraft/server/level/ServerEntity.java
 +++ b/net/minecraft/server/level/ServerEntity.java
-@@ -293,7 +293,12 @@ public class ServerEntity {
+@@ -298,7 +298,12 @@ public class ServerEntity {
          this.sendDirtyEntityData();
          if (newMinecartBehavior.lerpSteps.isEmpty()) {
              Vec3 movement = this.entity.getDeltaMovement();

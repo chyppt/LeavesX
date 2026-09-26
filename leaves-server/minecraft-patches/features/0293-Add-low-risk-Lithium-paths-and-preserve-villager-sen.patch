@@ -1,0 +1,124 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 12:27:28 +0800
+Subject: [PATCH] Add low-risk Lithium paths and preserve villager sensing
+
+
+diff --git a/net/minecraft/core/AxisCycle.java b/net/minecraft/core/AxisCycle.java
+index e3524e70..a3378de6 100644
+--- a/net/minecraft/core/AxisCycle.java
++++ b/net/minecraft/core/AxisCycle.java
+@@ -35,7 +35,12 @@ public enum AxisCycle {
+ 
+         @Override
+         public Direction.Axis cycle(final Direction.Axis axis) {
+-            return AXIS_VALUES[Math.floorMod(axis.ordinal() + 1, 3)];
++            // LeavesX - Lithium: the enum has exactly three stable axes; avoid floorMod on collision hot paths.
++            return switch (axis) {
++                case X -> Direction.Axis.Y;
++                case Y -> Direction.Axis.Z;
++                case Z -> Direction.Axis.X;
++            };
+         }
+ 
+         @Override
+@@ -56,7 +61,11 @@ public enum AxisCycle {
+ 
+         @Override
+         public Direction.Axis cycle(final Direction.Axis axis) {
+-            return AXIS_VALUES[Math.floorMod(axis.ordinal() - 1, 3)];
++            return switch (axis) {
++                case X -> Direction.Axis.Z;
++                case Y -> Direction.Axis.X;
++                case Z -> Direction.Axis.Y;
++            };
+         }
+ 
+         @Override
+diff --git a/net/minecraft/core/Direction.java b/net/minecraft/core/Direction.java
+index 46547155..74a712a7 100644
+--- a/net/minecraft/core/Direction.java
++++ b/net/minecraft/core/Direction.java
+@@ -355,7 +355,7 @@ public enum Direction implements StringRepresentable, ca.spottedleaf.moonrise.pa
+     }
+ 
+     public static Direction getRandom(final RandomSource random) {
+-        return Util.getRandom(VALUES, random);
++        return VALUES[random.nextInt(VALUES.length)]; // LeavesX - Lithium: equivalent direct array selection
+     }
+ 
+     public static Direction getApproximateNearest(final double dx, final double dy, final double dz) {
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index a25f7e5b..e9be98a1 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -2837,6 +2837,11 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+     }
+ 
+     protected void updateSwingTime() {
++        // LeavesX - Lithium: idle entities have no swing state to advance.
++        if (org.leavesx.leavesx.config.LeavesXRuntime.lithiumIdleSwingOptimization()
++            && !this.swinging && this.swingTime == 0) {
++            return;
++        }
+         int currentSwingDuration = this.getCurrentSwingDuration();
+         if (this.swinging) {
+             this.swingTime++;
+@@ -3911,6 +3916,11 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+     protected void updateFallFlying() {
+         this.checkFallDistanceAccumulation();
+         if (!this.level().isClientSide()) {
++            // LeavesX - Lithium: avoid scanning equipment when the entity is not entering or leaving glide state.
++            if (org.leavesx.leavesx.config.LeavesXRuntime.lithiumIdleGlideOptimization()
++                && !this.isFallFlying() && this.fallFlyTicks == 0) {
++                return;
++            }
+             if (!this.canGlide()) {
+                 if (this.getSharedFlag(Entity.FLAG_FALL_FLYING) && !CraftEventFactory.callToggleGlideEvent(this, false).isCancelled()) // CraftBukkit
+                 this.setSharedFlag(Entity.FLAG_FALL_FLYING, false);
+diff --git a/net/minecraft/world/entity/ai/sensing/Sensor.java b/net/minecraft/world/entity/ai/sensing/Sensor.java
+index d86aabf7..a2f64976 100644
+--- a/net/minecraft/world/entity/ai/sensing/Sensor.java
++++ b/net/minecraft/world/entity/ai/sensing/Sensor.java
+@@ -54,7 +54,14 @@ public abstract class Sensor<E extends LivingEntity> {
+ 
+     public final void tick(final ServerLevel level, final E body) {
+         if (--this.timeToTick <= 0L) {
+-            this.timeToTick = java.util.Objects.requireNonNullElse(level.paperConfig().tickRates.sensor.get(body.getType(), this.configKey), this.scanRate); // Paper - configurable sensor tick rate and timings
++            final int paperInterval = java.util.Objects.requireNonNullElse(
++                level.paperConfig().tickRates.sensor.get(body.getType(), this.configKey),
++                this.scanRate
++            ); // Paper - configurable sensor tick rate and timings
++            this.timeToTick = org.leavesx.leavesx.config.LeavesXRuntime.villagerSensorTickInterval(
++                paperInterval,
++                this.scanRate
++            );
+             this.updateTargetingConditionRanges(body);
+             this.doTick(level, body);
+         }
+diff --git a/net/minecraft/world/phys/AABB.java b/net/minecraft/world/phys/AABB.java
+index efb79617..21a4062a 100644
+--- a/net/minecraft/world/phys/AABB.java
++++ b/net/minecraft/world/phys/AABB.java
+@@ -80,11 +80,19 @@ public class AABB {
+     }
+ 
+     public double min(final Direction.Axis axis) {
+-        return axis.choose(this.minX, this.minY, this.minZ);
++        return switch (axis) {
++            case X -> this.minX;
++            case Y -> this.minY;
++            case Z -> this.minZ;
++        };
+     }
+ 
+     public double max(final Direction.Axis axis) {
+-        return axis.choose(this.maxX, this.maxY, this.maxZ);
++        return switch (axis) {
++            case X -> this.maxX;
++            case Y -> this.maxY;
++            case Z -> this.maxZ;
++        };
+     }
+ 
+     @Override

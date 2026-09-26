@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize villager indoor walking for bate29
 
 
 diff --git a/net/minecraft/world/entity/ai/behavior/InsideBrownianWalk.java b/net/minecraft/world/entity/ai/behavior/InsideBrownianWalk.java
-index b57a48842e31f678de4dcef689a4c9dcf9dd66af..861cc15a923c6a59aba3da967ad0ce095a2541b4 100644
+index b57a4884..861cc15a 100644
 --- a/net/minecraft/world/entity/ai/behavior/InsideBrownianWalk.java
 +++ b/net/minecraft/world/entity/ai/behavior/InsideBrownianWalk.java
 @@ -3,11 +3,13 @@ package net.minecraft.world.entity.ai.behavior;

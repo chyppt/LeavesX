@@ -5,7 +5,7 @@ Subject: [PATCH] Sound update suppression
 
 
 diff --git a/net/minecraft/world/entity/animal/equine/AbstractHorse.java b/net/minecraft/world/entity/animal/equine/AbstractHorse.java
-index 52fc3d9600a7bd256647fbbfc1e460ca2b10a424..eb11277ae0c6e2613452887a27f1d89d7b7e49c8 100644
+index 847fcecc..8cbcf630 100644
 --- a/net/minecraft/world/entity/animal/equine/AbstractHorse.java
 +++ b/net/minecraft/world/entity/animal/equine/AbstractHorse.java
 @@ -300,7 +300,17 @@ public abstract class AbstractHorse extends Animal implements PlayerRideableJump
@@ -28,10 +28,10 @@ index 52fc3d9600a7bd256647fbbfc1e460ca2b10a424..eb11277ae0c6e2613452887a27f1d89d
              int max = Math.min(old.getContainerSize(), this.inventory.getContainerSize());
  
 diff --git a/net/minecraft/world/entity/npc/villager/AbstractVillager.java b/net/minecraft/world/entity/npc/villager/AbstractVillager.java
-index d68cc8ae9e2b5e2350fa226bcf8ed519579ce0c1..0754c74d99e472747e98ca111cce7958b4f289a9 100644
+index 1129636d..5a1115a3 100644
 --- a/net/minecraft/world/entity/npc/villager/AbstractVillager.java
 +++ b/net/minecraft/world/entity/npc/villager/AbstractVillager.java
-@@ -56,7 +56,17 @@ public abstract class AbstractVillager extends AgeableMob implements Npc, Mercha
+@@ -57,7 +57,17 @@ public abstract class AbstractVillager extends AgeableMob implements Npc, Mercha
      private static final EntityDataAccessor<Integer> DATA_UNHAPPY_COUNTER = SynchedEntityData.defineId(AbstractVillager.class, EntityDataSerializers.INT);
      private @Nullable Player tradingPlayer;
      protected @Nullable MerchantOffers offers;
@@ -51,7 +51,7 @@ index d68cc8ae9e2b5e2350fa226bcf8ed519579ce0c1..0754c74d99e472747e98ca111cce7958
  
      public AbstractVillager(final EntityType<? extends AbstractVillager> type, final Level level) {
 diff --git a/net/minecraft/world/entity/vehicle/minecart/AbstractMinecartContainer.java b/net/minecraft/world/entity/vehicle/minecart/AbstractMinecartContainer.java
-index 91d699adfbfa211db85734a6406d690aed5f0324..918b20be69b9961b3d9c0f1d4f8d0866e33a2745 100644
+index d3651110..ca8d934f 100644
 --- a/net/minecraft/world/entity/vehicle/minecart/AbstractMinecartContainer.java
 +++ b/net/minecraft/world/entity/vehicle/minecart/AbstractMinecartContainer.java
 @@ -66,6 +66,11 @@ public abstract class AbstractMinecartContainer extends AbstractMinecart impleme
@@ -67,19 +67,19 @@ index 91d699adfbfa211db85734a6406d690aed5f0324..918b20be69b9961b3d9c0f1d4f8d0866
  
      @Override
 diff --git a/net/minecraft/world/level/block/SculkSensorBlock.java b/net/minecraft/world/level/block/SculkSensorBlock.java
-index 94ec05d2c6338464f4912cc1c919165c080f8cde..5f24f6e850fb5701cb4e108af3a707a973fcd271 100644
+index 3da6b264..d78e8baf 100644
 --- a/net/minecraft/world/level/block/SculkSensorBlock.java
 +++ b/net/minecraft/world/level/block/SculkSensorBlock.java
-@@ -97,7 +97,7 @@ public class SculkSensorBlock extends BaseEntityBlock implements SimpleWaterlogg
+@@ -98,7 +98,7 @@ public class SculkSensorBlock extends BaseEntityBlock implements SimpleWaterlogg
      @Override
      public void stepOn(final Level level, final BlockPos pos, final BlockState onState, final Entity entity) {
          if (!level.isClientSide()
 -            && canActivate(onState)
 +            && canActivate(onState, pos) // Leaves - Sound update suppression
-             && !entity.is(EntityType.WARDEN)
+             && !entity.is(EntityTypes.WARDEN)
              && level.getBlockEntity(pos) instanceof SculkSensorBlockEntity sculkSensor
              && level instanceof ServerLevel serverLevel
-@@ -212,6 +212,15 @@ public class SculkSensorBlock extends BaseEntityBlock implements SimpleWaterlogg
+@@ -213,6 +213,15 @@ public class SculkSensorBlock extends BaseEntityBlock implements SimpleWaterlogg
          return state.getValue(PHASE);
      }
  
@@ -96,7 +96,7 @@ index 94ec05d2c6338464f4912cc1c919165c080f8cde..5f24f6e850fb5701cb4e108af3a707a9
          return state.getBlock() instanceof SculkSensorBlock && getPhase(state) == SculkSensorPhase.INACTIVE; // Paper - Check for a valid type
      }
 diff --git a/net/minecraft/world/level/block/entity/SculkSensorBlockEntity.java b/net/minecraft/world/level/block/entity/SculkSensorBlockEntity.java
-index a1adc346a229eb05e45843a6315622b24f11dda9..d1f677fd087aa7e88e55699e3431004782f55b37 100644
+index 7903289b..2b88743d 100644
 --- a/net/minecraft/world/level/block/entity/SculkSensorBlockEntity.java
 +++ b/net/minecraft/world/level/block/entity/SculkSensorBlockEntity.java
 @@ -115,7 +115,7 @@ public class SculkSensorBlockEntity extends BlockEntity implements GameEventList

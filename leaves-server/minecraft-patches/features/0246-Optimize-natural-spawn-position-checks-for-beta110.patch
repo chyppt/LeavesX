@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize natural spawn position checks for beta110
 
 
 diff --git a/net/minecraft/world/level/NaturalSpawner.java b/net/minecraft/world/level/NaturalSpawner.java
-index 13969ae1cfa2f7a18315f77d6583369412089d3b..18f104737aaec5f078fe1eab50fa0a22c43e8252 100644
+index 942f6a0a..69449010 100644
 --- a/net/minecraft/world/level/NaturalSpawner.java
 +++ b/net/minecraft/world/level/NaturalSpawner.java
-@@ -392,6 +392,22 @@ public final class NaturalSpawner {
+@@ -389,6 +389,22 @@ public final class NaturalSpawner {
          }
  
          LevelData.RespawnData respawnData = level.getRespawnData();
@@ -31,7 +31,7 @@ index 13969ae1cfa2f7a18315f77d6583369412089d3b..18f104737aaec5f078fe1eab50fa0a22
          if (respawnData.dimension() == level.dimension()
              && respawnData.pos().closerToCenterThan(new Vec3(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5), 24.0)) {
              return false;
-@@ -401,6 +417,20 @@ public final class NaturalSpawner {
+@@ -398,6 +414,20 @@ public final class NaturalSpawner {
          return Objects.equals(chunkPos, chunk.getPos()) || level.canSpawnEntitiesInChunk(chunkPos);
      }
  

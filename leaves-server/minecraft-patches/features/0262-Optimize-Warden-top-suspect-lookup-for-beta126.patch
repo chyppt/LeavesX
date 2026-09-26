@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize Warden top suspect lookup for beta126
 
 
 diff --git a/net/minecraft/world/entity/monster/warden/AngerManagement.java b/net/minecraft/world/entity/monster/warden/AngerManagement.java
-index 54160854ab8728e13e9d31f4d3dc502e85684631..d79f377f1538cd11594dfcaa0af001722ff1fe62 100644
+index 163e92ec..8583e282 100644
 --- a/net/minecraft/world/entity/monster/warden/AngerManagement.java
 +++ b/net/minecraft/world/entity/monster/warden/AngerManagement.java
-@@ -161,9 +161,25 @@ public class AngerManagement {
+@@ -160,9 +160,25 @@ public class AngerManagement {
      }
  
      private @Nullable Entity getTopSuspect() {

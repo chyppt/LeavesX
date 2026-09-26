@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 26 Sep 2026 00:20:00 +0800
+Subject: [PATCH] Isolate mutable sensor targeting state between world workers
+
+
+diff --git a/net/minecraft/world/entity/ai/sensing/Sensor.java b/net/minecraft/world/entity/ai/sensing/Sensor.java
+index 2b0fdac7..454a6780 100644
+--- a/net/minecraft/world/entity/ai/sensing/Sensor.java
++++ b/net/minecraft/world/entity/ai/sensing/Sensor.java
+@@ -13,21 +13,13 @@ import net.minecraft.world.entity.ai.targeting.TargetingConditions;
+ public abstract class Sensor<E extends LivingEntity> {
+     private static final int DEFAULT_SCAN_RATE = 20;
+     private static final int DEFAULT_TARGETING_RANGE = 16;
+-    private static final TargetingConditions TARGET_CONDITIONS = TargetingConditions.forNonCombat().range(16.0);
+-    private static final TargetingConditions TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING = TargetingConditions.forNonCombat()
+-        .range(16.0)
+-        .ignoreInvisibilityTesting();
+-    private static final TargetingConditions ATTACK_TARGET_CONDITIONS = TargetingConditions.forCombat().range(16.0);
+-    private static final TargetingConditions ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING = TargetingConditions.forCombat()
+-        .range(16.0)
+-        .ignoreInvisibilityTesting();
+-    private static final TargetingConditions ATTACK_TARGET_CONDITIONS_IGNORE_LINE_OF_SIGHT = TargetingConditions.forCombat().range(16.0).ignoreLineOfSight();
+-    private static final TargetingConditions ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_AND_LINE_OF_SIGHT = TargetingConditions.forCombat()
+-        .range(16.0)
+-        .ignoreLineOfSight()
+-        .ignoreInvisibilityTesting();
+-    // LeavesX - these conditions are shared, so the cache must describe their shared current range as well.
+-    private static long leavesXLastTargetingRangeBits = Long.MIN_VALUE;
++    private static final ThreadLocal<TargetingConditions> TARGET_CONDITIONS = ThreadLocal.withInitial(() -> TargetingConditions.forNonCombat().range(16.0));
++    private static final ThreadLocal<TargetingConditions> TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING = ThreadLocal.withInitial(() -> TargetingConditions.forNonCombat().range(16.0).ignoreInvisibilityTesting());
++    private static final ThreadLocal<TargetingConditions> ATTACK_TARGET_CONDITIONS = ThreadLocal.withInitial(() -> TargetingConditions.forCombat().range(16.0));
++    private static final ThreadLocal<TargetingConditions> ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING = ThreadLocal.withInitial(() -> TargetingConditions.forCombat().range(16.0).ignoreInvisibilityTesting());
++    private static final ThreadLocal<TargetingConditions> ATTACK_TARGET_CONDITIONS_IGNORE_LINE_OF_SIGHT = ThreadLocal.withInitial(() -> TargetingConditions.forCombat().range(16.0).ignoreLineOfSight());
++    private static final ThreadLocal<TargetingConditions> ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_AND_LINE_OF_SIGHT = ThreadLocal.withInitial(() -> TargetingConditions.forCombat().range(16.0).ignoreLineOfSight().ignoreInvisibilityTesting());
++    private static final ThreadLocal<Long> leavesXLastTargetingRangeBits = ThreadLocal.withInitial(() -> Long.MIN_VALUE);
+     private final int scanRate;
+     private long timeToTick;
+     private final String configKey; // Paper - configurable sensor tick rate and timings
+@@ -78,17 +70,17 @@ public abstract class Sensor<E extends LivingEntity> {
+         double followRange = body.getAttributeValue(Attributes.FOLLOW_RANGE);
+         final boolean optimizeRanges = org.leavesx.leavesx.config.LeavesXRuntime.sensorFollowRangeCacheOptimization();
+         final long followRangeBits = Double.doubleToRawLongBits(followRange);
+-        if (optimizeRanges && followRangeBits == leavesXLastTargetingRangeBits) {
++        if (optimizeRanges && followRangeBits == leavesXLastTargetingRangeBits.get()) {
+             return;
+         }
+-        TARGET_CONDITIONS.range(followRange);
+-        TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING.range(followRange);
+-        ATTACK_TARGET_CONDITIONS.range(followRange);
+-        ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING.range(followRange);
+-        ATTACK_TARGET_CONDITIONS_IGNORE_LINE_OF_SIGHT.range(followRange);
+-        ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_AND_LINE_OF_SIGHT.range(followRange);
++        TARGET_CONDITIONS.get().range(followRange);
++        TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING.get().range(followRange);
++        ATTACK_TARGET_CONDITIONS.get().range(followRange);
++        ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING.get().range(followRange);
++        ATTACK_TARGET_CONDITIONS_IGNORE_LINE_OF_SIGHT.get().range(followRange);
++        ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_AND_LINE_OF_SIGHT.get().range(followRange);
+         // Resetting while disabled guarantees that re-enabling the optimization performs a fresh write.
+-        leavesXLastTargetingRangeBits = optimizeRanges ? followRangeBits : Long.MIN_VALUE;
++        leavesXLastTargetingRangeBits.set(optimizeRanges ? followRangeBits : Long.MIN_VALUE);
+     }
+ 
+     protected abstract void doTick(final ServerLevel level, final E body);
+@@ -107,8 +99,8 @@ public abstract class Sensor<E extends LivingEntity> {
+         final boolean isCurrentAttackTarget
+     ) {
+         return isCurrentAttackTarget
+-            ? TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING.test(level, body, entity)
+-            : TARGET_CONDITIONS.test(level, body, entity);
++            ? TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING.get().test(level, body, entity)
++            : TARGET_CONDITIONS.get().test(level, body, entity);
+     }
+ 
+     public static boolean isEntityAttackable(final ServerLevel level, final LivingEntity body, final LivingEntity target) {
+@@ -123,8 +115,8 @@ public abstract class Sensor<E extends LivingEntity> {
+         final boolean isCurrentAttackTarget
+     ) {
+         return isCurrentAttackTarget
+-            ? ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING.test(level, body, target)
+-            : ATTACK_TARGET_CONDITIONS.test(level, body, target);
++            ? ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_TESTING.get().test(level, body, target)
++            : ATTACK_TARGET_CONDITIONS.get().test(level, body, target);
+     }
+ 
+     public static BiPredicate<ServerLevel, LivingEntity> wasEntityAttackableLastNTicks(final LivingEntity body, final int ticks) {
+@@ -133,8 +125,8 @@ public abstract class Sensor<E extends LivingEntity> {
+ 
+     public static boolean isEntityAttackableIgnoringLineOfSight(final ServerLevel level, final LivingEntity body, final LivingEntity target) {
+         return body.getBrain().isMemoryValue(MemoryModuleType.ATTACK_TARGET, target)
+-            ? ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_AND_LINE_OF_SIGHT.test(level, body, target)
+-            : ATTACK_TARGET_CONDITIONS_IGNORE_LINE_OF_SIGHT.test(level, body, target);
++            ? ATTACK_TARGET_CONDITIONS_IGNORE_INVISIBILITY_AND_LINE_OF_SIGHT.get().test(level, body, target)
++            : ATTACK_TARGET_CONDITIONS_IGNORE_LINE_OF_SIGHT.get().test(level, body, target);
+     }
+ 
+     public static <T, U> BiPredicate<T, U> rememberPositives(final int invocations, final BiPredicate<T, U> predicate) {

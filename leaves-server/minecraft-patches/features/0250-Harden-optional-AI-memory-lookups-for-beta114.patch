@@ -5,7 +5,7 @@ Subject: [PATCH] Harden optional AI memory lookups for beta114
 
 
 diff --git a/net/minecraft/world/entity/ai/Brain.java b/net/minecraft/world/entity/ai/Brain.java
-index 30a7a71feb3232a29300eb38c70d7e6c9532bb66..9b4d07a0a716de1d27a9bfc390def1f289b15854 100644
+index 7e69b54a..8a438d0f 100644
 --- a/net/minecraft/world/entity/ai/Brain.java
 +++ b/net/minecraft/world/entity/ai/Brain.java
 @@ -234,9 +234,16 @@ public class Brain<E extends LivingEntity> {

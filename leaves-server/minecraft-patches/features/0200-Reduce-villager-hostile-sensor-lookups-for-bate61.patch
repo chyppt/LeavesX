@@ -5,10 +5,10 @@ Subject: [PATCH] Reduce villager hostile sensor lookups for bate61
 
 
 diff --git a/net/minecraft/world/entity/ai/sensing/VillagerHostilesSensor.java b/net/minecraft/world/entity/ai/sensing/VillagerHostilesSensor.java
-index b728eb26005151bc61a368e32a65065fd46ed48c..bf7db290e4b95c562a0d4698afcffc09c939b3cc 100644
+index d5829df7..4cd257f0 100644
 --- a/net/minecraft/world/entity/ai/sensing/VillagerHostilesSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/VillagerHostilesSensor.java
-@@ -23,6 +23,10 @@ public class VillagerHostilesSensor extends NearestVisibleLivingEntitySensor {
+@@ -24,6 +24,10 @@ public class VillagerHostilesSensor extends NearestVisibleLivingEntitySensor {
  
      @Override
      protected boolean isMatchingEntity(final ServerLevel level, final LivingEntity body, final LivingEntity mob) {

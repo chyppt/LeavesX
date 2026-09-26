@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize villager food accounting for bate101
 
 
 diff --git a/net/minecraft/world/entity/npc/villager/Villager.java b/net/minecraft/world/entity/npc/villager/Villager.java
-index 18b0024bfcfec10953c18a09b80594dfcf10d6b9..b01dedad0b1064929376d5a7f45e6e60527f0ea7 100644
+index ff8ad4be..0d2f73f2 100644
 --- a/net/minecraft/world/entity/npc/villager/Villager.java
 +++ b/net/minecraft/world/entity/npc/villager/Villager.java
 @@ -849,17 +849,22 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re

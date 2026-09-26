@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize natural spawn chunk readiness for beta111
 
 
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index 63cda129ff1faa2a4a30ee2b29d8f67ebdbff742..cd02e59a1b40c02692ca96ea049b9699ef6a55f4 100644
+index 95357091..103a9fff 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -2789,6 +2789,13 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -2798,6 +2798,13 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
          // Paper end - rewrite chunk system
      }
  
@@ -23,10 +23,10 @@ index 63cda129ff1faa2a4a30ee2b29d8f67ebdbff742..cd02e59a1b40c02692ca96ea049b9699
      public FeatureFlagSet enabledFeatures() {
          return this.server.getWorldData().enabledFeatures();
 diff --git a/net/minecraft/world/level/NaturalSpawner.java b/net/minecraft/world/level/NaturalSpawner.java
-index 18f104737aaec5f078fe1eab50fa0a22c43e8252..f70e2fa59d9440533fc06642c781e5cc69a9034d 100644
+index 69449010..855ea17f 100644
 --- a/net/minecraft/world/level/NaturalSpawner.java
 +++ b/net/minecraft/world/level/NaturalSpawner.java
-@@ -405,6 +405,9 @@ public final class NaturalSpawner {
+@@ -402,6 +402,9 @@ public final class NaturalSpawner {
              if (leavesX$isInChunk(candidateX, candidateZ, currentChunkPos)) {
                  return true;
              }
@@ -37,7 +37,7 @@ index 18f104737aaec5f078fe1eab50fa0a22c43e8252..f70e2fa59d9440533fc06642c781e5cc
          }
  
 diff --git a/net/minecraft/world/level/border/WorldBorder.java b/net/minecraft/world/level/border/WorldBorder.java
-index 9fee66c1a4a3db233e6af88dc6db95da246da3c5..6ac5e3c27a6b460d639835c8264214afab71c683 100644
+index a211de15..1b25f271 100644
 --- a/net/minecraft/world/level/border/WorldBorder.java
 +++ b/net/minecraft/world/level/border/WorldBorder.java
 @@ -59,6 +59,14 @@ public class WorldBorder extends SavedData {

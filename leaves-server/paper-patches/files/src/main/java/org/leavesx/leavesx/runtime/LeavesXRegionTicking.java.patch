@@ -1,0 +1,277 @@
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXRegionTicking.java
+@@ -1,0 +_,274 @@
++package org.leavesx.leavesx.runtime;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Locale;
++import java.util.concurrent.atomic.AtomicLong;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
++/**
++ * Regionized ticking pipeline state for LeavesX.
++ *
++ * <p>The pipeline follows "parallel simulation, serial visibility": world simulation may run on
++ * region worker threads while every plugin-visible side effect (Bukkit/Paper events, scheduler
++ * tasks, API callbacks) stays on the single server thread inside a serial commit phase at the
++ * end of the tick. Modes other than {@link LeavesXConfig.RegionTickingSettings.Mode#OFF} are
++ * experimental; {@code off} is the permanent fallback and reproduces the pre-regionization
++ * single-threaded pipeline exactly.</p>
++ *
++ * <p>This class owns no game state. It only tracks the configured mode, the per-tick pipeline
++ * phase used by thread-domain assertions, and monotonic safety counters reported through
++ * {@code /leavesx regions} and {@code /leavesx safety}. All counters are cumulative since
++ * startup and intentionally lock-free; they are diagnostics, not control flow.</p>
++ */
++public final class LeavesXRegionTicking {
++
++    private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXRegionTicking.class);
++
++    /** Pipeline phase of the current tick. Threads consult this for thread-domain assertions. */
++    public enum Phase {
++        /** Worlds/regions simulate in parallel on region worker threads. */
++        PARALLEL_SIMULATION,
++        /** All regions have arrived; the world is static. */
++        BARRIER,
++        /** Server thread replays intents, fires deferred events and runs scheduler tasks. */
++        SERIAL_COMMIT,
++        /** Post-processing: tracking deltas, chunk packing, network encoding. */
++        PARALLEL_POST,
++        /** Regionization disabled: everything runs on the server thread as before. */
++        DISABLED
++    }
++
++    private static final AtomicLong TICK_CRITICAL_SUBMITS = new AtomicLong();
++    private static final AtomicLong TICK_CRITICAL_COMPLETED = new AtomicLong();
++    private static final AtomicLong TICK_CRITICAL_REJECTED = new AtomicLong();
++    private static final AtomicLong SERIALIZATION_REPLAYS = new AtomicLong();
++    private static final AtomicLong BARRIER_TIMEOUTS = new AtomicLong();
++    private static final AtomicLong MODE_DEGRADES = new AtomicLong();
++    private static final AtomicLong INTENT_APPLICATION_FAILURES = new AtomicLong();
++
++    private static volatile LeavesXConfig.RegionTickingSettings.Mode mode =
++        LeavesXConfig.RegionTickingSettings.Mode.OFF;
++    /**
++     * Mode actually in effect: regions degrades to worlds until the R3 region-ownership model
++     * lands; auto-degrade also lowers this at runtime. Diagnostics report this, not the config.
++     */
++    private static volatile LeavesXConfig.RegionTickingSettings.Mode effectiveMode =
++        LeavesXConfig.RegionTickingSettings.Mode.OFF;
++    private static volatile Phase phase = Phase.DISABLED;
++    private static volatile int mergeRadiusChunks = 8;
++    private static volatile int intentQueueSize = 65_536;
++    private static volatile int autoDegradeBarrierPercent = 25;
++    private static volatile int autoDegradeReplayThreshold = 64;
++    private static volatile List<String> strictSerialWorlds = List.of();
++
++    private LeavesXRegionTicking() {
++    }
++
++    /**
++     * Installs the regionized ticking settings. Called during server startup before any world
++     * ticks; safe to call again on configuration reload.
++     */
++    public static void configure(final LeavesXConfig.RegionTickingSettings settings) {
++        mode = settings.mode();
++        effectiveMode = settings.mode() == LeavesXConfig.RegionTickingSettings.Mode.REGIONS ? LeavesXConfig.RegionTickingSettings.Mode.WORLDS : settings.mode();
++        mergeRadiusChunks = settings.mergeRadiusChunks();
++        strictSerialWorlds = settings.strictSerialWorlds();
++        intentQueueSize = settings.intentQueueSize();
++        autoDegradeBarrierPercent = settings.autoDegradeBarrierPercent();
++        autoDegradeReplayThreshold = settings.autoDegradeReplayThreshold();
++    }
++
++    /** Returns the configured execution mode. */
++    public static LeavesXConfig.RegionTickingSettings.Mode mode() {
++        return mode;
++    }
++
++    /** Returns the mode actually in effect after automatic degrades and R3 gating. */
++    public static LeavesXConfig.RegionTickingSettings.Mode effectiveMode() {
++        return effectiveMode;
++    }
++
++    /** Lowers the effective mode one step (regions to worlds, worlds to off). */
++    public static void degradeEffectiveMode() {
++        if (effectiveMode == LeavesXConfig.RegionTickingSettings.Mode.REGIONS) {
++            effectiveMode = LeavesXConfig.RegionTickingSettings.Mode.WORLDS;
++        } else if (effectiveMode == LeavesXConfig.RegionTickingSettings.Mode.WORLDS) {
++            effectiveMode = LeavesXConfig.RegionTickingSettings.Mode.OFF;
++        }
++    }
++
++    /** Returns whether any parallel regionized mode is active. */
++    public static boolean enabled() {
++        return effectiveMode != LeavesXConfig.RegionTickingSettings.Mode.OFF;
++    }
++
++    /** Returns the validated regionized-ticking settings snapshot. */
++    public static LeavesXConfig.RegionTickingSettings settings() {
++        return new LeavesXConfig.RegionTickingSettings(
++            mode, mergeRadiusChunks, strictSerialWorlds, intentQueueSize,
++            autoDegradeBarrierPercent, autoDegradeReplayThreshold, 0
++        );
++    }
++
++    /** Returns the current pipeline phase; {@link Phase#DISABLED} when regionization is off. */
++    public static Phase phase() {
++        return phase;
++    }
++
++    /** Returns the worlds pinned to the server thread regardless of mode. */
++    public static List<String> strictSerialWorlds() {
++        return strictSerialWorlds;
++    }
++
++    /**
++     * Marks the start of the parallel simulation phase. The server thread invokes this before
++     * dispatching world ticks; mode {@code off} never enters this phase.
++     */
++    public static void beginParallelSimulation() {
++        phase = Phase.PARALLEL_SIMULATION;
++    }
++
++    /** Marks the start of the barrier phase where all regions have arrived and the world is static. */
++    public static void beginBarrier() {
++        phase = Phase.BARRIER;
++    }
++
++    /**
++     * Marks the start of the serial commit phase. The executing thread is the server thread;
++     * every plugin-visible side effect of this tick happens from here on.
++     */
++    public static void beginSerialCommit() {
++        phase = Phase.SERIAL_COMMIT;
++    }
++
++    /** Marks the start of the parallel post-processing phase. */
++    public static void beginParallelPost() {
++        phase = Phase.PARALLEL_POST;
++    }
++
++    /** Resets the phase to {@link Phase#DISABLED}; invoked after each tick. */
++    public static void endTick() {
++        phase = Phase.DISABLED;
++    }
++
++    /** Records a tick-critical intent submission (main thread is waiting on the result). */
++    public static void recordTickCriticalSubmit() {
++        TICK_CRITICAL_SUBMITS.incrementAndGet();
++    }
++
++    /** Records a completed tick-critical intent. */
++    public static void recordTickCriticalComplete() {
++        TICK_CRITICAL_COMPLETED.incrementAndGet();
++    }
++
++    /** Records a tick-critical intent rejected because a queue was full. */
++    public static void recordTickCriticalReject() {
++        TICK_CRITICAL_REJECTED.incrementAndGet();
++    }
++
++    /**
++     * Records a serial replay: a region fell back to single-threaded re-execution for this tick,
++     * typically because an intent queue overflowed.
++     */
++    public static void recordSerialReplay() {
++        SERIALIZATION_REPLAYS.incrementAndGet();
++    }
++
++    /** Records a barrier wait that exceeded its budget share of the tick. */
++    public static void recordBarrierTimeout() {
++        BARRIER_TIMEOUTS.incrementAndGet();
++    }
++
++    /** Records an automatic mode degrade (regions to worlds, or worlds to off). */
++    public static void recordModeDegrade(final String reason) {
++        MODE_DEGRADES.incrementAndGet();
++        degradeEffectiveMode();
++        if (reason != null && !reason.isBlank()) {
++            LOGGER.warn("LeavesX regionized ticking degraded mode: {}", reason);
++        }
++    }
++
++    /** Records an intent whose application failed during the serial commit phase. */
++    public static void recordIntentFailure() {
++        INTENT_APPLICATION_FAILURES.incrementAndGet();
++    }
++
++    /** Snapshot of all safety counters for diagnostics output. */
++    public record SafetyCounters(
++        long tickCriticalSubmits,
++        long tickCriticalCompleted,
++        long tickCriticalRejected,
++        long serialReplays,
++        long barrierTimeouts,
++        long modeDegrades,
++        long intentFailures
++    ) {
++    }
++
++    /** Returns a consistent-enough snapshot of the cumulative safety counters. */
++    public static SafetyCounters safetyCounters() {
++        return new SafetyCounters(
++            TICK_CRITICAL_SUBMITS.get(),
++            TICK_CRITICAL_COMPLETED.get(),
++            TICK_CRITICAL_REJECTED.get(),
++            SERIALIZATION_REPLAYS.get(),
++            BARRIER_TIMEOUTS.get(),
++            MODE_DEGRADES.get(),
++            INTENT_APPLICATION_FAILURES.get()
++        );
++    }
++
++    /** Renders the mode and pipeline state for diagnostics commands. */
++    public static String describeMode() {
++        final Phase current = phase;
++        if (effectiveMode == LeavesXConfig.RegionTickingSettings.Mode.WORLDS
++            && LeavesXWorldTicker.usesSerialCompatibility()) {
++            return mode.name().toLowerCase(Locale.ROOT) + "/serial-compatibility";
++        }
++        final String modeText = mode == effectiveMode
++            ? mode.name().toLowerCase(Locale.ROOT)
++            : mode.name().toLowerCase(Locale.ROOT) + "→" + effectiveMode.name().toLowerCase(Locale.ROOT);
++        if (current == Phase.DISABLED) {
++            return effectiveMode == LeavesXConfig.RegionTickingSettings.Mode.OFF ? "off" : modeText;
++        }
++        return modeText + "/" + current.name().toLowerCase(Locale.ROOT);
++    }
++
++    /** Returns the configured intent queue capacity. */
++    public static int intentQueueSize() {
++        return intentQueueSize;
++    }
++
++    /** Returns the configured merge radius in chunks. */
++    public static int mergeRadiusChunks() {
++        return mergeRadiusChunks;
++    }
++
++    /** Returns whether the named world is pinned to the server thread (case-insensitive). */
++    public static boolean isStrictSerialWorld(final String worldName) {
++        if (worldName == null) {
++            return false;
++        }
++        for (final String world : strictSerialWorlds) {
++            if (world.trim().equalsIgnoreCase(worldName.trim())) {
++                return true;
++            }
++        }
++        return false;
++    }
++
++    /**
++     * Returns a normalized copy of the configured world names, trimmed and lowercased for
++     * case-insensitive matching.
++     */
++    public static List<String> normalizedStrictSerialWorlds() {
++        final List<String> normalized = new ArrayList<>(strictSerialWorlds.size());
++        for (final String world : strictSerialWorlds) {
++            normalized.add(world.trim().toLowerCase(Locale.ROOT));
++        }
++        return List.copyOf(normalized);
++    }
++}

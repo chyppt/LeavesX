@@ -5,7 +5,7 @@ Subject: [PATCH] Build changes
 
 
 diff --git a/ca/spottedleaf/moonrise/paper/PaperHooks.java b/ca/spottedleaf/moonrise/paper/PaperHooks.java
-index 4a3f07daad8b48eaf3bea02bdacbfb0670dddf90..e1e032e709193b5a8008d69b748bc54bc660eb64 100644
+index c34b3c1c..2c996781 100644
 --- a/ca/spottedleaf/moonrise/paper/PaperHooks.java
 +++ b/ca/spottedleaf/moonrise/paper/PaperHooks.java
 @@ -29,7 +29,7 @@ import net.minecraft.world.phys.AABB;
@@ -18,10 +18,10 @@ index 4a3f07daad8b48eaf3bea02bdacbfb0670dddf90..e1e032e709193b5a8008d69b748bc54b
      private static final org.slf4j.Logger LOGGER = com.mojang.logging.LogUtils.getLogger();
  
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index c5dc23ff9a3cd30f7bae8ca896fede1a19e7a901..3fd785f2094ea8da37fe454ecc773ccffa4fa7c3 100644
+index 879f53a6..11c149f9 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -1318,7 +1318,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1292,7 +1292,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
                  LOGGER.info("*************************************************************************************");
                  LOGGER.info("This is the first time you're starting this server.");
                  LOGGER.info("It's recommended you read our 'Getting Started' documentation for guidance.");
@@ -30,7 +30,7 @@ index c5dc23ff9a3cd30f7bae8ca896fede1a19e7a901..3fd785f2094ea8da37fe454ecc773ccf
                  LOGGER.info("*************************************************************************************");
              }
              // Paper end - Add onboarding message for initial server start
-@@ -1974,7 +1974,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1948,7 +1948,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
      }
  
      public String getServerModName() {
@@ -40,10 +40,10 @@ index c5dc23ff9a3cd30f7bae8ca896fede1a19e7a901..3fd785f2094ea8da37fe454ecc773ccf
  
      public ServerClockManager clockManager() {
 diff --git a/net/minecraft/server/gui/MinecraftServerGui.java b/net/minecraft/server/gui/MinecraftServerGui.java
-index b810cb0a9dd8713aed70cc9fdeea1bc249c8e0dc..82cc8fe72621113c514c569d56a9c9a0958df5b6 100644
+index 023cca49..57b74c68 100644
 --- a/net/minecraft/server/gui/MinecraftServerGui.java
 +++ b/net/minecraft/server/gui/MinecraftServerGui.java
-@@ -183,7 +183,7 @@ public class MinecraftServerGui extends JComponent {
+@@ -185,7 +185,7 @@ public class MinecraftServerGui extends JComponent {
  
      // Paper start - Add onboarding message for initial server start
      private JComponent buildOnboardingPanel() {

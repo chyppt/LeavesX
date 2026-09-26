@@ -1,0 +1,486 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 17:07:13 +0800
+Subject: [PATCH] Enable async defaults and cover allocation hot paths
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 4f3920d57a9c29436ab54953fe2bc9349d9505a3..e915a872e6aca6c212fbab463bb61c7b9323c75f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -88,7 +88,7 @@ public record LeavesXConfig(
+     AsyncSettings asyncSettings
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 75;
++    public static final int CURRENT_CONFIG_VERSION = 76;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -307,16 +307,16 @@ public record LeavesXConfig(
+ 
+         public static AsyncSettings safeDefaults() {
+             return new AsyncSettings(
+-                false,
++                true,
+                 256,
+                 true,
+-                false,
++                true,
+                 0,
+                 1_024,
+                 60,
+-                false,
++                true,
+                 1_024,
+-                false,
++                true,
+                 0,
+                 1_024
+             );
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 004f0353c8554f7f2891cbcb1096f71a3886c8d7..9bb42c00d333c78654441d52515fe4a2417ced88 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -1,6 +1,5 @@
+ package org.leavesx.leavesx.config;
+ 
+-import io.papermc.paper.configuration.ConfigurationLoaders;
+ import io.papermc.paper.util.AtomicFiles;
+ import java.io.IOException;
+ import java.nio.channels.FileChannel;
+@@ -56,7 +55,7 @@ public final class LeavesXConfigLoader {
+             if (!Files.isRegularFile(normalized)) {
+                 throw new LeavesXConfigException("LeavesX configuration is not a regular file: " + normalized);
+             }
+-            final CommentedConfigurationNode node = ConfigurationLoaders.naturallySorted()
++            final CommentedConfigurationNode node = LeavesXConfigWriter.orderedLoader()
+                 .headerMode(HeaderMode.PRESERVE)
+                 .path(normalized)
+                 .build()
+@@ -426,14 +425,14 @@ public final class LeavesXConfigLoader {
+                     "fakeplayer.role.wrapper.right",
+                     "]"
+                 ),
+-                readString(node.node("messages", "join"), "messages.join", ""),
+-                readString(node.node("messages", "quit"), "messages.quit", ""),
++                readLifecycleMessage(node, "join"),
++                readLifecycleMessage(node, "quit"),
+                 readString(node.node("messages", "core-prefix"), "messages.core-prefix", ""),
+                 new LeavesXConfig.AsyncSettings(
+                     readBoolean(
+                         node.node("async", "chunk-send", "enabled"),
+                         "async.chunk-send.enabled",
+-                        false
++                        true
+                     ),
+                     readInt(
+                         node.node("async", "chunk-send", "queue-size"),
+@@ -448,7 +447,7 @@ public final class LeavesXConfigLoader {
+                     readBoolean(
+                         node.node("async", "pathfinding", "enabled"),
+                         "async.pathfinding.enabled",
+-                        false
++                        true
+                     ),
+                     readInt(
+                         node.node("async", "pathfinding", "threads"),
+@@ -468,7 +467,7 @@ public final class LeavesXConfigLoader {
+                     readBoolean(
+                         node.node("async", "playerdata-save", "enabled"),
+                         "async.playerdata-save.enabled",
+-                        false
++                        true
+                     ),
+                     readInt(
+                         node.node("async", "playerdata-save", "queue-size"),
+@@ -478,7 +477,7 @@ public final class LeavesXConfigLoader {
+                     readBoolean(
+                         node.node("async", "entity-tracker", "enabled"),
+                         "async.entity-tracker.enabled",
+-                        false
++                        true
+                     ),
+                     readInt(
+                         node.node("async", "entity-tracker", "threads"),
+@@ -520,7 +519,7 @@ public final class LeavesXConfigLoader {
+         throws IOException, ConfigurateException {
+         // Configurate does not retain every header layout, BOM, or source line ending when serializing a loaded node.
+         // Prefixing the original preamble keeps user documentation stable while the structured tree gains new keys.
+-        final String body = ConfigurationLoaders.naturallySorted()
++        final String body = LeavesXConfigWriter.orderedLoader()
+             .headerMode(HeaderMode.NONE)
+             .buildAndSaveString(node);
+         final String yaml = formatting.preamble() + normalizeLineEndings(body, formatting.lineSeparator());
+@@ -762,6 +761,19 @@ public final class LeavesXConfigLoader {
+         throw invalidType(path, "a string", raw);
+     }
+ 
++    /** Reads the canonical lifecycle message and accepts two layouts emitted by older development builds. */
++    private static String readLifecycleMessage(final ConfigurationNode root, final String key) {
++        final ConfigurationNode canonical = root.node("messages", key);
++        if (!canonical.virtual()) {
++            return readString(canonical, "messages." + key, "");
++        }
++        final ConfigurationNode legacyParallelism = root.node("parallelism", key);
++        if (!legacyParallelism.virtual()) {
++            return readString(legacyParallelism, "parallelism." + key, "");
++        }
++        return readString(root.node(key), key, "");
++    }
++
+     private static java.util.List<String> readStringList(
+         final ConfigurationNode node,
+         final String path,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 6d3b8f22f091192dd200a54009afe8c65933dd5a..5ba44ff2f48ed9da7917205915fcb6c6daaf575b 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -1,11 +1,13 @@
+ package org.leavesx.leavesx.config;
+ 
+-import io.papermc.paper.configuration.ConfigurationLoaders;
+ import java.util.LinkedHashMap;
+ import java.util.Map;
+ import org.spongepowered.configurate.CommentedConfigurationNode;
+ import org.spongepowered.configurate.ConfigurateException;
+ import org.spongepowered.configurate.loader.HeaderMode;
++import org.spongepowered.configurate.util.MapFactories;
++import org.spongepowered.configurate.yaml.NodeStyle;
++import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
+ 
+ /** Writes the supported LeavesX runtime tree into a Configurate document. */
+ public final class LeavesXConfigWriter {
+@@ -56,12 +58,33 @@ public final class LeavesXConfigWriter {
+     public static String render(final LeavesXConfig config, final String header) throws ConfigurateException {
+         final CommentedConfigurationNode node = CommentedConfigurationNode.root();
+         write(node, config);
+-        final String yaml = ConfigurationLoaders.naturallySorted()
++        final String yaml = orderedLoader()
+             .headerMode(HeaderMode.NONE)
+             .buildAndSaveString(node);
+         return YamlCommentInjector.injectGenerated(yaml, header, COMMENTS).text();
+     }
+ 
++    /** Keeps the schema marker first while retaining deterministic ordering for every other key. */
++    static YamlConfigurationLoader.Builder orderedLoader() {
++        return YamlConfigurationLoader.builder()
++            .indent(2)
++            .nodeStyle(NodeStyle.BLOCK)
++            .headerMode(HeaderMode.PRESET)
++            .defaultOptions(options -> options.mapFactory(MapFactories.sorted(LeavesXConfigWriter::compareKeys)));
++    }
++
++    private static int compareKeys(final Object left, final Object right) {
++        final String leftKey = String.valueOf(left);
++        final String rightKey = String.valueOf(right);
++        if (leftKey.equals("config-version")) {
++            return rightKey.equals("config-version") ? 0 : -1;
++        }
++        if (rightKey.equals("config-version")) {
++            return 1;
++        }
++        return leftKey.compareTo(rightKey);
++    }
++
+     private static boolean writeSupportedKeys(
+         final CommentedConfigurationNode node,
+         final LeavesXConfig config,
+@@ -461,7 +484,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：75。");
++        comments.put("config-version", "配置版本，请勿修改。默认：76。");
+         comments.put("console-messages.show-root-admin-warning", "是否显示使用 root 或管理员启动的警告。默认：false。");
+         comments.put("console-messages.show-offline-mode-warning", "是否显示离线模式安全警告。默认：false。");
+         comments.put("console-messages.show-collision-conversion-warning", "是否显示碰撞模式自动转换提示。默认：false。");
+@@ -483,16 +506,16 @@ public final class LeavesXConfigWriter {
+         comments.put("messages.join", "自定义进入提示；支持 <player>、<name>、<display_name>、%player_name% 和颜色代码。默认：空，使用原版提示。");
+         comments.put("messages.quit", "自定义退出提示；支持 <player>、<name>、<display_name>、%player_name% 和颜色代码。默认：空，使用原版提示。");
+         comments.put("messages.core-prefix", "服务端核心提示的统一前缀，例如假人创建成功或配置重载提示；支持 MiniMessage 和 &/§ 颜色代码。默认：空。");
+-        comments.put("async.chunk-send.enabled", "是否异步打包区块数据；多人进服、传送或高速飞行时可降低主线程负载。默认：false。");
++        comments.put("async.chunk-send.enabled", "是否异步打包区块数据；多人进服、传送或高速飞行时可降低主线程负载。默认：true。");
+         comments.put("async.chunk-send.queue-size", "异步区块发送最多排队任务数；队列满时回到主线程完整处理。默认：256。");
+         comments.put("async.mob-spawning", "是否异步计算生物生成统计；需同时开启 Paper 的 per-player-mob-spawns。默认：true。");
+-        comments.put("async.pathfinding.enabled", "是否异步计算生物寻路；结果按实体代次校验后在主线程使用。默认：false。");
++        comments.put("async.pathfinding.enabled", "是否异步计算生物寻路；结果按实体代次校验后在主线程使用。默认：true。");
+         comments.put("async.pathfinding.threads", "寻路为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");
+         comments.put("async.pathfinding.queue-size", "异步寻路最多排队任务数；队列满时等待空位，不会打乱同一生物的寻路顺序。默认：1024。");
+         comments.put("async.pathfinding.keepalive-seconds", "通用计算线程空闲保留时间，单位为秒。默认：60。");
+-        comments.put("async.playerdata-save.enabled", "是否异步写入玩家数据；NBT 编码和同一玩家保存顺序保持不变。默认：false。");
++        comments.put("async.playerdata-save.enabled", "是否异步写入玩家数据；NBT 编码和同一玩家保存顺序保持不变。默认：true。");
+         comments.put("async.playerdata-save.queue-size", "玩家数据写入最多排队任务数；队列满时等待空位，不会让新存档越过旧存档。默认：1024。");
+-        comments.put("async.entity-tracker.enabled", "是否并行计算实体追踪变化；发包、事件和追踪关系提交仍在主线程。默认：false。");
++        comments.put("async.entity-tracker.enabled", "是否并行计算实体追踪变化；发包、事件和追踪关系提交仍在主线程。默认：true。");
+         comments.put("async.entity-tracker.threads", "实体追踪为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");
+         comments.put("async.entity-tracker.queue-size", "实体追踪计算最多排队任务数；队列满时回到主线程。默认：1024。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 05e4fdb224a61ff845c8bae2162bcadc15576bdd..828b1f0d792acec6ad10990133aeb66393f7b6ef 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -40,14 +40,15 @@ class LeavesXConfigLoaderTest {
+         assertFalse(created.namedCceShulkerBoxes());
+         assertFalse(created.quickOpenShulkerBoxes());
+         assertFalse(created.carpetPlayerCommand());
+-        assertFalse(created.asyncSettings().chunkSendEnabled());
++        assertTrue(created.asyncSettings().chunkSendEnabled());
+         assertTrue(created.asyncSettings().mobSpawningEnabled());
+-        assertFalse(created.asyncSettings().pathfindingEnabled());
+-        assertFalse(created.asyncSettings().playerDataSaveEnabled());
+-        assertFalse(created.asyncSettings().entityTrackerEnabled());
++        assertTrue(created.asyncSettings().pathfindingEnabled());
++        assertTrue(created.asyncSettings().playerDataSaveEnabled());
++        assertTrue(created.asyncSettings().entityTrackerEnabled());
+         assertEquals("[假人]", created.fakeplayerDisplayPrefix());
+         assertTrue(created.fakeplayerForbiddenNameContains().isEmpty());
+         final String generated = Files.readString(path);
++        assertTrue(generated.indexOf("config-version:") < generated.indexOf("async:"), generated);
+         assertTrue(generated.contains("performance:"));
+         assertTrue(generated.contains("console-messages:"));
+         assertTrue(generated.contains("fakeplayer:"));
+@@ -85,6 +86,26 @@ class LeavesXConfigLoaderTest {
+         assertTrue(generated.lines().count() < 300L, "Default configuration should stay operator-sized");
+     }
+ 
++    @Test
++    void readsLegacyLifecycleMessageLocationsAndWritesCanonicalKeys() throws IOException {
++        final Path path = write("""
++            config-version: 75
++            join: '&e<player>加入了游戏'
++            parallelism:
++              quit: '&e<player>退出了游戏'
++            """);
++
++        final LeavesXConfig config = LeavesXConfigLoader.load(path);
++        final String upgraded = Files.readString(path);
++
++        assertEquals("&e<player>加入了游戏", config.joinMessage());
++        assertEquals("&e<player>退出了游戏", config.quitMessage());
++        assertTrue(upgraded.contains("messages:"), upgraded);
++        assertTrue(upgraded.contains("join: '&e<player>加入了游戏'"), upgraded);
++        assertTrue(upgraded.contains("quit: '&e<player>退出了游戏'"), upgraded);
++        assertTrue(upgraded.indexOf("config-version:") < upgraded.indexOf("async:"), upgraded);
++    }
++
+     @Test
+     void simplifiesVersion74WithoutDiscardingExplicitOverrides() throws IOException {
+         final Path path = write("""
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BeaconScanAllocationHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BeaconScanAllocationHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9fecc0429311f2acbfa4c906b05413046a4bb0cb
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/BeaconScanAllocationHotPathTest.java
+@@ -0,0 +1,66 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import net.minecraft.core.BlockPos;
++import net.minecraft.world.level.block.entity.BeaconBlockEntity;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.FieldNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++import org.objectweb.asm.tree.TypeInsnNode;
++
++/** Locks the beacon scan optimization to allocation-free mutable position traversal. */
++@Normal
++class BeaconScanAllocationHotPathTest {
++
++    @Test
++    void beamAndBaseScansReuseOneMutablePosition() throws IOException {
++        final ClassNode owner = new ClassNode();
++        new ClassReader(BeaconBlockEntity.class.getName()).accept(owner, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++
++        assertTrue(owner.fields.stream().map(FieldNode.class::cast).anyMatch(field ->
++            field.name.equals("leavesX$scanPosition")
++                && field.desc.equals("Lnet/minecraft/core/BlockPos$MutableBlockPos;")
++        ));
++        assertNoBlockPosAllocation(method(owner, "tick"));
++        assertNoBlockPosAllocation(method(owner, "updateBase"));
++        assertNoArrayListAllocation(method(owner, "tick"));
++        assertTrue(callsMutableSetter(method(owner, "tick")));
++        assertTrue(callsMutableSetter(method(owner, "updateBase")));
++    }
++
++    private static void assertNoArrayListAllocation(final MethodNode method) {
++        assertFalse(java.util.stream.StreamSupport.stream(
++            java.util.Spliterators.spliteratorUnknownSize(method.instructions.iterator(), 0), false
++        ).filter(TypeInsnNode.class::isInstance).map(TypeInsnNode.class::cast).anyMatch(instruction ->
++            instruction.getOpcode() == Opcodes.NEW && instruction.desc.equals("java/util/ArrayList")
++        ));
++    }
++
++    private static void assertNoBlockPosAllocation(final MethodNode method) {
++        assertFalse(method.instructions.iterator().hasNext() && java.util.stream.StreamSupport.stream(
++            java.util.Spliterators.spliteratorUnknownSize(method.instructions.iterator(), 0), false
++        ).filter(TypeInsnNode.class::isInstance).map(TypeInsnNode.class::cast).anyMatch(instruction ->
++            instruction.getOpcode() == Opcodes.NEW && instruction.desc.equals("net/minecraft/core/BlockPos")
++        ));
++    }
++
++    private static boolean callsMutableSetter(final MethodNode method) {
++        return java.util.stream.StreamSupport.stream(
++            java.util.Spliterators.spliteratorUnknownSize(method.instructions.iterator(), 0), false
++        ).filter(MethodInsnNode.class::isInstance).map(MethodInsnNode.class::cast).anyMatch(call ->
++            call.owner.equals("net/minecraft/core/BlockPos$MutableBlockPos") && call.name.equals("set")
++        );
++    }
++
++    private static MethodNode method(final ClassNode owner, final String name) {
++        return owner.methods.stream().filter(method -> method.name.equals(name)).findFirst().orElseThrow();
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntitySelectorPredicateOrderingTest.java b/src/test/java/org/leavesx/leavesx/performance/EntitySelectorPredicateOrderingTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd5f6081b458b802236f0a7d104082d7e06923c1
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EntitySelectorPredicateOrderingTest.java
+@@ -0,0 +1,31 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.verifyNoInteractions;
++
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.entity.EntitySelector;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++/** Ensures player-only predicates reject unrelated entities before invoking entity state methods. */
++@Normal
++class EntitySelectorPredicateOrderingTest {
++
++    @Test
++    void spawningPredicateDoesNotReadNonPlayerState() {
++        final Entity entity = mock(Entity.class);
++
++        assertFalse(EntitySelector.PLAYER_AFFECTS_SPAWNING.test(entity));
++        verifyNoInteractions(entity);
++    }
++
++    @Test
++    void livingPredicateDoesNotReadNonLivingState() {
++        final Entity entity = mock(Entity.class);
++
++        assertFalse(EntitySelector.LIVING_ENTITY_STILL_ALIVE.test(entity));
++        verifyNoInteractions(entity);
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityTrackerSnapshotReuseHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityTrackerSnapshotReuseHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..42388591e39d7294a87a28d28ba583ccbd7c8c99
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityTrackerSnapshotReuseHotPathTest.java
+@@ -0,0 +1,52 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import net.minecraft.server.level.ChunkMap;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodNode;
++import org.objectweb.asm.tree.TypeInsnNode;
++
++/** Guards the allocation-free steady-state layout of asynchronous entity tracking snapshots. */
++@Normal
++class EntityTrackerSnapshotReuseHotPathTest {
++
++    @Test
++    void trackerReusesOneFlattenedSnapshot() throws IOException, ClassNotFoundException {
++        final ClassNode chunkMap = classNode(ChunkMap.class);
++        final ClassNode trackedEntity = classNode(ChunkMap.TrackedEntity.class);
++        final ClassNode snapshot = classNode(Class.forName("net.minecraft.server.level.ChunkMap$LeavesXTrackerSnapshot"));
++
++        assertTrue(chunkMap.fields.stream().anyMatch(field -> field.name.equals("leavesX$trackerSnapshots")));
++        assertTrue(trackedEntity.fields.stream().anyMatch(field -> field.name.equals("leavesX$trackerSnapshot")));
++        assertTrue(snapshot.fields.stream().anyMatch(field ->
++            field.name.equals("playerData") && field.desc.equals("[D")
++        ));
++        assertFalse(snapshot.fields.stream().anyMatch(field ->
++            field.name.equals("playerX") || field.name.equals("playerY") || field.name.equals("playerZ")
++        ));
++
++        final MethodNode create = trackedEntity.methods.stream()
++            .filter(method -> method.name.equals("leavesX$createTrackerSnapshot"))
++            .findFirst()
++            .orElseThrow();
++        assertFalse(java.util.stream.StreamSupport.stream(
++            java.util.Spliterators.spliteratorUnknownSize(create.instructions.iterator(), 0), false
++        ).filter(TypeInsnNode.class::isInstance).map(TypeInsnNode.class::cast).anyMatch(instruction ->
++            instruction.getOpcode() == Opcodes.NEW
++                && instruction.desc.equals("net/minecraft/server/level/ChunkMap$LeavesXTrackerSnapshot")
++        ));
++    }
++
++    private static ClassNode classNode(final Class<?> type) throws IOException {
++        final ClassNode node = new ClassNode();
++        new ClassReader(type.getName()).accept(node, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        return node;
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/TemptGoalDistanceGateHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/TemptGoalDistanceGateHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..7a1ef344f3d9949b6506295a890948fa4a034474
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/TemptGoalDistanceGateHotPathTest.java
+@@ -0,0 +1,44 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import net.minecraft.world.entity.ai.goal.TemptGoal;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Ensures TemptGoal rejects distant players before inspecting their held items. */
++@Normal
++class TemptGoalDistanceGateHotPathTest {
++
++    @Test
++    void distancePrecedesTargetingConditionEvaluation() throws IOException {
++        final ClassNode owner = new ClassNode();
++        new ClassReader(TemptGoal.class.getName()).accept(owner, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        final MethodNode method = owner.methods.stream()
++            .filter(candidate -> candidate.name.equals("leavesX$findNearestTemptingPlayer"))
++            .findFirst()
++            .orElseThrow();
++
++        int distanceCall = -1;
++        int targetingCall = -1;
++        int index = 0;
++        for (final var instruction : method.instructions) {
++            if (instruction instanceof MethodInsnNode call) {
++                if (call.name.equals("distanceToSqr")) {
++                    distanceCall = index;
++                } else if (call.owner.equals("net/minecraft/world/entity/ai/targeting/TargetingConditions")
++                    && call.name.equals("test")) {
++                    targetingCall = index;
++                }
++            }
++            index++;
++        }
++
++        assertTrue(distanceCall >= 0 && targetingCall > distanceCall);
++    }
++}

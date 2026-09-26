@@ -5,10 +5,10 @@ Subject: [PATCH] Fix falling block's block location
 
 
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index dfa1badd83f183e0497eaf205c36a72dac21d3f7..be817cf17c8c865f7cf0efa682fd71fdbb74ca4e 100644
+index 523fa69a..f6705b33 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -5011,6 +5011,15 @@ public abstract class Entity
+@@ -5095,6 +5095,15 @@ public abstract class Entity
              int fx = Mth.floor(x);
              int fy = Mth.floor(y);
              int fz = Mth.floor(z);

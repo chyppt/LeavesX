@@ -236,7 +236,6 @@ public class BotList {
         this.server.server.getPluginManager().callEvent(event);
         location = event.getSpawnLocation();
 
-        bot.spawnIn(world);
         bot.gameMode.setLevel(bot.level());
 
         bot.setPosRaw(location.getX(), location.getY(), location.getZ());
@@ -276,7 +275,7 @@ public class BotList {
         bot.renderInfo();
         bot.suppressTrackerForLogin = false;
 
-        bot.level().getChunkSource().chunkMap.addEntity(bot);
+        bot.level().getChunkSource().addEntity(bot);
         bot.renderData();
         bot.initInventoryMenu();
         botsNameByWorldUuid

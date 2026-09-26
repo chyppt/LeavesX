@@ -5,10 +5,10 @@ Subject: [PATCH] Use activation snapshots for large entity batches in beta147
 
 
 diff --git a/io/papermc/paper/entity/activation/ActivationRange.java b/io/papermc/paper/entity/activation/ActivationRange.java
-index 101683ea4a14bab33ba18298ed694f560f20e2e8..cf7f5216ae61cdddf8b467716bf136f8db103987 100644
+index c8768007..a09b716b 100644
 --- a/io/papermc/paper/entity/activation/ActivationRange.java
 +++ b/io/papermc/paper/entity/activation/ActivationRange.java
-@@ -165,6 +165,9 @@ public final class ActivationRange {
+@@ -166,6 +166,9 @@ public final class ActivationRange {
              ActivationType.VILLAGER.boundingBox = playerBoundingBox.inflate(villagerActivationRange, worldHeight, villagerActivationRange);
  
              final List<Entity> entities = world.getEntities((Entity) null, ActivationRange.maxBB, e -> true);

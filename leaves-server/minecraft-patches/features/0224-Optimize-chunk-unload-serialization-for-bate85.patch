@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize chunk unload serialization for bate85
 
 
 diff --git a/net/minecraft/world/level/chunk/storage/SerializableChunkData.java b/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
-index 7d29fdc6548324d97ec34d476b5b48ec0bdba0d2..109b6cf540733d62675ec5d50538aeaeb518cf7d 100644
+index 7d29fdc6..109b6cf5 100644
 --- a/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
 +++ b/net/minecraft/world/level/chunk/storage/SerializableChunkData.java
 @@ -448,12 +448,15 @@ public record SerializableChunkData(

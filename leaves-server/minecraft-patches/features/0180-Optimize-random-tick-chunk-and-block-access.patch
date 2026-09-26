@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize random tick chunk and block access
 
 
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index 0015babdde0f9acfb03e7592f20ef4f407bc5808..7c01649594603f01942380e0f2764cd5e8cc1fab 100644
+index 27c7e623..0d065206 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -993,22 +993,21 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -1008,22 +1008,21 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
  
      private void optimiseRandomTick(final LevelChunk chunk, final int tickSpeed) {
          final LevelChunkSection[] sections = chunk.getSections();
@@ -26,16 +26,16 @@ index 0015babdde0f9acfb03e7592f20ef4f407bc5808..7c01649594603f01942380e0f2764cd5
          for (int sectionIndex = 0, sectionsLen = sections.length; sectionIndex < sectionsLen; sectionIndex++) {
              final int offsetY = (sectionIndex + minSection) << 4;
              final LevelChunkSection section = sections[sectionIndex];
--            final net.minecraft.world.level.chunk.PalettedContainer<net.minecraft.world.level.block.state.BlockState> states = section.states;
+-            final net.minecraft.world.level.chunk.PalettedContainer<net.minecraft.world.level.block.state.BlockState> states = section.getStates();
              if (!section.isRandomlyTickingBlocks()) {
                  continue;
              }
  
-+            final net.minecraft.world.level.chunk.PalettedContainer<net.minecraft.world.level.block.state.BlockState> states = section.states;
++            final net.minecraft.world.level.chunk.PalettedContainer<net.minecraft.world.level.block.state.BlockState> states = section.getStates();
              final ca.spottedleaf.moonrise.common.list.ShortList tickList = ((ca.spottedleaf.moonrise.patches.block_counting.BlockCountingChunkSection)section).moonrise$getTickingBlockList();
  
              for (int i = 0; i < tickSpeed; ++i) {
-@@ -1042,9 +1041,8 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -1057,9 +1056,8 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
  
      public void tickChunk(final LevelChunk chunk, final int tickSpeed) {
          final ca.spottedleaf.moonrise.common.util.SimpleThreadUnsafeRandom simpleRandom = this.simpleRandom; // Paper - optimise random ticking
@@ -47,7 +47,7 @@ index 0015babdde0f9acfb03e7592f20ef4f407bc5808..7c01649594603f01942380e0f2764cd5
          ProfilerFiller profiler = Profiler.get();
          profiler.push("iceandsnow");
  
-@@ -1065,10 +1063,9 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -1080,10 +1078,9 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
      }
  
      public void tickThunder(final LevelChunk chunk) {
@@ -61,7 +61,7 @@ index 0015babdde0f9acfb03e7592f20ef4f407bc5808..7c01649594603f01942380e0f2764cd5
          profiler.push("thunder");
          if (!this.paperConfig().environment.disableThunder && raining && this.isThundering() && this.spigotConfig.thunderChance > 0 && this.random.nextInt(this.spigotConfig.thunderChance) == 0) { // Spigot // Paper - Option to disable thunder
 diff --git a/net/minecraft/world/level/block/SpreadingSnowyBlock.java b/net/minecraft/world/level/block/SpreadingSnowyBlock.java
-index 839bfdda7f54e6aabe401db6da1856544b032bf8..fa07a661dde9fc3e4836727f7ced8ee4ce08b53c 100644
+index 513e23b6..0c04b4eb 100644
 --- a/net/minecraft/world/level/block/SpreadingSnowyBlock.java
 +++ b/net/minecraft/world/level/block/SpreadingSnowyBlock.java
 @@ -1,10 +1,8 @@

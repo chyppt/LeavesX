@@ -5,7 +5,7 @@ Subject: [PATCH] Apply safe network and occlusion cache optimizations
 
 
 diff --git a/net/minecraft/network/VarInt.java b/net/minecraft/network/VarInt.java
-index 1428ce80e8316a24cfca7b6aafdea8588a5a790e..1ab233d20c1946761c26d71a64c85f9b806bea2d 100644
+index 1428ce80..1ab233d2 100644
 --- a/net/minecraft/network/VarInt.java
 +++ b/net/minecraft/network/VarInt.java
 @@ -1,6 +1,8 @@
@@ -28,7 +28,7 @@ index 1428ce80e8316a24cfca7b6aafdea8588a5a790e..1ab233d20c1946761c26d71a64c85f9b
          // Peel the one and two byte count cases explicitly as they are the most common VarInt sizes
          // that the proxy will write, to improve inlining.
 diff --git a/net/minecraft/network/VarLong.java b/net/minecraft/network/VarLong.java
-index 913442a641134fed4ad5669f190c508c3109ab6a..9182290d5a1407f41825d1891bb9ab68ee181b3f 100644
+index 913442a6..9182290d 100644
 --- a/net/minecraft/network/VarLong.java
 +++ b/net/minecraft/network/VarLong.java
 @@ -1,6 +1,8 @@
@@ -61,7 +61,7 @@ index 913442a641134fed4ad5669f190c508c3109ab6a..9182290d5a1407f41825d1891bb9ab68
              output.writeByte((int)(value & DATA_BITS_MASK) | CONTINUATION_BIT_MASK);
              value >>>= DATA_BITS_PER_BYTE;
 diff --git a/net/minecraft/world/level/block/Block.java b/net/minecraft/world/level/block/Block.java
-index 6060f30488e92c3481f6aa7a4f7968ff25d9e52f..dd8f3cf2c637eac3d565f0a133a2be4143a0ec6b 100644
+index 20a88b58..bdb42ce6 100644
 --- a/net/minecraft/world/level/block/Block.java
 +++ b/net/minecraft/world/level/block/Block.java
 @@ -72,6 +72,7 @@ import net.minecraft.world.phys.Vec3;
@@ -72,7 +72,7 @@ index 6060f30488e92c3481f6aa7a4f7968ff25d9e52f..dd8f3cf2c637eac3d565f0a133a2be41
  import org.jspecify.annotations.Nullable;
  import org.slf4j.Logger;
  
-@@ -140,6 +141,9 @@ public class Block extends BlockBehaviour implements ItemLike {
+@@ -137,6 +138,9 @@ public class Block extends BlockBehaviour implements ItemLike {
          map.defaultReturnValue((byte)127);
          return map;
      });
@@ -82,7 +82,7 @@ index 6060f30488e92c3481f6aa7a4f7968ff25d9e52f..dd8f3cf2c637eac3d565f0a133a2be41
  
      @Override
      protected MapCodec<? extends Block> codec() {
-@@ -338,7 +342,9 @@ public class Block extends BlockBehaviour implements ItemLike {
+@@ -335,7 +339,9 @@ public class Block extends BlockBehaviour implements ItemLike {
              return true;
          }
  
@@ -93,7 +93,7 @@ index 6060f30488e92c3481f6aa7a4f7968ff25d9e52f..dd8f3cf2c637eac3d565f0a133a2be41
          Object2ByteLinkedOpenHashMap<Block.ShapePairKey> cache = OCCLUSION_CACHE.get();
          byte cached = cache.getAndMoveToFirst(key);
          if (cached != 127) {
-@@ -350,7 +356,11 @@ public class Block extends BlockBehaviour implements ItemLike {
+@@ -347,7 +353,11 @@ public class Block extends BlockBehaviour implements ItemLike {
              cache.removeLastByte();
          }
  
@@ -106,7 +106,7 @@ index 6060f30488e92c3481f6aa7a4f7968ff25d9e52f..dd8f3cf2c637eac3d565f0a133a2be41
          return result;
      }
  
-@@ -732,15 +742,45 @@ public class Block extends BlockBehaviour implements ItemLike {
+@@ -729,15 +739,45 @@ public class Block extends BlockBehaviour implements ItemLike {
      }
      // Leaves end - reset push reaction
  

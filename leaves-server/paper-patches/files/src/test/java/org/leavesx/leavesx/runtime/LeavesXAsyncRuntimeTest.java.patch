@@ -1,0 +1,244 @@
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java
+@@ -1,0 +_,241 @@
++package org.leavesx.leavesx.runtime;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.List;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicInteger;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.bukkit.support.environment.Normal;
++
++@Normal
++class LeavesXAsyncRuntimeTest {
++
++    @AfterEach
++    void shutdown() {
++        LeavesXAsyncRuntime.shutdown();
++        LeavesXComputeExecutor.shutdown();
++    }
++
++    @Test
++    void mobSpawningUsesSeveralWorldLanesOnMulticoreHosts() {
++        LeavesXComputeExecutor.shutdown();
++        final LeavesXConfig.AsyncSettings settings = new LeavesXConfig.AsyncSettings(
++            false, 64, true, false, 0, 64, 30, false, 64, false, 0, 64
++        );
++        final int expected = Math.max(1, Math.min(3, Runtime.getRuntime().availableProcessors() / 4));
++
++        assertEquals(expected, LeavesXAsyncRuntime.generalThreadCount(settings));
++    }
++
++    @Test
++    void disabledWorkloadRunsCompleteTaskOnCaller() {
++        LeavesXAsyncRuntime.configure(settings(false, false, false));
++        final String caller = Thread.currentThread().getName();
++        final List<String> threads = new ArrayList<>();
++
++        LeavesXAsyncRuntime.submitOrRun(
++            LeavesXAsyncRuntime.Workload.PATHFINDING,
++            () -> threads.add(Thread.currentThread().getName())
++        ).join();
++
++        assertEquals(List.of(caller), threads);
++        assertFalse(LeavesXAsyncRuntime.metrics(LeavesXAsyncRuntime.Workload.PATHFINDING).enabled());
++    }
++
++    @Test
++    void orderedPlayerDataTasksNeverOvertake() {
++        LeavesXAsyncRuntime.configure(settings(true, false, false));
++        final List<Integer> writes = Collections.synchronizedList(new ArrayList<>());
++        CompletableFuture<Void> last = CompletableFuture.completedFuture(null);
++        for (int value = 0; value < 256; value++) {
++            final int expected = value;
++            last = LeavesXAsyncRuntime.submitOrdered(
++                LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE,
++                () -> writes.add(expected)
++            );
++        }
++        last.join();
++        LeavesXAsyncRuntime.awaitOrdered(LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE);
++
++        assertEquals(256, writes.size());
++        for (int index = 0; index < writes.size(); index++) {
++            assertEquals(index, writes.get(index));
++        }
++    }
++
++    @Test
++    void fullBoundedQueueRunsRejectedPathCompletelyOnCaller() throws Exception {
++        LeavesXAsyncRuntime.configure(settings(false, true, false));
++        final CountDownLatch workerStarted = new CountDownLatch(1);
++        final CountDownLatch releaseWorker = new CountDownLatch(1);
++        final CompletableFuture<Void> blocker = LeavesXAsyncRuntime.submitOrRun(
++            LeavesXAsyncRuntime.Workload.PATHFINDING,
++            () -> {
++                workerStarted.countDown();
++                try {
++                    releaseWorker.await();
++                } catch (final InterruptedException interruption) {
++                    Thread.currentThread().interrupt();
++                }
++            }
++        );
++        assertTrue(workerStarted.await(5L, TimeUnit.SECONDS));
++        for (int index = 0; index < 64; index++) {
++            LeavesXAsyncRuntime.submitOrRun(LeavesXAsyncRuntime.Workload.PATHFINDING, () -> { });
++        }
++
++        final String caller = Thread.currentThread().getName();
++        final List<String> fallbackThread = new ArrayList<>();
++        LeavesXAsyncRuntime.submitOrRun(
++            LeavesXAsyncRuntime.Workload.PATHFINDING,
++            () -> fallbackThread.add(Thread.currentThread().getName())
++        ).join();
++        releaseWorker.countDown();
++        blocker.join();
++
++        assertEquals(List.of(caller), fallbackThread);
++        final LeavesXAsyncRuntime.Metrics metrics = LeavesXAsyncRuntime.metrics(
++            LeavesXAsyncRuntime.Workload.PATHFINDING
++        );
++        assertTrue(metrics.rejectedTasks() >= 1L);
++        assertTrue(metrics.callerRuns() >= 1L);
++        assertEquals(0L, metrics.failedTasks());
++    }
++
++    @Test
++    void sameOwnerIsStrictlySerialAndFifo() throws Exception {
++        LeavesXAsyncRuntime.configure(settings(false, true, true));
++        final Object owner = new Object();
++        final CountDownLatch firstStarted = new CountDownLatch(1);
++        final CountDownLatch releaseFirst = new CountDownLatch(1);
++        final CountDownLatch secondStarted = new CountDownLatch(1);
++        final List<Integer> order = Collections.synchronizedList(new ArrayList<>());
++
++        final CompletableFuture<Void> first = LeavesXAsyncRuntime.submitOwnedOrRun(
++            LeavesXAsyncRuntime.Workload.PATHFINDING,
++            owner,
++            () -> {
++                order.add(1);
++                firstStarted.countDown();
++                try {
++                    releaseFirst.await();
++                } catch (final InterruptedException interruption) {
++                    Thread.currentThread().interrupt();
++                }
++            }
++        );
++        assertTrue(firstStarted.await(5L, TimeUnit.SECONDS));
++        final CompletableFuture<Void> second = LeavesXAsyncRuntime.submitOwnedOrRun(
++            LeavesXAsyncRuntime.Workload.PATHFINDING,
++            owner,
++            () -> {
++                order.add(2);
++                secondStarted.countDown();
++            }
++        );
++
++        assertFalse(secondStarted.await(200L, TimeUnit.MILLISECONDS));
++        releaseFirst.countDown();
++        CompletableFuture.allOf(first, second).join();
++
++        assertEquals(List.of(1, 2), order);
++    }
++
++    @Test
++    void unrelatedOwnersUseSharedWorkersConcurrently() throws Exception {
++        LeavesXAsyncRuntime.configure(settings(false, true, true));
++        final CountDownLatch bothStarted = new CountDownLatch(2);
++        final CountDownLatch release = new CountDownLatch(1);
++        final AtomicInteger running = new AtomicInteger();
++        final AtomicInteger maximumRunning = new AtomicInteger();
++        final Runnable task = () -> {
++            maximumRunning.accumulateAndGet(running.incrementAndGet(), Math::max);
++            bothStarted.countDown();
++            try {
++                release.await();
++            } catch (final InterruptedException interruption) {
++                Thread.currentThread().interrupt();
++            } finally {
++                running.decrementAndGet();
++            }
++        };
++
++        final CompletableFuture<Void> first = LeavesXAsyncRuntime.submitOwnedOrRun(
++            LeavesXAsyncRuntime.Workload.PATHFINDING,
++            new Object(),
++            task
++        );
++        final CompletableFuture<Void> second = LeavesXAsyncRuntime.submitOwnedOrRun(
++            LeavesXAsyncRuntime.Workload.PATHFINDING,
++            new Object(),
++            task
++        );
++
++        assertTrue(bothStarted.await(5L, TimeUnit.SECONDS));
++        release.countDown();
++        CompletableFuture.allOf(first, second).join();
++        assertEquals(2, maximumRunning.get());
++    }
++
++    @Test
++    void equalPersistentKeysShareOneLane() throws Exception {
++        LeavesXAsyncRuntime.configure(settings(true, false, false));
++        final CountDownLatch firstStarted = new CountDownLatch(1);
++        final CountDownLatch releaseFirst = new CountDownLatch(1);
++        final List<Integer> order = Collections.synchronizedList(new ArrayList<>());
++
++        final CompletableFuture<Void> first = LeavesXAsyncRuntime.submitKeyedOrRun(
++            LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE,
++            new String("same-player"),
++            () -> {
++                order.add(1);
++                firstStarted.countDown();
++                try {
++                    releaseFirst.await();
++                } catch (final InterruptedException interruption) {
++                    Thread.currentThread().interrupt();
++                }
++            }
++        );
++        assertTrue(firstStarted.await(5L, TimeUnit.SECONDS));
++        final CompletableFuture<Void> second = LeavesXAsyncRuntime.submitKeyedOrRun(
++            LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE,
++            new String("same-player"),
++            () -> order.add(2)
++        );
++        releaseFirst.countDown();
++        CompletableFuture.allOf(first, second).join();
++
++        assertEquals(List.of(1, 2), order);
++    }
++
++    private static LeavesXConfig.AsyncSettings settings(
++        final boolean playerData,
++        final boolean pathfinding,
++        final boolean tracker
++    ) {
++        return new LeavesXConfig.AsyncSettings(
++            false,
++            64,
++            false,
++            pathfinding,
++            1,
++            64,
++            30,
++            playerData,
++            64,
++            tracker,
++            1,
++            64
++        );
++    }
++}

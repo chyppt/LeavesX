@@ -5,10 +5,10 @@ Subject: [PATCH] Bedrock break list
 
 
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index 74b10f353cb97c20553dc7af32a081f239cd0671..a2aef8bc2b67ffc2fc95a71cc38ea96502cf1d46 100644
+index 95a246de..534f354c 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -1887,6 +1887,8 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1861,6 +1861,8 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
  
          org.leavesmc.leaves.protocol.core.LeavesProtocolManager.handleTick(this.tickCount); // Leaves - protocol
  
@@ -18,7 +18,7 @@ index 74b10f353cb97c20553dc7af32a081f239cd0671..a2aef8bc2b67ffc2fc95a71cc38ea965
              tickable.run();
          }
 diff --git a/net/minecraft/server/ServerScoreboard.java b/net/minecraft/server/ServerScoreboard.java
-index 9bf09b888425e491072864265c8de3885154a0ba..4e400a24c0a5968223c7cd4874bd4d1e04e9fa2b 100644
+index 7ffd683c..62b2940e 100644
 --- a/net/minecraft/server/ServerScoreboard.java
 +++ b/net/minecraft/server/ServerScoreboard.java
 @@ -164,6 +164,7 @@ public class ServerScoreboard extends Scoreboard {
@@ -38,7 +38,7 @@ index 9bf09b888425e491072864265c8de3885154a0ba..4e400a24c0a5968223c7cd4874bd4d1e
              this.stopTrackingObjective(objective);
          }
 diff --git a/net/minecraft/world/level/block/piston/PistonBaseBlock.java b/net/minecraft/world/level/block/piston/PistonBaseBlock.java
-index 869a3f9c212b739c91e1f10ac7697ce097d05655..8e60d158618e45b03eac9a01abe0777e359cf0bc 100644
+index c02394b5..86f4ac71 100644
 --- a/net/minecraft/world/level/block/piston/PistonBaseBlock.java
 +++ b/net/minecraft/world/level/block/piston/PistonBaseBlock.java
 @@ -75,6 +75,11 @@ public class PistonBaseBlock extends DirectionalBlock {
@@ -53,7 +53,7 @@ index 869a3f9c212b739c91e1f10ac7697ce097d05655..8e60d158618e45b03eac9a01abe0777e
              this.checkIfExtend(level, pos, state);
          }
      }
-@@ -229,7 +234,13 @@ public class PistonBaseBlock extends DirectionalBlock {
+@@ -228,7 +233,13 @@ public class PistonBaseBlock extends DirectionalBlock {
                              }
                          }
                          // Paper end - Fix sticky pistons and BlockPistonRetractEvent
@@ -68,7 +68,7 @@ index 869a3f9c212b739c91e1f10ac7697ce097d05655..8e60d158618e45b03eac9a01abe0777e
                      } else {
                          this.moveBlocks(level, pos, direction, false);
                      }
-@@ -238,6 +249,11 @@ public class PistonBaseBlock extends DirectionalBlock {
+@@ -237,6 +248,11 @@ public class PistonBaseBlock extends DirectionalBlock {
                  // Paper start - Protect Bedrock and End Portal/Frames from being destroyed; fix headless pistons breaking blocks
                  BlockPos headPos = pos.relative(direction);
                  if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.allowPermanentBlockBreakExploits || level.getBlockState(headPos) == Blocks.PISTON_HEAD.defaultBlockState().setValue(FACING, direction)) { // double check to make sure we're not a headless piston

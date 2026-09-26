@@ -5,7 +5,7 @@ Subject: [PATCH] Reduce nearest-entity sensor query overhead for beta132
 
 
 diff --git a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
-index 78e086f8e40accea0bb68c4cd499b1598a3c4f96..f57e1c2b0974013954959e27ac7e7dc320967ec6 100644
+index 78e086f8..f57e1c2b 100644
 --- a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
 @@ -1,8 +1,8 @@
@@ -36,7 +36,7 @@ index 78e086f8e40accea0bb68c4cd499b1598a3c4f96..f57e1c2b0974013954959e27ac7e7dc3
          if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortOptimization()
              && items.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
 diff --git a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
-index 7c8ab8c48066dbb20ee90c74b5f114b2a0cd5250..b3c6d70f82d3a75869c5b0da565ee8ed675c689b 100644
+index 7c8ab8c4..b3c6d70f 100644
 --- a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
 @@ -1,8 +1,8 @@
@@ -61,10 +61,10 @@ index 7c8ab8c48066dbb20ee90c74b5f114b2a0cd5250..b3c6d70f82d3a75869c5b0da565ee8ed
          if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortOptimization()
              && livingEntities.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index 72dbb090de0f10d7a61c25866e20941697200fa7..93ddf17eaf694577fbb7b4f78dcd0c2eaa62cef8 100644
+index 95d1ddba..ced340c8 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
-@@ -249,10 +249,21 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -250,10 +250,21 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
          final AABB boundingBox,
          final Predicate<? super T> predicate,
          final List<? super T> into

@@ -98,7 +98,7 @@ public class BotUtil {
     }
 
     public static boolean isCreateLegal(@NotNull String name) {
-        if (!name.matches("^[a-zA-Z0-9_]{4,16}$")) {
+        if (!isValidAccountName(name)) {
             return false;
         }
 
@@ -111,6 +111,17 @@ public class BotUtil {
         }
 
         return BotList.INSTANCE.bots.size() < LeavesConfig.modify.fakeplayer.limit;
+    }
+
+    /** Keep command and builder validation identical; three-character Minecraft names such as 111 are valid. */
+    public static boolean isValidAccountName(@NotNull String name) {
+        if (name.length() < 3 || name.length() > 16) return false;
+        for (int index = 0; index < name.length(); index++) {
+            final char c = name.charAt(index);
+            if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z')
+                && !(c >= '0' && c <= '9') && c != '_') return false;
+        }
+        return true;
     }
 
     /** Returns whether a raw or full fakeplayer name matches either Leaves' exact list or LeavesX fragments. */

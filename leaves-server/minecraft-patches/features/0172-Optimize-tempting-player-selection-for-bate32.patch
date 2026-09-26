@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize tempting player selection for bate32
 
 
 diff --git a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
-index c5834f7d58b45148122f8c9267186bd8bddeed87..eb4b2874077f453843b88f43b0e704333261fea0 100644
+index c5834f7d..eb4b2874 100644
 --- a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
 @@ -1,7 +1,6 @@

@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize server fire state checks for bate100
 
 
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 2d362b73c9ad72e77fc5f839b20bf87f95b6fdea..73a096fcc461683c10f390eb81b4255ca04c5b6a 100644
+index f27499d1..64549881 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -3645,7 +3645,12 @@ public abstract class Entity
+@@ -3710,7 +3710,12 @@ public abstract class Entity
      }
  
      public boolean isOnFire() {

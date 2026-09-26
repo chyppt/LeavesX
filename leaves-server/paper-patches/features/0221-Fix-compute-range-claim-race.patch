@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 21:45:08 +0800
+Subject: [PATCH] Fix compute range claim race
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index f3e87201269e039e69615e1cde82d30cbddc36b1..bcb1c699e92054e13d04cd0d7498b0ace8a272f2 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -517,6 +517,17 @@ public final class LeavesXComputeExecutor {
+         return remainingRanges <= boundedMaximum * 2 ? 1 : boundedMaximum;
+     }
+ 
++    /** Keeps the width reserved by an atomic cursor update attached to the range that must be completed. */
++    static RangeClaim claimRange(final int startInclusive, final int claimedWidth, final int limitExclusive) {
++        return new RangeClaim(
++            startInclusive,
++            Math.min(limitExclusive, startInclusive + Math.max(1, claimedWidth))
++        );
++    }
++
++    record RangeClaim(int startInclusive, int endExclusive) {
++    }
++
+     static int taskCountFor(final int size, final int availableLanes, final int minimumItems) {
+         if (size <= 0 || availableLanes <= 1) {
+             return 1;
+@@ -1223,13 +1234,11 @@ public final class LeavesXComputeExecutor {
+ 
+                 // Initial ranges are reserved one-per-submission before workers start. Only claim from the shared
+                 // cursor after that reservation; otherwise a fast worker could execute another worker's first range.
+-                taskIndex = nextTask.getAndAdd(claimWidthFor(taskCount - 1 - nextTask.get(), rangesPerClaim));
++                int claimWidth = claimWidthFor(taskCount - 1 - nextTask.get(), rangesPerClaim);
++                taskIndex = nextTask.getAndAdd(claimWidth);
+                 while (taskIndex < taskCount - 1) {
+-                    final int claimEnd = Math.min(
+-                        taskCount - 1,
+-                        taskIndex + claimWidthFor(taskCount - 1 - taskIndex, rangesPerClaim)
+-                    );
+-                    while (taskIndex < claimEnd) {
++                    final RangeClaim claim = claimRange(taskIndex, claimWidth, taskCount - 1);
++                    while (taskIndex < claim.endExclusive()) {
+                         final int start = taskIndex * rangeSize;
+                         final int end = Math.min(inputSize, start + rangeSize);
+                         ranges++;
+@@ -1244,7 +1253,8 @@ public final class LeavesXComputeExecutor {
+                         taskIndex++;
+                     }
+                     final int remainingRanges = Math.max(0, taskCount - 1 - nextTask.get());
+-                    taskIndex = nextTask.getAndAdd(claimWidthFor(remainingRanges, rangesPerClaim));
++                    claimWidth = claimWidthFor(remainingRanges, rangesPerClaim);
++                    taskIndex = nextTask.getAndAdd(claimWidth);
+                 }
+             } finally {
+                 this.activeWorkers.decrementAndGet();
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index 6142afa6a7dbae6a4e11fb3ee48915bfba147a5b..e8110bd6c9386259603680b3d1c0930d5b0b7033 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -788,4 +788,12 @@ public class LeavesXComputeExecutorTest {
+         assertTrue(firstRangeFailed.get());
+         assertTrue(secondRangeCompleted.await(0L, TimeUnit.MILLISECONDS));
+     }
++
++    @Test
++    void aStaleWideClaimCannotStrandItsSecondRangeAtTheTail() {
++        final LeavesXComputeExecutor.RangeClaim claim = LeavesXComputeExecutor.claimRange(13, 2, 15);
++
++        assertEquals(13, claim.startInclusive());
++        assertEquals(15, claim.endExclusive());
++    }
+ }

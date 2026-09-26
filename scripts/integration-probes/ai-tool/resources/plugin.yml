@@ -1,0 +1,4 @@
+name: LeavesXAiTradeProbe
+version: 1.0
+main: org.leavesx.probe.AiTradeProbe
+api-version: '26.1.2'

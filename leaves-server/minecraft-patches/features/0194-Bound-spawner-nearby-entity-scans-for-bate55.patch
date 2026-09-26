@@ -5,10 +5,10 @@ Subject: [PATCH] Bound spawner nearby entity scans for bate55
 
 
 diff --git a/net/minecraft/world/level/BaseSpawner.java b/net/minecraft/world/level/BaseSpawner.java
-index 6bc7956c5ee9b1eb0024ad0644cfeeadf0e770c3..d004072fa180a553fe382d5e9912aa4a07e0ab6b 100644
+index 2f89a914..5bd257c0 100644
 --- a/net/minecraft/world/level/BaseSpawner.java
 +++ b/net/minecraft/world/level/BaseSpawner.java
-@@ -157,12 +157,26 @@ public abstract class BaseSpawner {
+@@ -163,12 +163,26 @@ public abstract class BaseSpawner {
                                  return;
                              }
  
@@ -42,10 +42,10 @@ index 6bc7956c5ee9b1eb0024ad0644cfeeadf0e770c3..d004072fa180a553fe382d5e9912aa4a
                                  this.delay(level, pos);
                                  return;
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index a83f31d454b0d5ffffc08c22fe83ee0515410d12..aeb0fea05b751d1c95537e9786ba945f17c9603e 100644
+index c7f78f84..e2817f0b 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
-@@ -2359,6 +2359,23 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -2364,6 +2364,23 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
              return this.results;
          }
  

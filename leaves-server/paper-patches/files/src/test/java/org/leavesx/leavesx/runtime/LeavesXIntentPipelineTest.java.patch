@@ -1,0 +1,172 @@
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXIntentPipelineTest.java
+@@ -1,0 +_,169 @@
++package org.leavesx.leavesx.runtime;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicInteger;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++
++@Normal
++public class LeavesXIntentPipelineTest {
++
++    private ExecutorService executor;
++
++    @AfterEach
++    void shutdownExecutor() {
++        if (this.executor != null) {
++            this.executor.shutdownNow();
++            this.executor = null;
++        }
++    }
++
++    @Test
++    void drainsIntentsInAscendingOrderKeyOrder() {
++        final LeavesXIntentPipeline pipeline = new LeavesXIntentPipeline(16);
++        assertTrue(pipeline.submit(30, () -> { }));
++        assertTrue(pipeline.submit(10, () -> { }));
++        assertTrue(pipeline.submit(20, () -> { }));
++
++        final List<LeavesXIntentPipeline.Intent> drained = pipeline.drainOrdered();
++        assertEquals(3, drained.size());
++        assertEquals(10, drained.get(0).orderKey());
++        assertEquals(20, drained.get(1).orderKey());
++        assertEquals(30, drained.get(2).orderKey());
++        assertEquals(0, pipeline.pending());
++    }
++
++    @Test
++    void drainsEmptyPipelineToEmptyList() {
++        final LeavesXIntentPipeline pipeline = new LeavesXIntentPipeline(4);
++        assertTrue(pipeline.drainOrdered().isEmpty());
++        assertEquals(0, pipeline.pending());
++    }
++
++    @Test
++    void rejectsSubmissionsBeyondCapacityAndCountsDrops() {
++        final LeavesXIntentPipeline pipeline = new LeavesXIntentPipeline(2);
++        assertTrue(pipeline.submit(1, () -> { }));
++        assertTrue(pipeline.submit(2, () -> { }));
++        assertFalse(pipeline.submit(3, () -> { }));
++        assertFalse(pipeline.submit(4, () -> { }));
++        assertEquals(2, pipeline.pending());
++        assertEquals(2L, pipeline.dropped());
++    }
++
++    @Test
++    void dropsResetOnDrainAndQueueReusesCapacity() {
++        final LeavesXIntentPipeline pipeline = new LeavesXIntentPipeline(2);
++        assertTrue(pipeline.submit(1, () -> { }));
++        assertTrue(pipeline.submit(2, () -> { }));
++        assertFalse(pipeline.submit(3, () -> { }));
++        pipeline.drainOrdered();
++        assertEquals(0, pipeline.pending());
++        assertTrue(pipeline.submit(4, () -> { }));
++        assertTrue(pipeline.submit(5, () -> { }));
++    }
++
++    @Test
++    void rejectsNullAction() {
++        final LeavesXIntentPipeline pipeline = new LeavesXIntentPipeline(2);
++        assertThrows(IllegalArgumentException.class, () -> pipeline.submit(1, null));
++    }
++
++    @Test
++    void rejectsNonPositiveCapacity() {
++        assertThrows(IllegalArgumentException.class, () -> new LeavesXIntentPipeline(0));
++    }
++
++    @Test
++    void barrierTripsExactlyOnceOnFinalArrival() {
++        final LeavesXIntentPipeline pipeline = new LeavesXIntentPipeline(4);
++        pipeline.beginBarrier(3);
++        assertFalse(pipeline.arrive());
++        assertFalse(pipeline.arrive());
++        assertTrue(pipeline.arrive());
++        assertThrows(IllegalStateException.class, pipeline::arrive);
++    }
++
++    @Test
++    void barrierRejectsNonPositiveExpectedArrivals() {
++        final LeavesXIntentPipeline pipeline = new LeavesXIntentPipeline(4);
++        assertThrows(IllegalArgumentException.class, () -> pipeline.beginBarrier(0));
++    }
++
++    @Test
++    void tracksHighestOrderKey() {
++        final LeavesXIntentPipeline pipeline = new LeavesXIntentPipeline(8);
++        pipeline.submit(15, () -> { });
++        pipeline.submit(7, () -> { });
++        pipeline.submit(23, () -> { });
++        assertEquals(23L, pipeline.highestOrderKey());
++        pipeline.drainOrdered();
++        assertEquals(23L, pipeline.highestOrderKey());
++    }
++
++    @Test
++    void concurrentSubmissionsAllLandInThePipeline() throws Exception {
++        final LeavesXIntentPipeline pipeline = new LeavesXIntentPipeline(1_024);
++        final int producers = 4;
++        final int perProducer = 64;
++        this.executor = Executors.newFixedThreadPool(producers);
++        final CountDownLatch start = new CountDownLatch(1);
++        for (int producer = 0; producer < producers; producer++) {
++            final long base = producer * 10_000L;
++            this.executor.submit(() -> {
++                start.await();
++                for (int index = 0; index < perProducer; index++) {
++                    pipeline.submit(base + index, () -> { });
++                }
++                return null;
++            });
++        }
++        start.countDown();
++        this.executor.shutdown();
++        assertTrue(this.executor.awaitTermination(30, TimeUnit.SECONDS), "producers did not finish");
++
++        final List<LeavesXIntentPipeline.Intent> drained = pipeline.drainOrdered();
++        assertEquals(producers * perProducer, drained.size());
++        assertEquals(0L, pipeline.dropped());
++        for (int index = 1; index < drained.size(); index++) {
++            assertTrue(
++                drained.get(index - 1).orderKey() <= drained.get(index).orderKey(),
++                "drained intents must be sorted"
++            );
++        }
++    }
++
++    @Test
++    void replayedActionsExecuteInOrderKeyOrder() {
++        final LeavesXIntentPipeline pipeline = new LeavesXIntentPipeline(8);
++        final List<Integer> applied = new ArrayList<>();
++        pipeline.submit(2, () -> applied.add(2));
++        pipeline.submit(1, () -> applied.add(1));
++        pipeline.submit(3, () -> applied.add(3));
++        for (final LeavesXIntentPipeline.Intent intent : pipeline.drainOrdered()) {
++            intent.action().run();
++        }
++        assertEquals(List.of(1, 2, 3), applied);
++    }
++
++    @Test
++    void drainIsDestructiveAndRepeatable() {
++        final LeavesXIntentPipeline pipeline = new LeavesXIntentPipeline(4);
++        final AtomicInteger runs = new AtomicInteger();
++        pipeline.submit(1, runs::incrementAndGet);
++        pipeline.drainOrdered().forEach(intent -> intent.action().run());
++        assertTrue(pipeline.drainOrdered().isEmpty());
++        assertEquals(1, runs.get());
++    }
++}

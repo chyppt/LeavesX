@@ -5,10 +5,10 @@ Subject: [PATCH] Vanilla portal handle
 
 
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 224a49052b76538faa743ba9bfa319c48c88fe2e..4ca24f14d4fc6897fb6615eea8c8e26bd64847bd 100644
+index e42e0e06..3e216696 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -864,6 +864,7 @@ public abstract class Entity
+@@ -870,6 +870,7 @@ public abstract class Entity
  
      // CraftBukkit start
      public void postTick() {
@@ -16,7 +16,7 @@ index 224a49052b76538faa743ba9bfa319c48c88fe2e..4ca24f14d4fc6897fb6615eea8c8e26b
          // No clean way to break out of ticking once the entity has been copied to a new world, so instead we move the portalling later in the tick cycle
          if (!(this instanceof ServerPlayer) && this.isAlive()) { // Paper - don't attempt to teleport dead entities
              this.handlePortal();
-@@ -885,7 +886,7 @@ public abstract class Entity
+@@ -891,7 +892,7 @@ public abstract class Entity
              this.boardingCooldown--;
          }
  
@@ -26,7 +26,7 @@ index 224a49052b76538faa743ba9bfa319c48c88fe2e..4ca24f14d4fc6897fb6615eea8c8e26b
              this.spawnSprintParticle();
          }
 diff --git a/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java b/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java
-index 1c043c1136fc42e888125047ed73b1dc32276183..28ee5a62cfd584707c879e74ff87792db208eca9 100644
+index 30b99d9d..a456390c 100644
 --- a/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java
 +++ b/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java
 @@ -307,7 +307,7 @@ public abstract class AbstractMinecart extends VehicleEntity {

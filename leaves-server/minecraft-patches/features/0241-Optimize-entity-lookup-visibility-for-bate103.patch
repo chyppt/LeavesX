@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize entity lookup visibility for bate103
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
-index 56e71bf01f22579c294c6b33450bd282e082f6ae..7c6c1be358ad67083dbd837fd3ac6217614d8758 100644
+index 328784ba..10e44a6c 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
 @@ -93,6 +93,15 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
@@ -24,7 +24,7 @@ index 56e71bf01f22579c294c6b33450bd282e082f6ae..7c6c1be358ad67083dbd837fd3ac6217
          final Visibility visibility = EntityLookup.getEntityStatus(entity);
          return visibility.isAccessible() ? entity : null;
      }
-@@ -398,6 +407,16 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+@@ -402,6 +411,16 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
              return Visibility.TICKING;
          }
          final FullChunkStatus entityStatus = ((ChunkSystemEntity)entity).moonrise$getChunkStatus();

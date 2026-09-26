@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize bounded POI traversal for bate14
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
-index 4407b5efd663aed0fa30f0a0fc685cae74c2b5b9..86af8bc0c030ae68854b016f6931517a2cdf5dc6 100644
+index 4407b5ef..86af8bc0 100644
 --- a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
 +++ b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
 @@ -69,9 +69,10 @@ public final class PoiAccess {

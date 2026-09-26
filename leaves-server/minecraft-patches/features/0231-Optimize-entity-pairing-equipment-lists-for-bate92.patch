@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize entity pairing equipment lists for bate92
 
 
 diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
-index f9863ec2f50dcb738641301a7fcc16f3f9d99aea..be080fbbc51f512eb8e8fc2e23ad2bb29b134469 100644
+index c8143a53..31dc24dc 100644
 --- a/net/minecraft/server/level/ServerEntity.java
 +++ b/net/minecraft/server/level/ServerEntity.java
-@@ -376,16 +376,12 @@ public class ServerEntity {
+@@ -381,16 +381,12 @@ public class ServerEntity {
          }
  
          if (this.entity instanceof LivingEntity livingEntity) {
@@ -30,7 +30,7 @@ index f9863ec2f50dcb738641301a7fcc16f3f9d99aea..be080fbbc51f512eb8e8fc2e23ad2bb2
                  broadcast.accept(new ClientboundSetEquipmentPacket(this.entity.getId(), slots, true)); // Paper - data sanitization
              }
              if (this.entity.totalEntityAge == 0) ((LivingEntity) this.entity).detectEquipmentUpdates(); // CraftBukkit - SPIGOT-3789: sync again immediately after sending // Leaves - fix chunk reload detector (#492)
-@@ -404,6 +400,23 @@ public class ServerEntity {
+@@ -409,6 +405,23 @@ public class ServerEntity {
          }
      }
  

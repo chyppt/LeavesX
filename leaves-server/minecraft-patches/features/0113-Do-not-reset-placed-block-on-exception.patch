@@ -5,39 +5,33 @@ Subject: [PATCH] Do not reset placed block on exception
 
 
 diff --git a/net/minecraft/world/item/BlockItem.java b/net/minecraft/world/item/BlockItem.java
-index a36530616fd46cb72e0b1982724a1e33984dff06..0d2931902e375297c47881660a25ecb81218f04d 100644
+index a9d01219..dd2ca0f6 100644
 --- a/net/minecraft/world/item/BlockItem.java
 +++ b/net/minecraft/world/item/BlockItem.java
-@@ -90,20 +90,22 @@ public class BlockItem extends Item {
-         BlockState placedState = level.getBlockState(pos);
+@@ -91,21 +91,11 @@ public class BlockItem extends Item {
+         java.util.function.UnaryOperator<InteractionResult.PaperSuccessContext> context = c -> c.placedBlockAt(pos.immutable()); // Paper - track placed block position from block item
          if (placedState.is(placementState.getBlock())) {
              placedState = this.updateBlockStateFromTag(pos, level, itemStack, placedState);
-+                        // Leaves start - we do not need this
-             // Paper start - Reset placed block on exception
+-            // Paper start - Reset placed block on exception
 -            try {
-+                        // try {
-             this.updateCustomBlockEntityTag(pos, level, player, itemStack, placedState);
-             updateBlockEntityComponents(level, pos, itemStack);
+-                boolean updatedBlockEntity = this.updateCustomBlockEntityTag(pos, level, player, itemStack, placedState);
+-                context = context.andThen(c -> c.updatedBlockEntity(updatedBlockEntity))::apply; // track whether the block entity got updated or not
+-                updateBlockEntityComponents(level, pos, itemStack);
 -            } catch (Exception ex) {
--                ((org.bukkit.craftbukkit.block.CraftBlockState) previousState).revertPlace();
+-                ((org.bukkit.craftbukkit.block.CraftBlockState) previousState).revertPlace(false);
 -                if (player instanceof ServerPlayer serverPlayer) {
 -                    net.minecraft.server.MinecraftServer.LOGGER.warn("Player {} tried placing invalid block", player.getScoreboardName(), ex);
--                    serverPlayer.connection.disconnect(net.minecraft.network.chat.Component.literal("Packet processing error"));
+-                    serverPlayer.connection.disconnect(net.minecraft.network.chat.Component.literal("Packet processing error"), org.bukkit.event.player.PlayerKickEvent.Cause.ILLEGAL_ACTION);
 -                    return InteractionResult.FAIL;
 -                }
 -                throw ex; // Rethrow exception if not placed by a player
 -            }
-+                        // } catch (Exception ex) {
-+                        //     ((org.bukkit.craftbukkit.block.CraftBlockState) previousState).revertPlace();
-+                        //     if (player instanceof ServerPlayer serverPlayer) {
-+                        //         net.minecraft.server.MinecraftServer.LOGGER.warn("Player {} tried placing invalid block", player.getScoreboardName(), ex);
-+                        //         serverPlayer.connection.disconnect(net.minecraft.network.chat.Component.literal("Packet processing error"));
-+                        //         return InteractionResult.FAIL;
-+                        //     }
-+                        //     throw ex; // Rethrow exception if not placed by a player
-+                        // }
-             // Paper end - Reset placed block on exception
-+                        // Leaves end - we dot not need this
+-            // Paper end - Reset placed block on exception
++            // Leaves start - preserve the placed block when a block-entity tag is invalid.
++            boolean updatedBlockEntity = this.updateCustomBlockEntityTag(pos, level, player, itemStack, placedState);
++            context = context.andThen(c -> c.updatedBlockEntity(updatedBlockEntity))::apply; // Paper - track updated block entities
++            updateBlockEntityComponents(level, pos, itemStack);
++            // Leaves end
              placedState.getBlock().setPlacedBy(level, pos, placedState, player, itemStack);
              // CraftBukkit start - special case for handling block placement with water lilies, frog spawn and snow buckets
              if (player != null && (this instanceof PlaceOnWaterBlockItem || this instanceof SolidBucketItem)) {

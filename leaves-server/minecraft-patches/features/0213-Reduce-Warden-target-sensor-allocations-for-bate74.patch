@@ -5,7 +5,7 @@ Subject: [PATCH] Reduce Warden target sensor allocations for bate74
 
 
 diff --git a/net/minecraft/world/entity/ai/sensing/WardenEntitySensor.java b/net/minecraft/world/entity/ai/sensing/WardenEntitySensor.java
-index 83285d9f3310ab7827607f0022a24b5627f7b480..a5ad3e5bc19236cc06354a68742b1fce4cc4bbf4 100644
+index 78a5d265..0544e7c4 100644
 --- a/net/minecraft/world/entity/ai/sensing/WardenEntitySensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/WardenEntitySensor.java
 @@ -31,8 +31,22 @@ public class WardenEntitySensor extends NearestLivingEntitySensor<Warden> {

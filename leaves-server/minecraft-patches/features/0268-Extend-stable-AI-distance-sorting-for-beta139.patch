@@ -5,7 +5,7 @@ Subject: [PATCH] Extend stable AI distance sorting for beta139
 
 
 diff --git a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
-index f57e1c2b0974013954959e27ac7e7dc320967ec6..a568fb3446e0f416a15726a546517683fa27a9fc 100644
+index f57e1c2b..a568fb34 100644
 --- a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
 @@ -3,6 +3,7 @@ package net.minecraft.world.entity.ai.sensing;
@@ -54,7 +54,7 @@ index f57e1c2b0974013954959e27ac7e7dc320967ec6..a568fb3446e0f416a15726a546517683
          if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortOptimization()
              && items.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
 diff --git a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
-index b3c6d70f82d3a75869c5b0da565ee8ed675c689b..60510e2cee009b7d44516a42037d789bfa476f67 100644
+index b3c6d70f..60510e2c 100644
 --- a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
 @@ -3,6 +3,7 @@ package net.minecraft.world.entity.ai.sensing;
@@ -91,7 +91,7 @@ index b3c6d70f82d3a75869c5b0da565ee8ed675c689b..60510e2cee009b7d44516a42037d789b
          if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortOptimization()
              && livingEntities.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
 diff --git a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
-index 63a5eb93e7d6d3f34882c233fa70fff3de89392b..53fb24440174584a9af1613b62be9b393cf0f732 100644
+index 63a5eb93..53fb2444 100644
 --- a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
 @@ -42,7 +42,7 @@ public class PlayerSensor extends Sensor<LivingEntity> {

@@ -1,15 +1,15 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: MC_XiaoHei <xor7xiaohei@gmail.com>
 Date: Sat, 2 Aug 2025 09:46:11 +0800
-Subject: [PATCH] Leaves Plugin
+Subject: [PATCH 09/10] Leaves Plugin
 
 This patch is licensed under the MIT license.
 
 diff --git a/src/main/java/org/bukkit/Bukkit.java b/src/main/java/org/bukkit/Bukkit.java
-index fb615407be4b6726ec9e412209e92cd9809474a0..84e263084d4e62dc30e118b2e812047599965ece 100644
+index 6e86c9e4e..318a3e7c1 100644
 --- a/src/main/java/org/bukkit/Bukkit.java
 +++ b/src/main/java/org/bukkit/Bukkit.java
-@@ -3007,6 +3007,12 @@ public final class Bukkit {
+@@ -3006,6 +3006,12 @@ public final class Bukkit {
          server.restart();
      }
  
@@ -23,10 +23,10 @@ index fb615407be4b6726ec9e412209e92cd9809474a0..84e263084d4e62dc30e118b2e8120475
      /**
       * Returns a bot manager.
 diff --git a/src/main/java/org/bukkit/Server.java b/src/main/java/org/bukkit/Server.java
-index 00a6c7fd0daa98ea12cb886274d70af1e5b4f1a9..0e76f77998b4a1193d83db99af7710a27818eda1 100644
+index eae808765..4e548f3c1 100644
 --- a/src/main/java/org/bukkit/Server.java
 +++ b/src/main/java/org/bukkit/Server.java
-@@ -2781,6 +2781,10 @@ public interface Server extends PluginMessageRecipient, net.kyori.adventure.audi
+@@ -2775,6 +2775,10 @@ public interface Server extends PluginMessageRecipient, net.kyori.adventure.audi
      void allowPausing(@NotNull org.bukkit.plugin.Plugin plugin, boolean value);
      // Paper end - API to check if the server is sleeping
  

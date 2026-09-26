@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize entity state hot paths for bate31
 
 
 diff --git a/net/minecraft/world/entity/AreaEffectCloud.java b/net/minecraft/world/entity/AreaEffectCloud.java
-index 1a502cbd8acea9420fa6dd8d716018b5ede4ba6a..6ffbb3c7f931492d58c769536f7c515473ffbaf8 100644
+index f03fa06c..cfa7f4fd 100644
 --- a/net/minecraft/world/entity/AreaEffectCloud.java
 +++ b/net/minecraft/world/entity/AreaEffectCloud.java
 @@ -228,9 +228,16 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
@@ -43,7 +43,7 @@ index 1a502cbd8acea9420fa6dd8d716018b5ede4ba6a..6ffbb3c7f931492d58c769536f7c5154
          return this.radiusOnUse;
      }
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 4edc2b5c62b378f6ef34ff47eb436fcc74d72445..350c523a9a5e359c9b9cf617e2898d080f5d1268 100644
+index 7b57941f..de3d03bb 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
 @@ -12,7 +12,9 @@ import it.unimi.dsi.fastutil.objects.Object2LongMap;
@@ -64,7 +64,7 @@ index 4edc2b5c62b378f6ef34ff47eb436fcc74d72445..350c523a9a5e359c9b9cf617e2898d08
  import net.minecraft.util.Util;
  import net.minecraft.util.profiling.Profiler;
  import net.minecraft.util.profiling.ProfilerFiller;
-@@ -1024,16 +1027,33 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -1021,16 +1024,33 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
      }
  
      private void updateSynchronizedMobEffectParticles() {
@@ -104,7 +104,7 @@ index 4edc2b5c62b378f6ef34ff47eb436fcc74d72445..350c523a9a5e359c9b9cf617e2898d08
      private void updateGlowingStatus() {
          boolean glowingState = this.isCurrentlyGlowing();
          if (this.getSharedFlag(Entity.FLAG_GLOWING) != glowingState) {
-@@ -3883,8 +3903,13 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -3893,8 +3913,13 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
              if (checkFallFlyTicks % 10 == 0) {
                  int freeFallInterval = checkFallFlyTicks / 10;
                  if (freeFallInterval % 2 == 0) {
@@ -120,7 +120,7 @@ index 4edc2b5c62b378f6ef34ff47eb436fcc74d72445..350c523a9a5e359c9b9cf617e2898d08
                      this.getItemBySlot(slotToDamage).hurtAndBreak(1, this, slotToDamage);
                  }
  
-@@ -3893,6 +3918,28 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -3903,6 +3928,28 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
          }
      }
  

@@ -5,7 +5,7 @@ Subject: [PATCH] Movable Budding Amethyst
 
 
 diff --git a/net/minecraft/world/level/block/BuddingAmethystBlock.java b/net/minecraft/world/level/block/BuddingAmethystBlock.java
-index eccc42d8a27bf8eba4e2c25ba5e2918c50939c5d..bb94004a9e9798961dabf27eb74e82c568a30e33 100644
+index eccc42d8..bb94004a 100644
 --- a/net/minecraft/world/level/block/BuddingAmethystBlock.java
 +++ b/net/minecraft/world/level/block/BuddingAmethystBlock.java
 @@ -58,4 +58,12 @@ public class BuddingAmethystBlock extends AmethystBlock {

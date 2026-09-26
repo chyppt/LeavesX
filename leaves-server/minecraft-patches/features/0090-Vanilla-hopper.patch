@@ -6,7 +6,7 @@ Subject: [PATCH] Vanilla hopper
 This is a temporary solution designed to attempt to restore the vanilla behavior of the funnel while preserving optimizations as much as possible. It should ultimately be replaced by the optimization solution provided by lithium.
 
 diff --git a/net/minecraft/world/level/block/entity/HopperBlockEntity.java b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
-index 0eda2031d23eb0a9bc345d3848c4bba1a259a8a5..94d4bd6b37dd950d7360b04fd37b14fdac857bca 100644
+index a79a19b0..c8fab5a6 100644
 --- a/net/minecraft/world/level/block/entity/HopperBlockEntity.java
 +++ b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
 @@ -298,36 +298,58 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen

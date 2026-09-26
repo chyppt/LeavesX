@@ -5,7 +5,7 @@ Subject: [PATCH] Catch update suppression crash
 
 
 diff --git a/net/minecraft/network/PacketProcessor.java b/net/minecraft/network/PacketProcessor.java
-index 408cb996fc8ff77785da8919f19baff2cf4bd789..7c4d0ab96eb0a392debc7fbb2b52717ab5108a17 100644
+index 408cb996..7c4d0ab9 100644
 --- a/net/minecraft/network/PacketProcessor.java
 +++ b/net/minecraft/network/PacketProcessor.java
 @@ -95,7 +95,20 @@ public class PacketProcessor implements AutoCloseable {
@@ -30,10 +30,10 @@ index 408cb996fc8ff77785da8919f19baff2cf4bd789..7c4d0ab96eb0a392debc7fbb2b52717a
                          throw PacketUtils.makeReportedException(e, this.packet, this.listener);
                      }
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index f5be62950638d39feb904f9cab59eca9f34021c9..74b10f353cb97c20553dc7af32a081f239cd0671 100644
+index 0f89b7e1..95a246de 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -1851,7 +1851,16 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1825,7 +1825,16 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
  
              try {
                  level.tick(haveTime);
@@ -51,10 +51,10 @@ index f5be62950638d39feb904f9cab59eca9f34021c9..74b10f353cb97c20553dc7af32a081f2
                  level.fillReportDetails(report);
                  throw new ReportedException(report);
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index eccb02af4f3eb5e380863393eb7313700f418206..bb169daf1a373a6953111a4f0f172723a926fd73 100644
+index 7135639d..e2f18a9a 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -891,6 +891,11 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -907,6 +907,11 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
                                      if (org.leavesmc.leaves.LeavesConfig.performance.remove.tickGuardLambda) {
                                          try {
                                              this.tickNonPassenger(entity); // Leaves - changed
@@ -67,10 +67,10 @@ index eccb02af4f3eb5e380863393eb7313700f418206..bb169daf1a373a6953111a4f0f172723
                                              if (throwable instanceof ThreadDeath) throw throwable; // Paper
                                              // Paper start - Prevent block entity and entity crashes
 diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
-index 5bbe8f167e47e3df13c272b79319b3746e1421d7..d5755cb5d2d90f127099982d7c6c873eddd0ca7f 100644
+index a8f4a421..ac70c545 100644
 --- a/net/minecraft/server/level/ServerPlayer.java
 +++ b/net/minecraft/server/level/ServerPlayer.java
-@@ -902,6 +902,12 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+@@ -901,6 +901,12 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
                  ((org.bukkit.craftbukkit.CraftWorldBorder) this.getBukkitEntity().getWorldBorder()).getHandle().tick();
              }
              // CraftBukkit end
@@ -84,10 +84,10 @@ index 5bbe8f167e47e3df13c272b79319b3746e1421d7..d5755cb5d2d90f127099982d7c6c873e
              CrashReport report = CrashReport.forThrowable(t, "Ticking player");
              CrashReportCategory category = report.addCategory("Player being ticked");
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 441f8c254c5d93de0935995eaf6d04d06f6dcfef..49b7089ea4cf5959b761d49c53a205b9146a860d 100644
+index 4d1efe7e..ed62f427 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -1411,9 +1411,19 @@ public abstract class Entity
+@@ -1474,9 +1474,19 @@ public abstract class Entity
                  this.walkingStepSound(pos, blockState);
              }
  
@@ -109,10 +109,10 @@ index 441f8c254c5d93de0935995eaf6d04d06f6dcfef..49b7089ea4cf5959b761d49c53a205b9
              return true;
          } else {
 diff --git a/net/minecraft/world/level/block/ShulkerBoxBlock.java b/net/minecraft/world/level/block/ShulkerBoxBlock.java
-index 5e8f2cde93f8afd79d9ee167552b6857010f27c5..450dd13892ec6ad049fe6e4c134221cadd25c2a1 100644
+index ccc3a380..44899662 100644
 --- a/net/minecraft/world/level/block/ShulkerBoxBlock.java
 +++ b/net/minecraft/world/level/block/ShulkerBoxBlock.java
-@@ -181,7 +181,17 @@ public class ShulkerBoxBlock extends BaseEntityBlock {
+@@ -183,7 +183,17 @@ public class ShulkerBoxBlock extends BaseEntityBlock {
  
      @Override
      protected int getAnalogOutputSignal(final BlockState state, final Level level, final BlockPos pos, final Direction direction) {
@@ -132,7 +132,7 @@ index 5e8f2cde93f8afd79d9ee167552b6857010f27c5..450dd13892ec6ad049fe6e4c134221ca
  
      public @Nullable DyeColor getColor() {
 diff --git a/net/minecraft/world/level/block/state/StateHolder.java b/net/minecraft/world/level/block/state/StateHolder.java
-index 47a4aa4a45978dfec52ea995d197022f4fe32808..4302b44b7ad8d9a3eae3dfa211648948174bbeb8 100644
+index 47a4aa4a..4302b44b 100644
 --- a/net/minecraft/world/level/block/state/StateHolder.java
 +++ b/net/minecraft/world/level/block/state/StateHolder.java
 @@ -117,7 +117,16 @@ public abstract class StateHolder<O, S> implements ca.spottedleaf.moonrise.patch
@@ -154,7 +154,7 @@ index 47a4aa4a45978dfec52ea995d197022f4fe32808..4302b44b7ad8d9a3eae3dfa211648948
      }
  
 diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
-index 99a1f1ef2163328bd4c0efc32b0dab21aabed01e..f845c2c6b19a274f39ec63980b6e3e6761f23bf0 100644
+index b8677302..5159fe83 100644
 --- a/net/minecraft/world/level/chunk/LevelChunk.java
 +++ b/net/minecraft/world/level/chunk/LevelChunk.java
 @@ -380,7 +380,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
@@ -175,7 +175,7 @@ index 99a1f1ef2163328bd4c0efc32b0dab21aabed01e..f845c2c6b19a274f39ec63980b6e3e67
  
      @Deprecated
 diff --git a/net/minecraft/world/level/redstone/NeighborUpdater.java b/net/minecraft/world/level/redstone/NeighborUpdater.java
-index 72ef04091d1c850de5c15f0d9be3f2097a44ca7a..d18d158974af7931bedae89c80971aff9c51e549 100644
+index 041ed959..d9e97703 100644
 --- a/net/minecraft/world/level/redstone/NeighborUpdater.java
 +++ b/net/minecraft/world/level/redstone/NeighborUpdater.java
 @@ -48,6 +48,14 @@ public interface NeighborUpdater {

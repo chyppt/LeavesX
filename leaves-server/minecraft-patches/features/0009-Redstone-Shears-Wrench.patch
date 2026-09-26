@@ -5,7 +5,7 @@ Subject: [PATCH] Redstone Shears Wrench
 
 
 diff --git a/net/minecraft/world/item/ShearsItem.java b/net/minecraft/world/item/ShearsItem.java
-index c9ecf7347f568b455c31e0a0f6d679e1a460e9bf..009054403ac445a6510a2d216d658b71663f80df 100644
+index 9750a2a7..1913b30f 100644
 --- a/net/minecraft/world/item/ShearsItem.java
 +++ b/net/minecraft/world/item/ShearsItem.java
 @@ -80,7 +80,10 @@ public class ShearsItem extends Item {

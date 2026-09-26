@@ -5,7 +5,7 @@ Subject: [PATCH] Resize mob-spawn partial buffers for beta173 partitions
 
 
 diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minecraft/world/level/MobSpawnCountAccumulator.java
-index 0ae323a9d0a4afdc6eb27cbfd72a4568431f139a..cbc16e1608316c0478821cc6f8d04b4fca72546f 100644
+index 0ae323a9..cbc16e16 100644
 --- a/net/minecraft/world/level/MobSpawnCountAccumulator.java
 +++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
 @@ -34,7 +34,9 @@ final class MobSpawnCountAccumulator {

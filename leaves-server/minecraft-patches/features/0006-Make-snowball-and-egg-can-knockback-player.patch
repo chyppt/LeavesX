@@ -5,10 +5,10 @@ Subject: [PATCH] Make snowball and egg can knockback player
 
 
 diff --git a/net/minecraft/world/entity/projectile/throwableitemprojectile/Snowball.java b/net/minecraft/world/entity/projectile/throwableitemprojectile/Snowball.java
-index 6e828818909df2b31349398639257b7a6f89fcd5..e57f447054cd553257e4f8bceb924b48551050d2 100644
+index d183a75c..df10a76f 100644
 --- a/net/minecraft/world/entity/projectile/throwableitemprojectile/Snowball.java
 +++ b/net/minecraft/world/entity/projectile/throwableitemprojectile/Snowball.java
-@@ -56,6 +56,12 @@ public class Snowball extends ThrowableItemProjectile {
+@@ -57,6 +57,12 @@ public class Snowball extends ThrowableItemProjectile {
          Entity entity = hitResult.getEntity();
          int damage = entity instanceof Blaze ? 3 : 0;
          entity.hurt(this.damageSources().thrown(this, this.getOwner()), damage);
@@ -22,10 +22,10 @@ index 6e828818909df2b31349398639257b7a6f89fcd5..e57f447054cd553257e4f8bceb924b48
  
      @Override
 diff --git a/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEgg.java b/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEgg.java
-index 55d97e1a69d17308196938398ab5a34bcca44e46..5c8ff14ccbe6e7dd6aac01ad1b50faf5af46db7a 100644
+index b844dee9..77c0d952 100644
 --- a/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEgg.java
 +++ b/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEgg.java
-@@ -60,6 +60,12 @@ public class ThrownEgg extends ThrowableItemProjectile {
+@@ -61,6 +61,12 @@ public class ThrownEgg extends ThrowableItemProjectile {
      protected void onHitEntity(final EntityHitResult hitResult) {
          super.onHitEntity(hitResult);
          hitResult.getEntity().hurt(this.damageSources().thrown(this, this.getOwner()), 0.0F);

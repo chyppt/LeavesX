@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize ticket removal probes for beta113
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
-index 3b782eab5a834227fdc26bcfb0c00dc2c31b424b..ef066062813caacc6434b6ea0d4fdf0296060fbd 100644
+index e3568d68..a2dc8bab 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 @@ -700,8 +700,16 @@ public final class ChunkHolderManager {
@@ -39,7 +39,7 @@ index 3b782eab5a834227fdc26bcfb0c00dc2c31b424b..ef066062813caacc6434b6ea0d4fdf02
              if (ticket == null) {
                  return false;
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/util/stream/TicketSet.java b/ca/spottedleaf/moonrise/patches/chunk_system/util/stream/TicketSet.java
-index d8db8894324276eb3ec58b4883c5635b44c57847..8649713cd3e903a6e162841024ffe98e46e47a02 100644
+index d8db8894..8649713c 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/util/stream/TicketSet.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/util/stream/TicketSet.java
 @@ -53,6 +53,33 @@ public final class TicketSet extends AbstractSet<Ticket> {
@@ -100,7 +100,7 @@ index d8db8894324276eb3ec58b4883c5635b44c57847..8649713cd3e903a6e162841024ffe98e
          Objects.checkIndex(0, this.size);
          return this.tickets[0];
 diff --git a/net/minecraft/server/level/Ticket.java b/net/minecraft/server/level/Ticket.java
-index b075d7f68a263422cfa1f35b1f896038d3c712dd..99a0ea38691606ab38c7b5008b51bee1800ae95a 100644
+index b075d7f6..99a0ea38 100644
 --- a/net/minecraft/server/level/Ticket.java
 +++ b/net/minecraft/server/level/Ticket.java
 @@ -44,29 +44,44 @@ public class Ticket<T> implements Comparable<Ticket>, ca.spottedleaf.moonrise.pa

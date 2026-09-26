@@ -5,10 +5,10 @@ Subject: [PATCH] Bound panda edible item queries for bate67
 
 
 diff --git a/net/minecraft/world/entity/animal/panda/Panda.java b/net/minecraft/world/entity/animal/panda/Panda.java
-index 7bb37a2efaec248a51da2b89ecad536d424d5393..bd9a2ae967e54294bb7aed62c61c3e4a4be001ef 100644
+index c669ae4b..c1505461 100644
 --- a/net/minecraft/world/entity/animal/panda/Panda.java
 +++ b/net/minecraft/world/entity/animal/panda/Panda.java
-@@ -1063,9 +1063,15 @@ public class Panda extends Animal {
+@@ -1058,9 +1058,15 @@ public class Panda extends Animal {
                  && Panda.this.getUnhappyCounter() <= 0
                  && (
                      !Panda.this.getItemBySlot(EquipmentSlot.MAINHAND).isEmpty()
@@ -27,7 +27,7 @@ index 7bb37a2efaec248a51da2b89ecad536d424d5393..bd9a2ae967e54294bb7aed62c61c3e4a
                  );
          }
  
-@@ -1086,10 +1092,20 @@ public class Panda extends Animal {
+@@ -1081,10 +1087,20 @@ public class Panda extends Animal {
          @Override
          public void start() {
              if (Panda.this.getItemBySlot(EquipmentSlot.MAINHAND).isEmpty()) {

@@ -1,0 +1,178 @@
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXRegionTickingTest.java
+@@ -1,0 +_,175 @@
++package org.leavesx.leavesx.runtime;
++
++import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.util.List;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++import org.leavesx.leavesx.config.LeavesXConfig;
++
++@Normal
++public class LeavesXRegionTickingTest {
++
++    @AfterEach
++    void resetToDefaults() {
++        LeavesXRegionTicking.configure(LeavesXConfig.RegionTickingSettings.safeDefaults());
++        LeavesXRegionTicking.endTick();
++        LeavesXThreadDomain.clear();
++        LeavesXThreadDomain.setAssertionsEnabled(false);
++    }
++
++    @Test
++    void safeDefaultsAreOffAndPermanentFallback() {
++        final LeavesXConfig.RegionTickingSettings defaults = LeavesXConfig.RegionTickingSettings.safeDefaults();
++        assertEquals(LeavesXConfig.RegionTickingSettings.Mode.OFF, defaults.mode());
++        assertEquals(8, defaults.mergeRadiusChunks());
++        assertEquals(List.of(), defaults.strictSerialWorlds());
++        assertEquals(65_536, defaults.intentQueueSize());
++        assertEquals(25, defaults.autoDegradeBarrierPercent());
++        assertEquals(64, defaults.autoDegradeReplayThreshold());
++        assertEquals(0, defaults.threads());
++    }
++
++    @Test
++    void configurePublishesModeAndSettings() {
++        LeavesXRegionTicking.configure(new LeavesXConfig.RegionTickingSettings(
++            LeavesXConfig.RegionTickingSettings.Mode.WORLDS,
++            16,
++            List.of("world", "world_nether"),
++            8_192,
++            40,
++            32,
++            4
++        ));
++        assertEquals(LeavesXConfig.RegionTickingSettings.Mode.WORLDS, LeavesXRegionTicking.mode());
++        assertTrue(LeavesXRegionTicking.enabled());
++        assertEquals(16, LeavesXRegionTicking.mergeRadiusChunks());
++        assertEquals(8_192, LeavesXRegionTicking.intentQueueSize());
++        assertTrue(LeavesXRegionTicking.isStrictSerialWorld("world"));
++        assertTrue(LeavesXRegionTicking.isStrictSerialWorld("world_nether"));
++        assertFalse(LeavesXRegionTicking.isStrictSerialWorld("world_the_end"));
++    }
++
++    @Test
++    void offModeNeverEntersAPipelinePhase() {
++        LeavesXRegionTicking.configure(LeavesXConfig.RegionTickingSettings.safeDefaults());
++        assertFalse(LeavesXRegionTicking.enabled());
++        assertEquals(LeavesXRegionTicking.Phase.DISABLED, LeavesXRegionTicking.phase());
++        assertEquals("off", LeavesXRegionTicking.describeMode());
++    }
++
++    @Test
++    void phaseTransitionsFollowThePipeline() {
++        LeavesXRegionTicking.configure(new LeavesXConfig.RegionTickingSettings(
++            LeavesXConfig.RegionTickingSettings.Mode.REGIONS, 8, List.of(), 65_536, 25, 64, 0
++        ));
++        LeavesXRegionTicking.beginParallelSimulation();
++        assertEquals(LeavesXRegionTicking.Phase.PARALLEL_SIMULATION, LeavesXRegionTicking.phase());
++        LeavesXRegionTicking.beginBarrier();
++        assertEquals(LeavesXRegionTicking.Phase.BARRIER, LeavesXRegionTicking.phase());
++        LeavesXRegionTicking.beginSerialCommit();
++        assertEquals(LeavesXRegionTicking.Phase.SERIAL_COMMIT, LeavesXRegionTicking.phase());
++        LeavesXRegionTicking.beginParallelPost();
++        assertEquals(LeavesXRegionTicking.Phase.PARALLEL_POST, LeavesXRegionTicking.phase());
++        LeavesXRegionTicking.endTick();
++        assertEquals(LeavesXRegionTicking.Phase.DISABLED, LeavesXRegionTicking.phase());
++    }
++
++    @Test
++    void safetyCountersAccumulate() {
++        final LeavesXRegionTicking.SafetyCounters before = LeavesXRegionTicking.safetyCounters();
++        LeavesXRegionTicking.recordTickCriticalSubmit();
++        LeavesXRegionTicking.recordTickCriticalComplete();
++        LeavesXRegionTicking.recordTickCriticalReject();
++        LeavesXRegionTicking.recordSerialReplay();
++        LeavesXRegionTicking.recordBarrierTimeout();
++        LeavesXRegionTicking.recordModeDegrade(null);
++        LeavesXRegionTicking.recordIntentFailure();
++        final LeavesXRegionTicking.SafetyCounters after = LeavesXRegionTicking.safetyCounters();
++        assertEquals(before.tickCriticalSubmits() + 1, after.tickCriticalSubmits());
++        assertEquals(before.tickCriticalCompleted() + 1, after.tickCriticalCompleted());
++        assertEquals(before.tickCriticalRejected() + 1, after.tickCriticalRejected());
++        assertEquals(before.serialReplays() + 1, after.serialReplays());
++        assertEquals(before.barrierTimeouts() + 1, after.barrierTimeouts());
++        assertEquals(before.modeDegrades() + 1, after.modeDegrades());
++        assertEquals(before.intentFailures() + 1, after.intentFailures());
++    }
++
++    @Test
++    void threadDomainAssertionsFailFastWhenEnabled() {
++        LeavesXThreadDomain.setAssertionsEnabled(true);
++        LeavesXThreadDomain.clear();
++        assertThrows(
++            IllegalStateException.class,
++            () -> LeavesXThreadDomain.assertPluginVisibleThread("test")
++        );
++
++        LeavesXThreadDomain.installServerThread();
++        assertDoesNotThrow(() -> LeavesXThreadDomain.assertPluginVisibleThread("test"));
++
++        LeavesXThreadDomain.installRegionThread();
++        assertFalse(LeavesXThreadDomain.isServerThread());
++        assertTrue(LeavesXThreadDomain.isRegionThread());
++        assertThrows(
++            IllegalStateException.class,
++            () -> LeavesXThreadDomain.assertPluginVisibleThread("region-thread-test")
++        );
++    }
++
++    @Test
++    void serialCommitAssertionAcceptsServerPhaseAndDisabledPhase() {
++        LeavesXThreadDomain.setAssertionsEnabled(true);
++        LeavesXRegionTicking.configure(LeavesXConfig.RegionTickingSettings.safeDefaults());
++        assertDoesNotThrow(() -> LeavesXThreadDomain.assertSerialCommitPhase("disabled-phase"));
++
++        LeavesXRegionTicking.configure(new LeavesXConfig.RegionTickingSettings(
++            LeavesXConfig.RegionTickingSettings.Mode.WORLDS, 8, List.of(), 65_536, 25, 64, 0
++        ));
++        LeavesXRegionTicking.beginSerialCommit();
++        assertDoesNotThrow(() -> LeavesXThreadDomain.assertSerialCommitPhase("serial-commit"));
++
++        LeavesXRegionTicking.beginParallelSimulation();
++        assertThrows(
++            IllegalStateException.class,
++            () -> LeavesXThreadDomain.assertSerialCommitPhase("simulation-phase")
++        );
++    }
++
++    @Test
++    void normalizedStrictSerialWorldsLowercasesAndTrims() {
++        LeavesXRegionTicking.configure(new LeavesXConfig.RegionTickingSettings(
++            LeavesXConfig.RegionTickingSettings.Mode.OFF, 8, List.of("  World ", "NETHER"), 65_536, 25, 64, 0
++        ));
++        assertEquals(List.of("world", "nether"), LeavesXRegionTicking.normalizedStrictSerialWorlds());
++    }
++
++    @Test
++    void settingsValidationRejectsOutOfRangeValues() {
++        assertThrows(IllegalArgumentException.class, () -> new LeavesXConfig.RegionTickingSettings(
++            LeavesXConfig.RegionTickingSettings.Mode.OFF, -1, List.of(), 65_536, 25, 64, 0
++        ));
++        assertThrows(IllegalArgumentException.class, () -> new LeavesXConfig.RegionTickingSettings(
++            LeavesXConfig.RegionTickingSettings.Mode.OFF, 8, List.of(), 512, 25, 64, 0
++        ));
++        assertThrows(IllegalArgumentException.class, () -> new LeavesXConfig.RegionTickingSettings(
++            LeavesXConfig.RegionTickingSettings.Mode.OFF, 8, List.of(), 65_536, 101, 64, 0
++        ));
++        assertThrows(IllegalArgumentException.class, () -> new LeavesXConfig.RegionTickingSettings(
++            LeavesXConfig.RegionTickingSettings.Mode.OFF, 8, List.of(), 65_536, 25, -1, 0
++        ));
++        assertThrows(IllegalArgumentException.class, () -> new LeavesXConfig.RegionTickingSettings(
++            LeavesXConfig.RegionTickingSettings.Mode.OFF, 8, List.of(), 65_536, 25, 64, 17
++        ));
++        assertThrows(IllegalArgumentException.class, () -> new LeavesXConfig.RegionTickingSettings(
++            LeavesXConfig.RegionTickingSettings.Mode.OFF, 8, null, 65_536, 25, 64, 0
++        ));
++        assertThrows(IllegalArgumentException.class, () -> new LeavesXConfig.RegionTickingSettings(
++            LeavesXConfig.RegionTickingSettings.Mode.OFF, 8, java.util.Arrays.asList((String) null), 65_536, 25, 64, 0
++        ));
++    }
++}

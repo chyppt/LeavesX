@@ -5,10 +5,10 @@ Subject: [PATCH] Bound chicken jockey mount lookups for bate72
 
 
 diff --git a/net/minecraft/world/entity/monster/zombie/Zombie.java b/net/minecraft/world/entity/monster/zombie/Zombie.java
-index 82a01cf20308dc98915a7870495877cc43afed96..e0023761e3e002d47bacea504e8c30a7d3f921bb 100644
+index d5ed4718..8512a3f6 100644
 --- a/net/minecraft/world/entity/monster/zombie/Zombie.java
 +++ b/net/minecraft/world/entity/monster/zombie/Zombie.java
-@@ -66,6 +66,7 @@ import net.minecraft.world.level.block.LevelEvent;
+@@ -67,6 +67,7 @@ import net.minecraft.world.level.block.LevelEvent;
  import net.minecraft.world.level.block.state.BlockState;
  import net.minecraft.world.level.storage.ValueInput;
  import net.minecraft.world.level.storage.ValueOutput;
@@ -16,7 +16,7 @@ index 82a01cf20308dc98915a7870495877cc43afed96..e0023761e3e002d47bacea504e8c30a7
  import org.jspecify.annotations.Nullable;
  
  public class Zombie extends Monster {
-@@ -512,11 +513,21 @@ public class Zombie extends Monster {
+@@ -514,11 +515,21 @@ public class Zombie extends Monster {
                  this.setBaby(true);
                  if (zombieData.canSpawnJockey) {
                      if (random.nextFloat() < 0.05) {

@@ -5,10 +5,10 @@ Subject: [PATCH] Reuse entity activation query storage for beta148
 
 
 diff --git a/io/papermc/paper/entity/activation/ActivationRange.java b/io/papermc/paper/entity/activation/ActivationRange.java
-index cf7f5216ae61cdddf8b467716bf136f8db103987..7ad3fce142ed9311ac15179deae078e00e6baaa5 100644
+index a09b716b..c1d33001 100644
 --- a/io/papermc/paper/entity/activation/ActivationRange.java
 +++ b/io/papermc/paper/entity/activation/ActivationRange.java
-@@ -36,6 +36,7 @@ import net.minecraft.world.entity.vehicle.boat.AbstractBoat;
+@@ -37,6 +37,7 @@ import net.minecraft.world.entity.vehicle.boat.AbstractBoat;
  import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
  import net.minecraft.world.level.Level;
  import net.minecraft.world.phys.AABB;
@@ -16,7 +16,7 @@ index cf7f5216ae61cdddf8b467716bf136f8db103987..7ad3fce142ed9311ac15179deae078e0
  import org.spigotmc.SpigotWorldConfig;
  import java.util.List;
  import java.util.Set;
-@@ -146,35 +147,49 @@ public final class ActivationRange {
+@@ -147,35 +148,49 @@ public final class ActivationRange {
          final int worldHeight = world.getHeight();
          final boolean tickMarkers = world.paperConfig().entities.markers.tick;
          final List<? extends Player> players = world.players();

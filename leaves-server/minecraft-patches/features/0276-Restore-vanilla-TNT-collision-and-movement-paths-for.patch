@@ -5,10 +5,10 @@ Subject: [PATCH] Restore vanilla TNT collision and movement paths for beta150
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java b/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
-index dd052a2abf21ac323dc73be41a6d7ae9ad4d6ddd..3dcb3f7a4828b9cb74fa5f0c1c6dcc7371bb8fdc 100644
+index d18300a7..6e94231f 100644
 --- a/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
 +++ b/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
-@@ -2096,45 +2096,31 @@ public final class CollisionUtil {
+@@ -2097,45 +2097,31 @@ public final class CollisionUtil {
          // Vanilla for hard collisions has this backwards, and they expand by +epsilon but this causes terrible problems
          // specifically with boat collisions.
          aabb = aabb.inflate(-COLLISION_EPSILON, -COLLISION_EPSILON, -COLLISION_EPSILON);
@@ -74,7 +74,7 @@ index dd052a2abf21ac323dc73be41a6d7ae9ad4d6ddd..3dcb3f7a4828b9cb74fa5f0c1c6dcc73
  
      public static boolean getCollisions(final Level world, final Entity entity, final AABB aabb,
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 73a096fcc461683c10f390eb81b4255ca04c5b6a..3e5524f247b549148ff14ce80997904542ad85a5 100644
+index 64549881..35f60d82 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
 @@ -280,7 +280,6 @@ public abstract class Entity
@@ -85,7 +85,7 @@ index 73a096fcc461683c10f390eb81b4255ca04c5b6a..3e5524f247b549148ff14ce809979045
      public boolean onGround;
      public boolean horizontalCollision;
      public boolean verticalCollision;
-@@ -1150,13 +1149,6 @@ public abstract class Entity
+@@ -1156,13 +1155,6 @@ public abstract class Entity
      // Paper end - detailed watchdog information
  
      public void move(final MoverType moverType, Vec3 delta) {
@@ -99,7 +99,7 @@ index 73a096fcc461683c10f390eb81b4255ca04c5b6a..3e5524f247b549148ff14ce809979045
          final Vec3 originalMovement = delta; // Paper - Expose pre-collision velocity
          // Paper start - detailed watchdog information
          ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread("Cannot move an entity off-main");
-@@ -1296,17 +1288,8 @@ public abstract class Entity
+@@ -1295,17 +1287,8 @@ public abstract class Entity
                      }
                  }
  
@@ -119,7 +119,7 @@ index 73a096fcc461683c10f390eb81b4255ca04c5b6a..3e5524f247b549148ff14ce809979045
                  profiler.pop();
              }
          }
-@@ -1830,9 +1813,8 @@ public abstract class Entity
+@@ -1912,9 +1895,8 @@ public abstract class Entity
                  } else {
                      VoxelShape intersectShape = state.getEntityInsideCollisionShape(this.level(), blockIntersection, this);
                      boolean insideBlock = intersectShape == Shapes.block()
@@ -131,7 +131,7 @@ index 73a096fcc461683c10f390eb81b4255ca04c5b6a..3e5524f247b549148ff14ce809979045
                      if ((insideBlock || insideFluid) && visitedBlocks.add(blockIntersection.asLong())) {
                          if (insideBlock) {
                              try {
-@@ -1852,7 +1834,7 @@ public abstract class Entity
+@@ -1934,7 +1916,7 @@ public abstract class Entity
  
                          if (insideFluid) {
                              effectCollector.advanceStep(iteration, blockIntersection); // Paper - track position inside effect was triggered on
@@ -140,7 +140,7 @@ index 73a096fcc461683c10f390eb81b4255ca04c5b6a..3e5524f247b549148ff14ce809979045
                          }
  
                          if (debugEntityBlockIntersections) {
-@@ -1884,7 +1866,7 @@ public abstract class Entity
+@@ -1966,7 +1948,7 @@ public abstract class Entity
  
      public boolean collidedWithFluid(final FluidState fluidState, final BlockPos blockPos, final Vec3 from, final Vec3 to) {
          AABB fluidAABB = fluidState.getAABB(this.level(), blockPos);
@@ -149,7 +149,7 @@ index 73a096fcc461683c10f390eb81b4255ca04c5b6a..3e5524f247b549148ff14ce809979045
      }
  
      public boolean collidedWithShapeMovingFrom(final Vec3 from, final Vec3 to, final List<AABB> aabbs) {
-@@ -1893,20 +1875,6 @@ public abstract class Entity
+@@ -1975,20 +1957,6 @@ public abstract class Entity
          return boundingBoxAtFrom.collidedAlongVector(travelVector, aabbs);
      }
  
@@ -170,7 +170,7 @@ index 73a096fcc461683c10f390eb81b4255ca04c5b6a..3e5524f247b549148ff14ce809979045
      protected void onInsideBlock(final BlockState state) {
      }
  
-@@ -4599,7 +4567,6 @@ public abstract class Entity
+@@ -4682,7 +4650,6 @@ public abstract class Entity
      }
  
      public final void setBoundingBox(final AABB bb) {
@@ -179,7 +179,7 @@ index 73a096fcc461683c10f390eb81b4255ca04c5b6a..3e5524f247b549148ff14ce809979045
          double minX = bb.minX,
                  minY = bb.minY,
 diff --git a/net/minecraft/world/level/EntityGetter.java b/net/minecraft/world/level/EntityGetter.java
-index 23a477a9ab6ce9597b0497a6b800c090413403d3..85ee9caf3bc2ad31f715f941868e0c7ff2cfe146 100644
+index 23a477a9..85ee9caf 100644
 --- a/net/minecraft/world/level/EntityGetter.java
 +++ b/net/minecraft/world/level/EntityGetter.java
 @@ -87,42 +87,28 @@ public interface EntityGetter extends ca.spottedleaf.moonrise.patches.chunk_syst
@@ -241,10 +241,10 @@ index 23a477a9ab6ce9597b0497a6b800c090413403d3..85ee9caf3bc2ad31f715f941868e0c7f
      }
  
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index e9367b47aade862c6378063ac1f38d39d30c4943..46cb1fb7f086c26c98be16776a31d26eaadb687c 100644
+index e450650b..c2fc6d8b 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
-@@ -432,21 +432,6 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -433,21 +433,6 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
          return ret;
      }
  
@@ -266,7 +266,7 @@ index e9367b47aade862c6378063ac1f38d39d30c4943..46cb1fb7f086c26c98be16776a31d26e
      @Override
      public LevelChunk moonrise$getFullChunkIfLoaded(final int chunkX, final int chunkZ) {
          return (LevelChunk)this.getChunkSource().getChunk(chunkX, chunkZ, ChunkStatus.FULL, false);
-@@ -2459,18 +2444,6 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -2464,18 +2449,6 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
              return this.results;
          }
  
@@ -286,7 +286,7 @@ index e9367b47aade862c6378063ac1f38d39d30c4943..46cb1fb7f086c26c98be16776a31d26e
          @SuppressWarnings({"rawtypes", "unchecked"})
          public <T extends Entity> List<T> queryOfClass(
 diff --git a/net/minecraft/world/phys/AABB.java b/net/minecraft/world/phys/AABB.java
-index 8fcb4a5b38f90487c81299ebef662a2c6eec23e3..efb79617cebe7234d85721da7b7f1fd6ef1a6a73 100644
+index 8fcb4a5b..efb79617 100644
 --- a/net/minecraft/world/phys/AABB.java
 +++ b/net/minecraft/world/phys/AABB.java
 @@ -405,18 +405,6 @@ public class AABB {

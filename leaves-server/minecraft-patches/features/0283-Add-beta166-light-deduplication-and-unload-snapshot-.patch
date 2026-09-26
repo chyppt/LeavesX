@@ -5,7 +5,7 @@ Subject: [PATCH] Add beta166 light deduplication and unload snapshot cache
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java b/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
-index 323b5339cbd1062106dfe7f360c4f2222d9c18c1..c31ffc62a14357e8eaf8321d69eff743c531a7c9 100644
+index 323b5339..c31ffc62 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
 @@ -19,7 +19,11 @@ public final class ChunkUnloadQueue {
@@ -81,7 +81,7 @@ index 323b5339cbd1062106dfe7f360c4f2222d9c18c1..c31ffc62a14357e8eaf8321d69eff743
              this.unloadSections.remove(CoordinateUtils.getChunkKey(sectionX, sectionZ));
          }
 diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
-index ec8a0f4e8badf2762d2b145aec75162aa1298685..b489b8fddc378a91d2365dfcf852e34b90d40cc4 100644
+index 0976e16b..53d0141d 100644
 --- a/net/minecraft/server/level/ServerChunkCache.java
 +++ b/net/minecraft/server/level/ServerChunkCache.java
 @@ -4,6 +4,7 @@ import com.google.common.annotations.VisibleForTesting;

@@ -5,7 +5,7 @@ Subject: [PATCH] Reuse pressure plate entity scans for bate47
 
 
 diff --git a/net/minecraft/world/level/block/BasePressurePlateBlock.java b/net/minecraft/world/level/block/BasePressurePlateBlock.java
-index e22cade1f4258f9660f1f5ac3a330432cdf326d1..0e2c63b57d1ead2514ea21784e88336de4b764ae 100644
+index 3d0fb0a3..d2bca281 100644
 --- a/net/minecraft/world/level/block/BasePressurePlateBlock.java
 +++ b/net/minecraft/world/level/block/BasePressurePlateBlock.java
 @@ -1,6 +1,8 @@
@@ -91,7 +91,7 @@ index e22cade1f4258f9660f1f5ac3a330432cdf326d1..0e2c63b57d1ead2514ea21784e88336d
  
      protected abstract int getSignalForState(BlockState state);
 diff --git a/net/minecraft/world/level/block/PressurePlateBlock.java b/net/minecraft/world/level/block/PressurePlateBlock.java
-index a3dd45486d58056d376b9e0238867913744efd5e..d57912c7a2983f9cd551fa5ee29794588e282513 100644
+index a3dd4548..d57912c7 100644
 --- a/net/minecraft/world/level/block/PressurePlateBlock.java
 +++ b/net/minecraft/world/level/block/PressurePlateBlock.java
 @@ -41,12 +41,22 @@ public class PressurePlateBlock extends BasePressurePlateBlock {
@@ -120,7 +120,7 @@ index a3dd45486d58056d376b9e0238867913744efd5e..d57912c7a2983f9cd551fa5ee2979458
                  org.bukkit.event.Cancellable cancellable;
  
 diff --git a/net/minecraft/world/level/block/WeightedPressurePlateBlock.java b/net/minecraft/world/level/block/WeightedPressurePlateBlock.java
-index e26385eb25338e7f0770b9154a542273b651c2f4..ccf6ae0012a4587c6a7d4be0336473f2fd27d3f9 100644
+index e26385eb..ccf6ae00 100644
 --- a/net/minecraft/world/level/block/WeightedPressurePlateBlock.java
 +++ b/net/minecraft/world/level/block/WeightedPressurePlateBlock.java
 @@ -39,10 +39,20 @@ public class WeightedPressurePlateBlock extends BasePressurePlateBlock {

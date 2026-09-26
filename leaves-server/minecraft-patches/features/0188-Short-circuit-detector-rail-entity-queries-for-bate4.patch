@@ -5,7 +5,7 @@ Subject: [PATCH] Short-circuit detector rail entity queries for bate49
 
 
 diff --git a/net/minecraft/world/level/block/DetectorRailBlock.java b/net/minecraft/world/level/block/DetectorRailBlock.java
-index 5f09b65c6986579047662436d3ec4251338f55b3..b52c374b1f3c644b75e26645fde0233bc6a10f5d 100644
+index 0caf401e..6bf43932 100644
 --- a/net/minecraft/world/level/block/DetectorRailBlock.java
 +++ b/net/minecraft/world/level/block/DetectorRailBlock.java
 @@ -26,12 +26,14 @@ import net.minecraft.world.level.block.state.properties.Property;

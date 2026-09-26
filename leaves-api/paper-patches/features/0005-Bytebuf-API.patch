@@ -1,14 +1,14 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Lumine1909 <133463833+Lumine1909@users.noreply.github.com>
 Date: Wed, 22 May 2024 10:12:04 +0800
-Subject: [PATCH] Bytebuf API
+Subject: [PATCH 05/10] Bytebuf API
 
 
 diff --git a/src/main/java/org/bukkit/Bukkit.java b/src/main/java/org/bukkit/Bukkit.java
-index 77f8f93b2402630150cfddb66694a861103d7f58..3b489ea7933b7275a1b3e65820154cedc8a61768 100644
+index 37b2231a7..20516a21e 100644
 --- a/src/main/java/org/bukkit/Bukkit.java
 +++ b/src/main/java/org/bukkit/Bukkit.java
-@@ -3023,4 +3023,10 @@ public final class Bukkit {
+@@ -3022,4 +3022,10 @@ public final class Bukkit {
          return server.getPhotographerManager();
      }
      // Leaves end - Photographer API
@@ -20,10 +20,10 @@ index 77f8f93b2402630150cfddb66694a861103d7f58..3b489ea7933b7275a1b3e65820154ced
 +    // Leaves end - Bytebuf API
  }
 diff --git a/src/main/java/org/bukkit/Server.java b/src/main/java/org/bukkit/Server.java
-index 471297bd2c74430a2b4a5b7bb93521326e1a2a9d..0858f07c549372500320f98ab8a9f416df9670b2 100644
+index f343cba49..3f2164232 100644
 --- a/src/main/java/org/bukkit/Server.java
 +++ b/src/main/java/org/bukkit/Server.java
-@@ -2791,4 +2791,6 @@ public interface Server extends PluginMessageRecipient, net.kyori.adventure.audi
+@@ -2785,4 +2785,6 @@ public interface Server extends PluginMessageRecipient, net.kyori.adventure.audi
      // Leaves end - Bot API
  
      @NotNull org.leavesmc.leaves.entity.photographer.PhotographerManager getPhotographerManager(); // Leaves - Photographer API
@@ -31,15 +31,15 @@ index 471297bd2c74430a2b4a5b7bb93521326e1a2a9d..0858f07c549372500320f98ab8a9f416
 +    org.leavesmc.leaves.bytebuf.BytebufAllocator getBytebufAllocator(); // Leaves - Bytebuf API
  }
 diff --git a/src/main/java/org/bukkit/entity/Player.java b/src/main/java/org/bukkit/entity/Player.java
-index fe3f4b7552e1230d518a8554a3f0fd4009523a73..0484628bce42b1222df02777b7c19767e280e475 100644
+index 65e83e171..4605f722a 100644
 --- a/src/main/java/org/bukkit/entity/Player.java
 +++ b/src/main/java/org/bukkit/entity/Player.java
-@@ -69,7 +69,7 @@ import org.jspecify.annotations.Nullable;
+@@ -72,7 +72,7 @@ import org.jspecify.annotations.Nullable;
   * Represents a player, connected or not
   */
  @NullMarked
--public interface Player extends HumanEntity, Conversable, OfflinePlayer, PluginMessageRecipient, net.kyori.adventure.identity.Identified, net.kyori.adventure.bossbar.BossBarViewer, com.destroystokyo.paper.network.NetworkClient { // Paper
-+public interface Player extends HumanEntity, Conversable, OfflinePlayer, PluginMessageRecipient, net.kyori.adventure.identity.Identified, net.kyori.adventure.bossbar.BossBarViewer, com.destroystokyo.paper.network.NetworkClient, org.leavesmc.leaves.bytebuf.PacketAudience { // Paper // Leaves - Bytbuf API
+-public interface Player extends HumanEntity, Conversable, OfflinePlayer, PluginMessageRecipient, net.kyori.adventure.identity.Identified, net.kyori.adventure.bossbar.BossBarViewer, com.destroystokyo.paper.network.NetworkClient, ObjectContentsLike { // Paper
++public interface Player extends HumanEntity, Conversable, OfflinePlayer, PluginMessageRecipient, net.kyori.adventure.identity.Identified, net.kyori.adventure.bossbar.BossBarViewer, com.destroystokyo.paper.network.NetworkClient, ObjectContentsLike, org.leavesmc.leaves.bytebuf.PacketAudience { // Paper // Leaves - Bytebuf API
  
      // Paper start
      @Override

@@ -5,10 +5,10 @@ Subject: [PATCH] Vanilla player display name
 
 
 diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
-index d5755cb5d2d90f127099982d7c6c873eddd0ca7f..fb6daa4d375421654b5437f0c06473631b207f74 100644
+index ac70c545..19756298 100644
 --- a/net/minecraft/server/level/ServerPlayer.java
 +++ b/net/minecraft/server/level/ServerPlayer.java
-@@ -483,7 +483,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+@@ -489,7 +489,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
          this.object = null;
          // CraftBukkit start
          this.displayName = this.getScoreboardName();
@@ -18,7 +18,7 @@ index d5755cb5d2d90f127099982d7c6c873eddd0ca7f..fb6daa4d375421654b5437f0c0647363
          this.maxHealthCache = this.getMaxHealth();
          // CraftBukkit end
 diff --git a/net/minecraft/world/scores/Scoreboard.java b/net/minecraft/world/scores/Scoreboard.java
-index 5cd65073793152967484ba9b92326eb6ede69805..ba22490e62a93e9c64078a47092d55053d72c648 100644
+index 4a15851b..f1d975e8 100644
 --- a/net/minecraft/world/scores/Scoreboard.java
 +++ b/net/minecraft/world/scores/Scoreboard.java
 @@ -275,6 +275,16 @@ public class Scoreboard {

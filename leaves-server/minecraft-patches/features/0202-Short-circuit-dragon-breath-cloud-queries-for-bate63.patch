@@ -5,7 +5,7 @@ Subject: [PATCH] Short-circuit dragon breath cloud queries for bate63
 
 
 diff --git a/net/minecraft/world/item/BottleItem.java b/net/minecraft/world/item/BottleItem.java
-index e45fb987b709cbd798b7bcd179a559d8ab70e6ff..8ae24b26e473dc2a326f91af9391d587a2244b6c 100644
+index 83c4c614..a8b6f890 100644
 --- a/net/minecraft/world/item/BottleItem.java
 +++ b/net/minecraft/world/item/BottleItem.java
 @@ -1,6 +1,7 @@
@@ -13,7 +13,7 @@ index e45fb987b709cbd798b7bcd179a559d8ab70e6ff..8ae24b26e473dc2a326f91af9391d587
  
  import java.util.List;
 +import java.util.function.Predicate;
- import net.minecraft.advancements.CriteriaTriggers;
+ import net.minecraft.advancements.triggers.CriteriaTriggers;
  import net.minecraft.core.BlockPos;
  import net.minecraft.server.level.ServerPlayer;
 @@ -28,12 +29,18 @@ public class BottleItem extends Item {

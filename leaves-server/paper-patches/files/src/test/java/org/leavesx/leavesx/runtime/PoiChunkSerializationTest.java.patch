@@ -1,0 +1,50 @@
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/runtime/PoiChunkSerializationTest.java
+@@ -1,0 +_,47 @@
++package org.leavesx.leavesx.runtime;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++
++import java.nio.file.Files;
++import java.nio.file.Path;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.io.TempDir;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.ValueSource;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXConfigLoader;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++
++/** Tests the POI safety gates, not serialization equivalence or live-world persistence. */
++@Normal
++class PoiChunkSerializationTest {
++
++    @TempDir
++    Path directory;
++
++    @ParameterizedTest
++    @ValueSource(booleans = {false, true})
++    void unsafePoiPathsStayDisabledEvenWhenOldConfigurationRequestsThem(final boolean enabled) throws Exception {
++        final Path file = this.directory.resolve("leavesx.yml");
++        Files.writeString(file, """
++            performance:
++              chunk:
++                poi-async-serialization: %s
++              ai:
++                poi-competitor-scan-no-load: %s
++            """.formatted(enabled, enabled));
++        final LeavesXConfig requested = LeavesXConfigLoader.load(file);
++
++        // Publish the actual parsed configuration; checking defaults alone would miss upgrades with old true values.
++        final var publish = LeavesXRuntime.class.getDeclaredMethod("publish", LeavesXConfig.class);
++        publish.setAccessible(true);
++        final LeavesXConfig previous = LeavesXRuntime.configuration();
++        try {
++            publish.invoke(null, requested);
++            assertFalse(LeavesXRuntime.regionizedPoiSerialization());
++            assertFalse(LeavesXRuntime.poiCompetitorScanNoLoadOptimization());
++        } finally {
++            publish.invoke(null, previous);
++        }
++    }
++}

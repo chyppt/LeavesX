@@ -5,7 +5,7 @@ Subject: [PATCH] Add bate12 runtime diagnostics and path optimizations
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
-index 4dfccf6a3e1f891dfca866e4c6a579884db3f8f1..28010217bc9255e525a238cec10f7c7720540ce5 100644
+index a9907562..b34bd8c6 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 @@ -117,6 +117,11 @@ public final class ChunkHolderManager {
@@ -21,10 +21,10 @@ index 4dfccf6a3e1f891dfca866e4c6a579884db3f8f1..28010217bc9255e525a238cec10f7c77
          final int ticketShift = ThreadedTicketLevelPropagator.SECTION_SHIFT;
          final int ticketMask = (1 << ticketShift) - 1;
 diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Connection.java
-index 074786da4475bef0ba26c5cebd8ca2afc67b29af..3eaa80c31a7465a91688480a991dc999cd6c8874 100644
+index 4857bd69..7de18731 100644
 --- a/net/minecraft/network/Connection.java
 +++ b/net/minecraft/network/Connection.java
-@@ -854,6 +854,11 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+@@ -907,6 +907,11 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
          return this.averageSentPackets;
      }
  
@@ -37,10 +37,10 @@ index 074786da4475bef0ba26c5cebd8ca2afc67b29af..3eaa80c31a7465a91688480a991dc999
          this.bandwidthDebugMonitor = new BandwidthDebugMonitor(bandwidthLogger);
      }
 diff --git a/net/minecraft/server/network/ServerConnectionListener.java b/net/minecraft/server/network/ServerConnectionListener.java
-index 68c417ce2d88f673af8313be2577043bf8225b73..f7eef39faf489959e1f6be6a10614ae27ebe0f21 100644
+index 8a2f1ebc..f51dd62d 100644
 --- a/net/minecraft/server/network/ServerConnectionListener.java
 +++ b/net/minecraft/server/network/ServerConnectionListener.java
-@@ -93,7 +93,9 @@ public class ServerConnectionListener {
+@@ -97,7 +97,9 @@ public class ServerConnectionListener {
                                      } catch (ChannelException var5) {
                                      }
  
@@ -52,7 +52,7 @@ index 68c417ce2d88f673af8313be2577043bf8225b73..f7eef39faf489959e1f6be6a10614ae2
                                      if (ServerConnectionListener.this.server.repliesToStatus()) {
                                          pipeline.addLast(HandlerNames.LEGACY_QUERY, new LegacyQueryHandler(ServerConnectionListener.this.getServer()));
 diff --git a/net/minecraft/world/entity/ai/goal/RandomLookAroundGoal.java b/net/minecraft/world/entity/ai/goal/RandomLookAroundGoal.java
-index b8551e9b79d898ab67419d4870e406e13d3789b3..6b31882d423679276ca6b2308938030951cfd1cb 100644
+index b8551e9b..6b31882d 100644
 --- a/net/minecraft/world/entity/ai/goal/RandomLookAroundGoal.java
 +++ b/net/minecraft/world/entity/ai/goal/RandomLookAroundGoal.java
 @@ -16,7 +16,15 @@ public class RandomLookAroundGoal extends Goal {
@@ -73,7 +73,7 @@ index b8551e9b79d898ab67419d4870e406e13d3789b3..6b31882d423679276ca6b23089380309
  
      @Override
 diff --git a/net/minecraft/world/entity/ai/goal/RandomStrollGoal.java b/net/minecraft/world/entity/ai/goal/RandomStrollGoal.java
-index 7e4fb5bb4e1df8e09ad7b08ca482ce44a47d0b28..f8967c379c0e65db405d552232e0dc5a7610990e 100644
+index 7e4fb5bb..f8967c37 100644
 --- a/net/minecraft/world/entity/ai/goal/RandomStrollGoal.java
 +++ b/net/minecraft/world/entity/ai/goal/RandomStrollGoal.java
 @@ -44,7 +44,15 @@ public class RandomStrollGoal extends Goal {
@@ -94,7 +94,7 @@ index 7e4fb5bb4e1df8e09ad7b08ca482ce44a47d0b28..f8967c379c0e65db405d552232e0dc5a
              }
          }
 diff --git a/net/minecraft/world/level/pathfinder/PathFinder.java b/net/minecraft/world/level/pathfinder/PathFinder.java
-index 253074a0a14115cd3d18aaae6fa5822cf32346c9..3ade59d41756eca500f1e1d7bb3ab5421dfd69a9 100644
+index 253074a0..3ade59d4 100644
 --- a/net/minecraft/world/level/pathfinder/PathFinder.java
 +++ b/net/minecraft/world/level/pathfinder/PathFinder.java
 @@ -137,13 +137,24 @@ public class PathFinder {

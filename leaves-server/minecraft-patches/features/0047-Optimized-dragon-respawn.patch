@@ -5,7 +5,7 @@ Subject: [PATCH] Optimized dragon respawn
 
 
 diff --git a/net/minecraft/world/level/block/state/pattern/BlockPattern.java b/net/minecraft/world/level/block/state/pattern/BlockPattern.java
-index ed5a5fb38bfe8fb9216c7eab00b833485c4bbade..fc45703525901d700c98b5ad0c6eb10b65e775d8 100644
+index ed5a5fb3..fc457035 100644
 --- a/net/minecraft/world/level/block/state/pattern/BlockPattern.java
 +++ b/net/minecraft/world/level/block/state/pattern/BlockPattern.java
 @@ -57,7 +57,7 @@ public class BlockPattern {
@@ -18,7 +18,7 @@ index ed5a5fb38bfe8fb9216c7eab00b833485c4bbade..fc45703525901d700c98b5ad0c6eb10b
      ) {
          for (int x = 0; x < this.width; x++) {
 diff --git a/net/minecraft/world/level/dimension/end/EnderDragonFight.java b/net/minecraft/world/level/dimension/end/EnderDragonFight.java
-index 6cfaf75e92d194fe4ad1d404bc12ddec5ca18b8a..86bfcae47d216f7041284f7a40d592d997b514b9 100644
+index 26926083..ca1f1134 100644
 --- a/net/minecraft/world/level/dimension/end/EnderDragonFight.java
 +++ b/net/minecraft/world/level/dimension/end/EnderDragonFight.java
 @@ -311,7 +311,68 @@ public class EnderDragonFight extends SavedData {
@@ -90,7 +90,7 @@ index 6cfaf75e92d194fe4ad1d404bc12ddec5ca18b8a..86bfcae47d216f7041284f7a40d592d9
          ChunkPos chunkOrigin = ChunkPos.containing(this.origin);
  
          for (int x = -8 + chunkOrigin.x(); x <= 8 + chunkOrigin.x(); x++) {
-@@ -608,6 +669,11 @@ public class EnderDragonFight extends SavedData {
+@@ -607,6 +668,11 @@ public class EnderDragonFight extends SavedData {
      }
  
      public boolean respawnDragon(final List<EndCrystal> crystals) { // CraftBukkit - return boolean

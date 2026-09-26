@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize Brain and POI AI hot paths
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
-index 85d80b3952a76b0ca7f67401a659cf35dd55b082..4407b5efd663aed0fa30f0a0fc685cae74c2b5b9 100644
+index 85d80b39..4407b5ef 100644
 --- a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
 +++ b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
 @@ -23,6 +23,7 @@ import java.util.Map;
@@ -58,7 +58,7 @@ index 85d80b3952a76b0ca7f67401a659cf35dd55b082..4407b5efd663aed0fa30f0a0fc685cae
          queue.enqueue(centerKey);
  
 diff --git a/net/minecraft/world/entity/ai/Brain.java b/net/minecraft/world/entity/ai/Brain.java
-index 07a9f94438fd82830c5e53ecb86d4dd6d67631b0..eb7d7c4e867d46f0b12f3589324b9fdcf3494abb 100644
+index 2b22bbfa..6ea8e852 100644
 --- a/net/minecraft/world/entity/ai/Brain.java
 +++ b/net/minecraft/world/entity/ai/Brain.java
 @@ -47,6 +47,12 @@ public class Brain<E extends LivingEntity> {

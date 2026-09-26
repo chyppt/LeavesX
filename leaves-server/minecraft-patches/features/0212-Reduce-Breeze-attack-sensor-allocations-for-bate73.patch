@@ -5,7 +5,7 @@ Subject: [PATCH] Reduce Breeze attack sensor allocations for bate73
 
 
 diff --git a/net/minecraft/world/entity/ai/sensing/BreezeAttackEntitySensor.java b/net/minecraft/world/entity/ai/sensing/BreezeAttackEntitySensor.java
-index 4c035ed3eb4eb782e76953c0dca2aa30b8977807..027746a72d0b19edd59bcd303f5ec659770223e3 100644
+index 4c035ed3..027746a7 100644
 --- a/net/minecraft/world/entity/ai/sensing/BreezeAttackEntitySensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/BreezeAttackEntitySensor.java
 @@ -4,9 +4,12 @@ import com.google.common.collect.ImmutableSet;

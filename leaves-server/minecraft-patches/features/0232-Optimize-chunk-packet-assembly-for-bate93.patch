@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize chunk packet assembly for bate93
 
 
 diff --git a/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java b/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
-index a52f93d0563f713b1d2b707cdb6ab74e4793a54d..3a18aa0a018d8a0a0abc37bd3e01c6118a49a283 100644
+index a52f93d0..3a18aa0a 100644
 --- a/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
 +++ b/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
 @@ -3,7 +3,9 @@ package net.minecraft.network.protocol.game;

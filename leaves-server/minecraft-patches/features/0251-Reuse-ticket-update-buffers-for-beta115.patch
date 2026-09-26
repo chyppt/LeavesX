@@ -5,7 +5,7 @@ Subject: [PATCH] Reuse ticket update buffers for beta115
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
-index ef066062813caacc6434b6ea0d4fdf0296060fbd..ff437bedbba4ec0a22b37665d013873331b145cb 100644
+index a2dc8bab..7d22e953 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
 @@ -73,6 +73,8 @@ public final class ChunkHolderManager {

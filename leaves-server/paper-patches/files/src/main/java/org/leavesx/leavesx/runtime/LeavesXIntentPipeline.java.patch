@@ -1,0 +1,182 @@
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXIntentPipeline.java
+@@ -1,0 +_,179 @@
++package org.leavesx.leavesx.runtime;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.concurrent.locks.Lock;
++import java.util.concurrent.locks.ReentrantLock;
++
++/**
++ * Ordered intent pipeline for the regionized ticking phases.
++ *
++ * <p>Region threads record cross-region effects and deferred plugin-visible work as intents
++ * carrying a global order key {@code (worldIndex, globalListPosition, localSequence)}. The server
++ * thread drains the pipeline in the serial commit phase and replays intents in ascending order,
++ * reproducing the traversal order of the single-threaded pipeline.</p>
++ *
++ * <p>The queue is bounded. When a region records more intents than the configured capacity in one
++ * tick, further submissions fail fast ({@code false} return) and the caller falls back to serial
++ * replay for the remainder of that region's tick; nothing silently overflows. Barrier arrival
++ * uses a simple count with the expected region count set each tick.</p>
++ *
++ * <p>The pipeline instance is per-tick and single-consumer after the barrier: only the server
++ * thread reads {@link #drainOrdered()}. Region threads only append. This class owns no game
++ * state; intents are opaque {@link Runnable} payloads supplied by the tick integration.</p>
++ */
++public final class LeavesXIntentPipeline {
++
++    /** An intent recorded by a region thread during parallel simulation. */
++    public record Intent(long orderKey, Runnable action) implements Comparable<Intent> {
++
++        @Override
++        public int compareTo(final Intent other) {
++            return Long.compare(this.orderKey, other.orderKey);
++        }
++    }
++
++    private final Intent[] slots;
++    private final Lock lock = new ReentrantLock();
++    private int size;
++    private long dropped;
++    private long highestOrderKey;
++
++    private int expectedArrivals;
++    private int arrivals;
++    private boolean barrierTripped;
++
++    /** Creates a pipeline with the given bounded intent capacity. */
++    public LeavesXIntentPipeline(final int capacity) {
++        if (capacity < 1) {
++            throw new IllegalArgumentException("intent capacity must be positive");
++        }
++        this.slots = new Intent[capacity];
++    }
++
++    /**
++     * Records one intent. Returns {@code false} when the queue is full; the caller must then
++     * fall back to serial execution for the remainder of the region's tick.
++     */
++    public boolean submit(final long orderKey, final Runnable action) {
++        if (action == null) {
++            throw new IllegalArgumentException("intent action must not be null");
++        }
++        this.lock.lock();
++        try {
++            if (this.size >= this.slots.length) {
++                this.dropped++;
++                return false;
++            }
++            this.slots[this.size++] = new Intent(orderKey, action);
++            if (orderKey > this.highestOrderKey) {
++                this.highestOrderKey = orderKey;
++            }
++            return true;
++        } finally {
++            this.lock.unlock();
++        }
++    }
++
++    /** Prepares the barrier for a tick with the given number of arriving regions. */
++    public void beginBarrier(final int expectedArrivals) {
++        if (expectedArrivals < 1) {
++            throw new IllegalArgumentException("expected arrivals must be positive");
++        }
++        this.lock.lock();
++        try {
++            this.expectedArrivals = expectedArrivals;
++            this.arrivals = 0;
++            this.barrierTripped = expectedArrivals == 0;
++        } finally {
++            this.lock.unlock();
++        }
++    }
++
++    /**
++     * Records one region arrival. Returns {@code true} exactly once when the final arrival trips
++     * the barrier and the serial commit phase may begin.
++     */
++    public boolean arrive() {
++        this.lock.lock();
++        try {
++            if (this.arrivals >= this.expectedArrivals || this.barrierTripped) {
++                throw new IllegalStateException("region arrived after the barrier tripped");
++            }
++            this.arrivals++;
++            if (this.arrivals == this.expectedArrivals) {
++                this.barrierTripped = true;
++                return true;
++            }
++            return false;
++        } finally {
++            this.lock.unlock();
++        }
++    }
++
++    /**
++     * Drains all intents in ascending order-key order. The list is sorted defensively; the sort
++     * short-circuits to a single ordered check when the buffer was filled in ascending order,
++     * which is the documented per-region append pattern.
++     */
++    public List<Intent> drainOrdered() {
++        this.lock.lock();
++        try {
++            if (this.size == 0) {
++                return List.of();
++            }
++            final List<Intent> intents = new ArrayList<>(this.size);
++            boolean ascending = true;
++            long previous = Long.MIN_VALUE;
++            for (int i = 0; i < this.size; i++) {
++                final Intent intent = this.slots[i];
++                this.slots[i] = null;
++                intents.add(intent);
++                if (ascending) {
++                    if (intent.orderKey() < previous) {
++                        ascending = false;
++                    } else {
++                        previous = intent.orderKey();
++                    }
++                }
++            }
++            this.size = 0;
++            if (!ascending) {
++                intents.sort(Intent::compareTo);
++            }
++            return intents;
++        } finally {
++            this.lock.unlock();
++        }
++    }
++
++    /** Returns the number of intents currently buffered. */
++    public int pending() {
++        this.lock.lock();
++        try {
++            return this.size;
++        } finally {
++            this.lock.unlock();
++        }
++    }
++
++    /** Returns the cumulative number of intents dropped due to a full queue. */
++    public long dropped() {
++        this.lock.lock();
++        try {
++            return this.dropped;
++        } finally {
++            this.lock.unlock();
++        }
++    }
++
++    /** Returns the highest order key submitted since creation. */
++    public long highestOrderKey() {
++        this.lock.lock();
++        try {
++            return this.highestOrderKey;
++        } finally {
++            this.lock.unlock();
++        }
++    }
++}

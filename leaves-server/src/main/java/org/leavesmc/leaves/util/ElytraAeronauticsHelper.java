@@ -124,7 +124,7 @@ public class ElytraAeronauticsHelper {
             }
             try {
                 PlatformHooks.get().removePlayerFromDistanceMaps(serverPlayer.level(), serverPlayer);
-                serverPlayer.level().chunkSource.chunkMap.getDistanceManager().removePlayer(serverPlayer.getLastSectionPos(), serverPlayer);
+                serverPlayer.level().getChunkSource().chunkMap.getDistanceManager().removePlayer(serverPlayer.getLastSectionPos(), serverPlayer);
             } catch (Exception ignored) {
             }
         }
@@ -139,7 +139,7 @@ public class ElytraAeronauticsHelper {
             }
             try {
                 PlatformHooks.get().addPlayerToDistanceMaps(serverPlayer.level(), serverPlayer);
-                serverPlayer.level().chunkSource.chunkMap.getDistanceManager().addPlayer(SectionPos.of(serverPlayer), serverPlayer);
+                serverPlayer.level().getChunkSource().chunkMap.getDistanceManager().addPlayer(SectionPos.of(serverPlayer), serverPlayer);
             } catch (Exception ignored) {
             }
         }

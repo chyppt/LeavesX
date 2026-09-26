@@ -1,0 +1,108 @@
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXThreadDomain.java
+@@ -1,0 +_,105 @@
++package org.leavesx.leavesx.runtime;
++
++import java.util.concurrent.atomic.AtomicLong;
++
++/**
++ * Thread domain markers for the LeavesX regionized ticking pipeline.
++ *
++ * <p>Domains classify which code may run on which thread. Assertions are enabled in development
++ * builds to fail fast when LeavesX pipeline code accidentally crosses a domain boundary; they are
++ * diagnostics for LeavesX's own code paths and never affect plugins. No Folia API is referenced.</p>
++ */
++public final class LeavesXThreadDomain {
++
++    /** The single server thread: plugin code, events, scheduler tasks and serial commit. */
++    private static final ThreadLocal<Boolean> SERVER_THREAD = ThreadLocal.withInitial(() -> Boolean.FALSE);
++
++    /** A region worker thread executing parallel simulation for one region. */
++    private static final ThreadLocal<Boolean> REGION_THREAD = ThreadLocal.withInitial(() -> Boolean.FALSE);
++
++    /** Whether domain assertions should throw on violations instead of counting them. */
++    private static volatile boolean assertionsEnabled;
++
++    private static final AtomicLong VIOLATIONS = new AtomicLong();
++
++    private LeavesXThreadDomain() {
++    }
++
++    /** Marks the current thread as the server thread. */
++    public static void installServerThread() {
++        SERVER_THREAD.set(Boolean.TRUE);
++        REGION_THREAD.set(Boolean.FALSE);
++    }
++
++    /** Marks the current thread as a region worker thread. */
++    public static void installRegionThread() {
++        SERVER_THREAD.set(Boolean.FALSE);
++        REGION_THREAD.set(Boolean.TRUE);
++    }
++
++    /** Clears both markers; used by pooled threads before returning to the pool. */
++    public static void clear() {
++        SERVER_THREAD.set(Boolean.FALSE);
++        REGION_THREAD.set(Boolean.FALSE);
++    }
++
++    /** Returns whether the current thread is the marked server thread. */
++    public static boolean isServerThread() {
++        return SERVER_THREAD.get();
++    }
++
++    /** Returns whether the current thread is a marked region worker thread. */
++    public static boolean isRegionThread() {
++        return REGION_THREAD.get();
++    }
++
++    /**
++     * Returns whether plugin-visible code (events, scheduler, API callbacks) is allowed to run on
++     * the current thread. Region threads must never reach plugin code; this is invariant A.
++     */
++    public static boolean isPluginVisibleThread() {
++        return SERVER_THREAD.get();
++    }
++
++    /** Enables or disables fail-fast assertions; development builds enable them. */
++    public static void setAssertionsEnabled(final boolean enabled) {
++        assertionsEnabled = enabled;
++    }
++
++    /**
++     * Asserts that the current thread may run plugin-visible code. Throws on violation when
++     * assertions are enabled; always counts the violation.
++     */
++    public static void assertPluginVisibleThread(final String context) {
++        if (!SERVER_THREAD.get()) {
++            VIOLATIONS.incrementAndGet();
++            if (assertionsEnabled) {
++                throw new IllegalStateException(
++                    "Plugin-visible work attempted outside the server thread: " + context
++                );
++            }
++        }
++    }
++
++    /**
++     * Asserts that the current thread is inside the serial commit phase, where the world is
++     * static and plugin-visible side effects are permitted.
++     */
++    public static void assertSerialCommitPhase(final String context) {
++        final LeavesXRegionTicking.Phase phase = LeavesXRegionTicking.phase();
++        if (phase != LeavesXRegionTicking.Phase.SERIAL_COMMIT
++            && phase != LeavesXRegionTicking.Phase.DISABLED) {
++            VIOLATIONS.incrementAndGet();
++            if (assertionsEnabled) {
++                throw new IllegalStateException(
++                    "Plugin-visible work attempted in phase " + phase + ": " + context
++                );
++            }
++        }
++    }
++
++    /** Returns the cumulative number of recorded domain violations. */
++    public static long violations() {
++        return VIOLATIONS.get();
++    }
++}

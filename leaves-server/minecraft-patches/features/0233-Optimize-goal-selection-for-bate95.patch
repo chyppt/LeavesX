@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize goal selection for bate95
 
 
 diff --git a/net/minecraft/world/entity/ai/goal/GoalSelector.java b/net/minecraft/world/entity/ai/goal/GoalSelector.java
-index 37dd98b83a91d67d69122578deda81fb9ca92a27..0fe3cdaa149f7c132b711f05dc26316bd0b4d9eb 100644
+index 1a708089..caf67e21 100644
 --- a/net/minecraft/world/entity/ai/goal/GoalSelector.java
 +++ b/net/minecraft/world/entity/ai/goal/GoalSelector.java
 @@ -25,6 +25,7 @@ public class GoalSelector {
@@ -89,7 +89,7 @@ index 37dd98b83a91d67d69122578deda81fb9ca92a27..0fe3cdaa149f7c132b711f05dc26316b
 -                int wrappedGoalSize = goal.getFlags().size();
 -                for (int i = 0; i < wrappedGoalSize; ++i) {
 -                    final Goal.Flag flag = GOAL_FLAG_VALUES[Long.numberOfTrailingZeros(flagIterator)];
--                    flagIterator ^= ca.spottedleaf.concurrentutil.util.IntegerUtil.getTrailingBit(flagIterator);
+-                    flagIterator ^= ca.spottedleaf.common.util.IntegerUtil.getTrailingBit(flagIterator);
 -                    // Paper end
 -                    WrappedGoal currentGoal = this.lockedFlags.getOrDefault(flag, NO_GOAL);
 -                    currentGoal.stop();

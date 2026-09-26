@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize block entity ticker removal
 
 
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index 17cc1fad88fdb5d199d3a12d5006ba238ee3347d..9ed5d6e18ff1b6bac0dcdbf590ae4b022eeb0997 100644
+index 88b3881d..5b4c5a64 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
 @@ -2,6 +2,8 @@ package net.minecraft.world.level;
@@ -26,15 +26,17 @@ index 17cc1fad88fdb5d199d3a12d5006ba238ee3347d..9ed5d6e18ff1b6bac0dcdbf590ae4b02
  
  // CraftBukkit start
  import java.util.Map;
-@@ -119,6 +123,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -120,7 +124,8 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
          .add(new ExplosionParticleInfo(ParticleTypes.SMOKE, 1.0F, 1.0F))
          .build();
      public final List<TickingBlockEntity> blockEntityTickers = Lists.newArrayList();
+-    protected final net.minecraft.world.level.redstone.NeighborUpdater neighborUpdater; // Leaves - instant updater
 +    private final IntArrayList removedBlockEntityTickerIndices = new IntArrayList(); // LeavesX - reuse removal storage across ticks
-     protected final net.minecraft.world.level.redstone.NeighborUpdater neighborUpdater; // Leaves - instantBlockUpdaterReintroduced
++    protected final net.minecraft.world.level.redstone.NeighborUpdater neighborUpdater; // Leaves - instantBlockUpdaterReintroduced
      private final List<TickingBlockEntity> pendingBlockEntityTickers = Lists.newArrayList();
      private boolean tickingBlockEntities;
-@@ -1518,13 +1523,27 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+     protected final Thread thread;
+@@ -1523,13 +1528,27 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
  
          int tickedEntities = 0; // Paper - rewrite chunk system
          // Paper start - Fix MC-117075 use removeAll
@@ -65,7 +67,7 @@ index 17cc1fad88fdb5d199d3a12d5006ba238ee3347d..9ed5d6e18ff1b6bac0dcdbf590ae4b02
              } else if (tickBlockEntities && this.shouldTickBlockPosFilterNull(ticker.getPos())) { // Leaves - Lithium Sleeping Block Entity
                  ticker.tick();
                  // Paper start - rewrite chunk system
-@@ -1535,7 +1554,13 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -1540,7 +1559,13 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
              }
          }
  

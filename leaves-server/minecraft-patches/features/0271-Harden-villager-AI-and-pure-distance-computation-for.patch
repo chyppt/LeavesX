@@ -5,7 +5,7 @@ Subject: [PATCH] Harden villager AI and pure distance computation for beta142
 
 
 diff --git a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
-index a568fb3446e0f416a15726a546517683fa27a9fc..5a5bb99598fe539e1c0c724e06a2530f3de671f6 100644
+index a568fb34..5a5bb995 100644
 --- a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
 @@ -47,12 +47,12 @@ public class NearestItemSensor extends Sensor<Mob> {
@@ -24,7 +24,7 @@ index a568fb3446e0f416a15726a546517683fa27a9fc..5a5bb99598fe539e1c0c724e06a2530f
              );
          } else {
 diff --git a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
-index 60510e2cee009b7d44516a42037d789bfa476f67..9cd5e8e6b976fb46f3e5a66df7439605fbc72992 100644
+index 60510e2c..9cd5e8e6 100644
 --- a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
 @@ -34,12 +34,12 @@ public class NearestLivingEntitySensor<T extends LivingEntity> extends Sensor<T>
@@ -43,7 +43,7 @@ index 60510e2cee009b7d44516a42037d789bfa476f67..9cd5e8e6b976fb46f3e5a66df7439605
              );
          } else {
 diff --git a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
-index 53fb24440174584a9af1613b62be9b393cf0f732..d1d42cde36ec8f2ba6db4a9179f63c32e31a1a09 100644
+index 53fb2444..d1d42cde 100644
 --- a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
 @@ -42,7 +42,6 @@ public class PlayerSensor extends Sensor<LivingEntity> {
@@ -83,7 +83,7 @@ index 53fb24440174584a9af1613b62be9b393cf0f732..d1d42cde36ec8f2ba6db4a9179f63c32
              );
              return;
 diff --git a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
-index c31c44de1cbc1af7c01ad0a531683e7828a74efc..7a1ec3c1e699d50336d61ddd8f197caa9940a430 100644
+index c31c44de..7a1ec3c1 100644
 --- a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
 @@ -1,6 +1,7 @@
@@ -126,10 +126,10 @@ index c31c44de1cbc1af7c01ad0a531683e7828a74efc..7a1ec3c1e699d50336d61ddd8f197caa
          double nearestDistance = 0.0;
          for (final Player player : players) {
 diff --git a/net/minecraft/world/entity/npc/villager/Villager.java b/net/minecraft/world/entity/npc/villager/Villager.java
-index a93392ed880b3410fc26e27823f263ca26f6283d..dc85983aff8e5d17f23e18a68c283913b3fedd56 100644
+index 82280948..4409be60 100644
 --- a/net/minecraft/world/entity/npc/villager/Villager.java
 +++ b/net/minecraft/world/entity/npc/villager/Villager.java
-@@ -279,7 +279,18 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+@@ -270,7 +270,18 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
          // Paper end - EAR 2
          ProfilerFiller profiler = Profiler.get();
          profiler.push("villagerBrain");

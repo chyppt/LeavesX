@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize block entity ticker removal checks
 
 
 diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
-index 0af2972f8f2364ce0aa1b83f938489cc4c58f50b..892a3d92e784e7b0d58977282a44d57c7a899e50 100644
+index dabd65ca..130d7072 100644
 --- a/net/minecraft/world/level/chunk/LevelChunk.java
 +++ b/net/minecraft/world/level/chunk/LevelChunk.java
-@@ -1031,13 +1031,26 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -1029,13 +1029,26 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
  
      public static class RebindableTickingBlockEntityWrapper implements TickingBlockEntity { // Leaves - default -> public
          public TickingBlockEntity ticker; // Leaves - private -> public
@@ -35,7 +35,7 @@ index 0af2972f8f2364ce0aa1b83f938489cc4c58f50b..892a3d92e784e7b0d58977282a44d57c
          }
  
          @Override
-@@ -1047,6 +1060,9 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -1045,6 +1058,9 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
  
          @Override
          public boolean isRemoved() {

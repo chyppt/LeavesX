@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize player sensor memory access for bate84
 
 
 diff --git a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
-index e1440c54b5c17ff342fc8e299a6441e42b93abbd..1b9ad07d96a8a6cd63e3cbcd7878561f8372f584 100644
+index e1440c54..1b9ad07d 100644
 --- a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
 @@ -28,16 +28,17 @@ public class PlayerSensor extends Sensor<LivingEntity> {

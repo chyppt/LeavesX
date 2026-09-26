@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize syncable attribute collection for beta123
 
 
 diff --git a/net/minecraft/world/entity/ai/attributes/AttributeMap.java b/net/minecraft/world/entity/ai/attributes/AttributeMap.java
-index 2c626adab31d93a25fd93d78bcdb77424ca2f1e2..1f12b6d849fcedf008f03d9fd31d184eb98e6816 100644
+index 2c626ada..1f12b6d8 100644
 --- a/net/minecraft/world/entity/ai/attributes/AttributeMap.java
 +++ b/net/minecraft/world/entity/ai/attributes/AttributeMap.java
 @@ -41,6 +41,16 @@ public class AttributeMap {

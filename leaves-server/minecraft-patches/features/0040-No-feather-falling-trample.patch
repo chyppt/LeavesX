@@ -5,7 +5,7 @@ Subject: [PATCH] No feather falling trample
 
 
 diff --git a/net/minecraft/world/level/block/FarmlandBlock.java b/net/minecraft/world/level/block/FarmlandBlock.java
-index 902735a0ae76c0a8b3397c00bb8e4480b4120c6e..7366e2e968e00a93dbe38bb5bf9b8e2545799066 100644
+index 902735a0..7366e2e9 100644
 --- a/net/minecraft/world/level/block/FarmlandBlock.java
 +++ b/net/minecraft/world/level/block/FarmlandBlock.java
 @@ -115,6 +115,13 @@ public class FarmlandBlock extends Block {

@@ -5,7 +5,7 @@ Subject: [PATCH] Reduce ticket and entity traversal allocations for beta163
 
 
 diff --git a/net/minecraft/server/level/TicketType.java b/net/minecraft/server/level/TicketType.java
-index 147cd0458d719be6679b6bac2b6617b48d98ce4c..3981ce35e9da8952072235c39a39ff11b822eaff 100644
+index fed2a68b..41d84076 100644
 --- a/net/minecraft/server/level/TicketType.java
 +++ b/net/minecraft/server/level/TicketType.java
 @@ -117,7 +117,10 @@ public final class TicketType<T> implements ca.spottedleaf.moonrise.patches.chun
@@ -21,7 +21,7 @@ index 147cd0458d719be6679b6bac2b6617b48d98ce4c..3981ce35e9da8952072235c39a39ff11
  
      @Override
 diff --git a/net/minecraft/world/level/BlockGetter.java b/net/minecraft/world/level/BlockGetter.java
-index 2a4c928281c7e455d6f210aeb599881855d328f8..cb0beac61857094f9c0f641ab48b11d47cd7520f 100644
+index 2a4c9282..cb0beac6 100644
 --- a/net/minecraft/world/level/BlockGetter.java
 +++ b/net/minecraft/world/level/BlockGetter.java
 @@ -22,6 +22,11 @@ import net.minecraft.world.phys.shapes.VoxelShape;

@@ -6,7 +6,7 @@ Subject: [PATCH] Admit medium natural-spawn snapshots when compute workers are
 
 
 diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
-index b489b8fddc378a91d2365dfcf852e34b90d40cc4..8a0caf5bd172973b3263fc94d3cac5b80a7bc39b 100644
+index 53d0141d..b69d529f 100644
 --- a/net/minecraft/server/level/ServerChunkCache.java
 +++ b/net/minecraft/server/level/ServerChunkCache.java
 @@ -637,8 +637,11 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon

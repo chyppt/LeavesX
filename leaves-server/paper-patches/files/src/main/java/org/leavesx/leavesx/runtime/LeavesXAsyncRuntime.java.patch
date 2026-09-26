@@ -1,0 +1,709 @@
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+@@ -1,0 +_,706 @@
++package org.leavesx.leavesx.runtime;
++
++import com.google.common.util.concurrent.ThreadFactoryBuilder;
++import java.time.Duration;
++import java.util.ArrayDeque;
++import java.util.EnumMap;
++import java.util.IdentityHashMap;
++import java.util.Map;
++import java.util.Objects;
++import java.util.Set;
++import java.util.concurrent.ArrayBlockingQueue;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.RejectedExecutionException;
++import java.util.concurrent.Semaphore;
++import java.util.concurrent.ThreadPoolExecutor;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicInteger;
++import java.util.concurrent.atomic.AtomicLong;
++import java.util.function.Supplier;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
++/**
++ * Owns the bounded executors used by LeavesX asynchronous subsystems.
++ *
++ * <p>CPU workloads share one pool so idle capacity can serve another subsystem. Tasks that mutate private calculator
++ * state can additionally use an identity-owned lane: one owner is serial, while unrelated owners remain parallel.
++ * Workers still only receive caller-prepared snapshots. Observable world, entity, Bukkit and network changes must be
++ * committed by the server thread.</p>
++ */
++public final class LeavesXAsyncRuntime {
++
++    private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXAsyncRuntime.class);
++    private static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(60L);
++    private static final int MAX_GENERAL_THREADS = 16;
++    private static final int MAX_OWNED_TASKS_PER_DRAIN = 8;
++    private static final Object GLOBAL_ORDER_OWNER = new Object();
++    private static volatile Map<Workload, ExecutorState> executors = Map.of();
++    private static volatile boolean configured;
++
++    private LeavesXAsyncRuntime() {
++    }
++
++    /** Creates startup-only executors from one validated configuration snapshot. */
++    public static synchronized void configure(final LeavesXConfig.AsyncSettings settings) {
++        Objects.requireNonNull(settings, "settings");
++        shutdown();
++
++        final EnumMap<Workload, ExecutorState> next = new EnumMap<>(Workload.class);
++        final int generalThreads = generalThreadCount(settings);
++        if (generalThreads > 0) {
++            final ThreadPoolExecutor generalExecutor = create(
++                "Async Compute",
++                generalThreads,
++                generalQueueSize(settings),
++                settings.pathfindingKeepaliveSeconds()
++            );
++            registerGeneral(next, settings, generalExecutor);
++        }
++
++        if (settings.playerDataSaveEnabled()) {
++            final int ioThreads = automaticThreads(0, 4);
++            final ThreadPoolExecutor ioExecutor = create(
++                "Async Player Data",
++                ioThreads,
++                settings.playerDataSaveQueueSize(),
++                60
++            );
++            next.put(
++                Workload.PLAYER_DATA_SAVE,
++                new ExecutorState(
++                    ioExecutor,
++                    settings.playerDataSaveQueueSize() + ioThreads
++                )
++            );
++        }
++
++        executors = Map.copyOf(next);
++        configured = true;
++    }
++
++    private static void registerGeneral(
++        final EnumMap<Workload, ExecutorState> states,
++        final LeavesXConfig.AsyncSettings settings,
++        final ThreadPoolExecutor executor
++    ) {
++        final int workers = executor.getMaximumPoolSize();
++        if (settings.chunkSendEnabled()) {
++            states.put(
++                Workload.CHUNK_SEND,
++                new ExecutorState(executor, settings.chunkSendQueueSize() + workers)
++            );
++        }
++        if (settings.mobSpawningEnabled()) {
++            states.put(Workload.MOB_SPAWNING, new ExecutorState(executor, 64 + workers));
++        }
++        if (settings.pathfindingEnabled()) {
++            states.put(
++                Workload.PATHFINDING,
++                new ExecutorState(executor, settings.pathfindingQueueSize() + workers)
++            );
++        }
++        if (settings.entityTrackerEnabled()) {
++            states.put(
++                Workload.ENTITY_TRACKER,
++                new ExecutorState(executor, settings.entityTrackerQueueSize() + workers)
++            );
++        }
++    }
++
++    /** Executes a task asynchronously or runs the complete task on the caller when admission or submission fails. */
++    public static CompletableFuture<Void> submitOrRun(final Workload workload, final Runnable task) {
++        Objects.requireNonNull(workload, "workload");
++        Objects.requireNonNull(task, "task");
++        final ExecutorState state = executors.get(workload);
++        if (state == null) {
++            return runInline(workload, null, task, false);
++        }
++        if (!state.reserve()) {
++            state.rejected.incrementAndGet();
++            return runInline(workload, state, task, true);
++        }
++
++        final CompletableFuture<Void> completion = new CompletableFuture<>();
++        try {
++            state.executor.execute(() -> runTask(state, task, completion));
++            state.submitted.incrementAndGet();
++            return completion;
++        } catch (final RejectedExecutionException rejected) {
++            state.release();
++            state.rejected.incrementAndGet();
++            return runInline(workload, state, task, true);
++        }
++    }
++
++    /** Executes a value-producing task with the same complete caller-thread fallback contract. */
++    public static <T> CompletableFuture<T> submitValueOrRun(final Workload workload, final Supplier<T> task) {
++        Objects.requireNonNull(workload, "workload");
++        Objects.requireNonNull(task, "task");
++        final ExecutorState state = executors.get(workload);
++        if (state == null) {
++            return runValueInline(workload, null, task, false);
++        }
++        if (!state.reserve()) {
++            state.rejected.incrementAndGet();
++            return runValueInline(workload, state, task, true);
++        }
++
++        final CompletableFuture<T> completion = new CompletableFuture<>();
++        try {
++            state.executor.execute(() -> runValueTask(state, task, completion));
++            state.submitted.incrementAndGet();
++            return completion;
++        } catch (final RejectedExecutionException rejected) {
++            state.release();
++            state.rejected.incrementAndGet();
++            return runValueInline(workload, state, task, true);
++        }
++    }
++
++    /**
++     * Submits work to an identity-owned lane.
++     *
++     * <p>Folia uses ownership rather than one global lock. LeavesX applies the same rule only to snapshot computation:
++     * tasks for the same owner are FIFO and never overlap, while different owners use the shared pool concurrently.</p>
++     */
++    public static CompletableFuture<Void> submitOwnedOrRun(
++        final Workload workload,
++        final Object owner,
++        final Runnable task
++    ) {
++        return submitOwnedValueOrRun(workload, owner, () -> {
++            task.run();
++            return null;
++        });
++    }
++
++    /** Value-producing variant of {@link #submitOwnedOrRun(Workload, Object, Runnable)}. */
++    public static <T> CompletableFuture<T> submitOwnedValueOrRun(
++        final Workload workload,
++        final Object owner,
++        final Supplier<T> task
++    ) {
++        Objects.requireNonNull(owner, "owner");
++        return submitKeyedValueOrRun(workload, new IdentityKey(owner), task);
++    }
++
++    /** Uses value equality for stable identifiers such as UUIDs while retaining per-key FIFO execution. */
++    public static CompletableFuture<Void> submitKeyedOrRun(
++        final Workload workload,
++        final Object key,
++        final Runnable task
++    ) {
++        return submitKeyedValueOrRun(workload, new ValueKey(key), () -> {
++            task.run();
++            return null;
++        });
++    }
++
++    private static <T> CompletableFuture<T> submitKeyedValueOrRun(
++        final Workload workload,
++        final LaneKey ownerKey,
++        final Supplier<T> task
++    ) {
++        Objects.requireNonNull(workload, "workload");
++        Objects.requireNonNull(ownerKey, "ownerKey");
++        Objects.requireNonNull(task, "task");
++        final ExecutorState state = executors.get(workload);
++        if (state == null) {
++            return runValueInline(workload, null, task, false);
++        }
++        if (!state.reserveOwned()) {
++            state.rejected.incrementAndGet();
++            return runValueInline(workload, state, task, true);
++        }
++
++        final CompletableFuture<T> completion = new CompletableFuture<>();
++        final OwnedTask ownedTask = new OwnedTask(() -> runValueTask(state, task, completion));
++        final boolean[] scheduleDrain = new boolean[1];
++        state.ownedLanes.compute(ownerKey, (ignored, existing) -> {
++            final OwnedLane lane = existing == null ? new OwnedLane() : existing;
++            synchronized (lane) {
++                lane.tasks.addLast(ownedTask);
++                if (!lane.drainScheduled) {
++                    lane.drainScheduled = true;
++                    scheduleDrain[0] = true;
++                }
++            }
++            return lane;
++        });
++        state.submitted.incrementAndGet();
++        state.ownedSubmissions.incrementAndGet();
++        if (scheduleDrain[0]) {
++            scheduleOwnedDrain(state, ownerKey);
++        }
++        return completion;
++    }
++
++    /** Submits a globally ordered task. Persistent callers should prefer an owner-specific lane when possible. */
++    public static CompletableFuture<Void> submitOrdered(final Workload workload, final Runnable task) {
++        return submitOwnedOrRun(workload, GLOBAL_ORDER_OWNER, task);
++    }
++
++    /** Waits until all globally ordered work submitted before this call has completed. */
++    public static void awaitOrdered(final Workload workload) {
++        submitOrdered(workload, () -> { }).join();
++    }
++
++    /** Waits for work already submitted for one identity owner without blocking unrelated owners. */
++    public static void awaitOwner(final Workload workload, final Object owner) {
++        submitOwnedOrRun(workload, owner, () -> { }).join();
++    }
++
++    /** Value-keyed counterpart used by persistent records that may recreate identifier objects between calls. */
++    public static void awaitKey(final Workload workload, final Object key) {
++        submitKeyedOrRun(workload, key, () -> { }).join();
++    }
++
++    public static boolean enabled(final Workload workload) {
++        return executors.containsKey(workload);
++    }
++
++    public static Metrics metrics(final Workload workload) {
++        final ExecutorState state = executors.get(workload);
++        if (state == null) {
++            return new Metrics(false, 0, 0, 0L, 0L, 0L, 0L, 0L, 0, 0, 0L);
++        }
++        return new Metrics(
++            true,
++            state.activeTasks.get(),
++            state.queuedTasks(),
++            state.submitted.get(),
++            state.completed.get(),
++            state.callerRuns.get(),
++            state.rejected.get(),
++            state.failed.get(),
++            state.maximumQueueDepth.get(),
++            state.ownedLanes.size(),
++            state.ownedSubmissions.get()
++        );
++    }
++
++    /** Stops accepting work and waits for queued data writes and computations to finish. */
++    public static synchronized void shutdown() {
++        final Map<Workload, ExecutorState> previous = executors;
++        executors = Map.of();
++        if (previous.isEmpty()) {
++            configured = false;
++            return;
++        }
++
++        final Set<ThreadPoolExecutor> uniqueExecutors = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
++        for (final ExecutorState state : previous.values()) {
++            uniqueExecutors.add(state.executor);
++        }
++        for (final ThreadPoolExecutor executor : uniqueExecutors) {
++            executor.shutdown();
++        }
++
++        boolean interrupted = false;
++        for (final ThreadPoolExecutor executor : uniqueExecutors) {
++            try {
++                if (!executor.awaitTermination(SHUTDOWN_TIMEOUT.toSeconds(), TimeUnit.SECONDS)) {
++                    LOGGER.warn(
++                        "LeavesX executor did not stop within {} seconds; cancelling {} queued task(s)",
++                        SHUTDOWN_TIMEOUT.toSeconds(),
++                        executor.getQueue().size()
++                    );
++                    executor.shutdownNow();
++                }
++            } catch (final InterruptedException interruption) {
++                interrupted = true;
++                executor.shutdownNow();
++            }
++        }
++        configured = false;
++        if (interrupted) {
++            Thread.currentThread().interrupt();
++        }
++    }
++
++    public static boolean configured() {
++        return configured;
++    }
++
++    static int generalThreadCount(final LeavesXConfig.AsyncSettings settings) {
++        int requestedThreads = 0;
++        if (settings.chunkSendEnabled()) {
++            requestedThreads += automaticThreads(0, 4);
++        }
++        if (settings.mobSpawningEnabled()) {
++            // One frozen spawn-count snapshot may be pending per world. Supplying several lanes lets the ordinary
++            // overworld, Nether and End progress independently instead of serializing behind one worker.
++            requestedThreads += automaticThreads(0, 3);
++        }
++        if (settings.pathfindingEnabled()) {
++            requestedThreads += automaticThreads(settings.pathfindingThreads(), 4);
++        }
++        if (settings.entityTrackerEnabled()) {
++            requestedThreads += automaticThreads(settings.entityTrackerThreads(), 4);
++        }
++        if (requestedThreads == 0) {
++            return 0;
++        }
++
++        // The synchronous snapshot pool is configured first. Keep the combined automatic worker budget below the
++        // processor count so enabling all asynchronous features cannot make the server, GC and network threads fight
++        // two independently sized compute pools. Explicit workload counts still act as demand, bounded by this cap.
++        final int availableProcessors = Runtime.getRuntime().availableProcessors();
++        final int minimumAsyncLanes = availableProcessors >= 8 ? 2 : 1;
++        final int processorHeadroom = Math.max(
++            minimumAsyncLanes,
++            availableProcessors - LeavesXComputeExecutor.configuredWorkerCount() - 2
++        );
++        return Math.min(Math.min(MAX_GENERAL_THREADS, requestedThreads), processorHeadroom);
++    }
++
++    private static int generalQueueSize(final LeavesXConfig.AsyncSettings settings) {
++        long queueSize = 0L;
++        if (settings.chunkSendEnabled()) {
++            queueSize += settings.chunkSendQueueSize();
++        }
++        if (settings.mobSpawningEnabled()) {
++            queueSize += 64;
++        }
++        if (settings.pathfindingEnabled()) {
++            queueSize += settings.pathfindingQueueSize();
++        }
++        if (settings.entityTrackerEnabled()) {
++            queueSize += settings.entityTrackerQueueSize();
++        }
++        return (int)Math.clamp(queueSize, 64L, 65_536L);
++    }
++
++    private static ThreadPoolExecutor create(
++        final String displayName,
++        final int threads,
++        final int queueSize,
++        final int keepaliveSeconds
++    ) {
++        final ThreadPoolExecutor executor = new ThreadPoolExecutor(
++            threads,
++            threads,
++            keepaliveSeconds,
++            TimeUnit.SECONDS,
++            new ArrayBlockingQueue<>(queueSize),
++            new ThreadFactoryBuilder()
++                .setDaemon(true)
++                .setPriority(Thread.NORM_PRIORITY - 1)
++                .setNameFormat("LeavesX " + displayName + " - %d")
++                .setUncaughtExceptionHandler((thread, failure) ->
++                    LOGGER.error("Uncaught exception in {}", thread.getName(), failure))
++                .build(),
++            new ThreadPoolExecutor.AbortPolicy()
++        );
++        executor.allowCoreThreadTimeOut(keepaliveSeconds > 0);
++        executor.prestartAllCoreThreads();
++        return executor;
++    }
++
++    private static int automaticThreads(final int configuredThreads, final int maximumAutomaticThreads) {
++        if (configuredThreads > 0) {
++            return configuredThreads;
++        }
++        return Math.max(1, Math.min(maximumAutomaticThreads, Runtime.getRuntime().availableProcessors() / 4));
++    }
++
++    private static void scheduleOwnedDrain(final ExecutorState state, final LaneKey ownerKey) {
++        try {
++            state.executor.execute(() -> drainOwnedLane(state, ownerKey, false));
++        } catch (final RejectedExecutionException rejected) {
++            state.rejected.incrementAndGet();
++            drainOwnedLane(state, ownerKey, true);
++        }
++    }
++
++    private static void drainOwnedLane(
++        final ExecutorState state,
++        final LaneKey ownerKey,
++        final boolean callerFallback
++    ) {
++        final OwnedLane lane = state.ownedLanes.get(ownerKey);
++        if (lane == null) {
++            return;
++        }
++
++        int completedTasks = 0;
++        while (completedTasks < MAX_OWNED_TASKS_PER_DRAIN) {
++            final OwnedTask task;
++            synchronized (lane) {
++                task = lane.tasks.pollFirst();
++            }
++            if (task == null) {
++                break;
++            }
++            if (callerFallback) {
++                state.callerRuns.incrementAndGet();
++            }
++            task.run();
++            completedTasks++;
++        }
++
++        final boolean[] reschedule = new boolean[1];
++        state.ownedLanes.compute(ownerKey, (ignored, current) -> {
++            if (current != lane) {
++                return current;
++            }
++            synchronized (lane) {
++                if (lane.tasks.isEmpty()) {
++                    lane.drainScheduled = false;
++                    return null;
++                }
++                reschedule[0] = true;
++                return lane;
++            }
++        });
++        if (reschedule[0]) {
++            scheduleOwnedDrain(state, ownerKey);
++        }
++    }
++
++    private static void runTask(
++        final ExecutorState state,
++        final Runnable task,
++        final CompletableFuture<Void> completion
++    ) {
++        state.activeTasks.incrementAndGet();
++        try {
++            task.run();
++            state.completed.incrementAndGet();
++            completion.complete(null);
++        } catch (final Throwable failure) {
++            state.failed.incrementAndGet();
++            completion.completeExceptionally(failure);
++        } finally {
++            state.activeTasks.decrementAndGet();
++            state.release();
++        }
++    }
++
++    private static <T> void runValueTask(
++        final ExecutorState state,
++        final Supplier<T> task,
++        final CompletableFuture<T> completion
++    ) {
++        state.activeTasks.incrementAndGet();
++        try {
++            completion.complete(task.get());
++            state.completed.incrementAndGet();
++        } catch (final Throwable failure) {
++            state.failed.incrementAndGet();
++            completion.completeExceptionally(failure);
++        } finally {
++            state.activeTasks.decrementAndGet();
++            state.release();
++        }
++    }
++
++    private static CompletableFuture<Void> runInline(
++        final Workload workload,
++        final ExecutorState state,
++        final Runnable task,
++        final boolean rejected
++    ) {
++        if (state != null) {
++            state.callerRuns.incrementAndGet();
++        }
++        try {
++            task.run();
++            if (state != null) {
++                state.completed.incrementAndGet();
++            }
++            return CompletableFuture.completedFuture(null);
++        } catch (final Throwable failure) {
++            if (state != null) {
++                state.failed.incrementAndGet();
++            }
++            final CompletableFuture<Void> completion = new CompletableFuture<>();
++            completion.completeExceptionally(failure);
++            if (rejected) {
++                LOGGER.error("LeavesX {} caller-thread fallback failed", workload.displayName, failure);
++            }
++            return completion;
++        }
++    }
++
++    private static <T> CompletableFuture<T> runValueInline(
++        final Workload workload,
++        final ExecutorState state,
++        final Supplier<T> task,
++        final boolean rejected
++    ) {
++        if (state != null) {
++            state.callerRuns.incrementAndGet();
++        }
++        try {
++            final T result = task.get();
++            if (state != null) {
++                state.completed.incrementAndGet();
++            }
++            return CompletableFuture.completedFuture(result);
++        } catch (final Throwable failure) {
++            if (state != null) {
++                state.failed.incrementAndGet();
++            }
++            final CompletableFuture<T> completion = new CompletableFuture<>();
++            completion.completeExceptionally(failure);
++            if (rejected) {
++                LOGGER.error("LeavesX {} caller-thread fallback failed", workload.displayName, failure);
++            }
++            return completion;
++        }
++    }
++
++    public enum Workload {
++        CHUNK_SEND("Async Chunk Send"),
++        MOB_SPAWNING("Async Mob Spawning"),
++        PATHFINDING("Async Pathfinding"),
++        PLAYER_DATA_SAVE("Async Player Data"),
++        ENTITY_TRACKER("Async Entity Tracker");
++
++        private final String displayName;
++
++        Workload(final String displayName) {
++            this.displayName = displayName;
++        }
++
++        public String displayName() {
++            return this.displayName;
++        }
++    }
++
++    public record Metrics(
++        boolean enabled,
++        int activeThreads,
++        int queuedTasks,
++        long submittedTasks,
++        long completedTasks,
++        long callerRuns,
++        long rejectedTasks,
++        long failedTasks,
++        int maximumQueueDepth,
++        int ownedLanes,
++        long ownedSubmissions
++    ) {
++    }
++
++    private static final class ExecutorState {
++
++        private final ThreadPoolExecutor executor;
++        private final Semaphore capacity;
++        private final AtomicInteger inFlight = new AtomicInteger();
++        private final AtomicInteger activeTasks = new AtomicInteger();
++        private final AtomicLong submitted = new AtomicLong();
++        private final AtomicLong completed = new AtomicLong();
++        private final AtomicLong callerRuns = new AtomicLong();
++        private final AtomicLong rejected = new AtomicLong();
++        private final AtomicLong failed = new AtomicLong();
++        private final AtomicLong ownedSubmissions = new AtomicLong();
++        private final AtomicInteger maximumQueueDepth = new AtomicInteger();
++        private final ConcurrentHashMap<LaneKey, OwnedLane> ownedLanes = new ConcurrentHashMap<>();
++
++        private ExecutorState(final ThreadPoolExecutor executor, final int maximumInFlight) {
++            this.executor = executor;
++            this.capacity = new Semaphore(maximumInFlight);
++        }
++
++        private boolean reserve() {
++            if (!this.capacity.tryAcquire()) {
++                return false;
++            }
++            this.inFlight.incrementAndGet();
++            this.recordMaximumQueueDepth();
++            return true;
++        }
++
++        /**
++         * Applies bounded backpressure before entering an owned FIFO lane. Running inline here could overtake an older
++         * task for the same owner, so shutdown is the only condition that uses the caller fallback.
++         */
++        private boolean reserveOwned() {
++            boolean interrupted = false;
++            try {
++                while (true) {
++                    if (this.executor.isShutdown()) {
++                        return false;
++                    }
++                    try {
++                        if (this.capacity.tryAcquire(100L, TimeUnit.MILLISECONDS)) {
++                            this.inFlight.incrementAndGet();
++                            this.recordMaximumQueueDepth();
++                            return true;
++                        }
++                    } catch (final InterruptedException interruption) {
++                        interrupted = true;
++                    }
++                }
++            } finally {
++                if (interrupted) {
++                    Thread.currentThread().interrupt();
++                }
++            }
++        }
++
++        private void release() {
++            this.inFlight.decrementAndGet();
++            this.capacity.release();
++        }
++
++        private int queuedTasks() {
++            return Math.max(0, this.inFlight.get() - this.activeTasks.get());
++        }
++
++        private void recordMaximumQueueDepth() {
++            final int depth = this.queuedTasks();
++            this.maximumQueueDepth.accumulateAndGet(depth, Math::max);
++        }
++    }
++
++    /** Identity semantics prevent mutable entity/path objects with custom equals implementations from sharing a lane. */
++    private interface LaneKey {
++    }
++
++    private static final class IdentityKey implements LaneKey {
++
++        private final Object value;
++        private final int hashCode;
++
++        private IdentityKey(final Object value) {
++            this.value = value;
++            this.hashCode = System.identityHashCode(value);
++        }
++
++        @Override
++        public boolean equals(final Object other) {
++            return other instanceof IdentityKey key && this.value == key.value;
++        }
++
++        @Override
++        public int hashCode() {
++            return this.hashCode;
++        }
++    }
++
++    private record ValueKey(Object value) implements LaneKey {
++
++        private ValueKey {
++            Objects.requireNonNull(value, "value");
++        }
++    }
++
++    private static final class OwnedLane {
++
++        private final ArrayDeque<OwnedTask> tasks = new ArrayDeque<>();
++        private boolean drainScheduled;
++    }
++
++    private record OwnedTask(Runnable action) {
++
++        private void run() {
++            this.action.run();
++        }
++    }
++}

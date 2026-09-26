@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize AI traversal and distance sorting for bate21
 
 
 diff --git a/net/minecraft/world/entity/ai/Brain.java b/net/minecraft/world/entity/ai/Brain.java
-index eb7d7c4e867d46f0b12f3589324b9fdcf3494abb..2b32d4d8111b33a265050d80c66390d063729bac 100644
+index 6ea8e852..5f458da8 100644
 --- a/net/minecraft/world/entity/ai/Brain.java
 +++ b/net/minecraft/world/entity/ai/Brain.java
 @@ -47,12 +47,15 @@ public class Brain<E extends LivingEntity> {
@@ -116,7 +116,7 @@ index eb7d7c4e867d46f0b12f3589324b9fdcf3494abb..2b32d4d8111b33a265050d80c66390d0
          if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
              final ObjectArrayList<Brain.BehaviorGroup<E>> behaviorGroups = this.leavesX$getBehaviorGroups();
 diff --git a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
-index 8aeea55380462421cde43afb4b2fb0ce44b65195..40ccfd64615926a3dc57eb5a7833aca71553c417 100644
+index 8aeea553..40ccfd64 100644
 --- a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
 @@ -25,7 +25,19 @@ public class NearestItemSensor extends Sensor<Mob> {
@@ -141,7 +141,7 @@ index 8aeea55380462421cde43afb4b2fb0ce44b65195..40ccfd64615926a3dc57eb5a7833aca7
          ItemEntity nearest = null;
          for (final ItemEntity item : items) {
 diff --git a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
-index fe724c70f8ea95264f4ef5be60794da78494d3e7..53a0cb547c00a2dfa90c691a22b3edc1ca8a240c 100644
+index fe724c70..53a0cb54 100644
 --- a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
 @@ -18,37 +18,19 @@ public class NearestLivingEntitySensor<T extends LivingEntity> extends Sensor<T>
@@ -190,7 +190,7 @@ index fe724c70f8ea95264f4ef5be60794da78494d3e7..53a0cb547c00a2dfa90c691a22b3edc1
          brain.setMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES, livingEntities);
          brain.setMemory(MemoryModuleType.NEAREST_VISIBLE_LIVING_ENTITIES, new NearestVisibleLivingEntities(level, body, livingEntities));
 diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minecraft/world/level/MobSpawnCountAccumulator.java
-index 146fcfcb269d21042ab74fbc48b51bb4a1944f5a..0ae323a9d0a4afdc6eb27cbfd72a4568431f139a 100644
+index 146fcfcb..0ae323a9 100644
 --- a/net/minecraft/world/level/MobSpawnCountAccumulator.java
 +++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
 @@ -36,6 +36,7 @@ final class MobSpawnCountAccumulator {

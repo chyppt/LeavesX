@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize villager farmland seed scans for bate102
 
 
 diff --git a/net/minecraft/world/entity/ai/behavior/HarvestFarmland.java b/net/minecraft/world/entity/ai/behavior/HarvestFarmland.java
-index f5e93036b5ecb46e4f81aff27d93d27cda49e1b0..7593e01e044acdc21f035ab3cd7f1de7e2a5975a 100644
+index 5a0d0d1c..f4937388 100644
 --- a/net/minecraft/world/entity/ai/behavior/HarvestFarmland.java
 +++ b/net/minecraft/world/entity/ai/behavior/HarvestFarmland.java
 @@ -115,7 +115,9 @@ public class HarvestFarmland extends Behavior<Villager> {
@@ -25,5 +25,5 @@ index f5e93036b5ecb46e4f81aff27d93d27cda49e1b0..7593e01e044acdc21f035ab3cd7f1de7
                  }
 +                // LeavesX end - the planting loop is already the exact seed-presence scan
  
-                 if (block instanceof CropBlock && !((CropBlock)block).isMaxAge(blockState)) {
+                 if (block instanceof CropBlock cropBlock && !cropBlock.isMaxAge(blockState)) {
                      this.validFarmlandAroundVillager.remove(this.aboveFarmlandPos);

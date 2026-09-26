@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize entity lifecycle event hot paths for beta141
 
 
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index cd02e59a1b40c02692ca96ea049b9699ef6a55f4..5908b20bec67396c217dee861b4e52ce724c1912 100644
+index 103a9fff..085cd917 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -2980,7 +2980,11 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -2989,7 +2989,11 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
                  entity.originWorld = ServerLevel.this.getWorld().getUID();
              }
              // Paper end - Entity origin API
@@ -21,7 +21,7 @@ index cd02e59a1b40c02692ca96ea049b9699ef6a55f4..5908b20bec67396c217dee861b4e52ce
          }
  
          @Override
-@@ -3009,8 +3013,13 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -3018,8 +3022,13 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
                      merchant.getTrader().closeInventory(org.bukkit.event.inventory.InventoryCloseEvent.Reason.UNLOADED);
                  }
                  // Paper end - Fix merchant inventory not closing on entity removal
@@ -37,7 +37,7 @@ index cd02e59a1b40c02692ca96ea049b9699ef6a55f4..5908b20bec67396c217dee861b4e52ce
                  }
              }
              // Spigot end
-@@ -3053,7 +3062,10 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -3062,7 +3071,10 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
                  }
              }
              // CraftBukkit end

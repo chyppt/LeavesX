@@ -1,11 +1,11 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: violetc <58360096+s-yh-china@users.noreply.github.com>
 Date: Sun, 6 Apr 2025 10:42:47 +0800
-Subject: [PATCH] Fix SculkCatalyst exp skip
+Subject: [PATCH 07/10] Fix SculkCatalyst exp skip
 
 
 diff --git a/src/main/java/org/bukkit/event/entity/EntityDeathEvent.java b/src/main/java/org/bukkit/event/entity/EntityDeathEvent.java
-index 76c08499b704a6cb0cb95ce69b9a9248d69cc127..316bbf8c95e4803190897d66a0c7d8b4316f4164 100644
+index 76c08499b..316bbf8c9 100644
 --- a/src/main/java/org/bukkit/event/entity/EntityDeathEvent.java
 +++ b/src/main/java/org/bukkit/event/entity/EntityDeathEvent.java
 @@ -28,6 +28,8 @@ public class EntityDeathEvent extends EntityEvent implements Cancellable {
@@ -64,7 +64,7 @@ index 76c08499b704a6cb0cb95ce69b9a9248d69cc127..316bbf8c95e4803190897d66a0c7d8b4
      public boolean isCancelled() {
          return this.cancelled;
 diff --git a/src/main/java/org/bukkit/event/entity/PlayerDeathEvent.java b/src/main/java/org/bukkit/event/entity/PlayerDeathEvent.java
-index 78497c423edaff9550315610ccc2f3d4d3614dce..6e9f3b0dc789103e208a806cbecaea7ee1790ff4 100644
+index 78497c423..6e9f3b0dc 100644
 --- a/src/main/java/org/bukkit/event/entity/PlayerDeathEvent.java
 +++ b/src/main/java/org/bukkit/event/entity/PlayerDeathEvent.java
 @@ -23,6 +23,7 @@ public class PlayerDeathEvent extends EntityDeathEvent {

@@ -1,0 +1,889 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 12:27:15 +0800
+Subject: [PATCH] Simplify configuration and harden compatibility diagnostics
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index dcf9ca3ad21aadff5b129856250ceb2e9eea9bed..4f3920d57a9c29436ab54953fe2bc9349d9505a3 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -88,7 +88,7 @@ public record LeavesXConfig(
+     AsyncSettings asyncSettings
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 74;
++    public static final int CURRENT_CONFIG_VERSION = 75;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -292,15 +292,15 @@ public record LeavesXConfig(
+     ) {
+ 
+         public AsyncSettings {
+-            validateThreadCount(pathfindingThreads, "async.async-pathfinding.threads");
+-            validateThreadCount(entityTrackerThreads, "async.async-entity-tracker.threads");
+-            validateQueueSize(chunkSendQueueSize, "async.async-chunk-send.queue-size");
+-            validateQueueSize(pathfindingQueueSize, "async.async-pathfinding.queue-size");
+-            validateQueueSize(playerDataSaveQueueSize, "async.async-playerdata-save.queue-size");
+-            validateQueueSize(entityTrackerQueueSize, "async.async-entity-tracker.queue-size");
++            validateThreadCount(pathfindingThreads, "async.pathfinding.threads");
++            validateThreadCount(entityTrackerThreads, "async.entity-tracker.threads");
++            validateQueueSize(chunkSendQueueSize, "async.chunk-send.queue-size");
++            validateQueueSize(pathfindingQueueSize, "async.pathfinding.queue-size");
++            validateQueueSize(playerDataSaveQueueSize, "async.playerdata-save.queue-size");
++            validateQueueSize(entityTrackerQueueSize, "async.entity-tracker.queue-size");
+             if (pathfindingKeepaliveSeconds < 1 || pathfindingKeepaliveSeconds > 600) {
+                 throw new IllegalArgumentException(
+-                    "async.async-pathfinding.keepalive-seconds must be between 1 and 600"
++                    "async.pathfinding.keepalive-seconds must be between 1 and 600"
+                 );
+             }
+         }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 9add6436733fabb8c4c6903548b2f88e8531da5a..004f0353c8554f7f2891cbcb1096f71a3886c8d7 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -27,6 +27,7 @@ public final class LeavesXConfigLoader {
+     private static final int ENTITY_ACTIVATION_ITEMS_DEFAULT = 512;
+     private static final int MOB_SPAWN_DEFAULT = 2_048;
+     private static final int PARALLEL_THRESHOLD_MIGRATION_VERSION = 64;
++    private static final int SIMPLIFIED_CONFIG_VERSION = 75;
+     private static final String HEADER = "LeavesX 配置。默认设置保持 Paper、Bukkit 和原版行为。";
+     // Schema-owned version comments may be replaced; all other leading user comments stay untouched.
+     private static final Pattern GENERATED_CONFIG_VERSION_COMMENT = Pattern.compile(
+@@ -64,6 +65,7 @@ public final class LeavesXConfigLoader {
+             final int sourceVersion = node.node("config-version").getInt(LeavesXConfig.CURRENT_CONFIG_VERSION);
+             boolean changed = migrateLegacyAiParallelDefault(node, sourceVersion);
+             changed |= migrateLegacyParallelDefaults(node, sourceVersion);
++            changed |= migrateSimplifiedSettings(node, sourceVersion);
+             if (changed) {
+                 config = fromNode(node, normalized);
+             }
+@@ -429,63 +431,63 @@ public final class LeavesXConfigLoader {
+                 readString(node.node("messages", "core-prefix"), "messages.core-prefix", ""),
+                 new LeavesXConfig.AsyncSettings(
+                     readBoolean(
+-                        node.node("async", "async-chunk-send", "enabled"),
+-                        "async.async-chunk-send.enabled",
++                        node.node("async", "chunk-send", "enabled"),
++                        "async.chunk-send.enabled",
+                         false
+                     ),
+                     readInt(
+-                        node.node("async", "async-chunk-send", "queue-size"),
+-                        "async.async-chunk-send.queue-size",
++                        node.node("async", "chunk-send", "queue-size"),
++                        "async.chunk-send.queue-size",
+                         256
+                     ),
+                     readBoolean(
+-                        node.node("async", "async-mob-spawning", "enabled"),
+-                        "async.async-mob-spawning.enabled",
++                        node.node("async", "mob-spawning"),
++                        "async.mob-spawning",
+                         true
+                     ),
+                     readBoolean(
+-                        node.node("async", "async-pathfinding", "enabled"),
+-                        "async.async-pathfinding.enabled",
++                        node.node("async", "pathfinding", "enabled"),
++                        "async.pathfinding.enabled",
+                         false
+                     ),
+                     readInt(
+-                        node.node("async", "async-pathfinding", "threads"),
+-                        "async.async-pathfinding.threads",
++                        node.node("async", "pathfinding", "threads"),
++                        "async.pathfinding.threads",
+                         0
+                     ),
+                     readInt(
+-                        node.node("async", "async-pathfinding", "queue-size"),
+-                        "async.async-pathfinding.queue-size",
++                        node.node("async", "pathfinding", "queue-size"),
++                        "async.pathfinding.queue-size",
+                         1_024
+                     ),
+                     readInt(
+-                        node.node("async", "async-pathfinding", "keepalive-seconds"),
+-                        "async.async-pathfinding.keepalive-seconds",
++                        node.node("async", "pathfinding", "keepalive-seconds"),
++                        "async.pathfinding.keepalive-seconds",
+                         60
+                     ),
+                     readBoolean(
+-                        node.node("async", "async-playerdata-save", "enabled"),
+-                        "async.async-playerdata-save.enabled",
++                        node.node("async", "playerdata-save", "enabled"),
++                        "async.playerdata-save.enabled",
+                         false
+                     ),
+                     readInt(
+-                        node.node("async", "async-playerdata-save", "queue-size"),
+-                        "async.async-playerdata-save.queue-size",
++                        node.node("async", "playerdata-save", "queue-size"),
++                        "async.playerdata-save.queue-size",
+                         1_024
+                     ),
+                     readBoolean(
+-                        node.node("async", "async-entity-tracker", "enabled"),
+-                        "async.async-entity-tracker.enabled",
++                        node.node("async", "entity-tracker", "enabled"),
++                        "async.entity-tracker.enabled",
+                         false
+                     ),
+                     readInt(
+-                        node.node("async", "async-entity-tracker", "threads"),
+-                        "async.async-entity-tracker.threads",
++                        node.node("async", "entity-tracker", "threads"),
++                        "async.entity-tracker.threads",
+                         0
+                     ),
+                     readInt(
+-                        node.node("async", "async-entity-tracker", "queue-size"),
+-                        "async.async-entity-tracker.queue-size",
++                        node.node("async", "entity-tracker", "queue-size"),
++                        "async.entity-tracker.queue-size",
+                         1_024
+                     )
+                 )
+@@ -671,6 +673,73 @@ public final class LeavesXConfigLoader {
+         return false;
+     }
+ 
++    /**
++     * Removes generated implementation-detail switches and shortens the redundant async paths introduced in v74.
++     * Explicit {@code false} fine-grained overrides remain valid and are deliberately preserved.
++     */
++    private static boolean migrateSimplifiedSettings(
++        final CommentedConfigurationNode node,
++        final int sourceVersion
++    ) {
++        if (sourceVersion >= SIMPLIFIED_CONFIG_VERSION) {
++            return false;
++        }
++
++        boolean changed = false;
++        changed |= moveNode(node, path("async", "async-chunk-send"), path("async", "chunk-send"));
++        changed |= moveNode(
++            node,
++            path("async", "async-mob-spawning", "enabled"),
++            path("async", "mob-spawning")
++        );
++        changed |= moveNode(node, path("async", "async-pathfinding"), path("async", "pathfinding"));
++        changed |= moveNode(node, path("async", "async-playerdata-save"), path("async", "playerdata-save"));
++        changed |= moveNode(node, path("async", "async-entity-tracker"), path("async", "entity-tracker"));
++
++        for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
++            final Object[] optimizationPath = optimization.nodePath();
++            final CommentedConfigurationNode setting = node.node(optimizationPath);
++            if (Boolean.TRUE.equals(setting.rawScalar())) {
++                setting.raw(null);
++                pruneEmptyParents(node, optimizationPath);
++                changed = true;
++            }
++        }
++        return changed;
++    }
++
++    private static boolean moveNode(
++        final CommentedConfigurationNode root,
++        final Object[] oldPath,
++        final Object[] newPath
++    ) {
++        final CommentedConfigurationNode source = root.node(oldPath);
++        if (source.virtual()) {
++            return false;
++        }
++        final CommentedConfigurationNode destination = root.node(newPath);
++        if (destination.virtual()) {
++            destination.from(source);
++        }
++        source.raw(null);
++        pruneEmptyParents(root, oldPath);
++        return true;
++    }
++
++    private static void pruneEmptyParents(final CommentedConfigurationNode root, final Object[] path) {
++        for (int depth = path.length - 1; depth > 0; depth--) {
++            final CommentedConfigurationNode parent = root.node(java.util.Arrays.copyOf(path, depth));
++            if (!parent.isMap() || !parent.childrenMap().isEmpty()) {
++                return;
++            }
++            parent.raw(null);
++        }
++    }
++
++    private static Object[] path(final Object... elements) {
++        return elements;
++    }
++
+     private static boolean readBoolean(final ConfigurationNode node, final String path, final boolean defaultValue) {
+         if (node.virtual()) {
+             return defaultValue;
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index c6721506738c11ac71855c60453ed830326540dd..6d3b8f22f091192dd200a54009afe8c65933dd5a 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -136,18 +136,18 @@ public final class LeavesXConfigWriter {
+         changed |= writeValue(node.node("messages", "quit"), "messages.quit", config.quitMessage(), missingOnly);
+         changed |= writeValue(node.node("messages", "core-prefix"), "messages.core-prefix", config.coreMessagePrefix(), missingOnly);
+         final LeavesXConfig.AsyncSettings async = config.asyncSettings();
+-        changed |= writeValue(node.node("async", "async-chunk-send", "enabled"), "async.async-chunk-send.enabled", async.chunkSendEnabled(), missingOnly);
+-        changed |= writeValue(node.node("async", "async-chunk-send", "queue-size"), "async.async-chunk-send.queue-size", async.chunkSendQueueSize(), missingOnly);
+-        changed |= writeValue(node.node("async", "async-mob-spawning", "enabled"), "async.async-mob-spawning.enabled", async.mobSpawningEnabled(), missingOnly);
+-        changed |= writeValue(node.node("async", "async-pathfinding", "enabled"), "async.async-pathfinding.enabled", async.pathfindingEnabled(), missingOnly);
+-        changed |= writeValue(node.node("async", "async-pathfinding", "threads"), "async.async-pathfinding.threads", async.pathfindingThreads(), missingOnly);
+-        changed |= writeValue(node.node("async", "async-pathfinding", "queue-size"), "async.async-pathfinding.queue-size", async.pathfindingQueueSize(), missingOnly);
+-        changed |= writeValue(node.node("async", "async-pathfinding", "keepalive-seconds"), "async.async-pathfinding.keepalive-seconds", async.pathfindingKeepaliveSeconds(), missingOnly);
+-        changed |= writeValue(node.node("async", "async-playerdata-save", "enabled"), "async.async-playerdata-save.enabled", async.playerDataSaveEnabled(), missingOnly);
+-        changed |= writeValue(node.node("async", "async-playerdata-save", "queue-size"), "async.async-playerdata-save.queue-size", async.playerDataSaveQueueSize(), missingOnly);
+-        changed |= writeValue(node.node("async", "async-entity-tracker", "enabled"), "async.async-entity-tracker.enabled", async.entityTrackerEnabled(), missingOnly);
+-        changed |= writeValue(node.node("async", "async-entity-tracker", "threads"), "async.async-entity-tracker.threads", async.entityTrackerThreads(), missingOnly);
+-        changed |= writeValue(node.node("async", "async-entity-tracker", "queue-size"), "async.async-entity-tracker.queue-size", async.entityTrackerQueueSize(), missingOnly);
++        changed |= writeValue(node.node("async", "chunk-send", "enabled"), "async.chunk-send.enabled", async.chunkSendEnabled(), missingOnly);
++        changed |= writeValue(node.node("async", "chunk-send", "queue-size"), "async.chunk-send.queue-size", async.chunkSendQueueSize(), missingOnly);
++        changed |= writeValue(node.node("async", "mob-spawning"), "async.mob-spawning", async.mobSpawningEnabled(), missingOnly);
++        changed |= writeValue(node.node("async", "pathfinding", "enabled"), "async.pathfinding.enabled", async.pathfindingEnabled(), missingOnly);
++        changed |= writeValue(node.node("async", "pathfinding", "threads"), "async.pathfinding.threads", async.pathfindingThreads(), missingOnly);
++        changed |= writeValue(node.node("async", "pathfinding", "queue-size"), "async.pathfinding.queue-size", async.pathfindingQueueSize(), missingOnly);
++        changed |= writeValue(node.node("async", "pathfinding", "keepalive-seconds"), "async.pathfinding.keepalive-seconds", async.pathfindingKeepaliveSeconds(), missingOnly);
++        changed |= writeValue(node.node("async", "playerdata-save", "enabled"), "async.playerdata-save.enabled", async.playerDataSaveEnabled(), missingOnly);
++        changed |= writeValue(node.node("async", "playerdata-save", "queue-size"), "async.playerdata-save.queue-size", async.playerDataSaveQueueSize(), missingOnly);
++        changed |= writeValue(node.node("async", "entity-tracker", "enabled"), "async.entity-tracker.enabled", async.entityTrackerEnabled(), missingOnly);
++        changed |= writeValue(node.node("async", "entity-tracker", "threads"), "async.entity-tracker.threads", async.entityTrackerThreads(), missingOnly);
++        changed |= writeValue(node.node("async", "entity-tracker", "queue-size"), "async.entity-tracker.queue-size", async.entityTrackerQueueSize(), missingOnly);
+         changed |= writeValue(
+             node.node("diagnostics", "command-enabled"),
+             "diagnostics.command-enabled",
+@@ -443,14 +443,6 @@ public final class LeavesXConfigWriter {
+             config.chunkUnloadMaximumPerTick(),
+             missingOnly
+         );
+-        for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
+-            changed |= writeValue(
+-                node.node(optimization.nodePath()),
+-                optimization.path(),
+-                config.optimizationEnabled(optimization),
+-                missingOnly
+-            );
+-        }
+         return changed;
+     }
+ 
+@@ -469,7 +461,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：74。");
++        comments.put("config-version", "配置版本，请勿修改。默认：75。");
+         comments.put("console-messages.show-root-admin-warning", "是否显示使用 root 或管理员启动的警告。默认：false。");
+         comments.put("console-messages.show-offline-mode-warning", "是否显示离线模式安全警告。默认：false。");
+         comments.put("console-messages.show-collision-conversion-warning", "是否显示碰撞模式自动转换提示。默认：false。");
+@@ -491,18 +483,18 @@ public final class LeavesXConfigWriter {
+         comments.put("messages.join", "自定义进入提示；支持 <player>、<name>、<display_name>、%player_name% 和颜色代码。默认：空，使用原版提示。");
+         comments.put("messages.quit", "自定义退出提示；支持 <player>、<name>、<display_name>、%player_name% 和颜色代码。默认：空，使用原版提示。");
+         comments.put("messages.core-prefix", "服务端核心提示的统一前缀，例如假人创建成功或配置重载提示；支持 MiniMessage 和 &/§ 颜色代码。默认：空。");
+-        comments.put("async.async-chunk-send.enabled", "是否异步打包区块数据；多人进服、传送或高速飞行时可降低主线程负载。默认：false。");
+-        comments.put("async.async-chunk-send.queue-size", "异步区块发送最多排队任务数；队列满时回到主线程完整处理。默认：256。");
+-        comments.put("async.async-mob-spawning.enabled", "是否异步计算生物生成统计；需同时开启 Paper 的 per-player-mob-spawns。默认：true。");
+-        comments.put("async.async-pathfinding.enabled", "是否异步计算生物寻路；结果按实体代次校验后在主线程使用。默认：false。");
+-        comments.put("async.async-pathfinding.threads", "寻路为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");
+-        comments.put("async.async-pathfinding.queue-size", "异步寻路最多排队任务数；队列满时等待空位，不会打乱同一生物的寻路顺序。默认：1024。");
+-        comments.put("async.async-pathfinding.keepalive-seconds", "通用计算线程空闲保留时间，单位为秒。默认：60。");
+-        comments.put("async.async-playerdata-save.enabled", "是否异步写入玩家数据；NBT 编码和同一玩家保存顺序保持不变。默认：false。");
+-        comments.put("async.async-playerdata-save.queue-size", "玩家数据写入最多排队任务数；队列满时等待空位，不会让新存档越过旧存档。默认：1024。");
+-        comments.put("async.async-entity-tracker.enabled", "是否并行计算实体追踪变化；发包、事件和追踪关系提交仍在主线程。默认：false。");
+-        comments.put("async.async-entity-tracker.threads", "实体追踪为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");
+-        comments.put("async.async-entity-tracker.queue-size", "实体追踪计算最多排队任务数；队列满时回到主线程。默认：1024。");
++        comments.put("async.chunk-send.enabled", "是否异步打包区块数据；多人进服、传送或高速飞行时可降低主线程负载。默认：false。");
++        comments.put("async.chunk-send.queue-size", "异步区块发送最多排队任务数；队列满时回到主线程完整处理。默认：256。");
++        comments.put("async.mob-spawning", "是否异步计算生物生成统计；需同时开启 Paper 的 per-player-mob-spawns。默认：true。");
++        comments.put("async.pathfinding.enabled", "是否异步计算生物寻路；结果按实体代次校验后在主线程使用。默认：false。");
++        comments.put("async.pathfinding.threads", "寻路为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");
++        comments.put("async.pathfinding.queue-size", "异步寻路最多排队任务数；队列满时等待空位，不会打乱同一生物的寻路顺序。默认：1024。");
++        comments.put("async.pathfinding.keepalive-seconds", "通用计算线程空闲保留时间，单位为秒。默认：60。");
++        comments.put("async.playerdata-save.enabled", "是否异步写入玩家数据；NBT 编码和同一玩家保存顺序保持不变。默认：false。");
++        comments.put("async.playerdata-save.queue-size", "玩家数据写入最多排队任务数；队列满时等待空位，不会让新存档越过旧存档。默认：1024。");
++        comments.put("async.entity-tracker.enabled", "是否并行计算实体追踪变化；发包、事件和追踪关系提交仍在主线程。默认：false。");
++        comments.put("async.entity-tracker.threads", "实体追踪为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");
++        comments.put("async.entity-tracker.queue-size", "实体追踪计算最多排队任务数；队列满时回到主线程。默认：1024。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index eb820087aa79496ae8edcf7172c50ef10f904115..612e35e2eac0a4131426236dca9b33eaa2000319 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -507,6 +507,14 @@ enum LeavesXOptimization {
+     MOB_SPAWNER_ENUM_MAP(
+         "performance.mob-spawning.spawner-enum-map",
+         "刷怪类别使用不可变枚举映射，减少查找开销；关闭后使用普通不可变映射。默认：true。"
++    ),
++    LITHIUM_IDLE_SWING(
++        "performance.entity-update.lithium-idle-swing",
++        "空闲实体没有挥手状态时跳过摆动时长计算。默认：true。"
++    ),
++    LITHIUM_IDLE_GLIDE(
++        "performance.entity-update.lithium-idle-glide",
++        "实体未滑翔且没有滑翔计时时跳过装备扫描。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 10c753d925bb9525800b87ba7b67d76868d2cfb0..9fbb96605231d05be07819107c27ef23fb49544e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -754,6 +754,16 @@ public final class LeavesXRuntime {
+         restoreVillagerContextBit(VILLAGER_BRAIN_SAFETY_CONTEXT, previous);
+     }
+ 
++    /**
++     * Keeps villager sensor cadence at the vanilla value while full compatibility mode owns the current tick.
++     * Paper's per-sensor override remains authoritative for all other entities and when compatibility mode is off.
++     */
++    public static int villagerSensorTickInterval(final int paperInterval, final int vanillaInterval) {
++        return (VILLAGER_OPTIMIZATION_CONTEXT.get() & VILLAGER_FULL_COMPATIBILITY_CONTEXT) != 0
++            ? vanillaInterval
++            : paperInterval;
++    }
++
+     private static void restoreVillagerContextBit(final int bit, final boolean enabled) {
+         final int context = VILLAGER_OPTIMIZATION_CONTEXT.get();
+         final int restored = enabled ? context | bit : context & ~bit;
+@@ -1419,6 +1429,16 @@ public final class LeavesXRuntime {
+         return entityStateOptimizations && enabled(LeavesXOptimization.GLIDER_SLOT_SELECTION);
+     }
+ 
++    /** Returns whether the Lithium idle-swing early return may skip an otherwise empty state update. */
++    public static boolean lithiumIdleSwingOptimization() {
++        return entityStateOptimizations && enabled(LeavesXOptimization.LITHIUM_IDLE_SWING);
++    }
++
++    /** Returns whether the Lithium idle-glide early return may skip an otherwise empty equipment scan. */
++    public static boolean lithiumIdleGlideOptimization() {
++        return entityStateOptimizations && enabled(LeavesXOptimization.LITHIUM_IDLE_GLIDE);
++    }
++
+     /** Returns whether area-effect clouds may scan applicable effects directly. */
+     public static boolean areaEffectCloudScanOptimization() {
+         return entityStateOptimizations && enabled(LeavesXOptimization.AREA_EFFECT_CLOUD_SCAN);
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 318d27e48e5cd41c1cf5eb229b8901870cfa1f48..8653275bb43f68b480d144ec0fe478a5f4533411 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -222,17 +222,43 @@ public final class LeavesXComputeExecutor {
+      * all live-world access on the calling thread.</p>
+      */
+     public static boolean shouldAttempt(final Workload workload, final int size, final int minimumSize) {
+-        final ComputeThreadPoolExecutor current = executor;
+-        if (current == null || workerCount <= 1 || size <= 0) {
++        Objects.requireNonNull(workload, "workload");
++        if (size <= 0) {
+             return false;
+         }
++        final ComputeThreadPoolExecutor current = executor;
++        if (current == null || workerCount <= 1) {
++            return rejectBeforeSubmission(workload, size, FallbackReason.POOL_UNAVAILABLE);
++        }
+         if (size >= minimumSize) {
+             return true;
+         }
+-        return supportsAdaptiveScheduling(workload)
++        final boolean adaptivelyAdmitted = supportsAdaptiveScheduling(workload)
+             && minimumSize >= 256
+             && isIdleForAdaptiveDispatch(current)
+             && size >= Math.max(MIN_ADAPTIVE_ITEMS_PER_TASK, (minimumSize + 1) / 2);
++        return adaptivelyAdmitted
++            || rejectBeforeSubmission(workload, size, FallbackReason.BELOW_THRESHOLD);
++    }
++
++    /** Records batches rejected by the cheap pre-snapshot gate so diagnostics do not misleadingly report zero work. */
++    private static boolean rejectBeforeSubmission(
++        final Workload workload,
++        final int size,
++        final FallbackReason reason
++    ) {
++        final WorkloadCounters counters = WORKLOAD_COUNTERS[workload.ordinal()];
++        invocationCount.incrementAndGet();
++        counters.recordInvocation(size);
++        if (reason == FallbackReason.POOL_UNAVAILABLE) {
++            unavailableParallelismFallbackCount.incrementAndGet();
++            counters.unavailableParallelismFallbacks.incrementAndGet();
++        } else {
++            belowFeatureThresholdFallbackCount.incrementAndGet();
++            counters.belowFeatureThresholdFallbacks.incrementAndGet();
++        }
++        recordFallback(workload, reason, size);
++        return false;
+     }
+ 
+     /**
+diff --git a/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java b/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
+index ec321a2a9a1ae1f400ed74d69f7cf59ccf7d11b3..40c45b08564b996502ca8ca956c87f30e60336c6 100644
+--- a/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
++++ b/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
+@@ -161,9 +161,9 @@ public class NaturalSpawnPositionHotPathTest {
+         final String upgraded = Files.readString(path);
+ 
+         assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
+-        assertTrue(upgraded.contains("spawn-position-distance-checks: true"));
+-        assertTrue(upgraded.contains("spawn-chunk-readiness-checks: true"));
+-        assertTrue(upgraded.contains("local-cap-accounting: true"));
++        assertFalse(upgraded.contains("spawn-position-distance-checks: true"));
++        assertFalse(upgraded.contains("spawn-chunk-readiness-checks: true"));
++        assertFalse(upgraded.contains("local-cap-accounting: true"));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx.yml.bak")));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx-migration-report.yml")));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java b/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java
+index f7373eec6de52b7e4b407a0aa8ddc6a81f96edd7..7977ad1dee556ac7bc28ca1522617869545b1eb3 100644
+--- a/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java
+@@ -50,7 +50,7 @@ class EntityActivationQueryBufferConfigTest {
+ 
+         assertTrue(config.optimizationEnabled(LeavesXOptimization.ENTITY_ACTIVATION_BUFFER_REUSE));
+         assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
+-        assertTrue(upgraded.contains("entity-activation-buffer-reuse: true"));
++        assertFalse(upgraded.contains("entity-activation-buffer-reuse: true"));
+         assertTrue(upgraded.contains("retained: true"));
+         assertTrue(upgraded.startsWith("# 用户配置。"));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 9de2b711a5f6ab92070186e5e77ced4db43425e6..05e4fdb224a61ff845c8bae2162bcadc15576bdd 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -61,39 +61,75 @@ class LeavesXConfigLoaderTest {
+         assertTrue(generated.contains("mob-spawning:"));
+         assertTrue(generated.contains("diagnostics:"));
+         assertTrue(generated.contains("async:"));
+-        assertTrue(generated.contains("async-chunk-send:"));
+-        assertTrue(generated.contains("async-mob-spawning:"));
+-        assertTrue(generated.contains("async-pathfinding:"));
+-        assertTrue(generated.contains("async-playerdata-save:"));
+-        assertTrue(generated.contains("async-entity-tracker:"));
++        assertTrue(generated.contains("chunk-send:"));
++        assertTrue(generated.contains("mob-spawning: true"));
++        assertTrue(generated.contains("pathfinding:"));
++        assertTrue(generated.contains("playerdata-save:"));
++        assertTrue(generated.contains("entity-tracker:"));
+         assertTrue(generated.contains("rolling-window-seconds:"));
+         assertTrue(generated.contains("slow-plugin-task-ms:"));
+         assertTrue(generated.contains("villager-profession-assignment:"));
+         assertTrue(generated.contains("long-jump-candidates:"));
+         assertTrue(generated.contains("ram-position-selection:"));
+-        assertTrue(generated.contains("entity-queries:"));
+-        assertTrue(generated.contains("hopper-entity-queries:"));
+-        assertTrue(generated.contains("hopper-slot-state-cache:"));
+-        assertTrue(generated.contains("hopper-direct-slot-scans:"));
+-        assertTrue(generated.contains("hopper-item-entity-query-buffer:"));
+-        assertTrue(generated.contains("container-opener-search-box-cache:"));
+-        assertTrue(generated.contains("container-user-list-scan:"));
+         assertTrue(generated.contains("dense-monster-ai:"));
+         assertTrue(generated.contains("nearby-radius:"));
+-        assertTrue(generated.contains("warden-target-sensor:"));
+         assertTrue(generated.contains("workers:"));
+         assertTrue(generated.contains("entity-activation:"));
+-        assertTrue(generated.contains("light-update-notification-batching:"));
+-        assertTrue(generated.contains("light-update-notification-deduplication:"));
+-        assertTrue(generated.contains("unload-stage-buffer-reuse:"));
+-        assertTrue(generated.contains("autosave-buffer-reuse:"));
+-        assertTrue(generated.contains("status-update-buffer-reuse:"));
+-        assertTrue(generated.contains("unload-section-snapshot-cache:"));
++        assertFalse(generated.contains("hopper-entity-queries:"));
++        assertFalse(generated.contains("warden-target-sensor:"));
++        assertFalse(generated.contains("unload-section-snapshot-cache:"));
++        assertTrue(generated.contains("# 是否异步计算生物生成统计"));
++        assertTrue(generated.contains("# 是否异步写入玩家数据"));
+         assertFalse(generated.contains("threading:"));
+         assertFalse(generated.contains("folia"));
+-        for (final String comment : LeavesXConfigWriter.comments().values()) {
+-            assertTrue(generated.contains("# " + comment), "Generated configuration must include every key comment");
+-        }
++        assertTrue(generated.lines().count() < 300L, "Default configuration should stay operator-sized");
++    }
++
++    @Test
++    void simplifiesVersion74WithoutDiscardingExplicitOverrides() throws IOException {
++        final Path path = write("""
++            config-version: 74
++            async:
++              async-chunk-send:
++                enabled: true
++                queue-size: 512
++              async-mob-spawning:
++                enabled: false
++              async-pathfinding:
++                enabled: true
++                threads: 3
++                queue-size: 2048
++                keepalive-seconds: 45
++              async-playerdata-save:
++                enabled: true
++                queue-size: 512
++              async-entity-tracker:
++                enabled: true
++                threads: 2
++                queue-size: 2048
++            performance:
++              block-entity:
++                hopper-entity-queries: true
++              entity-queries:
++                pressure-plate-scans: false
++            """);
++
++        final LeavesXConfig migrated = LeavesXConfigLoader.load(path);
++        final String yaml = Files.readString(path);
++
++        assertTrue(migrated.asyncSettings().chunkSendEnabled());
++        assertFalse(migrated.asyncSettings().mobSpawningEnabled());
++        assertEquals(3, migrated.asyncSettings().pathfindingThreads());
++        assertTrue(migrated.asyncSettings().playerDataSaveEnabled());
++        assertEquals(2, migrated.asyncSettings().entityTrackerThreads());
++        assertTrue(migrated.optimizationEnabled(LeavesXOptimization.HOPPER_ENTITY_QUERIES));
++        assertFalse(migrated.optimizationEnabled(LeavesXOptimization.PRESSURE_PLATE_ENTITY_SCANS));
++        assertTrue(yaml.contains("chunk-send:"));
++        assertTrue(yaml.contains("mob-spawning: false"));
++        assertTrue(yaml.contains("pathfinding:"));
++        assertFalse(yaml.contains("async-chunk-send:"));
++        assertFalse(yaml.contains("hopper-entity-queries: true"));
++        assertTrue(yaml.contains("pressure-plate-scans: false"));
+     }
+ 
+     @Test
+@@ -167,8 +203,8 @@ class LeavesXConfigLoaderTest {
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.ai.ram-position-selection")));
+         for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
+             assertTrue(config.optimizationEnabled(optimization));
+-            assertTrue(reloaded.node(optimization.nodePath()).getBoolean(), optimization.path());
+-            assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get(optimization.path())), optimization.path());
++            assertTrue(reloaded.node(optimization.nodePath()).virtual(), optimization.path());
++            assertFalse(upgraded.contains("# " + LeavesXConfigWriter.comments().get(optimization.path())), optimization.path());
+         }
+     }
+ 
+@@ -204,8 +240,8 @@ class LeavesXConfigLoaderTest {
+         assertFalse(node.node("performance", "network", "light-update-notification-deduplication").getBoolean());
+         assertFalse(node.node("performance", "chunk", "unload-stage-buffer-reuse").getBoolean());
+         assertFalse(node.node("performance", "chunk", "unload-section-snapshot-cache").getBoolean());
+-        assertTrue(node.node("performance", "chunk", "autosave-buffer-reuse").getBoolean());
+-        assertTrue(node.node("performance", "chunk", "status-update-buffer-reuse").getBoolean());
++        assertTrue(node.node("performance", "chunk", "autosave-buffer-reuse").virtual());
++        assertTrue(node.node("performance", "chunk", "status-update-buffer-reuse").virtual());
+         assertTrue(node.node("custom-extension", "retained").getBoolean());
+         assertTrue(upgraded.startsWith("# 用户配置。"));
+ 
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index 1e9f22517e983726fbe6cc72b4b76dc453ec2770..2178a3964425b0d80583f87599202ab06dc2ffbe 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -52,6 +52,7 @@ class VillagerCompatibilityContextTest {
+             assertFalse(LeavesXRuntime.villagerPlayTagOptimization());
+             assertFalse(LeavesXRuntime.yieldJobSiteOptimization());
+             assertFalse(LeavesXRuntime.occupiedPoiBedQueriesOptimization());
++            assertTrue(LeavesXRuntime.villagerSensorTickInterval(1_200, 20) == 20);
+         } finally {
+             LeavesXRuntime.exitVillagerCompatibilityContext(previous);
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+@@ -74,6 +75,7 @@ class VillagerCompatibilityContextTest {
+             assertTrue(LeavesXRuntime.mobPresenceSensorOptimization());
+             assertTrue(LeavesXRuntime.playerSensorOptimization());
+             assertTrue(LeavesXRuntime.visibleEntityTargetCacheOptimization());
++            assertTrue(LeavesXRuntime.villagerSensorTickInterval(1_200, 20) == 1_200);
+         } finally {
+             LeavesXRuntime.exitVillagerCompatibilityContext(previous);
+             LeavesXRuntime.publish(LeavesXConfig.safeDefaults());
+diff --git a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+index 388ed3e103df1e2b0757fb9458b2ac5cd531118e..ab1a19f59a3fae12508d6b0c9cbd915cd96f3b44 100644
+--- a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+@@ -72,7 +72,10 @@ class LeavesConfigMigratorTest {
+         for (final Map.Entry<String, String> comment : LeavesXConfigWriter.comments().entrySet()) {
+             assertTrue(comment.getValue().contains("默认："), comment.getKey());
+             assertFalse(comment.getValue().contains("\n"), comment.getKey());
+-            assertTrue(leavesXText.contains("# " + comment.getValue()), comment.getKey());
++            final ConfigurationNode setting = leavesX.node((Object[])comment.getKey().split("\\."));
++            if (!setting.virtual()) {
++                assertTrue(leavesXText.contains("# " + comment.getValue()), comment.getKey());
++            }
+         }
+         try (var files = Files.list(this.temporaryDirectory)) {
+             assertEquals(
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
+index 1bd0f5903e5d512f7a9bfad1f187fb250325885c..555771e6f68c294a6475116900cf116d3d4303a9 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
+@@ -101,7 +101,7 @@ class BlockEntityTypeValidationHotPathTest {
+ 
+         assertTrue(config.enabledFineGrainedOptimizationCount() > 0);
+         assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
+-        assertTrue(upgraded.contains("type-validation: true"));
++        assertFalse(upgraded.contains("type-validation: true"));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx.yml.bak")));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx-migration-report.yml")));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+index 717585b4d4b0cc3a172e2c2598f7dfecbaf1c862..7aad0562ac468e5fbceb5b4b5d2e94a471d45d63 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/FineGrainedOptimizationWiringTest.java
+@@ -134,7 +134,9 @@ class FineGrainedOptimizationWiringTest {
+                 "livingEffectTickOptimization",
+                 "effectParticleCollectionOptimization",
+                 "freezeTickUpdateOptimization",
+-                "gliderSlotSelectionOptimization"
++                "gliderSlotSelectionOptimization",
++                "lithiumIdleSwingOptimization",
++                "lithiumIdleGlideOptimization"
+             ),
+             new Wiring("net.minecraft.world.entity.AreaEffectCloud", "areaEffectCloudScanOptimization"),
+             new Wiring("net.minecraft.world.item.enchantment.Enchantment", "enchantmentSlotMatchingOptimization"),
+diff --git a/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java
+index daf1d6939e33c2b7df2398c02f0393e4c3571a3c..b5bb19be362c645f7c920093d7b8002857c19cc0 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java
+@@ -63,7 +63,7 @@ class InsideBlockEffectCollectorHotPathTest {
+ 
+         assertTrue(config.enabledFineGrainedOptimizationCount() > 0);
+         assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
+-        assertTrue(upgraded.contains("inside-block-effect-collector: true"));
++        assertFalse(upgraded.contains("inside-block-effect-collector: true"));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx.yml.bak")));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx-migration-report.yml")));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/LithiumLowRiskHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/LithiumLowRiskHotPathTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdf6fa01ddb093fe0dbe6b4ceaf23a35d3af2861
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/performance/LithiumLowRiskHotPathTest.java
+@@ -0,0 +1,84 @@
++package org.leavesx.leavesx.performance;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.IOException;
++import net.minecraft.core.AxisCycle;
++import net.minecraft.core.Direction;
++import net.minecraft.util.RandomSource;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.phys.AABB;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/** Differential coverage for behavior-equivalent Lithium hot-path ports. */
++@Normal
++class LithiumLowRiskHotPathTest {
++
++    @Test
++    void axisCyclesPreserveTheThreeVanillaMappings() {
++        assertSame(Direction.Axis.Y, AxisCycle.FORWARD.cycle(Direction.Axis.X));
++        assertSame(Direction.Axis.Z, AxisCycle.FORWARD.cycle(Direction.Axis.Y));
++        assertSame(Direction.Axis.X, AxisCycle.FORWARD.cycle(Direction.Axis.Z));
++        assertSame(Direction.Axis.Z, AxisCycle.BACKWARD.cycle(Direction.Axis.X));
++        assertSame(Direction.Axis.X, AxisCycle.BACKWARD.cycle(Direction.Axis.Y));
++        assertSame(Direction.Axis.Y, AxisCycle.BACKWARD.cycle(Direction.Axis.Z));
++    }
++
++    @Test
++    void aabbAxisSelectionPreservesAllComponents() {
++        final AABB bounds = new AABB(-7.5D, -2.0D, 3.25D, 11.0D, 13.5D, 19.75D);
++
++        assertEquals(-7.5D, bounds.min(Direction.Axis.X));
++        assertEquals(-2.0D, bounds.min(Direction.Axis.Y));
++        assertEquals(3.25D, bounds.min(Direction.Axis.Z));
++        assertEquals(11.0D, bounds.max(Direction.Axis.X));
++        assertEquals(13.5D, bounds.max(Direction.Axis.Y));
++        assertEquals(19.75D, bounds.max(Direction.Axis.Z));
++    }
++
++    @Test
++    void directDirectionSelectionConsumesTheSameRandomSequence() {
++        final RandomSource expectedRandom = RandomSource.create(0x5EEDL);
++        final RandomSource actualRandom = RandomSource.create(0x5EEDL);
++        final Direction[] directions = Direction.values();
++        for (int sample = 0; sample < 4_096; sample++) {
++            assertSame(
++                directions[expectedRandom.nextInt(directions.length)],
++                Direction.getRandom(actualRandom)
++            );
++        }
++    }
++
++    @Test
++    void idleEntityStateGuardsRemainControlledByTheExistingMasterSwitch() throws IOException {
++        assertCallsRuntimeSwitch("updateSwingTime");
++        assertCallsRuntimeSwitch("updateFallFlying");
++    }
++
++    private static void assertCallsRuntimeSwitch(final String methodName) throws IOException {
++        final ClassNode owner = new ClassNode();
++        new ClassReader(LivingEntity.class.getName()).accept(owner, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++        final MethodNode method = owner.methods.stream()
++            .filter(candidate -> candidate.name.equals(methodName))
++            .findFirst()
++            .orElseThrow();
++        assertTrue(
++            method.instructions.iterator().hasNext()
++                && java.util.stream.StreamSupport.stream(
++                    java.util.Spliterators.spliteratorUnknownSize(method.instructions.iterator(), 0),
++                    false
++                ).filter(MethodInsnNode.class::isInstance)
++                    .map(MethodInsnNode.class::cast)
++                    .anyMatch(call -> call.owner.equals("org/leavesx/leavesx/config/LeavesXRuntime")
++                        && call.name.startsWith("lithiumIdle")),
++            () -> methodName + " must keep the Lithium early return behind its dedicated switch"
++        );
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+index e7cd5f74a4e7ff8bf638fa4823737f4af7ebdbf2..fb3660f73eb7a76b2a31a427750cd9c67ad2083a 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -127,14 +127,16 @@ class StableDistanceSorterTest {
+             true,
+             64
+         );
+-        assertEquals(0L, LeavesXComputeExecutor.metrics().invocations());
++        assertEquals(1L, LeavesXComputeExecutor.metrics().invocations());
++        assertEquals(1L, LeavesXComputeExecutor.metrics().belowFeatureThresholdFallbacks());
+ 
+         final List<Entity> entities = new ArrayList<>();
+         for (int index = 0; index < 16; index++) {
+             entities.add(entityAt(index, 0.0D, 0.0D));
+         }
+         assertEquals(0, StableDistanceSorter.findNearestIndex(entities, entities.get(0), true, 64));
+-        assertEquals(0L, LeavesXComputeExecutor.metrics().invocations());
++        assertEquals(2L, LeavesXComputeExecutor.metrics().invocations());
++        assertEquals(2L, LeavesXComputeExecutor.metrics().belowFeatureThresholdFallbacks());
+     }
+ 
+     @Test
+@@ -234,17 +236,17 @@ class StableDistanceSorterTest {
+     }
+ 
+     @Test
+-    void keepsSmallCandidateSetsSynchronousWithoutEnteringTheScheduler() {
++    void keepsSmallCandidateSetsSynchronousAndRecordsAdmissionReason() {
+         LeavesXComputeExecutor.configure(4, 64);
+         StableDistanceSorter.sort(new double[128], new double[128], new double[128], 0.0D, 0.0D, 0.0D, true, 2_048);
+         StableDistanceSorter.sort(new double[256], new double[256], new double[256], 0.0D, 0.0D, 0.0D, true, 2_048);
+ 
+         final LeavesXComputeExecutor.WorkloadMetrics ai = workload(LeavesXComputeExecutor.Workload.AI_TARGET_SORT);
+-        assertEquals(0L, ai.invocations());
++        assertEquals(2L, ai.invocations());
+         assertEquals(0L, ai.parallelInvocations());
+-        assertEquals(0L, ai.belowFeatureThresholdFallbacks());
+-        assertEquals(0L, ai.totalItems());
+-        assertEquals(0L, ai.maximumItems());
++        assertEquals(2L, ai.belowFeatureThresholdFallbacks());
++        assertEquals(384L, ai.totalItems());
++        assertEquals(256L, ai.maximumItems());
+     }
+ 
+     @Test
+diff --git a/src/test/java/org/leavesx/leavesx/performance/VillagerHostileSensorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/VillagerHostileSensorHotPathTest.java
+index 1d70d557d78e389314f495a8fc48ff422c42843b..c24c0db52ee8ec177b9585fc1b635a115fe24fa7 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/VillagerHostileSensorHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/VillagerHostileSensorHotPathTest.java
+@@ -1,10 +1,20 @@
+ package org.leavesx.leavesx.performance;
+ 
++import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.doReturn;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
+ 
+ import java.io.IOException;
+ import java.util.Arrays;
+ import java.util.List;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.entity.EntityType;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.entity.ai.Brain;
++import net.minecraft.world.entity.ai.behavior.VillagerPanicTrigger;
++import net.minecraft.world.entity.ai.memory.MemoryModuleType;
+ import net.minecraft.world.entity.ai.sensing.VillagerHostilesSensor;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.Test;
+@@ -18,6 +28,42 @@ import org.objectweb.asm.tree.MethodNode;
+ @Normal
+ class VillagerHostileSensorHotPathTest {
+ 
++    @Test
++    void zombieAndPillagerKeepTheirVanillaFearDistances() throws ReflectiveOperationException {
++        final VillagerHostilesSensor sensor = new VillagerHostilesSensor();
++        final java.lang.reflect.Method matching = VillagerHostilesSensor.class.getDeclaredMethod(
++            "isMatchingEntity",
++            ServerLevel.class,
++            LivingEntity.class,
++            LivingEntity.class
++        );
++        matching.setAccessible(true);
++        final ServerLevel level = mock();
++        final LivingEntity villager = mock();
++        final LivingEntity hostile = mock();
++
++        doReturn(EntityType.ZOMBIE).when(hostile).getType();
++        when(hostile.distanceToSqr(villager)).thenReturn(64.0D, Math.nextUp(64.0D));
++        assertTrue((boolean)matching.invoke(sensor, level, villager, hostile));
++        assertFalse((boolean)matching.invoke(sensor, level, villager, hostile));
++
++        doReturn(EntityType.PILLAGER).when(hostile).getType();
++        when(hostile.distanceToSqr(villager)).thenReturn(225.0D, Math.nextUp(225.0D));
++        assertTrue((boolean)matching.invoke(sensor, level, villager, hostile));
++        assertFalse((boolean)matching.invoke(sensor, level, villager, hostile));
++    }
++
++    @Test
++    @SuppressWarnings("unchecked")
++    void nearestHostileMemoryStillTriggersPanic() {
++        final LivingEntity villager = mock();
++        final Brain<LivingEntity> brain = mock();
++        doReturn(brain).when(villager).getBrain();
++        when(brain.hasMemoryValue(MemoryModuleType.NEAREST_HOSTILE)).thenReturn(true);
++
++        assertTrue(VillagerPanicTrigger.hasHostile(villager));
++    }
++
+     @Test
+     void matchingKeepsOptimizedAndVanillaPaths() throws IOException {
+         final MethodNode matching = method(classNode(VillagerHostilesSensor.class), "isMatchingEntity");
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index c33f57f2ad7788e568a259164f9fc8f6605aa70c..83175e122f975b722ce01a3a6c2b02d18f3eac48 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -135,6 +135,27 @@ public class LeavesXComputeExecutorTest {
+         assertEquals(0, metrics.unavailableParallelismFallbacks());
+     }
+ 
++    @Test
++    void preSnapshotThresholdRejectionsRemainVisibleToDiagnostics() {
++        LeavesXComputeExecutor.configure(4, 64);
++
++        assertFalse(LeavesXComputeExecutor.shouldAttempt(
++            LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION,
++            100,
++            2_048
++        ));
++
++        final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
++        assertEquals(1L, metrics.invocations());
++        assertEquals(1L, metrics.belowFeatureThresholdFallbacks());
++        final LeavesXComputeExecutor.WorkloadMetrics activation = metrics.workloads().stream()
++            .filter(workload -> workload.workload() == LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION)
++            .findFirst()
++            .orElseThrow();
++        assertEquals(1L, activation.invocations());
++        assertEquals(100L, activation.totalItems());
++    }
++
+     @Test
+     void reportsWhenNoParallelLaneIsAvailable() {
+         LeavesXComputeExecutor.configure(1);

@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize villager AI allocation hot paths for bate23
 
 
 diff --git a/net/minecraft/world/entity/ai/behavior/AcquirePoi.java b/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
-index 7115dbb6782475b9ea4d33eaf890b40eb51d5f2f..174994f12944e70856c6f854b98dce87d1d3f6ce 100644
+index ae8512e3..d85fc0d0 100644
 --- a/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
 +++ b/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
 @@ -2,13 +2,16 @@ package net.minecraft.world.entity.ai.behavior;
@@ -315,7 +315,7 @@ index 7115dbb6782475b9ea4d33eaf890b40eb51d5f2f..174994f12944e70856c6f854b98dce87
          private static final int MIN_INTERVAL_INCREASE = 40;
          private static final int MAX_INTERVAL_INCREASE = 80;
 diff --git a/net/minecraft/world/entity/ai/behavior/TradeWithVillager.java b/net/minecraft/world/entity/ai/behavior/TradeWithVillager.java
-index 1d405a77c4cf70bd818a4f59163e5b319808d5f3..d17dc7bde7f66c851cfd669c25c7fc0cfbb317ac 100644
+index 736ad21b..2a6013e6 100644
 --- a/net/minecraft/world/entity/ai/behavior/TradeWithVillager.java
 +++ b/net/minecraft/world/entity/ai/behavior/TradeWithVillager.java
 @@ -2,8 +2,8 @@ package net.minecraft.world.entity.ai.behavior;
@@ -327,7 +327,7 @@ index 1d405a77c4cf70bd818a4f59163e5b319808d5f3..d17dc7bde7f66c851cfd669c25c7fc0c
 -import java.util.stream.Collectors;
  import net.minecraft.server.level.ServerLevel;
  import net.minecraft.world.SimpleContainer;
- import net.minecraft.world.entity.EntityType;
+ import net.minecraft.world.entity.EntityTypes;
 @@ -17,6 +17,7 @@ import net.minecraft.world.item.ItemStack;
  import net.minecraft.world.item.Items;
  
@@ -362,7 +362,7 @@ index 1d405a77c4cf70bd818a4f59163e5b319808d5f3..d17dc7bde7f66c851cfd669c25c7fc0c
  
      private static void throwHalfStack(final Villager villager, final Set<Item> items, final LivingEntity target) {
 diff --git a/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java b/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
-index 5c967b55f6ad3b660e9cdf74fadd90c5ea67afb9..8e8f4474bec023a5f22af369ace8235b313298e9 100644
+index 5c967b55..8e8f4474 100644
 --- a/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
 +++ b/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
 @@ -1,5 +1,6 @@
@@ -394,7 +394,7 @@ index 5c967b55f6ad3b660e9cdf74fadd90c5ea67afb9..8e8f4474bec023a5f22af369ace8235b
          return this.nearbyEntities.stream().filter(entity -> filter.test(entity) && this.lineOfSightTest.test(entity));
      }
 diff --git a/net/minecraft/world/entity/ai/sensing/SecondaryPoiSensor.java b/net/minecraft/world/entity/ai/sensing/SecondaryPoiSensor.java
-index 4172da3fce736bf7d6be2fa5eb944df68e25e23b..7a29056de8cc3dfebafb89bc627950003499eeb6 100644
+index 36444f24..89d8e516 100644
 --- a/net/minecraft/world/entity/ai/sensing/SecondaryPoiSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/SecondaryPoiSensor.java
 @@ -1,7 +1,7 @@
@@ -426,7 +426,7 @@ index 4172da3fce736bf7d6be2fa5eb944df68e25e23b..7a29056de8cc3dfebafb89bc62795000
              if (secondaryPoi.isEmpty()) {
                  body.getBrain().eraseMemory(MemoryModuleType.SECONDARY_JOB_SITE);
                  return;
-@@ -33,14 +35,16 @@ public class SecondaryPoiSensor extends Sensor<Villager> {
+@@ -33,15 +35,17 @@ public class SecondaryPoiSensor extends Sensor<Villager> {
          // Leaves end - skip secondary POI sensor if absent
          ResourceKey<Level> dimensionType = level.dimension();
          BlockPos center = body.blockPosition();
@@ -434,6 +434,7 @@ index 4172da3fce736bf7d6be2fa5eb944df68e25e23b..7a29056de8cc3dfebafb89bc62795000
 -        int horizontalSearch = 4;
 +        List<GlobalPos> jobSites = null;
  
+         if (!body.getVillagerData().profession().value().secondaryPoi().isEmpty()) // Paper - Perf: Only scan world if Villager profession has secondary POI
          for (int x = -4; x <= 4; x++) {
              for (int y = -2; y <= 2; y++) {
                  for (int z = -4; z <= 4; z++) {
@@ -446,7 +447,7 @@ index 4172da3fce736bf7d6be2fa5eb944df68e25e23b..7a29056de8cc3dfebafb89bc62795000
                          jobSites.add(GlobalPos.of(dimensionType, testPos));
                      }
                  }
-@@ -48,7 +52,7 @@ public class SecondaryPoiSensor extends Sensor<Villager> {
+@@ -49,7 +53,7 @@ public class SecondaryPoiSensor extends Sensor<Villager> {
          }
  
          Brain<?> brain = body.getBrain();
@@ -456,7 +457,7 @@ index 4172da3fce736bf7d6be2fa5eb944df68e25e23b..7a29056de8cc3dfebafb89bc62795000
          } else {
              brain.eraseMemory(MemoryModuleType.SECONDARY_JOB_SITE);
 diff --git a/net/minecraft/world/entity/ai/sensing/VillagerBabiesSensor.java b/net/minecraft/world/entity/ai/sensing/VillagerBabiesSensor.java
-index e3b2089e74d57ae8a15e9e5d29f43054ec6ec295..aff8e5e8169127ab3e549482f8d169f0b52f382f 100644
+index 2f3e93d4..618f60bb 100644
 --- a/net/minecraft/world/entity/ai/sensing/VillagerBabiesSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/VillagerBabiesSensor.java
 @@ -1,9 +1,9 @@
@@ -468,7 +469,7 @@ index e3b2089e74d57ae8a15e9e5d29f43054ec6ec295..aff8e5e8169127ab3e549482f8d169f0
  import java.util.Set;
 +import java.util.function.Predicate;
  import net.minecraft.server.level.ServerLevel;
- import net.minecraft.world.entity.EntityType;
+ import net.minecraft.world.entity.EntityTypes;
  import net.minecraft.world.entity.LivingEntity;
 @@ -11,6 +11,8 @@ import net.minecraft.world.entity.ai.memory.MemoryModuleType;
  import net.minecraft.world.entity.ai.memory.NearestVisibleLivingEntities;
@@ -479,17 +480,13 @@ index e3b2089e74d57ae8a15e9e5d29f43054ec6ec295..aff8e5e8169127ab3e549482f8d169f0
      @Override
      public Set<MemoryModuleType<?>> requires() {
          return ImmutableSet.of(MemoryModuleType.VISIBLE_VILLAGER_BABIES);
-@@ -22,11 +24,8 @@ public class VillagerBabiesSensor extends Sensor<LivingEntity> {
+@@ -22,6 +24,9 @@ public class VillagerBabiesSensor extends Sensor<LivingEntity> {
      }
  
      private List<LivingEntity> getNearestVillagerBabies(final LivingEntity myBody) {
--        return ImmutableList.copyOf(this.getVisibleEntities(myBody).findAll(this::isVillagerBaby));
--    }
--
--    private boolean isVillagerBaby(final LivingEntity entity) {
--        return entity.is(EntityType.VILLAGER) && entity.isBaby();
-+        // LeavesX - retain vanilla order and visibility checks without Guava's filtered-iterable wrapper.
-+        return this.getVisibleEntities(myBody).findAllToList(IS_VILLAGER_BABY);
++        if (org.leavesx.leavesx.config.LeavesXRuntime.aiOptimizations()) {
++            return this.getVisibleEntities(myBody).findAllToList(entity -> entity.is(EntityTypes.VILLAGER) && entity.isBaby());
++        }
+         return ImmutableList.copyOf(this.getVisibleEntities(myBody).findAll(this::isVillagerBaby));
      }
  
-     private NearestVisibleLivingEntities getVisibleEntities(final LivingEntity myBody) {

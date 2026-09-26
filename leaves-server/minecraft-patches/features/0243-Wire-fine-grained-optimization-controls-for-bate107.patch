@@ -5,7 +5,7 @@ Subject: [PATCH] Wire fine-grained optimization controls for bate107
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
-index 86af8bc0c030ae68854b016f6931517a2cdf5dc6..cd6b407b05a3c09598636520bd247e489a40db50 100644
+index 86af8bc0..cd6b407b 100644
 --- a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
 +++ b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
 @@ -134,7 +134,7 @@ public final class PoiAccess {
@@ -27,7 +27,7 @@ index 86af8bc0c030ae68854b016f6931517a2cdf5dc6..cd6b407b05a3c09598636520bd247e48
          final LongOpenHashSet seen = createVisitedSectionSet(lowerX, lowerY, lowerZ, upperX, upperY, upperZ, boundedTraversal);
          seen.add(centerKey);
 diff --git a/net/minecraft/network/syncher/SynchedEntityData.java b/net/minecraft/network/syncher/SynchedEntityData.java
-index 9e019e1e0ed8dc4cb773e45de5124af2675d460b..a2e9871bc14eb583b1a6fb9c875110ebc00aa5d2 100644
+index 9e019e1e..a2e9871b 100644
 --- a/net/minecraft/network/syncher/SynchedEntityData.java
 +++ b/net/minecraft/network/syncher/SynchedEntityData.java
 @@ -92,7 +92,7 @@ public class SynchedEntityData {
@@ -40,7 +40,7 @@ index 9e019e1e0ed8dc4cb773e45de5124af2675d460b..a2e9871bc14eb583b1a6fb9c875110eb
              : new ArrayList<>();
          this.dirtyCount = 0;
 diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
-index 667677de2ec3e071565d6f4266ee09eca5a236bb..b0bc3533345c9e6f56e5a092c0a04551b3abcc63 100644
+index 0d4b424b..27507a37 100644
 --- a/net/minecraft/server/level/ServerChunkCache.java
 +++ b/net/minecraft/server/level/ServerChunkCache.java
 @@ -618,7 +618,7 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
@@ -53,11 +53,11 @@ index 667677de2ec3e071565d6f4266ee09eca5a236bb..b0bc3533345c9e6f56e5a092c0a04551
              return NaturalSpawner.createState(
                  chunkCount,
 diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
-index a225038bb29189600daee6a50ece241402a19e12..dab5db773040dd93be21f8065b97c8a376065d60 100644
+index efa8c546..8467b035 100644
 --- a/net/minecraft/server/level/ServerEntity.java
 +++ b/net/minecraft/server/level/ServerEntity.java
-@@ -213,7 +213,7 @@ public class ServerEntity {
-                 if (this.entity.needsSync || this.trackDelta || this.entity instanceof LivingEntity && ((LivingEntity)this.entity).isFallFlying()) {
+@@ -218,7 +218,7 @@ public class ServerEntity {
+                 if (this.entity.needsSync || this.trackDelta || this.entity instanceof LivingEntity livingEntity && livingEntity.isFallFlying()) {
                      Vec3 movement = this.entity.getDeltaMovement();
                      // LeavesX start - Vec3 is immutable, so reference equality proves that motion is unchanged.
 -                    if (!org.leavesx.leavesx.config.LeavesXRuntime.entityStateOptimizations()
@@ -66,7 +66,7 @@ index a225038bb29189600daee6a50ece241402a19e12..dab5db773040dd93be21f8065b97c8a3
                          double diff = movement.distanceToSqr(this.lastSentMovement);
                          if (diff > 1.0E-7 || diff > 0.0 && movement.lengthSqr() == 0.0) {
 diff --git a/net/minecraft/world/entity/AreaEffectCloud.java b/net/minecraft/world/entity/AreaEffectCloud.java
-index 6ffbb3c7f931492d58c769536f7c515473ffbaf8..53f5cd4cdec842c81a8ae649c5457d6fa577afe0 100644
+index cfa7f4fd..4238074c 100644
 --- a/net/minecraft/world/entity/AreaEffectCloud.java
 +++ b/net/minecraft/world/entity/AreaEffectCloud.java
 @@ -228,7 +228,7 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
@@ -79,10 +79,10 @@ index 6ffbb3c7f931492d58c769536f7c515473ffbaf8..53f5cd4cdec842c81a8ae649c5457d6f
                              for (LivingEntity entity : entities) {
                                  if (
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 12d9187ab72f34207005d873d7e902a27ca97f20..7cd9d3c13a23f4d7def75f0f1edc5286cf359f8c 100644
+index 46f86600..a25f7e5b 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
-@@ -956,7 +956,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -958,7 +958,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
  
      protected void tickEffects() {
          if (this.level() instanceof ServerLevel serverLevel) {
@@ -90,8 +90,8 @@ index 12d9187ab72f34207005d873d7e902a27ca97f20..7cd9d3c13a23f4d7def75f0f1edc5286
 +            if (!org.leavesx.leavesx.config.LeavesXRuntime.livingEffectTickOptimization() || !this.activeEffects.isEmpty()) {
                  Iterator<Holder<MobEffect>> iterator = this.activeEffects.keySet().iterator();
  
-                 this.isTickingEffects = true; // CraftBukkit
-@@ -1030,7 +1030,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+                 this.tickingEffects = true; // CraftBukkit
+@@ -1027,7 +1027,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
      }
  
      private void updateSynchronizedMobEffectParticles() {
@@ -100,7 +100,7 @@ index 12d9187ab72f34207005d873d7e902a27ca97f20..7cd9d3c13a23f4d7def75f0f1edc5286
              ? collectVisibleEffectParticlesDirect(this.activeEffects.values())
              : this.activeEffects
                  .values()
-@@ -3843,7 +3843,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -3853,7 +3853,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
              if ((!this.isInPowderSnow || !this.canFreeze()) && !this.freezeLocked) { // Paper - Freeze Tick Lock API
                  // LeavesX start - SynchedEntityData already treats an unchanged value as a no-op; avoid the call entirely.
                  final int ticksFrozen = this.getTicksFrozen();
@@ -109,7 +109,7 @@ index 12d9187ab72f34207005d873d7e902a27ca97f20..7cd9d3c13a23f4d7def75f0f1edc5286
                      this.setTicksFrozen(Math.max(0, ticksFrozen - 2));
                  }
                  // LeavesX end - SynchedEntityData already treats an unchanged value as a no-op; avoid the call entirely.
-@@ -3912,7 +3912,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -3922,7 +3922,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
                  int freeFallInterval = checkFallFlyTicks / 10;
                  if (freeFallInterval % 2 == 0) {
                      EquipmentSlot slotToDamage;
@@ -119,7 +119,7 @@ index 12d9187ab72f34207005d873d7e902a27ca97f20..7cd9d3c13a23f4d7def75f0f1edc5286
                      } else {
                          List<EquipmentSlot> slotsWithGliders = EquipmentSlot.VALUES.stream().filter(slot -> canGlideUsing(this.getItemBySlot(slot), slot)).toList();
 diff --git a/net/minecraft/world/entity/ai/Brain.java b/net/minecraft/world/entity/ai/Brain.java
-index 7326468da70cc751b88f8c38d1c44b4c0d171beb..7385725258c889000763a16618347b0bdfdd8436 100644
+index fc60370b..115bda02 100644
 --- a/net/minecraft/world/entity/ai/Brain.java
 +++ b/net/minecraft/world/entity/ai/Brain.java
 @@ -446,7 +446,7 @@ public class Brain<E extends LivingEntity> {
@@ -150,7 +150,7 @@ index 7326468da70cc751b88f8c38d1c44b4c0d171beb..7385725258c889000763a16618347b0b
              for (int groupIndex = 0, groupCount = behaviorGroups.size(); groupIndex < groupCount; groupIndex++) {
                  final ObjectArrayList<BehaviorControl<? super E>> behaviors = behaviorGroups.get(groupIndex).behaviors;
 diff --git a/net/minecraft/world/entity/ai/behavior/AcquirePoi.java b/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
-index 174994f12944e70856c6f854b98dce87d1d3f6ce..15cd34e8493475a3f1dfb5065051cc0a731c90b4 100644
+index d85fc0d0..37f4cfd6 100644
 --- a/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
 +++ b/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
 @@ -148,7 +148,7 @@ public class AcquirePoi {
@@ -163,7 +163,7 @@ index 174994f12944e70856c6f854b98dce87d1d3f6ce..15cd34e8493475a3f1dfb5065051cc0a
              final List<Pair<Holder<PoiType>, BlockPos>> rawPoiPositions;
              if (optimizeAllocations) {
 diff --git a/net/minecraft/world/entity/ai/behavior/BehaviorUtils.java b/net/minecraft/world/entity/ai/behavior/BehaviorUtils.java
-index e45d6ff017858d042e78252e28b8be3b21ca3840..b669ea5abded0e023a092d78f1870152f2f99aa3 100644
+index e45d6ff0..b669ea5a 100644
 --- a/net/minecraft/world/entity/ai/behavior/BehaviorUtils.java
 +++ b/net/minecraft/world/entity/ai/behavior/BehaviorUtils.java
 @@ -113,7 +113,7 @@ public class BehaviorUtils {
@@ -176,7 +176,7 @@ index e45d6ff017858d042e78252e28b8be3b21ca3840..b669ea5abded0e023a092d78f1870152
          }
          int distToVillage = level.sectionsToVillage(center);
 diff --git a/net/minecraft/world/entity/ai/behavior/GateBehavior.java b/net/minecraft/world/entity/ai/behavior/GateBehavior.java
-index 8104fffc4368429dac7817f09f3ce0568b25e955..73d90f22318338f4171fb3700ddacfe22f7dde2a 100644
+index 8104fffc..73d90f22 100644
 --- a/net/minecraft/world/entity/ai/behavior/GateBehavior.java
 +++ b/net/minecraft/world/entity/ai/behavior/GateBehavior.java
 @@ -87,7 +87,7 @@ public class GateBehavior<E extends LivingEntity> implements BehaviorControl<E>
@@ -189,7 +189,7 @@ index 8104fffc4368429dac7817f09f3ce0568b25e955..73d90f22318338f4171fb3700ddacfe2
              for (final BehaviorControl<? super E> behavior : this.behaviors) {
                  if (behavior.getStatus() == Behavior.Status.RUNNING) {
 diff --git a/net/minecraft/world/entity/ai/behavior/InsideBrownianWalk.java b/net/minecraft/world/entity/ai/behavior/InsideBrownianWalk.java
-index 861cc15a923c6a59aba3da967ad0ce095a2541b4..003d11eac1ebbd31cc9d6fb173a7d34b9a2c6921 100644
+index 861cc15a..003d11ea 100644
 --- a/net/minecraft/world/entity/ai/behavior/InsideBrownianWalk.java
 +++ b/net/minecraft/world/entity/ai/behavior/InsideBrownianWalk.java
 @@ -27,7 +27,7 @@ public class InsideBrownianWalk {
@@ -202,7 +202,7 @@ index 861cc15a923c6a59aba3da967ad0ce095a2541b4..003d11eac1ebbd31cc9d6fb173a7d34b
                              if (target != null) {
                                  walkTarget.set(new WalkTarget(target, speedModifier, 0));
 diff --git a/net/minecraft/world/entity/ai/behavior/InteractWithDoor.java b/net/minecraft/world/entity/ai/behavior/InteractWithDoor.java
-index e1fab145e6f74b25235f70a53d898f06d138c2ab..e5efa60ea0b703371d1a2041a9ced319f7867761 100644
+index e1fab145..e5efa60e 100644
 --- a/net/minecraft/world/entity/ai/behavior/InteractWithDoor.java
 +++ b/net/minecraft/world/entity/ai/behavior/InteractWithDoor.java
 @@ -140,7 +140,7 @@ public class InteractWithDoor {
@@ -215,7 +215,7 @@ index e1fab145e6f74b25235f70a53d898f06d138c2ab..e5efa60ea0b703371d1a2041a9ced319
          }
          return nearestEntities.get()
 diff --git a/net/minecraft/world/entity/ai/behavior/PlayTagWithOtherKids.java b/net/minecraft/world/entity/ai/behavior/PlayTagWithOtherKids.java
-index 7e165a2625fb14bad80e2240d470351daffc6d6f..1fba1ad07e8a234ba2b5b27fc25670c666e57610 100644
+index 7e165a26..1fba1ad0 100644
 --- a/net/minecraft/world/entity/ai/behavior/PlayTagWithOtherKids.java
 +++ b/net/minecraft/world/entity/ai/behavior/PlayTagWithOtherKids.java
 @@ -39,7 +39,7 @@ public class PlayTagWithOtherKids {
@@ -228,7 +228,7 @@ index 7e165a2625fb14bad80e2240d470351daffc6d6f..1fba1ad07e8a234ba2b5b27fc25670c6
                          ? findFriendChasingMeDirect(me, friendsNearby)
                          : friendsNearby.stream().filter(friend -> isFriendChasingMe(me, friend)).findAny().orElse(null);
 diff --git a/net/minecraft/world/entity/ai/behavior/YieldJobSite.java b/net/minecraft/world/entity/ai/behavior/YieldJobSite.java
-index c03b6f99c702f2137036854ea233687144d10b1f..92f1700d383af4ef35d10fadbb7bd51f4d21fab5 100644
+index c03b6f99..92f1700d 100644
 --- a/net/minecraft/world/entity/ai/behavior/YieldJobSite.java
 +++ b/net/minecraft/world/entity/ai/behavior/YieldJobSite.java
 @@ -44,7 +44,7 @@ public class YieldJobSite {
@@ -241,7 +241,7 @@ index c03b6f99c702f2137036854ea233687144d10b1f..92f1700d383af4ef35d10fadbb7bd51f
                                  i.get(nearestEntities),
                                  body,
 diff --git a/net/minecraft/world/entity/ai/goal/FollowFlockLeaderGoal.java b/net/minecraft/world/entity/ai/goal/FollowFlockLeaderGoal.java
-index dcc44ceadd4fd64f266fe11f2f2a366603cf1675..618a13229d7fefa8f19a2854f09403e5ba8a86d3 100644
+index dcc44cea..618a1322 100644
 --- a/net/minecraft/world/entity/ai/goal/FollowFlockLeaderGoal.java
 +++ b/net/minecraft/world/entity/ai/goal/FollowFlockLeaderGoal.java
 @@ -35,7 +35,7 @@ public class FollowFlockLeaderGoal extends Goal {
@@ -254,7 +254,7 @@ index dcc44ceadd4fd64f266fe11f2f2a366603cf1675..618a13229d7fefa8f19a2854f09403e5
                  addFollowersDirect(leader, leadersWithSpaceOrNotFollowers);
              } else {
 diff --git a/net/minecraft/world/entity/ai/gossip/GossipContainer.java b/net/minecraft/world/entity/ai/gossip/GossipContainer.java
-index f717af74d277f772ad76b1223565c321b672b338..44f46878cb44a00824209352a9e955f33c06f988 100644
+index f717af74..44f46878 100644
 --- a/net/minecraft/world/entity/ai/gossip/GossipContainer.java
 +++ b/net/minecraft/world/entity/ai/gossip/GossipContainer.java
 @@ -127,7 +127,7 @@ public class GossipContainer {
@@ -276,7 +276,7 @@ index f717af74d277f772ad76b1223565c321b672b338..44f46878cb44a00824209352a9e955f3
          }
          return this.gossips.values().stream().filter(e -> valueTest.test(e.entries.getOrDefault(type, 0) * type.weight)).count();
 diff --git a/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java b/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
-index 42cdc235d79ff8282d9c18785d1e1d0f514bac71..ac1fdb55d340c905e4b84e689f5f37e40156979d 100644
+index 42cdc235..ac1fdb55 100644
 --- a/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
 +++ b/net/minecraft/world/entity/ai/memory/NearestVisibleLivingEntities.java
 @@ -27,7 +27,7 @@ public class NearestVisibleLivingEntities {
@@ -289,7 +289,7 @@ index 42cdc235d79ff8282d9c18785d1e1d0f514bac71..ac1fdb55d340c905e4b84e689f5f37e4
          } else {
              Object2BooleanOpenHashMap<LivingEntity> cache = new Object2BooleanOpenHashMap<>(livingEntities.size());
 diff --git a/net/minecraft/world/entity/ai/navigation/PathNavigation.java b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
-index 0ef220b57ae5b415b782a7b77dd1332c799067d8..e119726a32cc9e2f454d147638fc209cf380b995 100644
+index b6c0ae8f..8aacb3c3 100644
 --- a/net/minecraft/world/entity/ai/navigation/PathNavigation.java
 +++ b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
 @@ -299,7 +299,7 @@ public abstract class PathNavigation {
@@ -301,7 +301,7 @@ index 0ef220b57ae5b415b782a7b77dd1332c799067d8..e119726a32cc9e2f454d147638fc209c
              // LeavesX start - Path#getNextNodePos converts the node to a new BlockPos on every navigation tick.
              final Node currentNode = this.path.getNextNode();
              final double xDistance = Math.abs(this.mob.getX() - (currentNode.x + 0.5));
-@@ -331,7 +331,7 @@ public abstract class PathNavigation {
+@@ -333,7 +333,7 @@ public abstract class PathNavigation {
              return false;
          }
  
@@ -310,7 +310,7 @@ index 0ef220b57ae5b415b782a7b77dd1332c799067d8..e119726a32cc9e2f454d147638fc209c
              // LeavesX start - preserve Vec3's arithmetic while avoiding up to eight short-lived path-following objects.
              final Node currentNode = this.path.getNextNode();
              final double currentX = currentNode.x + 0.5;
-@@ -433,7 +433,7 @@ public abstract class PathNavigation {
+@@ -435,7 +435,7 @@ public abstract class PathNavigation {
  
          if (this.path != null && !this.path.isDone()) {
              final long time;
@@ -319,7 +319,7 @@ index 0ef220b57ae5b415b782a7b77dd1332c799067d8..e119726a32cc9e2f454d147638fc209c
                  // LeavesX start - the timeout target only needs a new BlockPos when the path advances to another node.
                  final Node pos = this.path.getNextNode();
                  time = this.level.getGameTime();
-@@ -554,7 +554,7 @@ public abstract class PathNavigation {
+@@ -556,7 +556,7 @@ public abstract class PathNavigation {
              return false;
          } else if (this.path != null && !this.path.isDone() && this.path.getNodeCount() != 0) {
              Node target = this.path.getEndNode();
@@ -329,7 +329,7 @@ index 0ef220b57ae5b415b782a7b77dd1332c799067d8..e119726a32cc9e2f454d147638fc209c
                  final double middleX = (target.x + this.mob.getX()) / 2.0;
                  final double middleY = (target.y + this.mob.getY()) / 2.0;
 diff --git a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
-index 40ccfd64615926a3dc57eb5a7833aca71553c417..78e086f8e40accea0bb68c4cd499b1598a3c4f96 100644
+index 40ccfd64..78e086f8 100644
 --- a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
 @@ -26,7 +26,7 @@ public class NearestItemSensor extends Sensor<Mob> {
@@ -342,7 +342,7 @@ index 40ccfd64615926a3dc57eb5a7833aca71553c417..78e086f8e40accea0bb68c4cd499b159
              org.leavesx.leavesx.performance.StableDistanceSorter.sortEntitiesByDistance(
                  items,
 diff --git a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
-index 53a0cb547c00a2dfa90c691a22b3edc1ca8a240c..7c8ab8c48066dbb20ee90c74b5f114b2a0cd5250 100644
+index 53a0cb54..7c8ab8c4 100644
 --- a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
 @@ -19,7 +19,7 @@ public class NearestLivingEntitySensor<T extends LivingEntity> extends Sensor<T>
@@ -355,7 +355,7 @@ index 53a0cb547c00a2dfa90c691a22b3edc1ca8a240c..7c8ab8c48066dbb20ee90c74b5f114b2
              org.leavesx.leavesx.performance.StableDistanceSorter.sortEntitiesByDistance(
                  livingEntities,
 diff --git a/net/minecraft/world/entity/ai/sensing/Sensor.java b/net/minecraft/world/entity/ai/sensing/Sensor.java
-index be94d55875bfb4ea2e7a99d6ff57152fe8c00c45..448dda18cbbe9d2b1dc9c98126bb1d52a0b55591 100644
+index 24c0dff4..d86aabf7 100644
 --- a/net/minecraft/world/entity/ai/sensing/Sensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/Sensor.java
 @@ -62,7 +62,7 @@ public abstract class Sensor<E extends LivingEntity> {
@@ -368,7 +368,7 @@ index be94d55875bfb4ea2e7a99d6ff57152fe8c00c45..448dda18cbbe9d2b1dc9c98126bb1d52
          if (optimizeRanges && followRangeBits == leavesXLastTargetingRangeBits) {
              return;
 diff --git a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
-index eb4b2874077f453843b88f43b0e704333261fea0..c31c44de1cbc1af7c01ad0a531683e7828a74efc 100644
+index eb4b2874..c31c44de 100644
 --- a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
 @@ -39,7 +39,7 @@ public class TemptingSensor extends Sensor<PathfinderMob> {
@@ -381,7 +381,7 @@ index eb4b2874077f453843b88f43b0e704333261fea0..c31c44de1cbc1af7c01ad0a531683e78
          } else {
              final List<Player> players = level.players()
 diff --git a/net/minecraft/world/entity/ai/targeting/TargetingConditions.java b/net/minecraft/world/entity/ai/targeting/TargetingConditions.java
-index 5bce0a05827f0d4aad3738a38050aef4c6aa5ea6..f931e0646fb42feac48eb3a73d27d386fe231f55 100644
+index 5bce0a05..f931e064 100644
 --- a/net/minecraft/world/entity/ai/targeting/TargetingConditions.java
 +++ b/net/minecraft/world/entity/ai/targeting/TargetingConditions.java
 @@ -82,7 +82,7 @@ public class TargetingConditions {
@@ -394,7 +394,7 @@ index 5bce0a05827f0d4aad3738a38050aef4c6aa5ea6..f931e0646fb42feac48eb3a73d27d386
                      final double maximumVisibilityDistance = Math.max(this.range, MIN_VISIBILITY_DISTANCE_FOR_INVISIBLE_TARGET);
                      if (distanceToSqr > maximumVisibilityDistance * maximumVisibilityDistance) {
 diff --git a/net/minecraft/world/entity/npc/villager/Villager.java b/net/minecraft/world/entity/npc/villager/Villager.java
-index b01dedad0b1064929376d5a7f45e6e60527f0ea7..349c1c1cb0454d6a21e6ff103ef1acbae2f9d228 100644
+index 0d2f73f2..0f77a3db 100644
 --- a/net/minecraft/world/entity/npc/villager/Villager.java
 +++ b/net/minecraft/world/entity/npc/villager/Villager.java
 @@ -918,7 +918,7 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
@@ -407,7 +407,7 @@ index b01dedad0b1064929376d5a7f45e6e60527f0ea7..349c1c1cb0454d6a21e6ff103ef1acba
              } else {
                  final List<Villager> nearbyVillagersThatWantAGolem = nearbyVillagers.stream()
 diff --git a/net/minecraft/world/item/enchantment/Enchantment.java b/net/minecraft/world/item/enchantment/Enchantment.java
-index eadfbe8992951286b0d21a4d6291d7cf06e21a5a..c485971aebcea25911ec4ac8be7c5c74d970964b 100644
+index eadfbe89..c485971a 100644
 --- a/net/minecraft/world/item/enchantment/Enchantment.java
 +++ b/net/minecraft/world/item/enchantment/Enchantment.java
 @@ -124,7 +124,7 @@ public record Enchantment(Component description, Enchantment.EnchantmentDefiniti
@@ -420,7 +420,7 @@ index eadfbe8992951286b0d21a4d6291d7cf06e21a5a..c485971aebcea25911ec4ac8be7c5c74
          }
          return this.definition.slots().stream().anyMatch(group -> group.test(slot));
 diff --git a/net/minecraft/world/level/EntityGetter.java b/net/minecraft/world/level/EntityGetter.java
-index 25216f2c2c35ad089c9bea04c05d21e2b7de5798..85ee9caf3bc2ad31f715f941868e0c7ff2cfe146 100644
+index 25216f2c..85ee9caf 100644
 --- a/net/minecraft/world/level/EntityGetter.java
 +++ b/net/minecraft/world/level/EntityGetter.java
 @@ -119,7 +119,7 @@ public interface EntityGetter extends ca.spottedleaf.moonrise.patches.chunk_syst
@@ -451,10 +451,10 @@ index 25216f2c2c35ad089c9bea04c05d21e2b7de5798..85ee9caf3bc2ad31f715f941868e0c7f
              final boolean unlimitedRange = range < 0.0;
              final double rangeSquared = range * range;
 diff --git a/net/minecraft/world/level/NaturalSpawner.java b/net/minecraft/world/level/NaturalSpawner.java
-index 050f20253431b8a1c0f82462554faab8653bcbf0..13969ae1cfa2f7a18315f77d6583369412089d3b 100644
+index eca311cc..942f6a0a 100644
 --- a/net/minecraft/world/level/NaturalSpawner.java
 +++ b/net/minecraft/world/level/NaturalSpawner.java
-@@ -420,7 +420,7 @@ public final class NaturalSpawner {
+@@ -417,7 +417,7 @@ public final class NaturalSpawner {
      ) {
          // Paper start - PreCreatureSpawnEvent
          EntityType<?> type = currentSpawnData.type();
@@ -464,7 +464,7 @@ index 050f20253431b8a1c0f82462554faab8653bcbf0..13969ae1cfa2f7a18315f77d65833694
              com.destroystokyo.paper.event.entity.PreCreatureSpawnEvent event = new com.destroystokyo.paper.event.entity.PreCreatureSpawnEvent(
                  org.bukkit.craftbukkit.util.CraftLocation.toBukkit(pos, level),
 diff --git a/net/minecraft/world/level/gameevent/GameEventDispatcher.java b/net/minecraft/world/level/gameevent/GameEventDispatcher.java
-index a099f7f0051b76a538e50c4f4a33691d8c3cd1cc..0fab1a40271721be5bb1e7758ee4b9d8ff5c8573 100644
+index a099f7f0..0fab1a40 100644
 --- a/net/minecraft/world/level/gameevent/GameEventDispatcher.java
 +++ b/net/minecraft/world/level/gameevent/GameEventDispatcher.java
 @@ -23,7 +23,7 @@ public class GameEventDispatcher {
@@ -477,7 +477,7 @@ index a099f7f0051b76a538e50c4f4a33691d8c3cd1cc..0fab1a40271721be5bb1e7758ee4b9d8
              org.bukkit.event.world.GenericGameEvent apiEvent = new org.bukkit.event.world.GenericGameEvent(
                  org.bukkit.craftbukkit.CraftGameEvent.minecraftHolderToBukkit(gameEvent), org.bukkit.craftbukkit.util.CraftLocation.toBukkit(center, this.level),
 diff --git a/net/minecraft/world/level/pathfinder/PathFinder.java b/net/minecraft/world/level/pathfinder/PathFinder.java
-index 3ade59d41756eca500f1e1d7bb3ab5421dfd69a9..d1d9aec3532afbbab40d154304a135f5dc320244 100644
+index 3ade59d4..d1d9aec3 100644
 --- a/net/minecraft/world/level/pathfinder/PathFinder.java
 +++ b/net/minecraft/world/level/pathfinder/PathFinder.java
 @@ -137,7 +137,7 @@ public class PathFinder {

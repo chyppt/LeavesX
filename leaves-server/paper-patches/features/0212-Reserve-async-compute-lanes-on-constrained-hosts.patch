@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 29 Aug 2026 17:08:37 +0800
+Subject: [PATCH] Reserve async compute lanes on constrained hosts
+
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+index 1cd364dc6ed557037cb1437fef33cac156feb06c..a8e77300ff02d3cad493f29c1663613f7c4aedaa 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+@@ -703,4 +703,4 @@ public final class LeavesXAsyncRuntime {
+             this.action.run();
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java
+index 4c62ff788ded0a887522e11138bd53e4cda04193..2c92682ab75f294ebb8b943f2079029e2db8ebc0 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java
+@@ -238,4 +238,4 @@ class LeavesXAsyncRuntimeTest {
+             64
+         );
+     }
+-}
+\ No newline at end of file
++}

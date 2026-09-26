@@ -5,10 +5,10 @@ Subject: [PATCH] Configurable void trade
 
 
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index 229ff740e0418a05d824a67401ae6f105b4c3642..7e90784a38bccfe6707ea7e10946c39db995f969 100644
+index 9415a758..443e86f3 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -2914,7 +2914,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -2923,7 +2923,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
              // Spigot start
              if (entity.getBukkitEntity() instanceof org.bukkit.inventory.InventoryHolder && (!(entity instanceof ServerPlayer) || entity.getRemovalReason() != Entity.RemovalReason.KILLED)) { // SPIGOT-6876: closeInventory clears death message
                  // Paper start - Fix merchant inventory not closing on entity removal
@@ -18,10 +18,10 @@ index 229ff740e0418a05d824a67401ae6f105b4c3642..7e90784a38bccfe6707ea7e10946c39d
                  }
                  // Paper end - Fix merchant inventory not closing on entity removal
 diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
-index bb49f5914b4a3d686821f1989af7a44c4e256c92..8ef8cc7a33ea8e2d368a273000b157958ad19ccb 100644
+index 031bac59..9a2f6059 100644
 --- a/net/minecraft/server/players/PlayerList.java
 +++ b/net/minecraft/server/players/PlayerList.java
-@@ -474,7 +474,7 @@ public abstract class PlayerList {
+@@ -475,7 +475,7 @@ public abstract class PlayerList {
                  player.stopRiding();
                  vehicle.getPassengersAndSelf().forEach(e -> {
                      // Paper start - Fix villager boat exploit
@@ -31,7 +31,7 @@ index bb49f5914b4a3d686821f1989af7a44c4e256c92..8ef8cc7a33ea8e2d368a273000b15795
                          if (human != null) {
                              villager.setTradingPlayer(null);
 diff --git a/net/minecraft/world/inventory/MerchantMenu.java b/net/minecraft/world/inventory/MerchantMenu.java
-index 1dd82dfa739957f00d51c8b987289a002815f622..7fcc2c2ad603699e176bb95559e51134174ecc20 100644
+index 5979e385..1777814c 100644
 --- a/net/minecraft/world/inventory/MerchantMenu.java
 +++ b/net/minecraft/world/inventory/MerchantMenu.java
 @@ -74,6 +74,7 @@ public class MerchantMenu extends AbstractContainerMenu {

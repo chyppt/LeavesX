@@ -5,7 +5,7 @@ Subject: [PATCH] Leaves I18n support
 
 
 diff --git a/net/minecraft/locale/Language.java b/net/minecraft/locale/Language.java
-index 3ee139b4c47cd5a747cf7aa4f95beb0c67f86143..1d2276f2db3d83bc23a8a73d9b7f762cca5d4680 100644
+index 47cd33bc..384cbe09 100644
 --- a/net/minecraft/locale/Language.java
 +++ b/net/minecraft/locale/Language.java
 @@ -37,6 +37,7 @@ public abstract class Language {
@@ -26,10 +26,10 @@ index 3ee139b4c47cd5a747cf7aa4f95beb0c67f86143..1d2276f2db3d83bc23a8a73d9b7f762c
              loadFromJson(stream, output);
          } catch (IOException | JsonParseException e) {
 diff --git a/net/minecraft/server/Main.java b/net/minecraft/server/Main.java
-index b730c6694e819813f8eb08b742d660937f9cbc21..f68b38e274947f96b371d832377e4b7c06e0c13e 100644
+index 32c158de..44f9e63a 100644
 --- a/net/minecraft/server/Main.java
 +++ b/net/minecraft/server/Main.java
-@@ -154,6 +154,8 @@ public class Main {
+@@ -166,6 +166,8 @@ public class Main {
                  return;
              }
  
@@ -39,10 +39,10 @@ index b730c6694e819813f8eb08b742d660937f9cbc21..f68b38e274947f96b371d832377e4b7c
              String awtException = io.papermc.paper.util.ServerEnvironment.awtDependencyCheck();
              if (awtException != null) {
 diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
-index c251bb40f9e2b370d38f1b4f0b8f7b18f88d2470..647abeb9e487cdead07cb38ae0c0184047923e6e 100644
+index 09efa89e..3b091e31 100644
 --- a/net/minecraft/server/dedicated/DedicatedServer.java
 +++ b/net/minecraft/server/dedicated/DedicatedServer.java
-@@ -292,6 +292,7 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+@@ -253,6 +253,7 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
  
          org.leavesmc.leaves.LeavesConfig.init((java.io.File) options.valueOf("leaves-settings")); // Leaves - Server Config
          this.getBotList().loadResumeBotInfo(); // Leaves - load resident bot info

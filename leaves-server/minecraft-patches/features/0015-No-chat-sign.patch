@@ -5,7 +5,7 @@ Subject: [PATCH] No chat sign
 
 
 diff --git a/net/minecraft/commands/arguments/ArgumentSignatures.java b/net/minecraft/commands/arguments/ArgumentSignatures.java
-index 042fec0c893c34c99edda17274a59e44c041c5d4..5048b4b92805bfaf01e3341d9cefac6e03b26e3e 100644
+index 042fec0c..5048b4b9 100644
 --- a/net/minecraft/commands/arguments/ArgumentSignatures.java
 +++ b/net/minecraft/commands/arguments/ArgumentSignatures.java
 @@ -13,10 +13,17 @@ public record ArgumentSignatures(List<ArgumentSignatures.Entry> entries) {
@@ -28,7 +28,7 @@ index 042fec0c893c34c99edda17274a59e44c041c5d4..5048b4b92805bfaf01e3341d9cefac6e
          output.writeCollection(this.entries, (out, entry) -> entry.write(out));
      }
 diff --git a/net/minecraft/network/protocol/game/ServerboundChatPacket.java b/net/minecraft/network/protocol/game/ServerboundChatPacket.java
-index c9623b551609c77e8f143e492fe07f80b5a07dc0..f6c589f13abebe9f8dd0063f55164671f6fd17c2 100644
+index c9623b55..f6c589f1 100644
 --- a/net/minecraft/network/protocol/game/ServerboundChatPacket.java
 +++ b/net/minecraft/network/protocol/game/ServerboundChatPacket.java
 @@ -16,7 +16,7 @@ public record ServerboundChatPacket(String message, Instant timeStamp, long salt
@@ -56,7 +56,7 @@ index c9623b551609c77e8f143e492fe07f80b5a07dc0..f6c589f13abebe9f8dd0063f55164671
      public PacketType<ServerboundChatPacket> type() {
          return GamePacketTypes.SERVERBOUND_CHAT;
 diff --git a/net/minecraft/network/protocol/game/ServerboundChatSessionUpdatePacket.java b/net/minecraft/network/protocol/game/ServerboundChatSessionUpdatePacket.java
-index a3dc386fb5900f24d9eb3a84ad24e60fa0328bd6..eb00b83be6f2c0fe1fed5e5858ef4488847670a1 100644
+index a3dc386f..eb00b83b 100644
 --- a/net/minecraft/network/protocol/game/ServerboundChatSessionUpdatePacket.java
 +++ b/net/minecraft/network/protocol/game/ServerboundChatSessionUpdatePacket.java
 @@ -26,6 +26,11 @@ public record ServerboundChatSessionUpdatePacket(RemoteChatSession.Data chatSess
@@ -72,7 +72,7 @@ index a3dc386fb5900f24d9eb3a84ad24e60fa0328bd6..eb00b83be6f2c0fe1fed5e5858ef4488
      }
  }
 diff --git a/net/minecraft/network/protocol/status/ServerStatus.java b/net/minecraft/network/protocol/status/ServerStatus.java
-index 5eb7d46bf0d84720662125711fa7b544e9299446..d0c9d71b6bb05ae6d5b463f4d0847a75205b6c0c 100644
+index 5eb7d46b..d0c9d71b 100644
 --- a/net/minecraft/network/protocol/status/ServerStatus.java
 +++ b/net/minecraft/network/protocol/status/ServerStatus.java
 @@ -19,7 +19,8 @@ public record ServerStatus(
@@ -106,10 +106,10 @@ index 5eb7d46bf0d84720662125711fa7b544e9299446..d0c9d71b6bb05ae6d5b463f4d0847a75
          private static final String PREFIX = "data:image/png;base64,";
          public static final Codec<ServerStatus.Favicon> CODEC = Codec.STRING.comapFlatMap(string -> {
 diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
-index 254aeaf65cc75fed4b734d7dbc86f960ee9b3bc3..c251bb40f9e2b370d38f1b4f0b8f7b18f88d2470 100644
+index 5ee37941..09efa89e 100644
 --- a/net/minecraft/server/dedicated/DedicatedServer.java
 +++ b/net/minecraft/server/dedicated/DedicatedServer.java
-@@ -806,7 +806,7 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+@@ -773,7 +773,7 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
          // Paper start - Add setting for proxy online mode status
          return properties.enforceSecureProfile
              && io.papermc.paper.configuration.GlobalConfiguration.get().proxies.isProxyOnlineMode()
@@ -119,7 +119,7 @@ index 254aeaf65cc75fed4b734d7dbc86f960ee9b3bc3..c251bb40f9e2b370d38f1b4f0b8f7b18
      }
  
 diff --git a/net/minecraft/server/network/ServerCommonPacketListenerImpl.java b/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
-index e9fdf2db4a41eaa268252ce5d2f8a7e1a553e06d..64e615758201d481214f0d5dea1db545376a1d98 100644
+index 5c0073b9..4c87bef7 100644
 --- a/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
 @@ -316,10 +316,25 @@ public abstract class ServerCommonPacketListenerImpl implements ServerCommonPack
@@ -151,10 +151,10 @@ index e9fdf2db4a41eaa268252ce5d2f8a7e1a553e06d..64e615758201d481214f0d5dea1db545
          if (packet == null) {
              return;
 diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
-index 99219206c1dc0856978d21ba33c1d305f856371c..0ad0b80415bce8ecac3e029a8c42a1841b21def0 100644
+index 82aaf1a7..2bef79ca 100644
 --- a/net/minecraft/server/players/PlayerList.java
 +++ b/net/minecraft/server/players/PlayerList.java
-@@ -1188,7 +1188,7 @@ public abstract class PlayerList {
+@@ -1194,7 +1194,7 @@ public abstract class PlayerList {
      }
  
      public boolean verifyChatTrusted(final PlayerChatMessage message) {

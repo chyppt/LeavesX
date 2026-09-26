@@ -5,10 +5,10 @@ Subject: [PATCH] Optimize fixed hopper entity queries for bate45
 
 
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index 9ed5d6e18ff1b6bac0dcdbf590ae4b022eeb0997..dfd9482ed1b0b422a8e3657c4f2d80dde8fc0e9f 100644
+index 5b4c5a64..c0b48692 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
-@@ -232,6 +232,19 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+@@ -233,6 +233,19 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
          return ret;
      }
  
@@ -29,7 +29,7 @@ index 9ed5d6e18ff1b6bac0dcdbf590ae4b022eeb0997..dfd9482ed1b0b422a8e3657c4f2d80dd
      public final List<Entity> moonrise$getHardCollidingEntities(final Entity entity, final AABB box, final Predicate<? super Entity> predicate) {
          Profiler.get().incrementCounter("getEntities");
 diff --git a/net/minecraft/world/level/block/entity/HopperBlockEntity.java b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
-index 0389f2fe57d191fb08ace59872e3b677246a525e..a011dd97c293aa89ae12dfd19f5ee2d5d3bb2e5f 100644
+index bc5893c4..e985fb6c 100644
 --- a/net/minecraft/world/level/block/entity/HopperBlockEntity.java
 +++ b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
 @@ -59,6 +59,8 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
@@ -143,7 +143,7 @@ index 0389f2fe57d191fb08ace59872e3b677246a525e..a011dd97c293aa89ae12dfd19f5ee2d5
      private static @Nullable Container getBlockContainer(final Level level, final BlockPos pos, final BlockState state) {
          if (!level.spigotConfig.hopperCanLoadChunks && !level.hasChunkAt(pos)) return null; // Spigot
          Block block = state.getBlock();
-@@ -855,6 +909,55 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
+@@ -853,6 +907,55 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen
          return !entities.isEmpty() ? (Container)entities.get(level.getRandom().nextInt(entities.size())) : null;
      }
  

@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize mob presence sensors for bate82
 
 
 diff --git a/net/minecraft/world/entity/ai/sensing/GolemSensor.java b/net/minecraft/world/entity/ai/sensing/GolemSensor.java
-index f5d1f7d01a520709e4c5b7fd98e0e76cce660025..05072c30aa1b7ce320fc5aa5651c4b587ab467d2 100644
+index 98b4a50a..deb9ffda 100644
 --- a/net/minecraft/world/entity/ai/sensing/GolemSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/GolemSensor.java
 @@ -31,24 +31,25 @@ public class GolemSensor extends Sensor<LivingEntity> {
@@ -24,7 +24,7 @@ index f5d1f7d01a520709e4c5b7fd98e0e76cce660025..05072c30aa1b7ce320fc5aa5651c4b58
 +            );
 +            if (livingEntities != null) {
 +                for (final LivingEntity entity : livingEntities) {
-                     if (entity.is(EntityType.IRON_GOLEM)) {
+                     if (entity.is(EntityTypes.IRON_GOLEM)) {
 -                        found = true;
 +                        golemDetected(body);
                          break;
@@ -32,7 +32,7 @@ index f5d1f7d01a520709e4c5b7fd98e0e76cce660025..05072c30aa1b7ce320fc5aa5651c4b58
                  }
 -                golemPresent = found;
 -            } else {
--                golemPresent = livingEntitiesMemory.get().stream().anyMatch(entity -> entity.is(EntityType.IRON_GOLEM));
+-                golemPresent = livingEntitiesMemory.get().stream().anyMatch(entity -> entity.is(EntityTypes.IRON_GOLEM));
 -            }
 -            if (golemPresent) {
 -                golemDetected(body);
@@ -42,13 +42,13 @@ index f5d1f7d01a520709e4c5b7fd98e0e76cce660025..05072c30aa1b7ce320fc5aa5651c4b58
 +
 +        Optional<List<LivingEntity>> livingEntitiesMemory = body.getBrain().getMemory(MemoryModuleType.NEAREST_LIVING_ENTITIES);
 +        if (!livingEntitiesMemory.isEmpty()
-+            && livingEntitiesMemory.get().stream().anyMatch(entity -> entity.is(EntityType.IRON_GOLEM))) {
++            && livingEntitiesMemory.get().stream().anyMatch(entity -> entity.is(EntityTypes.IRON_GOLEM))) {
 +            golemDetected(body);
          }
      }
  
 diff --git a/net/minecraft/world/entity/ai/sensing/MobSensor.java b/net/minecraft/world/entity/ai/sensing/MobSensor.java
-index 9213da1da0d3f19b3da92c94fc424818d7543fb0..19dea8e1af227f74e61782247514b6037ce83b0f 100644
+index 9213da1d..19dea8e1 100644
 --- a/net/minecraft/world/entity/ai/sensing/MobSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/MobSensor.java
 @@ -44,24 +44,25 @@ public class MobSensor<T extends LivingEntity> extends Sensor<T> {

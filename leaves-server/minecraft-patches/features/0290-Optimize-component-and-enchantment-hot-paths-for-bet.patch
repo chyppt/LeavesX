@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Wed, 26 Aug 2026 19:06:00 +0800
+Subject: [PATCH] Optimize component and enchantment hot paths for beta186
+
+
+diff --git a/net/minecraft/core/component/PatchedDataComponentMap.java b/net/minecraft/core/component/PatchedDataComponentMap.java
+index bb1eb278..8b9441a2 100644
+--- a/net/minecraft/core/component/PatchedDataComponentMap.java
++++ b/net/minecraft/core/component/PatchedDataComponentMap.java
+@@ -222,7 +222,18 @@ public final class PatchedDataComponentMap implements DataComponentMap, org.leav
+ 
+     @Override
+     public boolean equals(final Object obj) {
+-        return this == obj || obj instanceof PatchedDataComponentMap otherMap && this.prototype.equals(otherMap.prototype) && this.patch.equals(otherMap.patch);
++        if (this == obj) {
++            return true;
++        }
++        if (!(obj instanceof PatchedDataComponentMap otherMap)) {
++            return false;
++        }
++
++        // Copy-on-write maps commonly share a patch instance. Reject different sizes before an entry scan.
++        if (this.patch.size() != otherMap.patch.size() || !this.prototype.equals(otherMap.prototype)) {
++            return false;
++        }
++        return this.patch == otherMap.patch || this.patch.equals(otherMap.patch);
+     }
+ 
+     @Override
+diff --git a/net/minecraft/world/item/enchantment/Enchantment.java b/net/minecraft/world/item/enchantment/Enchantment.java
+index c485971a..86c62f66 100644
+--- a/net/minecraft/world/item/enchantment/Enchantment.java
++++ b/net/minecraft/world/item/enchantment/Enchantment.java
+@@ -206,9 +206,13 @@ public record Enchantment(Component description, Enchantment.EnchantmentDefiniti
+     }
+ 
+     public boolean isImmuneToDamage(final ServerLevel serverLevel, final int enchantmentLevel, final Entity victim, final DamageSource source) {
++        final List<ConditionalEffect<DamageImmunity>> immunityEffects = this.getEffects(EnchantmentEffectComponents.DAMAGE_IMMUNITY);
++        if (immunityEffects.isEmpty()) {
++            return false;
++        }
+         LootContext context = damageContext(serverLevel, enchantmentLevel, victim, source);
+ 
+-        for (ConditionalEffect<DamageImmunity> filteredEffect : this.getEffects(EnchantmentEffectComponents.DAMAGE_IMMUNITY)) {
++        for (ConditionalEffect<DamageImmunity> filteredEffect : immunityEffects) {
+             if (filteredEffect.matches(context)) {
+                 return true;
+             }
+@@ -410,8 +414,12 @@ public record Enchantment(Component description, Enchantment.EnchantmentDefiniti
+     }
+ 
+     public void tick(final ServerLevel serverLevel, final int enchantmentLevel, final EnchantedItemInUse item, final Entity entity) {
++        final List<ConditionalEffect<EnchantmentEntityEffect>> tickEffects = this.getEffects(EnchantmentEffectComponents.TICK);
++        if (tickEffects.isEmpty()) {
++            return;
++        }
+         applyEffects(
+-            this.getEffects(EnchantmentEffectComponents.TICK),
++            tickEffects,
+             entityContext(serverLevel, enchantmentLevel, entity, entity.position()),
+             e -> e.apply(serverLevel, enchantmentLevel, item, entity, entity.position())
+         );

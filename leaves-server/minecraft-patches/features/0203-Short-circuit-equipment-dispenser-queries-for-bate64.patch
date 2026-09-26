@@ -5,7 +5,7 @@ Subject: [PATCH] Short-circuit equipment dispenser queries for bate64
 
 
 diff --git a/net/minecraft/core/dispenser/EquipmentDispenseItemBehavior.java b/net/minecraft/core/dispenser/EquipmentDispenseItemBehavior.java
-index bdf3395a2ee7331ad8eef432380eca10c8755e36..df3076ed292f72878b122127634a695214b9a049 100644
+index bdf3395a..df3076ed 100644
 --- a/net/minecraft/core/dispenser/EquipmentDispenseItemBehavior.java
 +++ b/net/minecraft/core/dispenser/EquipmentDispenseItemBehavior.java
 @@ -26,12 +26,20 @@ public class EquipmentDispenseItemBehavior extends DefaultDispenseItemBehavior {

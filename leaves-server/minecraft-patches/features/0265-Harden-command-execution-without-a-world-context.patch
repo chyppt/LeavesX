@@ -5,7 +5,7 @@ Subject: [PATCH] Harden command execution without a world context
 
 
 diff --git a/net/minecraft/commands/Commands.java b/net/minecraft/commands/Commands.java
-index 14a55006a2c6adf0e0cf7f984b60531895fb0257..8158176cefc99f0a255ff05e5c9ca20b3883620a 100644
+index 0ccb8701..c0b7d0c5 100644
 --- a/net/minecraft/commands/Commands.java
 +++ b/net/minecraft/commands/Commands.java
 @@ -44,6 +44,7 @@ import net.minecraft.network.chat.MutableComponent;
@@ -16,7 +16,7 @@ index 14a55006a2c6adf0e0cf7f984b60531895fb0257..8158176cefc99f0a255ff05e5c9ca20b
  import net.minecraft.server.commands.AdvancementCommands;
  import net.minecraft.server.commands.AttributeCommand;
  import net.minecraft.server.commands.BanIpCommands;
-@@ -138,6 +139,7 @@ import net.minecraft.server.commands.WhitelistCommand;
+@@ -139,6 +140,7 @@ import net.minecraft.server.commands.WhitelistCommand;
  import net.minecraft.server.commands.WorldBorderCommand;
  import net.minecraft.server.commands.data.DataCommands;
  import net.minecraft.server.level.ServerPlayer;
@@ -24,7 +24,7 @@ index 14a55006a2c6adf0e0cf7f984b60531895fb0257..8158176cefc99f0a255ff05e5c9ca20b
  import net.minecraft.server.permissions.PermissionCheck;
  import net.minecraft.server.permissions.PermissionProviderCheck;
  import net.minecraft.server.permissions.PermissionSet;
-@@ -472,7 +474,7 @@ public class Commands {
+@@ -474,7 +476,7 @@ public class Commands {
          ExecutionContext<CommandSourceStack> currentContext = CURRENT_EXECUTION_CONTEXT.get();
          boolean isTopContext = currentContext == null;
          if (isTopContext) {
@@ -33,7 +33,7 @@ index 14a55006a2c6adf0e0cf7f984b60531895fb0257..8158176cefc99f0a255ff05e5c9ca20b
              int chainLimit = Math.max(1, gameRules.get(GameRules.MAX_COMMAND_SEQUENCE_LENGTH));
              int forkLimit = gameRules.get(GameRules.MAX_COMMAND_FORKS);
  
-@@ -488,6 +490,30 @@ public class Commands {
+@@ -490,6 +492,30 @@ public class Commands {
          }
      }
  

@@ -5,10 +5,10 @@ Subject: [PATCH] Reduce entity activation scan overhead
 
 
 diff --git a/io/papermc/paper/entity/activation/ActivationRange.java b/io/papermc/paper/entity/activation/ActivationRange.java
-index ce6b57eeeeb1bd652f4bb53c19dcfbc05126c7e9..101683ea4a14bab33ba18298ed694f560f20e2e8 100644
+index 829f7685..c8768007 100644
 --- a/io/papermc/paper/entity/activation/ActivationRange.java
 +++ b/io/papermc/paper/entity/activation/ActivationRange.java
-@@ -121,17 +121,18 @@ public final class ActivationRange {
+@@ -122,17 +122,18 @@ public final class ActivationRange {
       * @param world
       */
      public static void activateEntities(final Level world) {
@@ -38,7 +38,7 @@ index ce6b57eeeeb1bd652f4bb53c19dcfbc05126c7e9..101683ea4a14bab33ba18298ed694f56
  
          int maxRange = Math.max(monsterActivationRange, animalActivationRange);
          maxRange = Math.max(maxRange, raiderActivationRange);
-@@ -139,32 +140,38 @@ public final class ActivationRange {
+@@ -140,32 +141,38 @@ public final class ActivationRange {
          maxRange = Math.max(maxRange, flyingActivationRange);
          maxRange = Math.max(maxRange, waterActivationRange);
          maxRange = Math.max(maxRange, villagerActivationRange);
@@ -93,7 +93,7 @@ index ce6b57eeeeb1bd652f4bb53c19dcfbc05126c7e9..101683ea4a14bab33ba18298ed694f56
              }
          }
      }
-@@ -174,14 +181,14 @@ public final class ActivationRange {
+@@ -175,14 +182,14 @@ public final class ActivationRange {
       *
       * @param entity
       */

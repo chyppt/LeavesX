@@ -5,7 +5,7 @@ Subject: [PATCH] Cache experience orb merge parameters for bate99
 
 
 diff --git a/net/minecraft/world/entity/ExperienceOrb.java b/net/minecraft/world/entity/ExperienceOrb.java
-index c8dc203c3411736b859ada25fcae30a8e56e89cf..14ee8cc663142b3717b30156aabf5b9544ea19da 100644
+index 5faf6507..71e7f19c 100644
 --- a/net/minecraft/world/entity/ExperienceOrb.java
 +++ b/net/minecraft/world/entity/ExperienceOrb.java
 @@ -2,6 +2,7 @@ package net.minecraft.world.entity;
@@ -16,7 +16,7 @@ index c8dc203c3411736b859ada25fcae30a8e56e89cf..14ee8cc663142b3717b30156aabf5b95
  import net.minecraft.core.BlockPos;
  import net.minecraft.network.syncher.EntityDataAccessor;
  import net.minecraft.network.syncher.EntityDataSerializers;
-@@ -242,8 +243,22 @@ public class ExperienceOrb extends Entity {
+@@ -247,8 +248,22 @@ public class ExperienceOrb extends Entity {
  
      private void scanForMerges() {
          if (this.level() instanceof ServerLevel) {
@@ -41,7 +41,7 @@ index c8dc203c3411736b859ada25fcae30a8e56e89cf..14ee8cc663142b3717b30156aabf5b95
              }
          }
      }
-@@ -270,16 +285,21 @@ public class ExperienceOrb extends Entity {
+@@ -275,16 +290,21 @@ public class ExperienceOrb extends Entity {
      private static boolean tryMergeToExisting(final ServerLevel level, final Vec3 pos, final int value) {
          // Paper - TODO some other event for this kind of merge
          AABB box = AABB.ofSize(pos, 1.0, 1.0, 1.0);
@@ -70,7 +70,7 @@ index c8dc203c3411736b859ada25fcae30a8e56e89cf..14ee8cc663142b3717b30156aabf5b95
              orb = orbs.isEmpty() ? null : orbs.getFirst();
          }
  
-@@ -297,7 +317,16 @@ public class ExperienceOrb extends Entity {
+@@ -302,7 +322,16 @@ public class ExperienceOrb extends Entity {
      }
  
      private static boolean canMerge(final ExperienceOrb orb, final int id, final int value) {

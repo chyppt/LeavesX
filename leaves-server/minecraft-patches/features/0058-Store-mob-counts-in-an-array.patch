@@ -6,7 +6,7 @@ Subject: [PATCH] Store mob counts in an array
 This patch is Powered by Gale(https://github.com/GaleMC/Gale)
 
 diff --git a/net/minecraft/world/level/LocalMobCapCalculator.java b/net/minecraft/world/level/LocalMobCapCalculator.java
-index 5b3808e6ff58d350fe3fd65fb56e8f209e1b2c93..34ff3aed2dd9c0f051680433700b19c35341dfa3 100644
+index 5b3808e6..34ff3aed 100644
 --- a/net/minecraft/world/level/LocalMobCapCalculator.java
 +++ b/net/minecraft/world/level/LocalMobCapCalculator.java
 @@ -43,13 +43,26 @@ public class LocalMobCapCalculator {

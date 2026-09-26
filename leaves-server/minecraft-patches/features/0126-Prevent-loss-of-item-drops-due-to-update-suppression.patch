@@ -6,7 +6,7 @@ Subject: [PATCH] Prevent loss of item drops due to update suppression when
 
 
 diff --git a/net/minecraft/server/level/ServerPlayerGameMode.java b/net/minecraft/server/level/ServerPlayerGameMode.java
-index bf0d8da240f9c4ceb307c2b79c54bfe13db2cc1c..10ca2c2d601b5cf2e88049d1eb8ee1771c2a451e 100644
+index adba2fef..563980ce 100644
 --- a/net/minecraft/server/level/ServerPlayerGameMode.java
 +++ b/net/minecraft/server/level/ServerPlayerGameMode.java
 @@ -407,11 +407,21 @@ public class ServerPlayerGameMode {
@@ -42,7 +42,7 @@ index bf0d8da240f9c4ceb307c2b79c54bfe13db2cc1c..10ca2c2d601b5cf2e88049d1eb8ee177
          // Drop event experience
          if (changed) {
 diff --git a/net/minecraft/world/level/block/entity/AbstractFurnaceBlockEntity.java b/net/minecraft/world/level/block/entity/AbstractFurnaceBlockEntity.java
-index 97b69ca8025321d4ffbdca80e593348b014a73d6..b6f55df3e3f2752eae10cd0ee1e0c81fc57680c4 100644
+index d1ce11fb..332f0053 100644
 --- a/net/minecraft/world/level/block/entity/AbstractFurnaceBlockEntity.java
 +++ b/net/minecraft/world/level/block/entity/AbstractFurnaceBlockEntity.java
 @@ -150,6 +150,16 @@ public abstract class AbstractFurnaceBlockEntity extends BaseContainerBlockEntit

@@ -7,7 +7,7 @@ Cleans up the running anger timer whenever neither target nor
 persistentAngerTarget points to a valid player.
 
 diff --git a/net/minecraft/world/entity/NeutralMob.java b/net/minecraft/world/entity/NeutralMob.java
-index 3425ac4f186f144527e612bc895457ba4cd3ff93..99e8df0004d58721c99fcb01a162c952fe3ebc07 100644
+index 3425ac4f..99e8df00 100644
 --- a/net/minecraft/world/entity/NeutralMob.java
 +++ b/net/minecraft/world/entity/NeutralMob.java
 @@ -85,6 +85,22 @@ public interface NeutralMob {

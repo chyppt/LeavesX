@@ -5,10 +5,10 @@ Subject: [PATCH] Add configurable startup warnings and player messages
 
 
 diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
-index 205d34267222ac85777f0376c6326fd69eb4bc4a..7a7c46c2c0c5e2cd390840ec31c039da6eacf314 100644
+index e296a2c3..7beddb3b 100644
 --- a/net/minecraft/server/dedicated/DedicatedServer.java
 +++ b/net/minecraft/server/dedicated/DedicatedServer.java
-@@ -249,7 +249,8 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+@@ -210,7 +210,8 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
          }
  
          // Paper start - detect running as root
@@ -18,7 +18,7 @@ index 205d34267222ac85777f0376c6326fd69eb4bc4a..7a7c46c2c0c5e2cd390840ec31c039da
              LOGGER.warn("****************************");
              LOGGER.warn("YOU ARE RUNNING THIS SERVER AS AN ADMINISTRATIVE OR ROOT USER. THIS IS NOT ADVISED.");
              LOGGER.warn("YOU ARE OPENING YOURSELF UP TO POTENTIAL RISKS WHEN DOING THIS.");
-@@ -351,7 +352,8 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+@@ -312,7 +313,8 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
          String proxyFlavor = (io.papermc.paper.configuration.GlobalConfiguration.get().proxies.velocity.enabled) ? "Velocity" : "BungeeCord";
          String proxyLink = (io.papermc.paper.configuration.GlobalConfiguration.get().proxies.velocity.enabled) ? "https://docs.papermc.io/velocity/security" : "http://www.spigotmc.org/wiki/firewall-guide/";
          // Paper end - Add Velocity IP Forwarding Support
@@ -29,10 +29,10 @@ index 205d34267222ac85777f0376c6326fd69eb4bc4a..7a7c46c2c0c5e2cd390840ec31c039da
              LOGGER.warn("The server will make no attempt to authenticate usernames. Beware.");
              // Spigot start
 diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
-index 70e4824f23af05c3974bcd4706badde4f550e9b6..ddd734d523813a103c3ced19092542dd2bf9c275 100644
+index dcbd53f5..e29c64d3 100644
 --- a/net/minecraft/server/players/PlayerList.java
 +++ b/net/minecraft/server/players/PlayerList.java
-@@ -365,7 +365,13 @@ public abstract class PlayerList {
+@@ -366,7 +366,13 @@ public abstract class PlayerList {
          // Ensure that player inventory is populated with its viewer
          player.containerMenu.transferTo(player.containerMenu, bukkitPlayer);
  
@@ -47,7 +47,7 @@ index 70e4824f23af05c3974bcd4706badde4f550e9b6..ddd734d523813a103c3ced19092542dd
          this.cserver.getPluginManager().callEvent(playerJoinEvent);
  
          if (!player.connection.isAcceptingMessages()) {
-@@ -625,7 +631,13 @@ public abstract class PlayerList {
+@@ -626,7 +632,13 @@ public abstract class PlayerList {
              player.closeContainer(org.bukkit.event.inventory.InventoryCloseEvent.Reason.DISCONNECT); // Paper - Inventory close reason
          }
  

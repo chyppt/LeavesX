@@ -5,7 +5,7 @@ Subject: [PATCH] Bound cat spawning density lookups for bate58
 
 
 diff --git a/net/minecraft/world/entity/ai/village/poi/PoiManager.java b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
-index a67c3ccfd24172df1bd2e440a48d7e5f262af82f..e126a7acb81b2be97e14c51619ae6629ab42118f 100644
+index 3b07e731..2bec93fb 100644
 --- a/net/minecraft/world/entity/ai/village/poi/PoiManager.java
 +++ b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
 @@ -206,6 +206,33 @@ public class PoiManager extends SectionStorage<PoiSection, PoiSection.Packed> im
@@ -43,18 +43,19 @@ index a67c3ccfd24172df1bd2e440a48d7e5f262af82f..e126a7acb81b2be97e14c51619ae6629
          return this.exists(blockPos, p -> p.is(poiType));
      }
 diff --git a/net/minecraft/world/entity/npc/CatSpawner.java b/net/minecraft/world/entity/npc/CatSpawner.java
-index 3c745f35075a59a6055ba2d43b364b238089138f..1984e1ead1664fd01a41b5dd0622bd5be51f7e1c 100644
+index aedd0a9b..17f67b46 100644
 --- a/net/minecraft/world/entity/npc/CatSpawner.java
 +++ b/net/minecraft/world/entity/npc/CatSpawner.java
-@@ -6,6 +6,7 @@ import net.minecraft.server.level.ServerLevel;
+@@ -6,6 +6,8 @@ import net.minecraft.server.level.ServerLevel;
  import net.minecraft.tags.StructureTags;
  import net.minecraft.util.RandomSource;
  import net.minecraft.world.entity.EntitySpawnReason;
 +import net.minecraft.world.entity.EntitySelector;
- import net.minecraft.world.entity.EntityType;
++import net.minecraft.world.entity.EntityType;
+ import net.minecraft.world.entity.EntityTypes;
  import net.minecraft.world.entity.SpawnPlacements;
  import net.minecraft.world.entity.ai.village.poi.PoiManager;
-@@ -13,10 +14,16 @@ import net.minecraft.world.entity.ai.village.poi.PoiTypes;
+@@ -13,10 +15,16 @@ import net.minecraft.world.entity.ai.village.poi.PoiTypes;
  import net.minecraft.world.entity.animal.feline.Cat;
  import net.minecraft.world.entity.player.Player;
  import net.minecraft.world.level.CustomSpawner;
@@ -71,7 +72,7 @@ index 3c745f35075a59a6055ba2d43b364b238089138f..1984e1ead1664fd01a41b5dd0622bd5b
      private int nextTick;
  
      @Override
-@@ -45,19 +52,42 @@ public class CatSpawner implements CustomSpawner {
+@@ -45,19 +53,42 @@ public class CatSpawner implements CustomSpawner {
      }
  
      private void spawnInVillage(final ServerLevel serverLevel, final BlockPos spawnPos) {

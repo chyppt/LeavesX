@@ -5,7 +5,7 @@ Subject: [PATCH] Old leash behavior when use firework
 
 
 diff --git a/net/minecraft/world/item/FireworkRocketItem.java b/net/minecraft/world/item/FireworkRocketItem.java
-index 897f3e8750fec11ea665681d86e1126b84cca252..19cc55712c4ebcd81a6daa155355a940df2abdf4 100644
+index 897f3e87..19cc5571 100644
 --- a/net/minecraft/world/item/FireworkRocketItem.java
 +++ b/net/minecraft/world/item/FireworkRocketItem.java
 @@ -88,7 +88,7 @@ public class FireworkRocketItem extends Item implements ProjectileItem {

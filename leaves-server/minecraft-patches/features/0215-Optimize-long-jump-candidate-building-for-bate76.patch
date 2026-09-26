@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize long-jump candidate building for bate76
 
 
 diff --git a/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java b/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
-index fe7403770b6c117cc2b9e5a3ab9f8554deed703c..7b4c19a27f8bfd1d6938885ef1f8abe8227b49b3 100644
+index fe740377..7b4c19a2 100644
 --- a/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
 +++ b/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
 @@ -126,21 +126,48 @@ public class LongJumpToRandomPos<E extends Mob> extends Behavior<E> {

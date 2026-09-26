@@ -5,7 +5,7 @@ Subject: [PATCH] Short-circuit ridden entity follow scans for bate59
 
 
 diff --git a/net/minecraft/world/entity/ai/goal/FollowPlayerRiddenEntityGoal.java b/net/minecraft/world/entity/ai/goal/FollowPlayerRiddenEntityGoal.java
-index 4618602ac3db16fd1dea591ccc028b1115ffda39..e8f3fabb494a776a02cfc68eac91162a7da1fcad 100644
+index 4618602a..e8f3fabb 100644
 --- a/net/minecraft/world/entity/ai/goal/FollowPlayerRiddenEntityGoal.java
 +++ b/net/minecraft/world/entity/ai/goal/FollowPlayerRiddenEntityGoal.java
 @@ -1,5 +1,6 @@

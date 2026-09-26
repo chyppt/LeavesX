@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize list-backed container scans for beta127
 
 
 diff --git a/net/minecraft/world/level/block/entity/ListBackedContainer.java b/net/minecraft/world/level/block/entity/ListBackedContainer.java
-index 89a86543ccb6ca2c9a292a425c6b17e7cb646bce..a4e6d0c87eab25c2c7e3e6e15332b2d370cf2f61 100644
+index 89a86543..a4e6d0c8 100644
 --- a/net/minecraft/world/level/block/entity/ListBackedContainer.java
 +++ b/net/minecraft/world/level/block/entity/ListBackedContainer.java
 @@ -10,9 +10,23 @@ public interface ListBackedContainer extends Container {

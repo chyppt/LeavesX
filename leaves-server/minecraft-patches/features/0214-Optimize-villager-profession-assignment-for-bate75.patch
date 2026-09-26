@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize villager profession assignment for bate75
 
 
 diff --git a/net/minecraft/world/entity/ai/behavior/AssignProfessionFromJobSite.java b/net/minecraft/world/entity/ai/behavior/AssignProfessionFromJobSite.java
-index 4fa5879a98e7a8836a5689e525d97222305b5fdb..cc9005eb1ce80831f025a0728e09bda989f06d0c 100644
+index 4fa5879a..cc9005eb 100644
 --- a/net/minecraft/world/entity/ai/behavior/AssignProfessionFromJobSite.java
 +++ b/net/minecraft/world/entity/ai/behavior/AssignProfessionFromJobSite.java
 @@ -3,14 +3,17 @@ package net.minecraft.world.entity.ai.behavior;

@@ -5,10 +5,10 @@ Subject: [PATCH] Bound dolphin item play queries for bate68
 
 
 diff --git a/net/minecraft/world/entity/animal/dolphin/Dolphin.java b/net/minecraft/world/entity/animal/dolphin/Dolphin.java
-index cd01b389c862d363de7e78f042305d2e9e231d15..0a6681e316e28db7d2bda2852619e3c74cd217a8 100644
+index de7c9a12..09954d7d 100644
 --- a/net/minecraft/world/entity/animal/dolphin/Dolphin.java
 +++ b/net/minecraft/world/entity/animal/dolphin/Dolphin.java
-@@ -528,17 +528,14 @@ public class Dolphin extends AgeableWaterCreature {
+@@ -537,17 +537,14 @@ public class Dolphin extends AgeableWaterCreature {
                  return false;
              }
  
@@ -30,7 +30,7 @@ index cd01b389c862d363de7e78f042305d2e9e231d15..0a6681e316e28db7d2bda2852619e3c7
                  Dolphin.this.playSound(SoundEvents.DOLPHIN_PLAY, 1.0F, 1.0F);
              }
  
-@@ -557,17 +554,30 @@ public class Dolphin extends AgeableWaterCreature {
+@@ -566,17 +563,30 @@ public class Dolphin extends AgeableWaterCreature {
  
          @Override
          public void tick() {

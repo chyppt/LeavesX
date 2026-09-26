@@ -5,7 +5,7 @@ Subject: [PATCH] Defer ticket queue conflict allocation for bate87
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
-index 3bd1ff7605c66a3cc7e176b0de5b516617c24ef9..49c272c85cd662d7d358d38464e1b0c59e7e8caf 100644
+index 3bd1ff76..49c272c8 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ThreadedTicketLevelPropagator.java
 @@ -468,7 +468,9 @@ public abstract class ThreadedTicketLevelPropagator {

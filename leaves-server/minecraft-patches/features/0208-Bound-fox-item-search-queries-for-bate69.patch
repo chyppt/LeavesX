@@ -5,10 +5,10 @@ Subject: [PATCH] Bound fox item search queries for bate69
 
 
 diff --git a/net/minecraft/world/entity/animal/fox/Fox.java b/net/minecraft/world/entity/animal/fox/Fox.java
-index c14068e9f0acc4f91d54b61c60f6f1b52cb84d68..e5287c37f3de2d9a57dfbfc9f94bc865fd31ce6d 100644
+index dbe9cb45..aa49fdf0 100644
 --- a/net/minecraft/world/entity/animal/fox/Fox.java
 +++ b/net/minecraft/world/entity/animal/fox/Fox.java
-@@ -1289,26 +1289,39 @@ public class Fox extends Animal {
+@@ -1284,26 +1284,39 @@ public class Fox extends Animal {
                  return false;
              }
  

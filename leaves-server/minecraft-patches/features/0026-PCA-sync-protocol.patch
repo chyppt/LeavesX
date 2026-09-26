@@ -6,7 +6,7 @@ Subject: [PATCH] PCA sync protocol
 This patch is Powered by plusls-carpet-addition(https://github.com/plusls/plusls-carpet-addition)
 
 diff --git a/net/minecraft/world/level/block/entity/BeehiveBlockEntity.java b/net/minecraft/world/level/block/entity/BeehiveBlockEntity.java
-index d2aa5ef709781e0cea99883ce8deab340d4adee0..c74d683d4ab26d20903842c690b06db34b5f6a85 100644
+index 0bbce88f..8eb0f3e6 100644
 --- a/net/minecraft/world/level/block/entity/BeehiveBlockEntity.java
 +++ b/net/minecraft/world/level/block/entity/BeehiveBlockEntity.java
 @@ -320,6 +320,11 @@ public class BeehiveBlockEntity extends BlockEntity {
@@ -34,7 +34,7 @@ index d2aa5ef709781e0cea99883ce8deab340d4adee0..c74d683d4ab26d20903842c690b06db3
  
      @Override
 diff --git a/net/minecraft/world/level/block/entity/HopperBlockEntity.java b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
-index ce6b64e00a0a13ebdceda56d975d79f60c26b86d..97b5abf842f698a2b5cebca5acb1acb7fb9095e1 100644
+index fef616d7..7ab5afd8 100644
 --- a/net/minecraft/world/level/block/entity/HopperBlockEntity.java
 +++ b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
 @@ -200,6 +200,11 @@ public class HopperBlockEntity extends RandomizableContainerBlockEntity implemen

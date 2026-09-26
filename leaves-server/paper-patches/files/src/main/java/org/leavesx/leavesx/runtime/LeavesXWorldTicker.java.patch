@@ -1,0 +1,319 @@
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXWorldTicker.java
+@@ -1,0 +_,316 @@
++package org.leavesx.leavesx.runtime;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.CompletionException;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
++import java.util.concurrent.locks.LockSupport;
++import java.util.function.BooleanSupplier;
++import ca.spottedleaf.moonrise.common.util.TickThread;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.level.Level;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
++/**
++ * Experimental world-level dispatch. Vanilla dimensions and explicitly pinned worlds require
++ * the entire live world list to tick serially, in its original order. Cross-world teleports
++ * still mutate both worlds immediately; deferring them to a barrier would change portal and
++ * entity timing. Merely dispatching Bukkit events on the server thread is not world isolation.
++ *
++ * <p>Worker failures are reported after submitted tasks settle. An already-started world tick
++ * must never be replayed: it may already have spawned entities or placed portal tickets.</p>
++ */
++public final class LeavesXWorldTicker {
++
++    private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXWorldTicker.class);
++
++    private static final class WorldExecutor {
++        final ServerLevel level;
++        final java.util.concurrent.ExecutorService executor;
++        final boolean strictSerial;
++
++        WorldExecutor(final ServerLevel level, final boolean strictSerial) {
++            this.level = level;
++            this.strictSerial = strictSerial;
++            if (strictSerial) {
++                this.executor = null;
++            } else {
++                final java.util.concurrent.ThreadFactory factory = new WorldThreadFactory(level);
++                this.executor = java.util.concurrent.Executors.newSingleThreadExecutor(factory);
++            }
++        }
++    }
++
++    /** TickThread subtype carrying the world it is currently ticking for moonrise assertions. */
++    public static final class WorldTickThread extends TickThread {
++        public volatile ServerLevel currentTickingWorld;
++
++        WorldTickThread(final Runnable run, final String name) {
++            super(run, name);
++        }
++    }
++
++    private static final class WorldThreadFactory implements java.util.concurrent.ThreadFactory {
++        private final ServerLevel level;
++
++        WorldThreadFactory(final ServerLevel level) {
++            this.level = level;
++        }
++
++        @Override
++        public Thread newThread(final Runnable run) {
++            final WorldTickThread thread = new WorldTickThread(run, "LeavesX World Tick - " + this.level.getWorld().getName());
++            thread.setDaemon(true);
++            thread.setUncaughtExceptionHandler((t, e) ->
++                LOGGER.error("Uncaught exception in LeavesX world tick thread {}", t.getName(), e));
++            return thread;
++        }
++    }
++
++    private static volatile List<WorldExecutor> worlds = List.of();
++    private static volatile int concurrentWorlds = 1;
++    private static volatile boolean initialized;
++    private static volatile boolean degradedToSerial;
++    private static volatile boolean serialCompatibility;
++    private static volatile boolean terminationFailed;
++
++    private static final AtomicLong PARALLEL_TICKS = new AtomicLong();
++    private static final AtomicLong SERIAL_DEGRADED_TICKS = new AtomicLong();
++    private static final AtomicLong SUBMIT_FAILURES = new AtomicLong();
++
++    private LeavesXWorldTicker() {
++    }
++
++    /**
++     * Builds (or rebuilds) the per-world executors from the live world list. Called once after
++     * worlds load and on plugin-driven world load/unload while regionized ticking is enabled.
++     */
++    public static synchronized void refreshWorlds(final List<ServerLevel> levels) {
++        if (terminationFailed) {
++            throw new IllegalStateException("Previous LeavesX world tick executor is still running; refusing to start another");
++        }
++        shutdownExecutors();
++        // A plugin can transfer to an otherwise independent custom world. Pinning only the
++        // vanilla trio would still race that destination, so preserve the whole list's order.
++        serialCompatibility = levels.stream().anyMatch(level ->
++            Level.OVERWORLD.equals(level.dimension()) || Level.NETHER.equals(level.dimension())
++                || Level.END.equals(level.dimension())
++                || LeavesXRegionTicking.isStrictSerialWorld(level.getWorld().getName()));
++        final List<WorldExecutor> next = new ArrayList<>(levels.size());
++        for (final ServerLevel level : levels) {
++            next.add(new WorldExecutor(level, serialCompatibility));
++        }
++        worlds = List.copyOf(next);
++        final LeavesXConfigSnapshot snapshot = LeavesXConfigSnapshot.current();
++        final int requested = snapshot.worldThreads();
++        final int permitsCount = requested > 0
++            ? Math.min(requested, next.size())
++            : Math.max(1, Math.min(next.size(), Runtime.getRuntime().availableProcessors() - 1));
++        concurrentWorlds = Math.max(1, permitsCount);
++        initialized = !next.isEmpty();
++        degradedToSerial = false;
++        // shutdownExecutors closes the gate. Reopen only after its replacement state exists.
++        if (initialized && !serialCompatibility) {
++            LeavesXEventGate.reopen();
++            LeavesXEventGate.setEnabled(true);
++            LOGGER.info("LeavesX experimental parallel worlds: {} world(s), {} concurrent tick(s)",
++                next.size(), concurrentWorlds);
++        } else {
++            LeavesXEventGate.setEnabled(false);
++            if (initialized) {
++                LOGGER.info("LeavesX worlds: serial compatibility enabled for all {} worlds; preserving portal and cross-dimension tick order. Independent async computations remain available.", next.size());
++            }
++        }
++    }
++
++    /** Stops all world executors; called on server shutdown and config teardown. */
++    public static synchronized void shutdownExecutors() {
++        initialized = false;
++        // Close the synchronous-event gate before stopping workers. A worker blocked in a Bukkit
++        // event must fail and leave the old world before a replacement executor can be published.
++        LeavesXEventGate.close();
++        boolean interrupted = false;
++        IllegalStateException failure = null;
++        for (final WorldExecutor world : worlds) {
++            if (world.executor != null) {
++                world.executor.shutdown();
++                try {
++                    if (!world.executor.awaitTermination(10L, TimeUnit.SECONDS)) {
++                        world.executor.shutdownNow();
++                        if (!world.executor.awaitTermination(5L, TimeUnit.SECONDS)) {
++                            failure = new IllegalStateException("LeavesX world tick executor did not terminate: " + world.executor);
++                        }
++                    }
++                } catch (final InterruptedException interruption) {
++                    interrupted = true;
++                    world.executor.shutdownNow();
++                    failure = new IllegalStateException("Interrupted while stopping LeavesX world tick executors", interruption);
++                }
++            }
++        }
++        worlds = List.of();
++        serialCompatibility = false;
++        if (interrupted) {
++            Thread.currentThread().interrupt();
++        }
++        if (failure != null) {
++            terminationFailed = true;
++            throw failure;
++        }
++    }
++
++    /** Returns whether the ticker has world executors ready. */
++    public static boolean isReady() {
++        return initialized;
++    }
++
++    /** The server must use its original world loop, not the worker dispatch branch. */
++    public static boolean usesSerialCompatibility() {
++        return serialCompatibility || degradedToSerial;
++    }
++
++    /**
++     * Runs bounded batches while pumping synchronous events on the calling server thread.
++     * Returns false when compatibility requires the original serial world order.
++     */
++    public static boolean tickAllParallel(final BooleanSupplier haveTime, final TickInvoker invoker) {
++        final List<WorldExecutor> current = worlds;
++        if (!initialized || current.isEmpty() || usesSerialCompatibility()) {
++            tickAllSerial(current, haveTime, invoker);
++            return false;
++        }
++        final List<CompletableFuture<Void>> futures = new ArrayList<>(current.size());
++        boolean anyWorker = false;
++        try {
++            for (final WorldExecutor world : current) {
++                if (world.strictSerial || world.executor == null) {
++                    continue;
++                }
++                anyWorker = true;
++                // Never wait for an executor slot without servicing events: an occupied
++                // worker may itself be waiting for this server thread to dispatch one.
++                if (futures.size() == concurrentWorlds) {
++                    awaitBatch(futures);
++                    futures.clear();
++                }
++                final CompletableFuture<Void> future = new CompletableFuture<>();
++                futures.add(future);
++                try {
++                    world.executor.execute(() -> {
++                        final WorldTickThread thread = (WorldTickThread) Thread.currentThread();
++                        Throwable tickFailure = null;
++                        try {
++                            LeavesXEventGate.enterWorldThread();
++                            thread.currentTickingWorld = world.level;
++                            invoker.tick(world.level, haveTime);
++                        } catch (final Throwable failure) {
++                            tickFailure = failure;
++                        } finally {
++                            thread.currentTickingWorld = null;
++                            LeavesXEventGate.exitWorldThread();
++                        }
++                        // Publish completion only after releasing world ownership markers.
++                        if (tickFailure == null) {
++                            future.complete(null);
++                        } else {
++                            future.completeExceptionally(tickFailure);
++                        }
++                    });
++                } catch (final Throwable submitFailure) {
++                    SUBMIT_FAILURES.incrementAndGet();
++                    future.completeExceptionally(submitFailure);
++                    // Settle already-started siblings before propagating rejection. Do not
++                    // retry a partly completed tick on the server thread.
++                    awaitBatch(futures);
++                }
++            }
++            awaitBatch(futures);
++            PARALLEL_TICKS.incrementAndGet();
++            return anyWorker;
++        } catch (final CompletionException failure) {
++            SERIAL_DEGRADED_TICKS.incrementAndGet();
++            LOGGER.error("LeavesX parallel world tick failed; degrading this ticker to serial until restart", failure.getCause());
++            degradedToSerial = true;
++            throw failure;
++        } finally {
++            LeavesXEventGate.exitWorldThread();
++        }
++    }
++
++    private static void awaitBatch(final List<CompletableFuture<Void>> futures) {
++        Throwable dispatchFailure = null;
++        while (!allDone(futures)) {
++            try {
++                if (LeavesXEventGate.pendingCount() > 0) {
++                    LeavesXEventGate.pump();
++                } else {
++                    LockSupport.parkNanos(200_000L);
++                }
++            } catch (final Throwable failure) {
++                dispatchFailure = failure;
++                LeavesXEventGate.close();
++            }
++        }
++        if (dispatchFailure != null) {
++            throw new CompletionException(dispatchFailure);
++        }
++        // isDone includes exceptional completion; join is required to surface failures.
++        for (final CompletableFuture<Void> future : futures) {
++            future.join();
++        }
++    }
++
++    /** Returns whether every submitted world future has completed. */
++    private static boolean allDone(final List<CompletableFuture<Void>> futures) {
++        for (final CompletableFuture<Void> future : futures) {
++            if (!future.isDone()) {
++                return false;
++            }
++        }
++        return true;
++    }
++
++    private static void tickAllSerial(final List<WorldExecutor> current, final BooleanSupplier haveTime, final TickInvoker invoker) {
++        for (final WorldExecutor world : current) {
++            invoker.tick(world.level, haveTime);
++        }
++    }
++
++    /** Minimal invoker abstraction so the MC side can pass its guarded tick method. */
++    public interface TickInvoker {
++        void tick(ServerLevel level, BooleanSupplier haveTime);
++    }
++
++    /** Read-only config access bridged at configure time to avoid config module cycles. */
++    private static final class LeavesXConfigSnapshot {
++        private static volatile int worldThreads;
++
++        static void publish(final int threads) {
++            worldThreads = threads;
++        }
++
++        static int worldThreads() {
++            return worldThreads;
++        }
++
++        static LeavesXConfigSnapshot current() {
++            return new LeavesXConfigSnapshot();
++        }
++    }
++
++    /** Publishes the configured world thread count before executors are built. */
++    public static void configure(final int worldThreads) {
++        LeavesXConfigSnapshot.publish(worldThreads);
++    }
++
++    /** Snapshot of ticker counters for diagnostics. */
++    public record TickerCounters(long parallelTicks, long degradedTicks, long submitFailures) {
++    }
++
++    public static TickerCounters counters() {
++        return new TickerCounters(PARALLEL_TICKS.get(), SERIAL_DEGRADED_TICKS.get(), SUBMIT_FAILURES.get());
++    }
++}

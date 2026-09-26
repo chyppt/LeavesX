@@ -5,7 +5,7 @@ Subject: [PATCH] Optimize synchronous natural spawn accounting for bate17
 
 
 diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
-index 9f2260b0d1a49bbd865498d8305cc74727fac3cc..667677de2ec3e071565d6f4266ee09eca5a236bb 100644
+index e61dd03d..0d4b424b 100644
 --- a/net/minecraft/server/level/ServerChunkCache.java
 +++ b/net/minecraft/server/level/ServerChunkCache.java
 @@ -593,8 +593,10 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
@@ -22,7 +22,7 @@ index 9f2260b0d1a49bbd865498d8305cc74727fac3cc..667677de2ec3e071565d6f4266ee09ec
          } finally {
              spawningChunks.clear();
 diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minecraft/world/level/MobSpawnCountAccumulator.java
-index c28779891799e20fb456721b8c269010d52325b5..146fcfcb269d21042ab74fbc48b51bb4a1944f5a 100644
+index c2877989..146fcfcb 100644
 --- a/net/minecraft/world/level/MobSpawnCountAccumulator.java
 +++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
 @@ -5,7 +5,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -78,7 +78,7 @@ index c28779891799e20fb456721b8c269010d52325b5..146fcfcb269d21042ab74fbc48b51bb4
          final Long2ObjectOpenHashMap<int[]>[] partialCounts,
          final int completedPartitions
 diff --git a/net/minecraft/world/level/MobSpawnCounting.java b/net/minecraft/world/level/MobSpawnCounting.java
-index 4804185d0ad37b12865e5858ea08b46c94f13bb5..7d7641bb6d0152e63cfc3ff97fdfeb55d3e78456 100644
+index 4804185d..7d7641bb 100644
 --- a/net/minecraft/world/level/MobSpawnCounting.java
 +++ b/net/minecraft/world/level/MobSpawnCounting.java
 @@ -16,10 +16,11 @@ import net.minecraft.world.level.chunk.ChunkAccess;
