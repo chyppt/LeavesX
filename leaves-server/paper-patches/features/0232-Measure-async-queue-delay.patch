@@ -1,0 +1,99 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sun, 27 Sep 2026 01:00:00 +0800
+Subject: [PATCH] Measure async queue delay
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+index 49b70adf..be86809d 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+@@ -143,7 +143,8 @@ public final class LeavesXAsyncRuntime {
+ 
+         final CompletableFuture<Void> completion = new CompletableFuture<>();
+         try {
+-            state.executor.execute(() -> runTask(state, task, completion));
++            final long queuedAt = System.nanoTime();
++            state.executor.execute(() -> runTask(state, task, completion, queuedAt));
+             state.submitted.incrementAndGet();
+             return completion;
+         } catch (final RejectedExecutionException rejected) {
+@@ -168,7 +169,8 @@ public final class LeavesXAsyncRuntime {
+ 
+         final CompletableFuture<T> completion = new CompletableFuture<>();
+         try {
+-            state.executor.execute(() -> runValueTask(state, task, completion));
++            final long queuedAt = System.nanoTime();
++            state.executor.execute(() -> runValueTask(state, task, completion, queuedAt));
+             state.submitted.incrementAndGet();
+             return completion;
+         } catch (final RejectedExecutionException rejected) {
+@@ -199,7 +201,8 @@ public final class LeavesXAsyncRuntime {
+ 
+         final CompletableFuture<T> completion = new CompletableFuture<>();
+         try {
+-            state.executor.execute(() -> runValueTask(state, task, completion));
++            final long queuedAt = System.nanoTime();
++            state.executor.execute(() -> runValueTask(state, task, completion, queuedAt));
+             state.submitted.incrementAndGet();
+             return completion;
+         } catch (final RejectedExecutionException rejected) {
+@@ -266,7 +269,8 @@ public final class LeavesXAsyncRuntime {
+         }
+ 
+         final CompletableFuture<T> completion = new CompletableFuture<>();
+-        final OwnedTask ownedTask = new OwnedTask(() -> runValueTask(state, task, completion));
++        final long queuedAt = System.nanoTime();
++        final OwnedTask ownedTask = new OwnedTask(() -> runValueTask(state, task, completion, queuedAt));
+         final boolean[] scheduleDrain = new boolean[1];
+         state.ownedLanes.compute(ownerKey, (ignored, existing) -> {
+             final OwnedLane lane = existing == null ? new OwnedLane() : existing;
+@@ -339,6 +343,14 @@ public final class LeavesXAsyncRuntime {
+             : state.taskTiming.snapshot();
+     }
+ 
++    /** Time from admission until execution; excludes waiting for admission capacity. */
++    public static org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot queueTiming(final Workload workload) {
++        final ExecutorState state = executors.get(workload);
++        return state == null
++            ? new org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot(0L, 0L, 0L)
++            : state.queueTiming.snapshot();
++    }
++
+     /** Stops accepting work and waits for queued data writes and computations to finish. */
+     public static synchronized void shutdown() {
+         final Map<Workload, ExecutorState> previous = executors;
+@@ -525,9 +537,11 @@ public final class LeavesXAsyncRuntime {
+     private static void runTask(
+         final ExecutorState state,
+         final Runnable task,
+-        final CompletableFuture<Void> completion
++        final CompletableFuture<Void> completion,
++        final long queuedAt
+     ) {
+         final long started = System.nanoTime();
++        state.queueTiming.record(started - queuedAt);
+         state.activeTasks.incrementAndGet();
+         try {
+             task.run();
+@@ -546,9 +560,11 @@ public final class LeavesXAsyncRuntime {
+     private static <T> void runValueTask(
+         final ExecutorState state,
+         final Supplier<T> task,
+-        final CompletableFuture<T> completion
++        final CompletableFuture<T> completion,
++        final long queuedAt
+     ) {
+         final long started = System.nanoTime();
++        state.queueTiming.record(started - queuedAt);
+         state.activeTasks.incrementAndGet();
+         try {
+             completion.complete(task.get());
+@@ -657,6 +673,8 @@ public final class LeavesXAsyncRuntime {
+ 
+         private final org.leavesx.leavesx.diagnostics.AsyncTaskTiming taskTiming =
+             new org.leavesx.leavesx.diagnostics.AsyncTaskTiming();
++        private final org.leavesx.leavesx.diagnostics.AsyncTaskTiming queueTiming =
++            new org.leavesx.leavesx.diagnostics.AsyncTaskTiming();
+ 
+         private final ThreadPoolExecutor executor;
+         private final Semaphore capacity;

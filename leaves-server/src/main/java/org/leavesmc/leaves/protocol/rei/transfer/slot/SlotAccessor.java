@@ -40,4 +40,8 @@ public interface SlotAccessor {
     default boolean canPlace(ItemStack stack) {
         return true;
     }
+
+    default int maxStackSize(ItemStack stack) {
+        return stack.getMaxStackSize();
+    }
 }

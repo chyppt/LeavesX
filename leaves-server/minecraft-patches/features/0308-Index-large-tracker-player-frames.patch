@@ -1,0 +1,58 @@
+From: chyppt <pptwxo@163.com>
+Date: Sun, 27 Sep 2026 12:00:00 +0800
+Subject: [PATCH] Index large tracker player frames
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index 208ffbed..5691c29c 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1809,10 +1809,17 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         private double[] positionData = new double[0];
+         private double[] viewDistanceBlocks = new double[0];
+         private int size;
++        private final it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap<ServerPlayer> playerIndices =
++            new it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap<>();
++        private boolean indexed;
+ 
+         private void prepare(final List<ServerPlayer> currentPlayers) {
+             final int previousSize = this.size;
+             this.size = 0;
++            this.playerIndices.clear();
++            // Keep the short linear scan for small servers. Larger frames otherwise repeat
++            // an O(players) identity lookup for every entity/player candidate pair.
++            this.indexed = currentPlayers.size() >= 16;
+             this.ensureCapacity(currentPlayers.size());
+             for (int index = 0, count = currentPlayers.size(); index < count; index++) {
+                 final ServerPlayer player = currentPlayers.get(index);
+@@ -1824,9 +1831,12 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         }
+ 
+         private int indexOfOrAdd(final ServerPlayer player, final double viewDistance) {
+-            for (int index = 0; index < this.size; index++) {
+-                if (this.players[index] == player) {
+-                    return index;
++            if (this.indexed) {
++                final int existing = this.playerIndices.getOrDefault(player, -1);
++                if (existing >= 0) return existing;
++            } else {
++                for (int index = 0; index < this.size; index++) {
++                    if (this.players[index] == player) return index;
+                 }
+             }
+             this.ensureCapacity(this.size + 1);
+@@ -1838,11 +1848,14 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         private void clear() {
+             // Preparation may fail before overwriting every slot left by the previous frame.
+             java.util.Arrays.fill(this.players, null);
++            this.playerIndices.clear();
++            this.indexed = false;
+             this.size = 0;
+         }
+ 
+         private void capture(final int index, final ServerPlayer player, final double viewDistance) {
+             this.players[index] = player;
++            if (this.indexed) this.playerIndices.putIfAbsent(player, index);
+             final int offset = index * COMPONENTS;
+             this.positionData[offset] = player.getX();
+             this.positionData[offset + 1] = player.getY();
+

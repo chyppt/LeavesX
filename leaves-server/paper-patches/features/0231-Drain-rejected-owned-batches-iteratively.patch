@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sun, 27 Sep 2026 01:00:00 +0800
+Subject: [PATCH] Drain rejected owned batches iteratively
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+index 255669d1..49b70adf 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+@@ -465,22 +465,28 @@ public final class LeavesXAsyncRuntime {
+     }
+ 
+     private static void scheduleOwnedDrain(final ExecutorState state, final LaneKey ownerKey) {
+-        try {
+-            state.executor.execute(() -> drainOwnedLane(state, ownerKey, false));
+-        } catch (final RejectedExecutionException rejected) {
+-            state.rejected.incrementAndGet();
+-            drainOwnedLane(state, ownerKey, true);
+-        }
++        do {
++            try {
++                state.executor.execute(() -> {
++                    if (drainOwnedBatch(state, ownerKey, false)) scheduleOwnedDrain(state, ownerKey);
++                });
++                return;
++            } catch (final RejectedExecutionException rejected) {
++                state.rejected.incrementAndGet();
++            }
++            // Shutdown or saturation can reject every resubmission. Keep draining the same
++            // FIFO lane without growing the call stack once per batch of eight tasks.
++        } while (drainOwnedBatch(state, ownerKey, true));
+     }
+ 
+-    private static void drainOwnedLane(
++    private static boolean drainOwnedBatch(
+         final ExecutorState state,
+         final LaneKey ownerKey,
+         final boolean callerFallback
+     ) {
+         final OwnedLane lane = state.ownedLanes.get(ownerKey);
+         if (lane == null) {
+-            return;
++            return false;
+         }
+ 
+         int completedTasks = 0;
+@@ -513,9 +519,7 @@ public final class LeavesXAsyncRuntime {
+                 return lane;
+             }
+         });
+-        if (reschedule[0]) {
+-            scheduleOwnedDrain(state, ownerKey);
+-        }
++        return reschedule[0];
+     }
+ 
+     private static void runTask(

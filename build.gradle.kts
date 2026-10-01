@@ -41,6 +41,14 @@ subprojects {
     }
     tasks.withType<ProcessResources> {
         filteringCharset = Charsets.UTF_8.name()
+        inputs.property("leavesXLicenseLineEndings", "lf-v1")
+        // Git on Windows may convert this pinned license to CRLF before its patch installs attributes.
+        // Normalize only this resource; its audited UTF-8 bytes must match on every build host.
+        filesMatching("META-INF/licenses/leaves-documentation-MPL-2.0.txt") {
+            filter<org.apache.tools.ant.filters.FixCrLfFilter>(
+                "eol" to org.apache.tools.ant.filters.FixCrLfFilter.CrLf.newInstance("lf")
+            )
+        }
     }
 
 

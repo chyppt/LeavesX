@@ -1,0 +1,175 @@
+From: chyppt <pptwxo@163.com>
+Date: Tue, 29 Sep 2026 23:30:00 +0800
+Subject: [PATCH] Preserve ordered work during async shutdown
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+@@ -53,6 +53,9 @@ public final class LeavesXAsyncRuntime {
+     public static synchronized void configure(final LeavesXConfig.AsyncSettings settings, final boolean isolateChunkPacking) {
+         Objects.requireNonNull(settings, "settings");
+         shutdown();
++        if (!executors.isEmpty()) {
++            throw new IllegalStateException("Previous LeavesX async tasks are still draining; refusing to replace their executors");
++        }
+ 
+         final EnumMap<Workload, ExecutorState> next = new EnumMap<>(Workload.class);
+         final int generalThreads = generalThreadCount(settings);
+@@ -265,7 +268,9 @@ public final class LeavesXAsyncRuntime {
+         }
+         if (!state.reserveOwned()) {
+             state.rejected.incrementAndGet();
+-            return runValueInline(workload, state, task, true);
++            // The runtime is draining. Inline execution could overwrite an older admitted save.
++            return CompletableFuture.failedFuture(new RejectedExecutionException(
++                "LeavesX " + workload.displayName + " is stopping; ordered task was not accepted"));
+         }
+ 
+         final CompletableFuture<T> completion = new CompletableFuture<>();
+@@ -373,39 +378,51 @@ public final class LeavesXAsyncRuntime {
+ 
+-    /** Stops accepting work and waits for queued data writes and computations to finish. */
++    /** Closes ordered admission and waits for already admitted data writes and computations. */
+     public static synchronized void shutdown() {
++        shutdown(SHUTDOWN_TIMEOUT);
++    }
++
++    /** Package-private deadline seam for deterministic shutdown regression tests. */
++    static synchronized void shutdown(final Duration timeout) {
++        if (timeout.isNegative()) throw new IllegalArgumentException("Negative shutdown timeout");
+         final Map<Workload, ExecutorState> previous = executors;
+-        executors = Map.of();
++        configured = false;
+         if (previous.isEmpty()) {
+-            configured = false;
+             return;
+         }
+ 
++        // Keep the closing generation visible until all admitted work is done. Removing it early
++        // makes late saves look like a disabled workload and lets them bypass the old UUID lane.
+         final Set<ThreadPoolExecutor> uniqueExecutors = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+         for (final ExecutorState state : previous.values()) {
++            state.closeOwnedAdmission();
+             uniqueExecutors.add(state.executor);
+         }
+         for (final ThreadPoolExecutor executor : uniqueExecutors) {
+             executor.shutdown();
+         }
+ 
+-        boolean interrupted = false;
+-        for (final ThreadPoolExecutor executor : uniqueExecutors) {
+-            try {
+-                if (!executor.awaitTermination(SHUTDOWN_TIMEOUT.toSeconds(), TimeUnit.SECONDS)) {
+-                    LOGGER.warn(
+-                        "LeavesX executor did not stop within {} seconds; cancelling {} queued task(s)",
+-                        SHUTDOWN_TIMEOUT.toSeconds(),
+-                        executor.getQueue().size()
+-                    );
+-                    executor.shutdownNow();
++        final long deadline = System.nanoTime() + timeout.toNanos();
++        try {
++            for (final ThreadPoolExecutor executor : uniqueExecutors) {
++                if (!executor.awaitTermination(Math.max(0L, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)) {
++                    LOGGER.error("LeavesX async shutdown timed out; admitted tasks are still draining. "
++                        + "Ordered submissions and executor replacement remain disabled");
++                    return;
+                 }
+-            } catch (final InterruptedException interruption) {
+-                interrupted = true;
+-                executor.shutdownNow();
+             }
+-        }
+-        configured = false;
+-        if (interrupted) {
++            // A submission admitted just before closure may still be draining on its caller
++            // after the executor rejects it. Executor termination alone does not cover it.
++            for (final ExecutorState state : previous.values()) {
++                if (!state.awaitDrained(deadline)) {
++                    LOGGER.error("LeavesX caller-thread tasks are still draining; executor replacement remains disabled");
++                    return;
++                }
++            }
++            executors = Map.of();
++        } catch (final InterruptedException interruption) {
++            // Never discard queued saves or leave their completion futures permanently pending.
++            // The old generation remains observable and continues its normal FIFO drain.
++            LOGGER.warn("LeavesX async shutdown interrupted; admitted tasks will continue draining");
+             Thread.currentThread().interrupt();
+         }
+     }
+@@ -708,6 +725,7 @@ public final class LeavesXAsyncRuntime {
+         private final AtomicLong ownedSubmissions = new AtomicLong();
+         private final AtomicInteger maximumQueueDepth = new AtomicInteger();
+         private final ConcurrentHashMap<LaneKey, OwnedLane> ownedLanes = new ConcurrentHashMap<>();
++        private volatile boolean acceptingOwned = true;
+ 
+         private ExecutorState(final ThreadPoolExecutor executor, final int maximumInFlight) {
+             this.executor = executor;
+@@ -725,11 +743,14 @@ public final class LeavesXAsyncRuntime {
+ 
+         /**
+          * Applies bounded backpressure before entering an owned FIFO lane. Running inline here could overtake an older
+-         * task for the same owner, so shutdown is the only condition that uses the caller fallback.
++         * task for the same owner. Executor rejection still uses the same bounded lane; runtime
++         * closure rejects new ordered work explicitly instead of allowing it to bypass that lane.
+          */
+         private boolean reserveOwned() {
+-            if (this.executor.isShutdown()) return false;
+-            if (this.reserve()) return true;
++            synchronized (this) {
++                if (!this.acceptingOwned) return false;
++                if (this.reserve()) return true;
++            }
+             return org.leavesx.leavesx.diagnostics.OwnerThreadWaits.measure(
+                 org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.ADMISSION, this::waitForOwnedCapacity);
+         }
+@@ -738,14 +759,20 @@ public final class LeavesXAsyncRuntime {
+             boolean interrupted = false;
+             try {
+                 while (true) {
+-                    if (this.executor.isShutdown()) {
++                    if (!this.acceptingOwned) {
+                         return false;
+                     }
+                     try {
+                         if (this.capacity.tryAcquire(100L, TimeUnit.MILLISECONDS)) {
+-                            this.inFlight.incrementAndGet();
+-                            this.recordMaximumQueueDepth();
+-                            return true;
++                            synchronized (this) {
++                                if (!this.acceptingOwned) {
++                                    this.capacity.release();
++                                    return false;
++                                }
++                                this.inFlight.incrementAndGet();
++                                this.recordMaximumQueueDepth();
++                                return true;
++                            }
+                         }
+                     } catch (final InterruptedException interruption) {
+                         interrupted = true;
+@@ -761,6 +788,24 @@ public final class LeavesXAsyncRuntime {
+         private void release() {
+             this.inFlight.decrementAndGet();
+             this.capacity.release();
++            if (!this.acceptingOwned) {
++                synchronized (this) {
++                    this.notifyAll();
++                }
++            }
++        }
++
++        private synchronized void closeOwnedAdmission() {
++            this.acceptingOwned = false;
++        }
++
++        private synchronized boolean awaitDrained(final long deadline) throws InterruptedException {
++            while (this.inFlight.get() != 0) {
++                final long remaining = deadline - System.nanoTime();
++                if (remaining <= 0L) return false;
++                TimeUnit.NANOSECONDS.timedWait(this, remaining);
++            }
++            return true;
+         }
+ 
+         private int queuedTasks() {

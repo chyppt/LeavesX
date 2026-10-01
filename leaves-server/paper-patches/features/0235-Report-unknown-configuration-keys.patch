@@ -1,0 +1,38 @@
+From: chyppt <pptwxo@163.com>
+Date: Sun, 27 Sep 2026 12:00:00 +0800
+Subject: [PATCH] Report unknown configuration keys
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 68213549..14dfae74 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -25,6 +25,10 @@ public final class LeavesXConfigBootstrap {
+         return new ReloadResult(requested, restartRequiredChanges(startupConfiguration, requested));
+     }
+ 
++    public static Path configurationPath() {
++        return configuredPath;
++    }
++
+     /**
+      * Loads the configured file and publishes it to the runtime.
+      *
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 84f5365a..faf54324 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1441,6 +1441,13 @@ public final class LeavesXCommand extends Command {
+             final var result = org.leavesx.leavesx.config.LeavesXConfigBootstrap.checkConfiguration();
+             sendHeader(sender, "LeavesX 配置检查");
+             sender.sendMessage(Component.text("YAML 和配置值有效；本次检查未写入文件，也未重载运行时。", NamedTextColor.GREEN));
++            final var unknownKeys = org.leavesx.leavesx.config.LeavesXConfigInspection.unknownKeys(
++                org.leavesx.leavesx.config.LeavesXConfigBootstrap.configurationPath());
++            if (unknownKeys.isEmpty()) {
++                sender.sendMessage(Component.text("未发现未知配置项。", NamedTextColor.GRAY));
++            } else {
++                sender.sendMessage(Component.text("未知配置项（最多显示 32 项）：" + String.join("、", unknownKeys), NamedTextColor.YELLOW));
++            }
+             if (result.restartRequiredChanges().isEmpty()) {
+                 sender.sendMessage(Component.text("未发现需要重启的配置变化。", NamedTextColor.GRAY));
+             } else {
+

@@ -1,0 +1,38 @@
+From f0c7cb98ccc3eb417067fdab9022376c2f4af01a Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Wed, 30 Sep 2026 23:09:56 +0800
+Subject: [PATCH] Dispatch custom protocols on the server thread and release
+ buffers
+
+---
+ .../network/ServerCommonPacketListenerImpl.java       | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/net/minecraft/server/network/ServerCommonPacketListenerImpl.java b/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
+index 5cb388c3..1b05bf67 100644
+--- a/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
+@@ -178,14 +178,21 @@ public abstract class ServerCommonPacketListenerImpl implements ServerCommonPack
+ 
+     @Override
+     public void handleCustomPayload(final ServerboundCustomPayloadPacket packet) {
++        // LeavesX: protocol handlers inspect menus and inventories, so dispatch only after acquiring the server thread.
++        PacketUtils.ensureRunningOnSameThread(packet, this, this.server.packetProcessor());
+         // Leaves start - protocol
+         if (packet.payload() instanceof org.leavesmc.leaves.protocol.core.LeavesCustomPayload leavesPayload) {
+             org.leavesmc.leaves.protocol.core.LeavesProtocolManager.handlePayload(org.leavesmc.leaves.protocol.core.ProtocolUtils.createSelector(this), leavesPayload);
+             return;
+         }
+         if (packet.payload() instanceof net.minecraft.network.protocol.common.custom.DiscardedPayload(net.minecraft.resources.Identifier id, byte[] data)) {
+-            if (org.leavesmc.leaves.protocol.core.LeavesProtocolManager.handleBytebuf(org.leavesmc.leaves.protocol.core.ProtocolUtils.createSelector(this), id, io.netty.buffer.Unpooled.wrappedBuffer(data))) {
+-                return;
++            final io.netty.buffer.ByteBuf protocolBuffer = io.netty.buffer.Unpooled.wrappedBuffer(data);
++            try {
++                if (org.leavesmc.leaves.protocol.core.LeavesProtocolManager.handleBytebuf(org.leavesmc.leaves.protocol.core.ProtocolUtils.createSelector(this), id, protocolBuffer)) {
++                    return;
++                }
++            } finally {
++                protocolBuffer.release();
+             }
+         }
+         // Leaves end - protocol

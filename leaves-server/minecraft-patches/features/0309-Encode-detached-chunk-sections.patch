@@ -1,0 +1,288 @@
+From: chyppt <pptwxo@163.com>
+Subject: [PATCH] Encode detached chunk sections behind packet readiness
+
+diff --git a/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java b/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
+index 9ddbfedb..1c28d2a2 100644
+--- a/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
++++ b/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
+@@ -34,6 +34,7 @@ public class ClientboundLevelChunkPacketData {
+     private static final int TWO_MEGABYTES = 2097152; // Paper - diff on change - if this changes, update PacketEncoder
+     private final Map<Heightmap.Types, long[]> heightmaps;
+     private final byte[] buffer;
++    private final org.leavesx.leavesx.network.DeferredChunkSections leavesX$sections;
+     private final List<ClientboundLevelChunkPacketData.BlockEntityInfo> blockEntitiesData;
+     // Paper start - Handle oversized block entities in chunks
+     private static final int BLOCK_ENTITY_LIMIT = Integer.getInteger("Paper.excessiveTELimit", 750);
+@@ -56,12 +57,22 @@ public class ClientboundLevelChunkPacketData {
+         final boolean lazyExtraPackets = org.leavesx.leavesx.config.LeavesXRuntime.lazyChunkExtraPacketsOptimization();
+         List<Packet<?>> extraPackets = leavesX$createExtraPacketList(lazyExtraPackets);
+         this.heightmaps = collectHeightmaps(levelChunk.getHeightmaps(), optimizeAssembly);
+-        // Packet assembly stays on the owning tick thread until every chunk component can be snapshotted.
+-        this.buffer = new byte[calculateChunkSize(levelChunk)];
+-        if (chunkPacketInfo != null) {
+-            chunkPacketInfo.setBuffer(this.buffer);
++        // Only detached section palettes cross threads. Heightmaps, block entities, lights and
++        // all controller hooks remain captured in their original owner-thread order.
++        if (chunkPacketInfo == null
++            && org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.enabled(org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.CHUNK_SEND)
++            && levelChunk.getLevel().chunkPacketBlockController == io.papermc.paper.antixray.ChunkPacketBlockController.NO_OPERATION_INSTANCE) {
++            this.buffer = new byte[calculateChunkSize(levelChunk)];
++            this.leavesX$sections = new org.leavesx.leavesx.network.DeferredChunkSections(
++                org.leavesx.leavesx.network.ChunkSectionSnapshot.capture(levelChunk.getSections()), this.buffer);
++        } else {
++            this.leavesX$sections = null;
++            this.buffer = new byte[calculateChunkSize(levelChunk)];
++            if (chunkPacketInfo != null) {
++                chunkPacketInfo.setBuffer(this.buffer);
++            }
++            extractChunkData(new FriendlyByteBuf(this.getWriteBuffer()), levelChunk, chunkPacketInfo);
+         }
+-        extractChunkData(new FriendlyByteBuf(this.getWriteBuffer()), levelChunk, chunkPacketInfo);
+         final Map<BlockPos, BlockEntity> blockEntities = levelChunk.getBlockEntities();
+         this.blockEntitiesData = optimizeAssembly
+             ? new java.util.ArrayList<>(Math.min(blockEntities.size(), BLOCK_ENTITY_LIMIT))
+@@ -105,6 +116,7 @@ public class ClientboundLevelChunkPacketData {
+     }
+ 
+     public ClientboundLevelChunkPacketData(final RegistryFriendlyByteBuf input, final int x, final int z) {
++        this.leavesX$sections = null;
+         this.extraPackets = leavesX$createExtraPacketList(
+             org.leavesx.leavesx.config.LeavesXRuntime.lazyChunkExtraPacketsOptimization()
+         );
+@@ -136,8 +148,9 @@ public class ClientboundLevelChunkPacketData {
+ 
+     public void write(final RegistryFriendlyByteBuf output) {
+         HEIGHTMAPS_STREAM_CODEC.encode(output, this.heightmaps);
+-        output.writeVarInt(this.buffer.length);
+-        output.writeBytes(this.buffer);
++        final byte[] bytes = this.leavesX$sectionBytes();
++        output.writeVarInt(bytes.length);
++        output.writeBytes(bytes);
+         ClientboundLevelChunkPacketData.BlockEntityInfo.LIST_STREAM_CODEC.encode(output, this.blockEntitiesData);
+     }
+ 
+@@ -193,7 +206,15 @@ public class ClientboundLevelChunkPacketData {
+     }
+ 
+     public FriendlyByteBuf getReadBuffer() {
+-        return new FriendlyByteBuf(Unpooled.wrappedBuffer(this.buffer));
++        return new FriendlyByteBuf(Unpooled.wrappedBuffer(this.leavesX$sectionBytes()));
++    }
++
++    public boolean leavesX$isReady() {
++        return this.leavesX$sections == null || this.leavesX$sections.isReady();
++    }
++
++    private byte[] leavesX$sectionBytes() {
++        return this.leavesX$sections == null ? this.buffer : this.leavesX$sections.bytes();
+     }
+ 
+     public Map<Heightmap.Types, long[]> getHeightmaps() {
+diff --git a/net/minecraft/network/protocol/game/ClientboundLevelChunkWithLightPacket.java b/net/minecraft/network/protocol/game/ClientboundLevelChunkWithLightPacket.java
+index a1018e9c..f248ae23 100644
+--- a/net/minecraft/network/protocol/game/ClientboundLevelChunkWithLightPacket.java
++++ b/net/minecraft/network/protocol/game/ClientboundLevelChunkWithLightPacket.java
+@@ -22,7 +22,7 @@ public class ClientboundLevelChunkWithLightPacket implements Packet<ClientGamePa
+     private volatile boolean ready;
+     @Override
+     public boolean isReady() {
+-        return this.ready;
++        return this.ready && this.chunkData.leavesX$isReady();
+     }
+ 
+     public void setReady(final boolean ready) {
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+index bba22559..7f6ba2b7 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+@@ -26,7 +26,6 @@ import it.unimi.dsi.fastutil.longs.LongHeapPriorityQueue;
+ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+ import net.minecraft.network.protocol.Packet;
+ import net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket;
+-import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
+ import net.minecraft.network.protocol.game.ClientboundSetChunkCacheCenterPacket;
+ import net.minecraft.network.protocol.game.ClientboundSetChunkCacheRadiusPacket;
+ import net.minecraft.network.protocol.game.ClientboundSetSimulationDistancePacket;
+@@ -44,7 +43,6 @@ import net.minecraft.world.level.levelgen.BelowZeroRetrogen;
+ import java.lang.invoke.VarHandle;
+ import java.util.ArrayDeque;
+ import java.util.concurrent.TimeUnit;
+-import java.util.concurrent.CompletableFuture;
+ import java.util.concurrent.atomic.AtomicLong;
+ import java.util.function.Function;
+ import org.slf4j.Logger;
+@@ -446,10 +444,6 @@ public final class RegionizedPlayerChunkLoader {
+ 
+         private final ArrayDeque<ChunkHolderManager.TicketOperation<?, ?>> delayedTicketOps = new ArrayDeque<>();
+         private final LongOpenHashSet sentChunks = new LongOpenHashSet();
+-        private static final int MAX_ASYNC_CHUNK_SENDS_PER_PLAYER = 64;
+-        private final LongOpenHashSet leavesX$pendingAsyncChunkKeys = new LongOpenHashSet(MAX_ASYNC_CHUNK_SENDS_PER_PLAYER);
+-        private final ArrayDeque<LeavesXAsyncChunkPacket> leavesX$pendingAsyncChunkPackets =
+-            new ArrayDeque<>(MAX_ASYNC_CHUNK_SENDS_PER_PLAYER);
+         // Allocated only for read-only spectators. Normal players retain the original zero-overhead ticket path.
+         private final LongOpenHashSet observerPendingChunks;
+         private final Long2ObjectOpenHashMap<LevelChunk> observerSentChunkReferences;
+@@ -561,95 +555,6 @@ public final class RegionizedPlayerChunkLoader {
+             throw new IllegalStateException();
+         }
+ 
+-        private boolean leavesX$scheduleAsyncChunk(final int chunkX, final int chunkZ, final LevelChunk chunk) {
+-            if (this.leavesX$pendingAsyncChunkPackets.size() >= MAX_ASYNC_CHUNK_SENDS_PER_PLAYER) {
+-                return false;
+-            }
+-            final long chunkKey = CoordinateUtils.getChunkKey(chunkX, chunkZ);
+-            if (!this.leavesX$pendingAsyncChunkKeys.add(chunkKey)) {
+-                return true;
+-            }
+-
+-            final boolean shouldModify = this.world.chunkPacketBlockController.shouldModify(this.player, chunk);
+-            final CompletableFuture<ClientboundLevelChunkWithLightPacket> packet =
+-                org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.trySubmitValue(
+-                    org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.CHUNK_SEND,
+-                    () -> PlayerChunkSender.prepareChunkPacket(this.world, chunk, shouldModify)
+-                );
+-            if (packet == null) {
+-                this.leavesX$pendingAsyncChunkKeys.remove(chunkKey);
+-                return false;
+-            }
+-            this.leavesX$pendingAsyncChunkPackets.addLast(new LeavesXAsyncChunkPacket(chunkKey, chunk, packet));
+-            return true;
+-        }
+-
+-        private void leavesX$drainAsyncChunks() {
+-            while (!this.leavesX$pendingAsyncChunkPackets.isEmpty()) {
+-                final LeavesXAsyncChunkPacket pending = this.leavesX$pendingAsyncChunkPackets.peekFirst();
+-                if (!pending.packet().isDone()) {
+-                    return;
+-                }
+-                this.leavesX$pendingAsyncChunkPackets.removeFirst();
+-                this.leavesX$pendingAsyncChunkKeys.remove(pending.chunkKey());
+-
+-                final int chunkX = CoordinateUtils.getChunkX(pending.chunkKey());
+-                final int chunkZ = CoordinateUtils.getChunkZ(pending.chunkKey());
+-                final LevelChunk current = ((ChunkSystemLevel)this.world).moonrise$getFullChunkIfLoaded(chunkX, chunkZ);
+-                if (this.removed || !this.wantChunkSent(chunkX, chunkZ) || current != pending.chunk()) {
+-                    if (!this.removed && this.wantChunkSent(chunkX, chunkZ) && current != null) {
+-                        this.sendQueue.enqueue(pending.chunkKey());
+-                    }
+-                    continue;
+-                }
+-
+-                final ClientboundLevelChunkWithLightPacket packet;
+-                try {
+-                    packet = pending.packet().join();
+-                } catch (final Throwable failure) {
+-                    LOGGER.error(
+-                        "LeavesX async chunk packet preparation failed for player {} at [{}, {}]; rebuilding on the tick thread",
+-                        this.player.getScoreboardName(),
+-                        chunkX,
+-                        chunkZ,
+-                        failure
+-                    );
+-                    this.leavesX$sendPreparedChunk(chunkX, chunkZ, current,
+-                        PlayerChunkSender.prepareChunkPacket(
+-                            this.world,
+-                            current,
+-                            this.world.chunkPacketBlockController.shouldModify(this.player, current)
+-                        ));
+-                    continue;
+-                }
+-                this.leavesX$sendPreparedChunk(chunkX, chunkZ, current, packet);
+-            }
+-        }
+-
+-        private void leavesX$sendPreparedChunk(
+-            final int chunkX,
+-            final int chunkZ,
+-            final LevelChunk chunk,
+-            final ClientboundLevelChunkWithLightPacket packet
+-        ) {
+-            final long chunkKey = CoordinateUtils.getChunkKey(chunkX, chunkZ);
+-            if (!this.sentChunks.add(chunkKey)) {
+-                return;
+-            }
+-            final ca.spottedleaf.moonrise.patches.chunk_system.scheduling.NewChunkHolder holder =
+-                ((ChunkSystemServerLevel)this.world).moonrise$getChunkTaskScheduler().chunkHolderManager
+-                    .getChunkHolder(chunkX, chunkZ);
+-            if (holder == null || holder.vanillaChunkHolder.getChunkToSend() != chunk) {
+-                this.sentChunks.remove(chunkKey);
+-                if (this.wantChunkSent(chunkX, chunkZ)) {
+-                    this.sendQueue.enqueue(chunkKey);
+-                }
+-                return;
+-            }
+-            ((ChunkSystemChunkHolder)holder.vanillaChunkHolder).moonrise$addReceivedChunk(this.player);
+-            PlatformHooks.get().onChunkWatch(this.world, chunk, this.player);
+-            PlayerChunkSender.sendPreparedChunk(this.player.connection, this.world, chunk, packet);
+-        }
+ 
+         /**
+          * Returns a chunk that is already fully loaded and safe to send without scheduling work or adding a ticket.
+@@ -960,7 +865,6 @@ public final class RegionizedPlayerChunkLoader {
+                 this.updateObserverQueues(time);
+                 return;
+             }
+-            this.leavesX$drainAsyncChunks();
+             // update rate limits
+             final double loadRate = this.getMaxChunkLoadRate();
+             final double genRate = this.getMaxChunkGenRate();
+@@ -1153,17 +1057,10 @@ public final class RegionizedPlayerChunkLoader {
+                         return;
+                     } // else: good to dequeue and send, fall through
+                 }
+-                if (org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.enabled(
+-                    org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.CHUNK_SEND
+-                )) {
+-                    if (!this.leavesX$scheduleAsyncChunk(pendingSendX, pendingSendZ, chunk)) {
+-                        break;
+-                    }
+-                    this.sendQueue.dequeueLong();
+-                } else {
+-                    this.sendQueue.dequeueLong();
+-                    this.sendChunk(pendingSendX, pendingSendZ);
+-                }
++                // Admit and enqueue the snapshot now so later block/light changes cannot overtake it.
++                // Only detached section encoding is deferred behind Paper's packet-ready barrier.
++                this.sendQueue.dequeueLong();
++                this.sendChunk(pendingSendX, pendingSendZ);
+ 
+                 if (this.removed) {
+                     // sendChunk may invoke plugin logic
+@@ -1171,7 +1068,6 @@ public final class RegionizedPlayerChunkLoader {
+                 }
+             }
+ 
+-            this.leavesX$drainAsyncChunks();
+ 
+             this.flushDelayedTicketOps();
+         }
+@@ -1373,8 +1269,6 @@ public final class RegionizedPlayerChunkLoader {
+             }
+ 
+             this.sendQueue.clear();
+-            this.leavesX$pendingAsyncChunkPackets.clear();
+-            this.leavesX$pendingAsyncChunkKeys.clear();
+             this.tickingQueue.clear();
+             this.generatingQueue.clear();
+             this.genQueue.clear();
+@@ -1520,8 +1414,6 @@ public final class RegionizedPlayerChunkLoader {
+                 throw new IllegalStateException("Removing removed player chunk loader");
+             }
+             this.removed = true;
+-            this.leavesX$pendingAsyncChunkPackets.clear();
+-            this.leavesX$pendingAsyncChunkKeys.clear();
+             // sends the chunk unload packets
+             this.broadcastMap.remove();
+             if (this.observerOnly) {
+@@ -1560,11 +1452,5 @@ public final class RegionizedPlayerChunkLoader {
+             return this.sentChunks;
+         }
+ 
+-        private record LeavesXAsyncChunkPacket(
+-            long chunkKey,
+-            LevelChunk chunk,
+-            CompletableFuture<ClientboundLevelChunkWithLightPacket> packet
+-        ) {
+-        }
+     }
+ }

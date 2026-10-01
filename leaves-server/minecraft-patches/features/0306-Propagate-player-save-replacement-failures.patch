@@ -1,0 +1,22 @@
+From: chyppt <pptwxo@163.com>
+Date: Sun, 27 Sep 2026 12:00:00 +0800
+Subject: [PATCH] Propagate player save replacement failures
+
+diff --git a/net/minecraft/world/level/storage/PlayerDataStorage.java b/net/minecraft/world/level/storage/PlayerDataStorage.java
+index 5a266870..a12c213f 100644
+--- a/net/minecraft/world/level/storage/PlayerDataStorage.java
++++ b/net/minecraft/world/level/storage/PlayerDataStorage.java
+@@ -98,7 +98,11 @@ public class PlayerDataStorage {
+             Files.write(temporaryFile, encoded);
+             final Path realFile = playerDirPath.resolve(stringId + ".dat");
+             final Path oldFile = playerDirPath.resolve(stringId + ".dat_old");
+-            Util.safeReplaceFile(realFile, temporaryFile, oldFile);
++            // The void wrapper only logs exhausted retries. Propagate failure to the save lane
++            // so diagnostics cannot report a failed replacement as a completed save.
++            if (!Util.safeReplaceOrMoveFile(realFile, temporaryFile, oldFile, false)) {
++                throw new java.io.IOException("Player data replacement failed for " + stringId);
++            }
+         } catch (final Exception exception) {
+             if (temporaryFile != null) {
+                 try {
+

@@ -1,0 +1,129 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sun, 27 Sep 2026 18:15:00 +0800
+Subject: [PATCH] Observe owner waits and discard obsolete paths
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+index be86809d..c77ca524 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+@@ -298,17 +298,23 @@ public final class LeavesXAsyncRuntime {
+ 
+     /** Waits until all globally ordered work submitted before this call has completed. */
+     public static void awaitOrdered(final Workload workload) {
+-        submitOrdered(workload, () -> { }).join();
++        org.leavesx.leavesx.diagnostics.OwnerThreadWaits.measure(
++            org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.ORDERED_BARRIER,
++            () -> submitOrdered(workload, () -> { }).join());
+     }
+ 
+     /** Waits for work already submitted for one identity owner without blocking unrelated owners. */
+     public static void awaitOwner(final Workload workload, final Object owner) {
+-        submitOwnedOrRun(workload, owner, () -> { }).join();
++        org.leavesx.leavesx.diagnostics.OwnerThreadWaits.measure(
++            org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.ORDERED_BARRIER,
++            () -> submitOwnedOrRun(workload, owner, () -> { }).join());
+     }
+ 
+     /** Value-keyed counterpart used by persistent records that may recreate identifier objects between calls. */
+     public static void awaitKey(final Workload workload, final Object key) {
+-        submitKeyedOrRun(workload, key, () -> { }).join();
++        org.leavesx.leavesx.diagnostics.OwnerThreadWaits.measure(
++            org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.ORDERED_BARRIER,
++            () -> submitKeyedOrRun(workload, key, () -> { }).join());
+     }
+ 
+     public static boolean enabled(final Workload workload) {
+@@ -708,6 +714,13 @@ public final class LeavesXAsyncRuntime {
+          * task for the same owner, so shutdown is the only condition that uses the caller fallback.
+          */
+         private boolean reserveOwned() {
++            if (this.executor.isShutdown()) return false;
++            if (this.reserve()) return true;
++            return org.leavesx.leavesx.diagnostics.OwnerThreadWaits.measure(
++                org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.ADMISSION, this::waitForOwnedCapacity);
++        }
++
++        private boolean waitForOwnedCapacity() {
+             boolean interrupted = false;
+             try {
+                 while (true) {
+
+diff --git a/src/main/java/org/leavesx/leavesx/path/LeavesXAsyncPath.java b/src/main/java/org/leavesx/leavesx/path/LeavesXAsyncPath.java
+index d61dd1c7..9d64a467 100644
+--- a/src/main/java/org/leavesx/leavesx/path/LeavesXAsyncPath.java
++++ b/src/main/java/org/leavesx/leavesx/path/LeavesXAsyncPath.java
+@@ -108,9 +108,19 @@ public final class LeavesXAsyncPath extends Path {
+             if (Thread.currentThread() != this.owner) {
+                 throw new IllegalStateException("A pending path may only be adopted on its requesting thread");
+             }
++            // The owner can discard an obsolete request without waiting for detached work.
++            // Do not cancel the shared future: its producer owns snapshot lifetime and cleanup.
++            if (!this.currentRequest.getAsBoolean()) {
++                this.resolved = null;
++                this.adoption = null;
++                this.currentRequest = () -> false;
++                this.processed = true;
++                return;
++            }
+             Throwable computationFailure = null;
+             try {
+-                this.resolved = this.future.join();
++                this.resolved = org.leavesx.leavesx.diagnostics.OwnerThreadWaits.join(
++                    org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.PATH_RESULT, this.future);
+             } catch (final CompletionException | java.util.concurrent.CancellationException failure) {
+                 computationFailure = failure;
+                 if (this.adoption == null) LOGGER.error("LeavesX asynchronous path calculation failed; this path request will be discarded", failure);
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 2d5e6d5b..84f5365a 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1449,6 +1449,14 @@ public final class LeavesXCommand extends Command {
+             if (result.configuration().asyncSettings().chunkSendEnabled()) {
+                 sender.sendMessage(Component.text("提示：异步区块发送当前仍受安全门控，运行时不会读取实时区块状态进行打包。", NamedTextColor.YELLOW));
+             }
++            if (result.configuration().asyncSettings().mobSpawningEnabled()) {
++                for (final World world : Bukkit.getWorlds()) {
++                    if (!((CraftWorld) world).getHandle().paperConfig().entities.spawning.perPlayerMobSpawns) {
++                        sender.sendMessage(Component.text(world.getKey()
++                            + "：Paper per-player-mob-spawns 未开启，请检查异步刷怪前置条件。", NamedTextColor.YELLOW));
++                    }
++                }
++            }
+         } catch (final RuntimeException exception) {
+             sender.sendMessage(Component.text("配置检查失败：" + exception.getMessage(), NamedTextColor.RED));
+         }
+@@ -1475,6 +1483,7 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(Component.text("/leavesx safety - 区域化降级、重放与线程域违规计数", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx reload - 只重载 leavesx.yml，并提示需重启的配置", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx health | report - 查看健康检查或导出脱敏报告", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx config check - 只读检查配置与重启差异", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx memory|network|threads|system|config - 对应详细状态", NamedTextColor.GRAY));
+     }
+ 
+
+diff --git a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+index 58595549..51f05d72 100644
+--- a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
++++ b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+@@ -35,6 +35,8 @@ public record ServerBuildInfoImpl(
+     private static final String BRAND_LEAVESX_NAME = "LeavesX";
+ 
+     private static final String BUILD_DEV = "DEV";
++    private static final Optional<String> LEAVESX_VERSION = getManifestAttribute(
++        JarManifests.manifest(CraftServer.class), "LeavesX-Version");
+ 
+     public ServerBuildInfoImpl() {
+         this(JarManifests.manifest(CraftServer.class));
+@@ -78,6 +80,10 @@ public record ServerBuildInfoImpl(
+         final StringBuilder sb = new StringBuilder();
+         sb.append(this.minecraftVersionId);
+         sb.append('-');
++        if (this.brandId.equals(BRAND_LEAVESX_ID) && LEAVESX_VERSION.isPresent()) {
++            sb.append(LEAVESX_VERSION.get());
++            sb.append('-');
++        }
+         if (this.buildNumber.isPresent()) {
+             sb.append(this.buildNumber.getAsInt());
+         } else {

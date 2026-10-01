@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sun, 27 Sep 2026 01:00:00 +0800
+Subject: [PATCH] Add read-only configuration check
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index bff3b0f1..68213549 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -17,6 +17,14 @@ public final class LeavesXConfigBootstrap {
+     private LeavesXConfigBootstrap() {
+     }
+ 
++    /** Validates the configured file without publishing, migrating or writing it. */
++    public static ReloadResult checkConfiguration() {
++        final Path path = configuredPath;
++        if (path == null) throw new LeavesXConfigException("LeavesX configuration path is not initialized");
++        final LeavesXConfig requested = LeavesXConfigInspection.read(path);
++        return new ReloadResult(requested, restartRequiredChanges(startupConfiguration, requested));
++    }
++
+     /**
+      * Loads the configured file and publishes it to the runtime.
+      *
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index dfa8dc36..2d5e6d5b 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -119,7 +119,11 @@ public final class LeavesXCommand extends Command {
+             case "stalls" -> sendStalls(sender, args);
+             case "regions" -> sendRegions(sender);
+             case "safety" -> sendSafety(sender);
+-            case "config" -> sendConfig(sender);
++            case "config" -> {
++                if (args.length == 1) sendConfig(sender);
++                else if (args.length == 2 && args[1].equalsIgnoreCase("check")) checkConfiguration(sender);
++                else sender.sendMessage(Component.text("用法：/leavesx config [check]", NamedTextColor.YELLOW));
++            }
+             case "reload" -> reloadConfiguration(sender);
+             case "help" -> sendHelp(sender);
+             default -> {
+@@ -146,6 +150,9 @@ public final class LeavesXCommand extends Command {
+         if (args.length == 2 && args[0].equalsIgnoreCase("stalls")) {
+             return StringUtil.copyPartialMatches(args[1], List.of("5", "10", "20", "clear"), new ArrayList<>());
+         }
++        if (args.length == 2 && args[0].equalsIgnoreCase("config")) {
++            return StringUtil.copyPartialMatches(args[1], List.of("check"), new ArrayList<>());
++        }
+         if (args.length == 2 && args[0].equalsIgnoreCase("parallel")) {
+             return StringUtil.copyPartialMatches(args[1], List.of("10", "30", "60", "120", "300"), new ArrayList<>());
+         }
+@@ -1429,6 +1436,24 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(line("慢插件任务阈值", config.diagnosticsSlowPluginTaskMillis() + " ms", NamedTextColor.AQUA));
+     }
+ 
++    private static void checkConfiguration(final CommandSender sender) {
++        try {
++            final var result = org.leavesx.leavesx.config.LeavesXConfigBootstrap.checkConfiguration();
++            sendHeader(sender, "LeavesX 配置检查");
++            sender.sendMessage(Component.text("YAML 和配置值有效；本次检查未写入文件，也未重载运行时。", NamedTextColor.GREEN));
++            if (result.restartRequiredChanges().isEmpty()) {
++                sender.sendMessage(Component.text("未发现需要重启的配置变化。", NamedTextColor.GRAY));
++            } else {
++                sender.sendMessage(Component.text("以下项目需要重启后生效：" + String.join("、", result.restartRequiredChanges()), NamedTextColor.YELLOW));
++            }
++            if (result.configuration().asyncSettings().chunkSendEnabled()) {
++                sender.sendMessage(Component.text("提示：异步区块发送当前仍受安全门控，运行时不会读取实时区块状态进行打包。", NamedTextColor.YELLOW));
++            }
++        } catch (final RuntimeException exception) {
++            sender.sendMessage(Component.text("配置检查失败：" + exception.getMessage(), NamedTextColor.RED));
++        }
++    }
++
+     private static void sendHelp(final CommandSender sender) {
+         sendHeader(sender, "命令帮助");
+         sender.sendMessage(Component.text("/leavesx ai - 领取禁用实体AI木棍，右键切换（村民保留交易补货）", NamedTextColor.GRAY));

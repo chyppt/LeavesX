@@ -45,7 +45,6 @@ import org.leavesmc.leaves.protocol.rei.display.StoneCuttingDisplay;
 import org.leavesmc.leaves.protocol.rei.payload.DisplaySyncPayload;
 import org.leavesmc.leaves.protocol.rei.transfer.InputSlotCrafter;
 import org.leavesmc.leaves.protocol.rei.transfer.NewInputSlotCrafter;
-import org.leavesmc.leaves.protocol.rei.transfer.slot.PlayerInventorySlotAccessor;
 import org.leavesmc.leaves.protocol.rei.transfer.slot.SlotAccessor;
 import org.leavesmc.leaves.protocol.rei.transfer.slot.VanillaSlotAccessor;
 
@@ -88,6 +87,11 @@ public class REIServerProtocol implements LeavesProtocol {
     private static final Executor executor = new ThreadPoolExecutor(
         1, 1, 0L, TimeUnit.MILLISECONDS,
         new ArrayBlockingQueue<>(1),
+        runnable -> {
+            Thread thread = new Thread(runnable, "LeavesX-REI-Encoder");
+            thread.setDaemon(true);
+            return thread;
+        },
         new ThreadPoolExecutor.DiscardOldestPolicy()
     );
     private static int minecraftRecipeVer = 0;
@@ -96,7 +100,8 @@ public class REIServerProtocol implements LeavesProtocol {
 
     @ProtocolHandler.ReloadDataPack
     public static void onRecipeReload() {
-        minecraftRecipeVer = MinecraftServer.getServer().getTickCount();
+        minecraftRecipeVer++;
+        cachedPayloads = null;
     }
 
     @Contract("_ -> new")
@@ -113,19 +118,28 @@ public class REIServerProtocol implements LeavesProtocol {
         } else {
             pluginManager.removePermission(CHEAT_PERMISSION);
             enabledPlayers.clear();
+            TRANSFORMERS.values().forEach(PacketTransformer::clear);
+            cachedPayloads = null;
+            minecraftRecipeVer++;
         }
     }
 
     @ProtocolHandler.PlayerLeave
     public static void onPlayerLoggedOut(@NotNull ServerPlayer player) {
         enabledPlayers.remove(player);
+        TRANSFORMERS.values().forEach(transformer -> transformer.clear(player.getUUID()));
     }
 
     @ProtocolHandler.Ticker
     public static void tick() {
         if (minecraftRecipeVer != nextReiRecipeVer) {
             nextReiRecipeVer = minecraftRecipeVer;
-            executor.execute(() -> reloadRecipe(nextReiRecipeVer));
+            // Snapshot recipes/displays on the server thread. Only encoding the detached display goes to the worker.
+            try {
+                reloadRecipe(nextReiRecipeVer);
+            } catch (RuntimeException failure) {
+                LeavesLogger.LOGGER.warn("Unable to prepare Roughly Enough Items recipes; retrying after the next recipe reload", failure);
+            }
         }
     }
 
@@ -169,17 +183,29 @@ public class REIServerProtocol implements LeavesProtocol {
             reiRecipeVer
         );
 
-        RegistryFriendlyByteBuf s2cBuf = ProtocolUtils.decorate(Unpooled.buffer());
-        DisplaySyncPayload.STREAM_CODEC.encode(s2cBuf, displaySyncPayload);
-        ImmutableList.Builder<CustomPacketPayload> listBuilder = ImmutableList.builder();
-        outboundTransform(s2cBuf, (id, splitBuf) ->
-            listBuilder.add(PacketTransformer.wrapRei(id, splitBuf))
-        );
+        final RegistryAccess registries = server.registryAccess();
+        executor.execute(() -> encodeAndPublish(displaySyncPayload, registries, reiRecipeVer));
+    }
 
-        cachedPayloads = listBuilder.build();
+    private static void encodeAndPublish(DisplaySyncPayload displaySyncPayload, RegistryAccess registries, int version) {
+        RegistryFriendlyByteBuf s2cBuf = new RegistryFriendlyByteBuf(Unpooled.buffer(), registries);
+        ImmutableList.Builder<CustomPacketPayload> listBuilder = ImmutableList.builder();
+        try {
+            DisplaySyncPayload.STREAM_CODEC.encode(s2cBuf, displaySyncPayload);
+            outboundTransform(s2cBuf, (id, splitBuf) -> listBuilder.add(PacketTransformer.wrapRei(id, splitBuf)));
+        } catch (RuntimeException failure) {
+            LeavesLogger.LOGGER.warn("Unable to encode Roughly Enough Items recipes; retrying after the next recipe reload", failure);
+            return;
+        } finally {
+            s2cBuf.release();
+        }
+
+        final ImmutableList<CustomPacketPayload> completed = listBuilder.build();
         Bukkit.getGlobalRegionScheduler().run(MinecraftInternalPlugin.INSTANCE, (task) -> {
+            if (!LeavesConfig.protocol.reiServerProtocol || minecraftRecipeVer != version) return;
+            cachedPayloads = completed;
             for (ServerPlayer player : enabledPlayers) {
-                for (CustomPacketPayload payload : cachedPayloads) {
+                for (CustomPacketPayload payload : completed) {
                     ProtocolUtils.sendPayloadPacket(player, payload);
                 }
             }
@@ -188,9 +214,9 @@ public class REIServerProtocol implements LeavesProtocol {
 
     @ProtocolHandler.MinecraftRegister(onlyNamespace = true, stage = ProtocolHandler.Stage.GAME)
     public static void onPlayerSubscribed(@NotNull ServerPlayer player, Identifier location) {
-        enabledPlayers.add(player);
         String channel = location.getPath();
         if (channel.equals("sync_displays")) {
+            enabledPlayers.add(player);
             if (cachedPayloads != null) {
                 cachedPayloads.forEach(payload -> ProtocolUtils.sendPayloadPacket(player, payload));
             }
@@ -223,20 +249,14 @@ public class REIServerProtocol implements LeavesProtocol {
             return;
         }
         BiConsumer<Identifier, RegistryFriendlyByteBuf> consumer = (ignored, c2sWholeBuf) -> {
-            FriendlyByteBuf tmpBuf = new FriendlyByteBuf(Unpooled.buffer()).writeBytes(c2sWholeBuf.readByteArray());
-            ItemStack itemStack = tmpBuf.readLenientJsonWithCodec(ItemStack.OPTIONAL_CODEC);
-            if (player.getInventory().add(itemStack.copy())) {
-                RegistryFriendlyByteBuf s2cWholeBuf = ProtocolUtils.decorate(Unpooled.buffer());
-                s2cWholeBuf.writeJsonWithCodec(ItemStack.OPTIONAL_CODEC, itemStack.copy());
-                s2cWholeBuf.writeUtf(player.getScoreboardName(), 32767);
-                // Due to the bug in REI, no packets are actually sent here.
-                /*
-                outboundTransform(CREATE_ITEMS_MESSAGE_PACKET, s2cWholeBuf, (id, s2cSplitBuf) -> {
-                    ProtocolUtils.sendPayloadPacket(player, new BufCustomPacketPayload(new CustomPacketPayload.Type<>(id), ByteBufUtil.getBytes(s2cSplitBuf)));
-                });
-                */
-            } else {
-                player.sendSystemMessage(Component.translatable("text.rei.failed_cheat_items"), false);
+            FriendlyByteBuf tmpBuf = new FriendlyByteBuf(Unpooled.wrappedBuffer(c2sWholeBuf.readByteArray()));
+            try {
+                ItemStack itemStack = tmpBuf.readLenientJsonWithCodec(ItemStack.OPTIONAL_CODEC);
+                if (!player.getInventory().add(itemStack.copy())) {
+                    player.sendSystemMessage(Component.translatable("text.rei.failed_cheat_items"), false);
+                }
+            } finally {
+                tmpBuf.release();
             }
         };
         inboundTransform(player, CREATE_ITEMS_PACKET, buf, consumer);
@@ -248,26 +268,20 @@ public class REIServerProtocol implements LeavesProtocol {
             return;
         }
         BiConsumer<Identifier, RegistryFriendlyByteBuf> consumer = (ignored, c2sWholeBuf) -> {
-            FriendlyByteBuf tmpBuf = new FriendlyByteBuf(Unpooled.buffer()).writeBytes(c2sWholeBuf.readByteArray());
-            ItemStack itemStack = tmpBuf.readLenientJsonWithCodec(ItemStack.OPTIONAL_CODEC);
-            ItemStack stack = itemStack.copy();
-            AbstractContainerMenu menu = player.containerMenu;
-            if (!menu.getCarried().isEmpty() && ItemStack.isSameItemSameComponents(menu.getCarried(), stack)) {
-                stack.setCount(Mth.clamp(stack.getCount() + menu.getCarried().getCount(), 1, stack.getMaxStackSize()));
-            } else if (!menu.getCarried().isEmpty()) {
-                return;
+            FriendlyByteBuf tmpBuf = new FriendlyByteBuf(Unpooled.wrappedBuffer(c2sWholeBuf.readByteArray()));
+            try {
+                ItemStack stack = tmpBuf.readLenientJsonWithCodec(ItemStack.OPTIONAL_CODEC).copy();
+                AbstractContainerMenu menu = player.containerMenu;
+                if (!menu.getCarried().isEmpty() && ItemStack.isSameItemSameComponents(menu.getCarried(), stack)) {
+                    stack.setCount(Mth.clamp(stack.getCount() + menu.getCarried().getCount(), 1, stack.getMaxStackSize()));
+                } else if (!menu.getCarried().isEmpty()) {
+                    return;
+                }
+                menu.setCarried(stack);
+                menu.broadcastChanges();
+            } finally {
+                tmpBuf.release();
             }
-            menu.setCarried(stack.copy());
-            menu.broadcastChanges();
-            RegistryFriendlyByteBuf s2cWholeBuf = ProtocolUtils.decorate(Unpooled.buffer());
-            s2cWholeBuf.writeJsonWithCodec(ItemStack.OPTIONAL_CODEC, stack.copy());
-            s2cWholeBuf.writeUtf(player.getScoreboardName(), 32767);
-            // Due to the bug in REI, no packets are actually sent here.
-            /*
-            outboundTransform(CREATE_ITEMS_MESSAGE_PACKET, s2cWholeBuf, (id, s2cSplitBuf) -> {
-                ProtocolUtils.sendPayloadPacket(player, new BufCustomPacketPayload(new CustomPacketPayload.Type<>(id), ByteBufUtil.getBytes(s2cSplitBuf)));
-            });
-            */
         };
         inboundTransform(player, CREATE_ITEMS_GRAB_PACKET, buf, consumer);
     }
@@ -278,24 +292,18 @@ public class REIServerProtocol implements LeavesProtocol {
             return;
         }
         BiConsumer<Identifier, RegistryFriendlyByteBuf> consumer = (ignored, c2sWholeBuf) -> {
-            FriendlyByteBuf tmpBuf = new FriendlyByteBuf(Unpooled.buffer()).writeBytes(c2sWholeBuf.readByteArray());
-            ItemStack stack = tmpBuf.readLenientJsonWithCodec(ItemStack.OPTIONAL_CODEC);
-            int hotbarSlotId = tmpBuf.readVarInt();
-            if (hotbarSlotId >= 0 && hotbarSlotId < 9) {
-                AbstractContainerMenu menu = player.containerMenu;
-                player.getInventory().getNonEquipmentItems().set(hotbarSlotId, stack.copy());
-                menu.broadcastChanges();
-                RegistryFriendlyByteBuf s2cWholeBuf = ProtocolUtils.decorate(Unpooled.buffer());
-                s2cWholeBuf.writeJsonWithCodec(ItemStack.OPTIONAL_CODEC, stack.copy());
-                s2cWholeBuf.writeUtf(player.getScoreboardName(), 32767);
-                // Due to the bug in REI, no packets are actually sent here.
-                /*
-                outboundTransform(CREATE_ITEMS_MESSAGE_PACKET, s2cWholeBuf, (id, s2cSplitBuf) -> {
-                    ProtocolUtils.sendPayloadPacket(player, new BufCustomPacketPayload(new CustomPacketPayload.Type<>(id), ByteBufUtil.getBytes(s2cSplitBuf)));
-                });
-                */
-            } else {
-                player.sendSystemMessage(Component.translatable("text.rei.failed_cheat_items"), false);
+            FriendlyByteBuf tmpBuf = new FriendlyByteBuf(Unpooled.wrappedBuffer(c2sWholeBuf.readByteArray()));
+            try {
+                ItemStack stack = tmpBuf.readLenientJsonWithCodec(ItemStack.OPTIONAL_CODEC);
+                int hotbarSlotId = tmpBuf.readVarInt();
+                if (hotbarSlotId >= 0 && hotbarSlotId < 9) {
+                    player.getInventory().getNonEquipmentItems().set(hotbarSlotId, stack.copy());
+                    player.containerMenu.broadcastChanges();
+                } else {
+                    player.sendSystemMessage(Component.translatable("text.rei.failed_cheat_items"), false);
+                }
+            } finally {
+                tmpBuf.release();
             }
         };
         inboundTransform(player, CREATE_ITEMS_HOTBAR_PACKET, buf, consumer);
@@ -304,10 +312,10 @@ public class REIServerProtocol implements LeavesProtocol {
     @ProtocolHandler.BytebufReceiver(key = "move_items_new")
     public static void handleMoveItem(ServerPlayer player, RegistryFriendlyByteBuf buf) {
         BiConsumer<Identifier, RegistryFriendlyByteBuf> consumer = (ignored, c2sWholeBuf) -> {
-            FriendlyByteBuf tmpBuf = new FriendlyByteBuf(Unpooled.buffer()).writeBytes(c2sWholeBuf.readByteArray());
+            FriendlyByteBuf tmpBuf = new FriendlyByteBuf(Unpooled.wrappedBuffer(c2sWholeBuf.readByteArray()));
             AbstractContainerMenu container = player.containerMenu;
-            tmpBuf.readIdentifier();
             try {
+                tmpBuf.readIdentifier();
                 boolean shift = tmpBuf.readBoolean();
                 try {
                     CompoundTag nbt = tmpBuf.readNbt();
@@ -319,12 +327,24 @@ public class REIServerProtocol implements LeavesProtocol {
                         throw new IllegalStateException("Server and client REI protocol version mismatch! Server: 1, Client: " + version);
                     }
 
-                    List<List<ItemStack>> recipes = readInputs(player.registryAccess(), nbt.getListOrEmpty("Inputs"));
-                    List<SlotAccessor> input = readSlots(container, player, nbt.getListOrEmpty("InputSlots"));
-                    List<SlotAccessor> inventory = readSlots(container, player, nbt.getListOrEmpty("InventorySlots"));
+                    Set<SlotKey> used = new HashSet<>();
+                    List<SlotAccessor> input = readSlots(container, player, nbt.getListOrEmpty("InputSlots"), used, true);
+                    List<SlotAccessor> inventory = readSlots(container, player, nbt.getListOrEmpty("InventorySlots"), used, false);
+                    List<List<ItemStack>> recipes = readInputs(player.registryAccess(), nbt.getListOrEmpty("Inputs"), input.size());
                     NewInputSlotCrafter<AbstractContainerMenu> crafter = new NewInputSlotCrafter<>(container, input, inventory, recipes);
                     Bukkit.getScheduler().runTask(MinecraftInternalPlugin.INSTANCE, () -> {
                         try {
+                            // Closing/replacing the menu invalidates this request even if the numeric container id is reused.
+                            if (!LeavesConfig.protocol.reiServerProtocol || player.containerMenu != container
+                                || player.isRemoved() || !player.isAlive() || player.isSpectator()
+                                || !container.stillValid(player) || !container.getCarried().isEmpty()) return;
+                            // Slot permissions may change between receipt and the scheduled task.
+                            for (SlotAccessor slot : input) {
+                                if (!slot.getItemStack().isEmpty() && !slot.allowModification(player)) return;
+                            }
+                            for (SlotAccessor slot : inventory) {
+                                if (!slot.allowModification(player)) return;
+                            }
                             crafter.fillInputSlots(player, shift);
                         } catch (InputSlotCrafter.NotEnoughMaterialsException ignored1) {
                         } catch (IllegalStateException e) {
@@ -342,6 +362,8 @@ public class REIServerProtocol implements LeavesProtocol {
                 }
             } catch (Exception e) {
                 LeavesLogger.LOGGER.error("Failed to move items for player {}", player.getScoreboardName(), e);
+            } finally {
+                tmpBuf.release();
             }
         };
         inboundTransform(player, MOVE_ITEMS_NEW_PACKET, buf, consumer);
@@ -383,12 +405,16 @@ public class REIServerProtocol implements LeavesProtocol {
         return 200;
     }
 
-    private static List<List<ItemStack>> readInputs(RegistryAccess registryAccess, ListTag tag) {
-        List<List<ItemStack>> items = new ArrayList<>();
+    private static List<List<ItemStack>> readInputs(RegistryAccess registryAccess, ListTag tag, int slotCount) {
+        if (tag.size() > slotCount) throw new IllegalStateException("Too many REI ingredients");
+        List<List<ItemStack>> items = new ArrayList<>(java.util.Collections.nCopies(slotCount, List.of()));
+        Set<Integer> used = new HashSet<>();
         for (Tag t : tag) {
             CompoundTag compoundTag = (CompoundTag) t;
-            compoundTag.getInt("Index").orElseThrow();
+            int index = compoundTag.getInt("Index").orElseThrow();
+            if (index < 0 || index >= slotCount || !used.add(index)) throw new IllegalStateException("Invalid REI ingredient index");
             ListTag ingredientList = compoundTag.getListOrEmpty("Ingredient");
+            if (ingredientList.size() > 256) throw new IllegalStateException("Too many REI ingredient alternatives");
             List<ItemStack> slotItems = new ArrayList<>();
             for (Tag ingredient : ingredientList) {
                 CompoundTag ingredientTag = (CompoundTag) ingredient;
@@ -398,12 +424,16 @@ public class REIServerProtocol implements LeavesProtocol {
                 ).getOrThrow();
                 slotItems.add(stack);
             }
-            items.add(slotItems);
+            items.set(index, slotItems);
         }
         return items;
     }
 
-    private static List<SlotAccessor> readSlots(AbstractContainerMenu menu, ServerPlayer player, ListTag tag) {
+    private record SlotKey(net.minecraft.world.Container container, int slot) {}
+
+    private static List<SlotAccessor> readSlots(AbstractContainerMenu menu, ServerPlayer player, ListTag tag,
+                                               Set<SlotKey> used, boolean input) {
+        if (tag.isEmpty() || tag.size() > (input ? 9 : 36)) throw new IllegalStateException("Invalid REI slot count");
         List<SlotAccessor> slots = new ArrayList<>();
         for (Tag t : tag) {
             CompoundTag compoundTag = (CompoundTag) t;
@@ -413,12 +443,20 @@ public class REIServerProtocol implements LeavesProtocol {
             }
             id = id.substring((PROTOCOL_ID + ":").length());
             int slot = compoundTag.getInt("Slot").orElseThrow();
-            SlotAccessor accessor = switch (id) {
-                case "vanilla" -> new VanillaSlotAccessor(menu.slots.get(slot));
-                case "player" -> new PlayerInventorySlotAccessor(player, slot);
+            net.minecraft.world.inventory.Slot actual = switch (id) {
+                case "vanilla" -> slot < 0 || slot >= menu.slots.size() ? null : menu.slots.get(slot);
+                case "player" -> menu.slots.stream().filter(candidate -> candidate.container == player.getInventory()
+                    && candidate.getContainerSlot() == slot && slot >= 0 && slot < 36).findFirst().orElse(null);
                 default -> throw new IllegalStateException("Unknown container id: " + id);
             };
-            slots.add(accessor);
+            if (actual == null || actual.isFake() || !actual.mayPickup(player)
+                || (input && !actual.getItem().isEmpty() && !actual.mayPlace(actual.getItem()))
+                || (input ? actual.container == player.getInventory()
+                          : actual.container != player.getInventory() || actual.getContainerSlot() < 0 || actual.getContainerSlot() >= 36)
+                || !used.add(new SlotKey(actual.container, actual.getContainerSlot()))) {
+                throw new IllegalStateException("Invalid or overlapping REI slots");
+            }
+            slots.add(new VanillaSlotAccessor(actual));
         }
         return slots;
     }

@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sun, 27 Sep 2026 01:00:00 +0800
+Subject: [PATCH] Measure admitted async task wall time
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+index 604a19a6..255669d1 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+@@ -331,6 +331,14 @@ public final class LeavesXAsyncRuntime {
+         );
+     }
+ 
++    /** Wall time spent executing admitted tasks, including owned-lane caller fallback and completion callbacks. */
++    public static org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot taskTiming(final Workload workload) {
++        final ExecutorState state = executors.get(workload);
++        return state == null
++            ? new org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot(0L, 0L, 0L)
++            : state.taskTiming.snapshot();
++    }
++
+     /** Stops accepting work and waits for queued data writes and computations to finish. */
+     public static synchronized void shutdown() {
+         final Map<Workload, ExecutorState> previous = executors;
+@@ -515,6 +523,7 @@ public final class LeavesXAsyncRuntime {
+         final Runnable task,
+         final CompletableFuture<Void> completion
+     ) {
++        final long started = System.nanoTime();
+         state.activeTasks.incrementAndGet();
+         try {
+             task.run();
+@@ -524,6 +533,7 @@ public final class LeavesXAsyncRuntime {
+             state.failed.incrementAndGet();
+             completion.completeExceptionally(failure);
+         } finally {
++            state.taskTiming.record(System.nanoTime() - started);
+             state.activeTasks.decrementAndGet();
+             state.release();
+         }
+@@ -534,6 +544,7 @@ public final class LeavesXAsyncRuntime {
+         final Supplier<T> task,
+         final CompletableFuture<T> completion
+     ) {
++        final long started = System.nanoTime();
+         state.activeTasks.incrementAndGet();
+         try {
+             completion.complete(task.get());
+@@ -542,6 +553,7 @@ public final class LeavesXAsyncRuntime {
+             state.failed.incrementAndGet();
+             completion.completeExceptionally(failure);
+         } finally {
++            state.taskTiming.record(System.nanoTime() - started);
+             state.activeTasks.decrementAndGet();
+             state.release();
+         }
+@@ -639,6 +651,9 @@ public final class LeavesXAsyncRuntime {
+ 
+     private static final class ExecutorState {
+ 
++        private final org.leavesx.leavesx.diagnostics.AsyncTaskTiming taskTiming =
++            new org.leavesx.leavesx.diagnostics.AsyncTaskTiming();
++
+         private final ThreadPoolExecutor executor;
+         private final Semaphore capacity;
+         private final AtomicInteger inFlight = new AtomicInteger();

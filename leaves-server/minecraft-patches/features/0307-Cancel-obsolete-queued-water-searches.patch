@@ -1,0 +1,71 @@
+From: chyppt <pptwxo@163.com>
+Date: Sun, 27 Sep 2026 12:00:00 +0800
+Subject: [PATCH] Cancel obsolete queued water searches
+
+diff --git a/net/minecraft/world/entity/ai/navigation/PathNavigation.java b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
+index bbbbf782..22641f1a 100644
+--- a/net/minecraft/world/entity/ai/navigation/PathNavigation.java
++++ b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
+@@ -55,6 +55,15 @@ public abstract class PathNavigation {
+     public final PathFinder pathFinder;
+     private boolean isStuck;
+     private long leavesX$pathRequest;
++    private java.util.concurrent.atomic.@Nullable AtomicBoolean leavesX$pathCancelled;
++
++    private long leavesX$invalidatePathRequest() {
++        if (this.leavesX$pathCancelled != null) {
++            this.leavesX$pathCancelled.set(true);
++            this.leavesX$pathCancelled = null;
++        }
++        return ++this.leavesX$pathRequest;
++    }
+     private float requiredPathLength = 16.0F;
+ 
+     public PathNavigation(final Mob mob, final Level level) {
+@@ -200,16 +209,18 @@ public abstract class PathNavigation {
+         BlockPos fromPos = above ? this.mob.blockPosition().above() : this.mob.blockPosition();
+         int radius = (int)(maxPathLength + radiusOffset);
+         PathNavigationRegion region = new PathNavigationRegion(this.level, fromPos.offset(-radius, -radius, -radius), fromPos.offset(radius, radius, radius));
+-        final long request = ++this.leavesX$pathRequest;
++        final long request = this.leavesX$invalidatePathRequest();
+         Path path = null;
+-        if (this.getClass() == WaterBoundPathNavigation.class) {
++        if (this.getClass() == WaterBoundPathNavigation.class && org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().asyncWaterPathfinding()) {
++            final var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
++            this.leavesX$pathCancelled = cancelled;
+             path = org.leavesx.leavesx.path.WaterPathfinding.tryCreate(this.mob, this.pathFinder, region, targets,
+                 maxPathLength, reachRange, this.maxVisitedNodesMultiplier,
+                 () -> this.leavesX$pathRequest == request && this.mob.getNavigation() == this && this.mob.level() == this.level,
+                 () -> {
+                     final BlockPos currentFrom = above ? this.mob.blockPosition().above() : this.mob.blockPosition();
+                     return new PathNavigationRegion(this.level, currentFrom.offset(-radius, -radius, -radius), currentFrom.offset(radius, radius, radius));
+-                });
++                }, cancelled::get);
+         }
+         // Unknown navigation/evaluator subclasses retain their original live-world search.
+         if (path == null) path = this.pathFinder.findPath(region, this.mob, targets, maxPathLength, reachRange, this.maxVisitedNodesMultiplier);
+@@ -259,14 +270,14 @@ public abstract class PathNavigation {
+ 
+     public boolean moveTo(final @Nullable Path newPath, final double speedModifier) {
+         if (newPath == null) {
+-            ++this.leavesX$pathRequest;
++            this.leavesX$invalidatePathRequest();
+             this.path = null;
+             return false;
+         }
+ 
+         if (newPath instanceof org.leavesx.leavesx.path.LeavesXAsyncPath pending && !pending.isCurrentRequest()) return false;
+         if (!(newPath instanceof org.leavesx.leavesx.path.LeavesXAsyncPath)
+-            && this.path instanceof org.leavesx.leavesx.path.LeavesXAsyncPath) ++this.leavesX$pathRequest;
++            && this.path instanceof org.leavesx.leavesx.path.LeavesXAsyncPath) this.leavesX$invalidatePathRequest();
+ 
+         if (!newPath.isProcessed()) {
+             this.path = newPath;
+@@ -539,6 +550,6 @@ public abstract class PathNavigation {
+     }
+ 
+     public void stop() {
+-        ++this.leavesX$pathRequest; // A completed old request must not revive navigation after stop().
++        this.leavesX$invalidatePathRequest(); // A completed old request must not revive navigation after stop().
+         this.path = null;
+     }

@@ -1,0 +1,97 @@
+From 59bb30b564fb4ef8fa8c0b08cd87aabb8cb08eb8 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Wed, 30 Sep 2026 23:04:19 +0800
+Subject: [PATCH] Add configurable recipe client support and test registries
+
+---
+ .../java/org/leavesx/leavesx/config/LeavesXConfig.java   | 7 ++++---
+ .../org/leavesx/leavesx/config/LeavesXConfigLoader.java  | 4 +++-
+ .../org/leavesx/leavesx/config/LeavesXConfigWriter.java  | 4 ++++
+ src/test/java/org/bukkit/support/DummyServerHelper.java  | 9 ++++++++-
+ 4 files changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 13ea15db12..6fea1834c7 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -90,7 +90,7 @@ public record LeavesXConfig(
+     RegionTickingSettings regionTickingSettings
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 81;
++    public static final int CURRENT_CONFIG_VERSION = 82;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -294,11 +294,12 @@ public record LeavesXConfig(
+         boolean virtualBukkitScheduler, boolean asyncAiCandidates, boolean asyncPlayerCompression,
+         boolean parallelMobCollisions, boolean asyncWaterPathfinding,
+         boolean poiAsyncSerialization, boolean poiCompetitorScanNoLoad,
+-        boolean sensorListReuse, boolean recipeIndex
++        boolean sensorListReuse, boolean recipeIndex,
++        boolean jeiRecipeSync, boolean jeiRecipeTransfer
+     ) {
+         public static ExtensionSettings defaults() {
+             return new ExtensionSettings(true, true, false, false, true, false, true, true, true, true, false, true, false,
+-                true, true, false, false, false, false, true, true);
++                true, true, false, false, false, false, true, true, false, false);
+         }
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 666b9f007b..f05c881393 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -513,7 +513,9 @@ public final class LeavesXConfigLoader {
+                     readBoolean(node.node("performance", "chunk", "poi-async-serialization"), "performance.chunk.poi-async-serialization", false),
+                     readBoolean(node.node("performance", "ai", "poi-competitor-scan-no-load"), "performance.ai.poi-competitor-scan-no-load", false),
+                     readBoolean(node.node("performance", "ai", "sensor-list-reuse"), "performance.ai.sensor-list-reuse", true),
+-                    readBoolean(node.node("performance", "crafting", "recipe-index"), "performance.crafting.recipe-index", true)
++                    readBoolean(node.node("performance", "crafting", "recipe-index"), "performance.crafting.recipe-index", true),
++                    readBoolean(node.node("features", "just-enough-items", "recipe-sync"), "features.just-enough-items.recipe-sync", false),
++                    readBoolean(node.node("features", "just-enough-items", "recipe-transfer"), "features.just-enough-items.recipe-transfer", false)
+                 ),
+                 new LeavesXConfig.RegionTickingSettings(
+                     readMode(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 196f31b527..3fdc7e01d7 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -110,6 +110,8 @@ public final class LeavesXConfigWriter {
+         final boolean missingOnly
+     ) {
+         boolean changed = false;
++        changed |= writeValue(node.node("features", "just-enough-items", "recipe-sync"), "features.just-enough-items.recipe-sync", config.extensions().jeiRecipeSync(), missingOnly);
++        changed |= writeValue(node.node("features", "just-enough-items", "recipe-transfer"), "features.just-enough-items.recipe-transfer", config.extensions().jeiRecipeTransfer(), missingOnly);
+         changed |= writeValue(node.node("performance", "faster-random-generator", "enabled"), "performance.faster-random-generator.enabled", config.extensions().fasterRandom(), missingOnly);
+         changed |= writeValue(node.node("async", "ai-candidates"), "async.ai-candidates", config.extensions().asyncAiCandidates(), missingOnly);
+         changed |= writeValue(node.node("async", "playerdata-save", "compression"), "async.playerdata-save.compression", config.extensions().asyncPlayerCompression(), missingOnly);
+@@ -549,6 +551,8 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.lithium.enabled", "启用 Lithium 的空闲实体和漏斗槽位优化；关闭后走原检查逻辑。默认：true。");
+         comments.put("performance.blocks.container-copy-reuse", "复用容器同步的临时副本，减少背包和箱子操作时的内存分配。默认：true。");
+         comments.put("features.secure-seed", "新世界使用独立安全种子保护结构和资源分布；不改已有世界，需重启。默认：false。");
++        comments.put("features.just-enough-items.recipe-sync", "同步服务端配方到 Just Enough Items（JEI）；需对应版本的 Fabric 或 NeoForge 客户端，修改后重新进服。默认：false。");
++        comments.put("features.just-enough-items.recipe-transfer", "允许 Just Enough Items（JEI）填充已解锁的工作台、背包合成及熔炉配方；遵守插件配方书事件，不提供作弊取物，修改后重新进服。默认：false。");
+         comments.put("performance.use-virtual-thread.async-chat-executor", "异步聊天使用虚拟线程；依赖固定聊天线程的插件可能不兼容，聊天事件流程不变，需重启。默认：false。");
+         comments.put("async.isolate-chunk-packing", "区块打包使用独立队列，避免进服或传送时堵住寻路计算；线程总预算不增加，需重启。默认：true。");
+         comments.put("config-version", "配置版本，请勿修改。默认：" + LeavesXConfig.CURRENT_CONFIG_VERSION + "。");
+diff --git a/src/test/java/org/bukkit/support/DummyServerHelper.java b/src/test/java/org/bukkit/support/DummyServerHelper.java
+index 5811a3bbde..9583fc6119 100644
+--- a/src/test/java/org/bukkit/support/DummyServerHelper.java
++++ b/src/test/java/org/bukkit/support/DummyServerHelper.java
+@@ -99,7 +99,14 @@ public final class DummyServerHelper {
+         when(instance.getPluginManager()).thenReturn(pluginManager);
+         // Paper end - testing additions
+ 
+-        io.papermc.paper.configuration.GlobalConfigTestingBase.setupGlobalConfigForTest(RegistryHelper.registryAccess()); // Paper - configuration files - setup global configuration test base
++        // Item obfuscation binds enchantment components while the global configuration is created.
++        // Supply the same registry snapshot as the test datapack, before its static initializer runs.
++        final var minecraftServer = mock(net.minecraft.server.MinecraftServer.class);
++        when(minecraftServer.registryAccess()).thenReturn(RegistryHelper.registryAccess().freeze());
++        try (var servers = mockStatic(net.minecraft.server.MinecraftServer.class, CALLS_REAL_METHODS)) {
++            servers.when(net.minecraft.server.MinecraftServer::getServer).thenReturn(minecraftServer);
++            io.papermc.paper.configuration.GlobalConfigTestingBase.setupGlobalConfigForTest(RegistryHelper.registryAccess());
++        }
+ 
+         // Paper start - add test for recipe conversion
+         when(instance.recipeIterator()).thenAnswer(ignored ->

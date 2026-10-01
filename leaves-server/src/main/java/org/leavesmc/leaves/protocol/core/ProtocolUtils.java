@@ -38,8 +38,12 @@ public class ProtocolUtils {
 
     public static void sendBytebufPacket(@NotNull ServerPlayer player, Identifier id, Consumer<? super RegistryFriendlyByteBuf> consumer) {
         RegistryFriendlyByteBuf buf = decorate(Unpooled.buffer());
-        consumer.accept(buf);
-        player.connection.send(new ClientboundCustomPayloadPacket(new DiscardedPayload(id, ByteBufUtil.getBytes(buf))));
+        try {
+            consumer.accept(buf);
+            player.connection.send(new ClientboundCustomPayloadPacket(new DiscardedPayload(id, ByteBufUtil.getBytes(buf))));
+        } finally {
+            buf.release();
+        }
     }
 
     public static void sendPayloadPacket(ServerPlayer player, CustomPacketPayload payload) {
@@ -52,8 +56,12 @@ public class ProtocolUtils {
 
     public static void sendBytebufPacket(@NotNull Context context, Identifier id, Consumer<? super RegistryFriendlyByteBuf> consumer) {
         RegistryFriendlyByteBuf buf = decorate(Unpooled.buffer());
-        consumer.accept(buf);
-        context.connection().send(new ClientboundCustomPayloadPacket(new DiscardedPayload(id, ByteBufUtil.getBytes(buf))));
+        try {
+            consumer.accept(buf);
+            context.connection().send(new ClientboundCustomPayloadPacket(new DiscardedPayload(id, ByteBufUtil.getBytes(buf))));
+        } finally {
+            buf.release();
+        }
     }
 
     public static void sendPayloadPacket(Context context, CustomPacketPayload payload) {

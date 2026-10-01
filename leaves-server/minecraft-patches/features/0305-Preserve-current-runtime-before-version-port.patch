@@ -1,0 +1,1803 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 26 Sep 2026 00:00:00 +0800
+Subject: [PATCH] Preserve current runtime before version port
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/poi/PoiChunk.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/poi/PoiChunk.java
+index 5adbeecd..f5d863ce 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/level/poi/PoiChunk.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/poi/PoiChunk.java
+@@ -148,6 +148,63 @@ public final class PoiChunk {
+         return sections.isEmpty() ? null : ret;
+     }
+ 
++    // LeavesX start - regionized saving: split POI save into a cheap snapshot (tick thread) and
++    // an immutable pure-codec encode (save executor). The packed snapshot holds only immutable
++    // records, so encoding off-thread cannot observe live POI mutation.
++    public record PackedSection(int sectionY, PoiSection.Packed packed) {}
++
++    /** Must be called on the tick thread; freezes every non-empty section into immutable form. */
++    public @org.jetbrains.annotations.Nullable java.util.List<PackedSection> snapshotPacked() {
++        java.util.List<PackedSection> snapshot = null;
++        for (int sectionY = this.minSection; sectionY <= this.maxSection; ++sectionY) {
++            final PoiSection section = this.sections[sectionY - this.minSection];
++            if (section == null || ((ChunkSystemPoiSection)section).moonrise$isEmpty()) {
++                continue;
++            }
++            if (snapshot == null) {
++                snapshot = new java.util.ArrayList<>(this.maxSection - this.minSection + 1);
++            }
++            snapshot.add(new PackedSection(sectionY, section.pack()));
++        }
++        return snapshot;
++    }
++
++    /**
++     * Pure encoder over an immutable {@link #snapshotPacked()} result; safe on any thread.
++     * Returns {@code null} when the snapshot holds no sections.
++     */
++    public static @org.jetbrains.annotations.Nullable CompoundTag savePacked(
++        final ServerLevel world, final int chunkX, final int chunkZ, final java.util.List<PackedSection> snapshot
++    ) {
++        if (snapshot == null || snapshot.isEmpty()) {
++            return null;
++        }
++        final RegistryOps<Tag> registryOps = RegistryOps.create(NbtOps.INSTANCE, world.registryAccess());
++
++        final CompoundTag ret = new CompoundTag();
++        final CompoundTag sections = new CompoundTag();
++        ret.put("Sections", sections);
++
++        ret.putInt("DataVersion", SharedConstants.getCurrentVersion().dataVersion().version());
++
++        for (final PackedSection entry : snapshot) {
++            final DataResult<Tag> serializedResult = PoiSection.Packed.CODEC.encodeStart(registryOps, entry.packed());
++            final int finalSectionY = entry.sectionY();
++            final Tag serialized = serializedResult.resultOrPartial((final String description) -> {
++                LOGGER.error("Failed to serialize poi chunk for world: " + WorldUtil.getWorldName(world) + ", chunk: (" + chunkX + "," + finalSectionY + "," + chunkZ + "); description: " + description);
++            }).orElse(null);
++            if (serialized == null) {
++                // failed, should be logged from the resultOrPartial
++                continue;
++            }
++
++            sections.put(Integer.toString(finalSectionY), serialized);
++        }
++
++        return sections.isEmpty() ? null : ret;
++    }
++    // LeavesX end - regionized saving
++
+     public static PoiChunk empty(final ServerLevel world, final int chunkX, final int chunkZ) {
+         final PoiChunk ret = new PoiChunk(world, chunkX, chunkZ, WorldUtil.getMinSection(world), WorldUtil.getMaxSection(world));
+         ret.loaded = true;
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
+index 9a9a599e..58b5be04 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
+@@ -1811,6 +1811,47 @@ public final class NewChunkHolder {
+     private boolean lastPoiSaveNull;
+     private boolean savePOI(final PoiChunk poi, final boolean unloading, final Completable<CompoundTag>[] poiSave) {
+         try {
++            // LeavesX start - regionized saving
++            // Snapshot on the tick thread, then encode the immutable snapshot on the save
++            // executor. Same write ordering as before: scheduleSave happens after the encoder
++            // completes, so flushed data is identical to the synchronous path.
++            if (org.leavesx.leavesx.config.LeavesXRuntime.regionizedPoiSerialization()) {
++                final java.util.List<PoiChunk.PackedSection> snapshot = poi.snapshotPacked();
++                poi.setDirty(false);
++                final int snapshotSize = snapshot == null ? 0 : snapshot.size();
++                if (snapshotSize == 0 && this.lastPoiSaveNull) {
++                    return false;
++                }
++
++                final Completable<CompoundTag> completable = new Completable<>();
++                final PoiChunk poiRef = poi;
++                final Runnable run = () -> {
++                    final CompoundTag data;
++                    try {
++                        data = PoiChunk.savePacked(NewChunkHolder.this.world, NewChunkHolder.this.chunkX, NewChunkHolder.this.chunkZ, snapshot);
++                    } catch (final Throwable thr) {
++                        LOGGER.error("Failed to serialize poi data (" + NewChunkHolder.this.chunkX + "," + NewChunkHolder.this.chunkZ + ") in world '" + WorldUtil.getWorldName(NewChunkHolder.this.world) + "'", thr);
++                        completable.completeExceptionally(thr);
++                        return;
++                    }
++                    completable.complete(data);
++                };
++
++                final PrioritisedExecutor.PrioritisedTask task =
++                    this.scheduler.saveExecutor.createTask(run);
++                task.queue();
++
++                MoonriseRegionFileIO.scheduleSave(
++                    this.world, this.chunkX, this.chunkZ, completable, task, MoonriseRegionFileIO.RegionFileType.POI_DATA, ca.spottedleaf.concurrentutil.util.Priority.NORMAL
++                );
++                this.lastPoiSaveNull = snapshotSize == 0;
++                if (poiSave != null) {
++                    poiSave[0] = completable;
++                }
++                return true;
++            }
++            // LeavesX end - regionized saving
++
+             final CompoundTag save = poi.save();
+             poi.setDirty(false);
+             if (save == null && this.lastPoiSaveNull) {
+diff --git a/net/minecraft/advancements/criterion/LocationPredicate.java b/net/minecraft/advancements/criterion/LocationPredicate.java
+index 8a44bf80..e645f17d 100644
+--- a/net/minecraft/advancements/criterion/LocationPredicate.java
++++ b/net/minecraft/advancements/criterion/LocationPredicate.java
+@@ -52,7 +52,9 @@ public record LocationPredicate(
+ 
+         BlockPos pos = BlockPos.containing(x, y, z);
+         boolean loaded = level.isLoaded(pos);
+-        return (!this.biomes.isPresent() || loaded && this.biomes.get().contains(level.getBiome(pos)))
++        return (!this.biomes.isPresent() || loaded && this.biomes.get().contains(
++                org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().cacheBiomeAdvancements()
++                    ? level.getBiomeManager().leavesX$getBiomeCached(pos) : level.getBiome(pos)))
+             && (!this.structures.isPresent() || loaded && level.structureManager().getStructureWithPieceAt(pos, this.structures.get()).isValid())
+             && (!this.smokey.isPresent() || loaded && this.smokey.get() == CampfireBlock.isSmokeyPos(level, pos))
+             && (!this.light.isPresent() || this.light.get().matches(level, pos))
+diff --git a/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java b/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
+index a3c4107a..9ddbfedb 100644
+--- a/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
++++ b/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
+@@ -56,8 +56,8 @@ public class ClientboundLevelChunkPacketData {
+         final boolean lazyExtraPackets = org.leavesx.leavesx.config.LeavesXRuntime.lazyChunkExtraPacketsOptimization();
+         List<Packet<?>> extraPackets = leavesX$createExtraPacketList(lazyExtraPackets);
+         this.heightmaps = collectHeightmaps(levelChunk.getHeightmaps(), optimizeAssembly);
++        // Packet assembly stays on the owning tick thread until every chunk component can be snapshotted.
+         this.buffer = new byte[calculateChunkSize(levelChunk)];
+-        // Paper start - Anti-Xray - Add chunk packet info
+         if (chunkPacketInfo != null) {
+             chunkPacketInfo.setBuffer(this.buffer);
+         }
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+index ea15f336..84dadc7d 100644
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -680,6 +680,25 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         this.server.getCommandMap().registerServerAliases(); // Paper - relocate initial CommandMap#registerServerAliases() call
+         ((org.bukkit.craftbukkit.help.SimpleHelpMap) this.server.getHelpMap()).initializeCommands();
+         this.server.getPluginManager().callEvent(new org.bukkit.event.server.ServerLoadEvent(org.bukkit.event.server.ServerLoadEvent.LoadType.STARTUP));
++        // LeavesX start - regionized ticking: worlds-mode executors after worlds and plugins are up
++        final org.leavesx.leavesx.config.LeavesXConfig.RegionTickingSettings leavesXRegionSettings =
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.settings();
++        if (leavesXRegionSettings.mode() == org.leavesx.leavesx.config.LeavesXConfig.RegionTickingSettings.Mode.REGIONS) {
++            // R3 gate not satisfied yet: intra-world region threading requires full regionized
++            // ownership; degrade to worlds until the region model lands. Recorded for /leavesx regions.
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.recordModeDegrade(
++                "regions mode is not available in this build; running worlds instead");
++            LOGGER.info("LeavesX regionized ticking: regions mode degrades to worlds in this build");
++        }
++        if (org.leavesx.leavesx.runtime.LeavesXRegionTicking.effectiveMode()
++            == org.leavesx.leavesx.config.LeavesXConfig.RegionTickingSettings.Mode.WORLDS) {
++            final java.util.List<ServerLevel> leavesXLevels = new java.util.ArrayList<>();
++            for (final ServerLevel leavesXLevel : this.getAllLevels()) {
++                leavesXLevels.add(leavesXLevel);
++            }
++            org.leavesx.leavesx.runtime.LeavesXWorldTicker.refreshWorlds(java.util.Collections.unmodifiableList(leavesXLevels));
++        }
++        // LeavesX end - regionized ticking
+         this.connection.acceptConnections();
+     }
+     // Paper end - rework world loading process
+@@ -1096,6 +1115,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         this.saveAllChunks(false, true, false, true); // Paper - rewrite chunk system
+ 
+         this.isSaving = false;
++        org.leavesx.leavesx.runtime.LeavesXWorldTicker.shutdownExecutors(); // LeavesX - regionized ticking
+         org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.shutdown();
+         this.savedDataStorage.close();
+         this.resources.close();
+@@ -1294,6 +1314,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+ 
+     protected void runServer() {
+         try {
++            org.leavesx.leavesx.runtime.LeavesXThreadDomain.installServerThread(); // LeavesX - regionized ticking
+             if (!this.initServer()) {
+                 throw new IllegalStateException("Failed to initialize server");
+             }
+@@ -1871,7 +1892,55 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         );
+ 
+         this.isIteratingOverLevels = true; // Paper - Throw exception on world create while being ticked
++        // LeavesX start - regionized ticking pipeline
++        // Track pipeline phases when configured. Vanilla dimensions and pinned worlds use the
++        // original serial loop below: cross-world transfers and portal tickets must retain
++        // their in-tick ordering. Event gating alone cannot provide cross-world isolation.
++        final boolean leavesXRegionized = org.leavesx.leavesx.runtime.LeavesXRegionTicking.enabled();
++        if (leavesXRegionized) {
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.beginParallelSimulation();
++        }
++        // LeavesX end - regionized ticking pipeline
+         leavesXPhaseStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
++        // LeavesX start - regionized ticking: worlds-mode dispatch
++        final boolean leavesXParallelWorlds = leavesXRegionized
++            && org.leavesx.leavesx.runtime.LeavesXRegionTicking.effectiveMode() == org.leavesx.leavesx.config.LeavesXConfig.RegionTickingSettings.Mode.WORLDS
++            && org.leavesx.leavesx.runtime.LeavesXWorldTicker.isReady()
++            && !org.leavesx.leavesx.runtime.LeavesXWorldTicker.usesSerialCompatibility();
++        if (leavesXParallelWorlds) {
++            final ProfilerFiller leavesXProfiler = profiler;
++            org.leavesx.leavesx.runtime.LeavesXWorldTicker.tickAllParallel(haveTime, (level, time) -> {
++                level.hasPhysicsEvent = org.bukkit.event.block.BlockPhysicsEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - BlockPhysicsEvent
++                level.hasEntityMoveEvent = io.papermc.paper.event.entity.EntityMoveEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - Add EntityMoveEvent
++                level.updateLagCompensationTick(); // Paper - lag compensation
++                net.minecraft.world.level.block.entity.HopperBlockEntity.skipHopperEvents = level.paperConfig().hopper.disableMoveEvent || org.bukkit.event.inventory.InventoryMoveItemEvent.getHandlerList().getRegisteredListeners().length == 0; // Paper - Perf: Optimize Hoppers
++                leavesXProfiler.push(() -> level + " " + level.dimension().identifier());
++                leavesXProfiler.push("tick");
++                try {
++                    level.tick(time);
++                // Leaves start - update suppression crash fix
++                } catch (org.leavesmc.leaves.util.UpdateSuppressionException exception) {
++                    exception.provideLevel(level);
++                    exception.consume();
++                } catch (Throwable t) {
++                    if (t.getCause() instanceof org.leavesmc.leaves.util.UpdateSuppressionException exception) {
++                        exception.provideLevel(level);
++                        exception.consume();
++                    }
++                    // Leaves end - update suppression crash fix
++                    CrashReport report = CrashReport.forThrowable(t, "Exception ticking world");
++                    level.fillReportDetails(report);
++                    throw new ReportedException(report);
++                }
++                leavesXProfiler.pop();
++                leavesXProfiler.pop();
++                level.explosionDensityCache.clear(); // Paper - Optimize explosions
++            });
++            // Barrier window: world workers finished or are finishing; drain deferred events so
++            // blocked world threads make progress and plugin code runs here on the server thread.
++            org.leavesx.leavesx.runtime.LeavesXEventGate.pump();
++        } else
++        // LeavesX end - regionized ticking: worlds-mode dispatch
+         for (ServerLevel level : this.getAllLevels()) {
+             level.hasPhysicsEvent = org.bukkit.event.block.BlockPhysicsEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - BlockPhysicsEvent
+             level.hasEntityMoveEvent = io.papermc.paper.event.entity.EntityMoveEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - Add EntityMoveEvent
+@@ -1901,11 +1970,27 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+             profiler.pop();
+             level.explosionDensityCache.clear(); // Paper - Optimize explosions
+         }
++        // LeavesX start - regionized ticking: final barrier drain
++        if (leavesXRegionized) {
++            org.leavesx.leavesx.runtime.LeavesXEventGate.pump();
++        }
++        // LeavesX end - regionized ticking: final barrier drain
+         this.isIteratingOverLevels = false; // Paper - Throw exception on world create while being ticked
+         org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.endPhase(
+             org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.WORLDS,
+             leavesXPhaseStarted
+         );
++        if (leavesXRegionized) {
++            // LeavesX start - regionized ticking pipeline
++            // Barrier then serial commit: all simulation is complete, the world is static, and
++            // plugin-visible side effects (deferred events, scheduler tasks) run on this thread.
++            // R0 has no parallel regions yet, so the barrier is an idle marker and no intents
++            // are queued; the replay loop arrives with the R1 patch.
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.beginBarrier();
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.beginSerialCommit();
++            org.leavesx.leavesx.runtime.LeavesXThreadDomain.assertSerialCommitPhase("serial-commit-phase-entry");
++            // LeavesX end - regionized ticking pipeline
++        }
+ 
+         profiler.popPush("connection");
+         leavesXPhaseStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
+@@ -1954,6 +2039,14 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+             org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.CHUNK_SEND,
+             leavesXPhaseStarted
+         );
++        if (leavesXRegionized) {
++            // LeavesX start - regionized ticking pipeline
++            // Post-processing (tracking deltas, chunk packing, network encoding) completes the
++            // four-phase pipeline; the phase resets until the next tick begins.
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.beginParallelPost();
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.endTick();
++            // LeavesX end - regionized ticking pipeline
++        }
+ 
+         profiler.pop();
+         this.serverActivityMonitor.tick();
+@@ -2968,7 +3061,10 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         }
+     }
+ 
+-    public final java.util.concurrent.ExecutorService chatExecutor = java.util.concurrent.Executors.newCachedThreadPool(
++    public final java.util.concurrent.ExecutorService chatExecutor = org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().virtualChat()
++        ? java.util.concurrent.Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("LeavesX Async Chat - ", 0)
++            .uncaughtExceptionHandler(new net.minecraft.DefaultUncaughtExceptionHandlerWithName(net.minecraft.server.MinecraftServer.LOGGER)).factory())
++        : java.util.concurrent.Executors.newCachedThreadPool(
+         new com.google.common.util.concurrent.ThreadFactoryBuilder().setDaemon(true).setNameFormat("Async Chat Thread - #%d").setUncaughtExceptionHandler(new net.minecraft.DefaultUncaughtExceptionHandlerWithName(net.minecraft.server.MinecraftServer.LOGGER)).build()); // Paper
+     public final ChatDecorator improvedChatDecorator = new io.papermc.paper.adventure.ImprovedChatDecorator(this); // Paper - adventure
+ 
+diff --git a/net/minecraft/server/commands/SeedCommand.java b/net/minecraft/server/commands/SeedCommand.java
+index 86ee3b3a..fd98b2d5 100644
+--- a/net/minecraft/server/commands/SeedCommand.java
++++ b/net/minecraft/server/commands/SeedCommand.java
+@@ -13,6 +13,11 @@ public class SeedCommand {
+                 long seed = c.getSource().getLevel().getSeed();
+                 Component seedText = ComponentUtils.copyOnClickText(String.valueOf(seed));
+                 c.getSource().sendSuccess(() -> Component.translatable("commands.seed.success", seedText), false);
++                if (c.getSource().getBukkitSender().isOp()) {
++                    c.getSource().getLevel().worldGenSettings.options().leavesX$featureSeed().ifPresent(featureSeed ->
++                        c.getSource().sendSuccess(() -> Component.literal("LeavesX feature seed (v1): ")
++                            .append(ComponentUtils.copyOnClickText(featureSeed.encode())), false));
++                }
+                 return (int)seed;
+             })
+         );
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index da46c3b4..208ffbed 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -213,6 +213,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             this.randomState = RandomState.create(NoiseGeneratorSettings.dummy(), registryAccess.lookupOrThrow(Registries.NOISE), levelSeed);
+         }
+ 
++        this.randomState.leavesX$secureSeed = level.leavesX$secureSeed;
+         this.chunkGeneratorState = generator.createState(registryAccess.lookupOrThrow(Registries.STRUCTURE_SET), this.randomState, levelSeed, level.spigotConfig); // Spigot
+         this.mainThreadExecutor = mainThreadExecutor;
+         ConsecutiveExecutor worldgen = new ConsecutiveExecutor(executor, "worldgen");
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index 5908b20b..be5dff23 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -230,6 +230,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     private final WeatherData weatherData;
+     public final net.minecraft.world.level.timers.TimerQueue<net.minecraft.server.MinecraftServer> scheduledEvents;
+     public final WorldGenSettings worldGenSettings;
++    public final org.leavesx.leavesx.worldgen.SecureFeatureSeed.@Nullable Context leavesX$secureSeed;
+     private @Nullable ServerClockManager clockManager;
+     public boolean hasPhysicsEvent = true; // Paper - BlockPhysicsEvent
+     public boolean hasEntityMoveEvent; // Paper - Add EntityMoveEvent
+@@ -640,6 +641,8 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         this.uuid = loadedWorldData.uuid();
+         this.levelLoadListener = new net.minecraft.server.level.progress.LoggingLevelLoadListener(false, this);
+         this.worldGenSettings = worldGenSettings;
++        this.leavesX$secureSeed = worldGenSettings.options().leavesX$featureSeed()
++            .map(seed -> seed.forDimension(this.dimension().identifier().toString())).orElse(null);
+         this.scheduledEvents = savedDataStorage.computeIfAbsent(net.minecraft.world.level.timers.TimerQueue.TYPE);
+         // CraftBukkit end
+         this.tickTime = tickTime;
+@@ -989,12 +992,14 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     }
+ 
+     // Paper start - optimise random ticking
+-    private final ca.spottedleaf.moonrise.common.util.SimpleThreadUnsafeRandom simpleRandom = new ca.spottedleaf.moonrise.common.util.SimpleThreadUnsafeRandom(net.minecraft.world.level.levelgen.RandomSupport.generateUniqueSeed());
++    private final net.minecraft.world.level.levelgen.BitRandomSource simpleRandom = org.leavesx.leavesx.random.LeavesXRandomSources.randomTicks(net.minecraft.world.level.levelgen.RandomSupport.generateUniqueSeed());
++    private final org.leavesx.leavesx.random.RandomTickPositionCache leavesX$randomTickPositions = new org.leavesx.leavesx.random.RandomTickPositionCache();
+ 
+     private void optimiseRandomTick(final LevelChunk chunk, final int tickSpeed) {
+         final LevelChunkSection[] sections = chunk.getSections();
+         final int minSection = this.getMinSectionY();
+-        final ca.spottedleaf.moonrise.common.util.SimpleThreadUnsafeRandom simpleRandom = this.simpleRandom;
++        final net.minecraft.world.level.levelgen.BitRandomSource simpleRandom = this.simpleRandom;
++        final boolean optimize = org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().optimizeRandomTick();
+         final boolean doubleTickFluids = !ca.spottedleaf.moonrise.common.PlatformHooks.get().configFixMC224294();
+ 
+         final int offsetX = chunk.locX << 4;
+@@ -1012,6 +1017,11 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+ 
+             for (int i = 0; i < tickSpeed; ++i) {
+                 final int tickingBlocks = tickList.size();
++                if (optimize && tickingBlocks == 0) {
++                    // A callback may remove the last ticking block. Consume the same remaining samples without looping.
++                    simpleRandom.consumeCount(tickSpeed - i);
++                    break;
++                }
+                 final int index = simpleRandom.nextInt() & ((16 * 16 * 16) - 1);
+ 
+                 if (index >= tickingBlocks) {
+@@ -1023,7 +1033,10 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+                 final BlockState state = states.get(location);
+ 
+                 // do not use a mutable pos, as some random tick implementations store the input without calling immutable()!
+-                final BlockPos pos = new BlockPos((location & 15) | offsetX, ((location >>> (4 + 4)) & 15) | offsetY, ((location >>> 4) & 15) | offsetZ);
++                final int x = (location & 15) | offsetX;
++                final int y = ((location >>> 8) & 15) | offsetY;
++                final int z = ((location >>> 4) & 15) | offsetZ;
++                final BlockPos pos = optimize ? this.leavesX$randomTickPositions.get(x, y, z) : new BlockPos(x, y, z);
+ 
+                 state.randomTick((ServerLevel)(Object)this, pos, simpleRandom);
+                 if (doubleTickFluids) {
+@@ -1040,7 +1053,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     // Paper end - optimise random ticking
+ 
+     public void tickChunk(final LevelChunk chunk, final int tickSpeed) {
+-        final ca.spottedleaf.moonrise.common.util.SimpleThreadUnsafeRandom simpleRandom = this.simpleRandom; // Paper - optimise random ticking
++        final net.minecraft.world.level.levelgen.BitRandomSource simpleRandom = this.simpleRandom; // Paper - optimise random ticking
+         int minX = chunk.locX << 4;
+         int minZ = chunk.locZ << 4;
+         ProfilerFiller profiler = Profiler.get();
+diff --git a/net/minecraft/server/network/PlayerChunkSender.java b/net/minecraft/server/network/PlayerChunkSender.java
+index 2e060635..b897b633 100644
+--- a/net/minecraft/server/network/PlayerChunkSender.java
++++ b/net/minecraft/server/network/PlayerChunkSender.java
+@@ -84,7 +84,7 @@ public class PlayerChunkSender {
+         sendPreparedChunk(connection, level, chunk, prepareChunkPacket(level, chunk, shouldModify));
+     }
+ 
+-    /** Builds the immutable packet payload; the caller must have captured {@code shouldModify} on the tick thread. */
++    /** Builds a packet from live chunk data. This must run on the owning tick thread. */
+     public static ClientboundLevelChunkWithLightPacket prepareChunkPacket(
+         final ServerLevel level,
+         final LevelChunk chunk,
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index 9bd6cb82..dab4add6 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -2965,6 +2965,11 @@ public class ServerGamePacketListenerImpl
+                             return;
+                         }
+                         // CraftBukkit end
++                        if (tool.is(Items.STICK) && org.leavesx.leavesx.gameplay.EntityAiTool.interact(
++                            this.getCraftPlayer(), target, org.bukkit.craftbukkit.inventory.CraftItemStack.asBukkitCopy(tool)
++                        )) {
++                            return;
++                        }
+                         if (this.player.interactOn(target, hand, location) instanceof InteractionResult.Success success) {
+                             ItemStack awardedForStack = success.wasItemInteraction() ? usedItemStack : ItemStack.EMPTY;
+                             CriteriaTriggers.PLAYER_INTERACTED_WITH_ENTITY.trigger(this.player, awardedForStack, target);
+diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
+index ddd734d5..fb1761b4 100644
+--- a/net/minecraft/server/players/PlayerList.java
++++ b/net/minecraft/server/players/PlayerList.java
+@@ -373,6 +373,11 @@ public abstract class PlayerList {
+             );
+         org.bukkit.event.player.PlayerJoinEvent playerJoinEvent = new org.bukkit.event.player.PlayerJoinEvent(bukkitPlayer, configuredJoinMessage); // Paper - Adventure
+         this.cserver.getPluginManager().callEvent(playerJoinEvent);
++        // Configured wording wins over rewritten text; plugin suppression (e.g. vanished players) stays effective.
++        if (playerJoinEvent.joinMessage() != null && !playerJoinEvent.joinMessage().equals(net.kyori.adventure.text.Component.empty())) {
++            playerJoinEvent.joinMessage(org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.joinMessage(
++                player.getScoreboardName(), bukkitPlayer.displayName(), playerJoinEvent.joinMessage()));
++        }
+ 
+         if (!player.connection.isAcceptingMessages()) {
+             return;
+@@ -639,6 +644,10 @@ public abstract class PlayerList {
+             );
+         org.bukkit.event.player.PlayerQuitEvent playerQuitEvent = new org.bukkit.event.player.PlayerQuitEvent(player.getBukkitEntity(), configuredLeaveMessage, player.quitReason); // Paper - Adventure & Add API for quit reason
+         this.cserver.getPluginManager().callEvent(playerQuitEvent);
++        if (playerQuitEvent.quitMessage() != null && !playerQuitEvent.quitMessage().equals(net.kyori.adventure.text.Component.empty())) {
++            playerQuitEvent.quitMessage(org.leavesx.leavesx.presentation.LeavesXPlayerPresentation.quitMessage(
++                player.getScoreboardName(), player.getBukkitEntity().displayName(), playerQuitEvent.quitMessage()));
++        }
+         player.getBukkitEntity().disconnect();
+ 
+         // CraftBukkit end
+diff --git a/net/minecraft/server/players/SleepStatus.java b/net/minecraft/server/players/SleepStatus.java
+index 61870e38..aff0672e 100644
+--- a/net/minecraft/server/players/SleepStatus.java
++++ b/net/minecraft/server/players/SleepStatus.java
+@@ -8,6 +8,11 @@ import net.minecraft.world.entity.player.Player;
+ public class SleepStatus {
+     private int activePlayers;
+     private int sleepingPlayers;
++    // LeavesX start - beta8 C7: maintain deep-sleeper statistics incrementally in update()
++    // instead of streaming the player list on every sleep check after the percentage passes.
++    private int deepSleepers;
++    private boolean anyDeepSleep;
++    // LeavesX end - beta8 C7
+ 
+     public boolean areEnoughSleeping(final int sleepPercentageNeeded) {
+         return this.sleepingPlayers >= this.sleepersNeeded(sleepPercentageNeeded);
+@@ -15,9 +20,12 @@ public class SleepStatus {
+ 
+     public boolean areEnoughDeepSleeping(final int sleepPercentageNeeded, final List<ServerPlayer> players) {
+         // CraftBukkit start
+-        int deepSleepers = (int)players.stream().filter(player -> player.isSleepingLongEnough() || player.fauxSleeping).count();
+-        boolean anyDeepSleep = players.stream().anyMatch(Player::isSleepingLongEnough);
+-        return anyDeepSleep && deepSleepers >= this.sleepersNeeded(sleepPercentageNeeded);
++        // LeavesX start - beta8 C7: the counters below are refreshed once per tick by update();
++        // players only enter isSleepingLongEnough state between ticks while sleeping, and update()
++        // runs every tick the world has players, so the snapshot is at most one tick stale in the
++        // same way the sleepingPlayers counter already is.
++        return this.anyDeepSleep && this.deepSleepers >= this.sleepersNeeded(sleepPercentageNeeded);
++        // LeavesX end - beta8 C7
+         // CraftBukkit end
+     }
+ 
+@@ -38,6 +46,10 @@ public class SleepStatus {
+         int oldSleepingPlayers = this.sleepingPlayers;
+         this.activePlayers = 0;
+         this.sleepingPlayers = 0;
++        // LeavesX start - beta8 C7
++        this.deepSleepers = 0;
++        this.anyDeepSleep = false;
++        // LeavesX end - beta8 C7
+         boolean anySleep = false; // CraftBukkit
+ 
+         for (ServerPlayer player : players) {
+@@ -51,6 +63,14 @@ public class SleepStatus {
+                     anySleep = true;
+                 }
+                 // CraftBukkit end
++                // LeavesX start - beta8 C7
++                if (player.isSleepingLongEnough() || player.fauxSleeping) {
++                    this.deepSleepers++;
++                }
++                if (player.isSleepingLongEnough()) {
++                    this.anyDeepSleep = true;
++                }
++                // LeavesX end - beta8 C7
+             }
+         }
+ 
+diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
+index 3e5524f2..237b491e 100644
+--- a/net/minecraft/world/entity/Entity.java
++++ b/net/minecraft/world/entity/Entity.java
+@@ -1621,7 +1621,7 @@ public abstract class Entity
+             ca.spottedleaf.moonrise.patches.collisions.CollisionUtil.COLLISION_FLAG_CHECK_BORDER, null
+         );
+         potentialCollisionsBB.addAll(entityAABBs);
+-        final Vec3 collided = ca.spottedleaf.moonrise.patches.collisions.CollisionUtil.performCollisions(movement, currentBox, potentialCollisionsVoxel, potentialCollisionsBB);
++        final Vec3 collided = org.leavesx.leavesx.performance.ParallelMobCollision.collide(this, movement, currentBox, potentialCollisionsVoxel, potentialCollisionsBB);
+ 
+         final boolean collidedX = collided.x != movement.x;
+         final boolean collidedY = collided.y != movement.y;
+@@ -1650,7 +1650,7 @@ public abstract class Entity
+         );
+ 
+         for (final float step : calculateStepHeights(collidedYBox, stepVoxels, stepAABBs, (float)stepHeight, (float)collided.y)) {
+-            final Vec3 stepResult = ca.spottedleaf.moonrise.patches.collisions.CollisionUtil.performCollisions(new Vec3(movement.x, (double)step, movement.z), collidedYBox, stepVoxels, stepAABBs);
++            final Vec3 stepResult = org.leavesx.leavesx.performance.ParallelMobCollision.collide(this, new Vec3(movement.x, (double)step, movement.z), collidedYBox, stepVoxels, stepAABBs);
+             if (stepResult.horizontalDistanceSqr() > collided.horizontalDistanceSqr()) {
+                 return stepResult.add(0.0, collidedYBox.minY - currentBox.minY, 0.0);
+             }
+diff --git a/net/minecraft/world/entity/Mob.java b/net/minecraft/world/entity/Mob.java
+index d65fa06f..98f49ce0 100644
+--- a/net/minecraft/world/entity/Mob.java
++++ b/net/minecraft/world/entity/Mob.java
+@@ -837,6 +837,11 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+ 
+     @Override
+     protected final void serverAiStep() {
++        // The operator tool pauses goals, sensing and navigation, but keeps villager trade maintenance.
++        if (this instanceof net.minecraft.world.entity.npc.villager.Villager villager && villager.leavesX$isTradeOnly()) {
++            villager.leavesX$tickTradeOnly(this.level().getMinecraftWorld());
++            return;
++        }
+         this.noActionTime++;
+         // Paper start - Allow nerfed mobs to jump and float
+         if (!this.aware) {
+diff --git a/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java b/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
+index 7b4c19a2..1666ddd2 100644
+--- a/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
++++ b/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
+@@ -29,6 +29,7 @@ import org.jspecify.annotations.Nullable;
+ 
+ public class LongJumpToRandomPos<E extends Mob> extends Behavior<E> {
+     protected static final int FIND_JUMP_TRIES = 20;
++    private static final int MIN_ASYNC_JUMP_CANDIDATES = 256;
+     private static final int PREPARE_JUMP_DURATION = 40;
+     protected static final int MIN_PATHFIND_DISTANCE_TO_VALID_JUMP = 8;
+     private static final int TIME_OUT_DURATION = 200;
+@@ -38,6 +39,8 @@ public class LongJumpToRandomPos<E extends Mob> extends Behavior<E> {
+     protected final int maxLongJumpWidth;
+     protected final float maxJumpVelocityMultiplier;
+     protected List<LongJumpToRandomPos.PossibleJump> jumpCandidates = Lists.newArrayList();
++    private java.util.concurrent.CompletableFuture<List<PossibleJump>> leavesX$pendingCandidates;
++    private BlockPos leavesX$candidateOrigin;
+     protected Optional<Vec3> initialPosition = Optional.empty();
+     protected @Nullable Vec3 chosenJump;
+     protected int findJumpTries;
+@@ -107,6 +110,7 @@ public class LongJumpToRandomPos<E extends Mob> extends Behavior<E> {
+ 
+     @Override
+     protected boolean canStillUse(final ServerLevel level, final Mob body, final long timestamp) {
++        this.leavesX$finishCandidates();
+         boolean isValid = this.initialPosition.isPresent()
+             && this.initialPosition.get().equals(body.position())
+             && this.findJumpTries > 0
+@@ -126,7 +130,26 @@ public class LongJumpToRandomPos<E extends Mob> extends Behavior<E> {
+         this.findJumpTries = FIND_JUMP_TRIES;
+         this.initialPosition = Optional.of(body.position());
+         BlockPos mobPos = body.blockPosition();
++        this.leavesX$pendingCandidates = null;
++        this.leavesX$candidateOrigin = null;
+         if (org.leavesx.leavesx.config.LeavesXRuntime.longJumpCandidateOptimization()) {
++            // Only the two audited vanilla behaviors defer construction. Unknown subclasses may inspect the list
++            // immediately from start(), so they retain the synchronous contract.
++            if ((this.getClass() == LongJumpToRandomPos.class || this.getClass() == LongJumpToPreferredBlock.class)
++                && org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().asyncAiCandidates()
++                && (2L * this.maxLongJumpHeight + 1) * (2L * this.maxLongJumpWidth + 1) * (2L * this.maxLongJumpWidth + 1) >= MIN_ASYNC_JUMP_CANDIDATES) {
++                final BlockPos origin = mobPos.immutable();
++                final int height = this.maxLongJumpHeight;
++                final int width = this.maxLongJumpWidth;
++                this.leavesX$pendingCandidates = org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.trySubmitValue(
++                    org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.AI_CANDIDATES,
++                    () -> buildJumpCandidatesDirect(origin, height, width));
++                if (this.leavesX$pendingCandidates != null) {
++                    this.leavesX$candidateOrigin = origin;
++                    this.jumpCandidates = Lists.newArrayList();
++                    return;
++                }
++            }
+             this.jumpCandidates = buildJumpCandidatesDirect(mobPos, this.maxLongJumpHeight, this.maxLongJumpWidth);
+         } else {
+             int mobX = mobPos.getX();
+@@ -169,8 +192,24 @@ public class LongJumpToRandomPos<E extends Mob> extends Behavior<E> {
+     }
+     // LeavesX end - preserve BlockPos traversal order without stream and collector allocations
+ 
++    private void leavesX$finishCandidates() {
++        final var pending = this.leavesX$pendingCandidates;
++        if (pending == null) return;
++        try {
++            // Resolve at the original first-use boundary: no skipped AI ticks and no delayed RNG calls.
++            this.jumpCandidates = pending.join();
++        } catch (final java.util.concurrent.CompletionException failure) {
++            com.mojang.logging.LogUtils.getLogger().warn("Failed to prepare long-jump candidates; rebuilding on the server thread", failure);
++            this.jumpCandidates = buildJumpCandidatesDirect(this.leavesX$candidateOrigin, this.maxLongJumpHeight, this.maxLongJumpWidth);
++        } finally {
++            this.leavesX$pendingCandidates = null;
++            this.leavesX$candidateOrigin = null;
++        }
++    }
++
+     @Override
+     protected void tick(final ServerLevel level, final E body, final long timestamp) {
++        this.leavesX$finishCandidates();
+         if (this.chosenJump != null) {
+             if (timestamp - this.prepareJumpStart >= PREPARE_JUMP_DURATION) {
+                 body.setYRot(body.yBodyRot);
+diff --git a/net/minecraft/world/entity/ai/behavior/PoiCompetitorScan.java b/net/minecraft/world/entity/ai/behavior/PoiCompetitorScan.java
+index c507cbb1..b632e0ba 100644
+--- a/net/minecraft/world/entity/ai/behavior/PoiCompetitorScan.java
++++ b/net/minecraft/world/entity/ai/behavior/PoiCompetitorScan.java
+@@ -19,8 +19,13 @@ public class PoiCompetitorScan {
+                     i,
+                     (jobSite, nearestEntities) -> (level, body, timestamp) -> {
+                         GlobalPos pos = i.get(jobSite);
+-                        level.getPoiManager()
+-                            .getType(pos.pos())
++                        // LeavesX start - regionized POI: competitor scans must not sync-load POI
++                        // sections (ported from Leaf 0285 by HaHaWTH, GPL-3.0)
++                        final java.util.function.Supplier<java.util.Optional<Holder<net.minecraft.world.entity.ai.village.poi.PoiType>>> leavesXPoiType =
++                            org.leavesx.leavesx.config.LeavesXRuntime.poiCompetitorScanNoLoadOptimization()
++                                ? () -> level.getPoiManager().getTypeIfLoaded(pos.pos())
++                                : () -> level.getPoiManager().getType(pos.pos());
++                        leavesXPoiType.get()
+                             .ifPresent(
+                                 // Paper start - Improve performance of PoiCompetitorScan by unrolling stream
+                                 // The previous logic used Stream#reduce to simulate a form of single-iteration bubble sort
+diff --git a/net/minecraft/world/entity/ai/behavior/SetClosestHomeAsWalkTarget.java b/net/minecraft/world/entity/ai/behavior/SetClosestHomeAsWalkTarget.java
+index 5bd7473b..84ad6f39 100644
+--- a/net/minecraft/world/entity/ai/behavior/SetClosestHomeAsWalkTarget.java
++++ b/net/minecraft/world/entity/ai/behavior/SetClosestHomeAsWalkTarget.java
+@@ -4,9 +4,7 @@ import com.mojang.datafixers.util.Pair;
+ import it.unimi.dsi.fastutil.longs.Long2LongMap;
+ import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
+ import java.util.Optional;
+-import java.util.Set;
+ import java.util.function.Predicate;
+-import java.util.stream.Collectors;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.core.Holder;
+ import net.minecraft.world.entity.PathfinderMob;
+@@ -58,11 +56,14 @@ public class SetClosestHomeAsWalkTarget {
+                                 batchCache.put(key, lastUpdate.longValue() + CACHE_TIMEOUT);
+                                 return true;
+                             };
+-                            Set<Pair<Holder<PoiType>, BlockPos>> pois = poiManager.findAllWithType(
+-                                    p -> p.is(PoiTypes.HOME), cacheTest, body.blockPosition(), AcquirePoi.SCAN_RANGE, PoiManager.Occupancy.ANY
+-                                )
+-                                .collect(Collectors.toSet());
+-                            Path path = AcquirePoi.findPathToPois(body, pois);
++                            // Batch the scan without changing Paper's POI loading behavior.
++                            final java.util.List<Pair<Holder<PoiType>, BlockPos>> leavesXPois = new java.util.ArrayList<>();
++                            ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.findAnyPoiPositions(
++                                poiManager, p -> p.is(PoiTypes.HOME), cacheTest, body.blockPosition(),
++                                AcquirePoi.SCAN_RANGE, PoiManager.Occupancy.ANY, ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.LOAD_FOR_SEARCHING, Integer.MAX_VALUE, leavesXPois
++                            );
++                            final Path path = AcquirePoi.findPathToPois(body, new java.util.HashSet<>(leavesXPois));
++                            // LeavesX end - regionized POI
+                             if (path != null && path.canReach()) {
+                                 BlockPos targetPos = path.getTarget();
+                                 Optional<Holder<PoiType>> type = poiManager.getType(targetPos);
+diff --git a/net/minecraft/world/entity/ai/navigation/PathNavigation.java b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
+index 799837b4..bbbbf782 100644
+--- a/net/minecraft/world/entity/ai/navigation/PathNavigation.java
++++ b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
+@@ -54,6 +54,7 @@ public abstract class PathNavigation {
+     private float maxVisitedNodesMultiplier = 1.0F;
+     public final PathFinder pathFinder;
+     private boolean isStuck;
++    private long leavesX$pathRequest;
+     private float requiredPathLength = 16.0F;
+ 
+     public PathNavigation(final Mob mob, final Level level) {
+@@ -199,33 +200,20 @@ public abstract class PathNavigation {
+         BlockPos fromPos = above ? this.mob.blockPosition().above() : this.mob.blockPosition();
+         int radius = (int)(maxPathLength + radiusOffset);
+         PathNavigationRegion region = new PathNavigationRegion(this.level, fromPos.offset(-radius, -radius, -radius), fromPos.offset(radius, radius, radius));
+-        final Path path;
+-        if (org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.enabled(
+-            org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.PATHFINDING
+-        ) && !(this.mob instanceof net.minecraft.world.entity.npc.villager.Villager
+-            && org.leavesx.leavesx.config.LeavesXRuntime.villagerCompatibilityMode())) {
+-            final Set<BlockPos> frozenTargets = Set.copyOf(targets);
+-            final java.util.concurrent.CompletableFuture<Path> future =
+-                org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.submitOwnedValueOrRun(
+-                    org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.PATHFINDING,
+-                    this.pathFinder,
+-                    () -> {
+-                        synchronized (this.pathFinder) {
+-                            return this.pathFinder.findPath(
+-                                region,
+-                                this.mob,
+-                                frozenTargets,
+-                                maxPathLength,
+-                                reachRange,
+-                                this.maxVisitedNodesMultiplier
+-                            );
+-                        }
+-                    }
+-                );
+-            path = new org.leavesx.leavesx.path.LeavesXAsyncPath(frozenTargets, future);
+-        } else {
+-            path = this.pathFinder.findPath(region, this.mob, targets, maxPathLength, reachRange, this.maxVisitedNodesMultiplier);
++        final long request = ++this.leavesX$pathRequest;
++        Path path = null;
++        if (this.getClass() == WaterBoundPathNavigation.class) {
++            path = org.leavesx.leavesx.path.WaterPathfinding.tryCreate(this.mob, this.pathFinder, region, targets,
++                maxPathLength, reachRange, this.maxVisitedNodesMultiplier,
++                () -> this.leavesX$pathRequest == request && this.mob.getNavigation() == this && this.mob.level() == this.level,
++                () -> {
++                    final BlockPos currentFrom = above ? this.mob.blockPosition().above() : this.mob.blockPosition();
++                    return new PathNavigationRegion(this.level, currentFrom.offset(-radius, -radius, -radius), currentFrom.offset(radius, radius, radius));
++                });
+         }
++        // Unknown navigation/evaluator subclasses retain their original live-world search.
++        if (path == null) path = this.pathFinder.findPath(region, this.mob, targets, maxPathLength, reachRange, this.maxVisitedNodesMultiplier);
++        if (path != null && !path.isProcessed()) this.reachRange = reachRange;
+         profiler.pop();
+         if (path != null && path.isProcessed() && path.getTarget() != null) {
+             this.targetPos = path.getTarget();
+@@ -271,10 +259,15 @@ public abstract class PathNavigation {
+ 
+     public boolean moveTo(final @Nullable Path newPath, final double speedModifier) {
+         if (newPath == null) {
++            ++this.leavesX$pathRequest;
+             this.path = null;
+             return false;
+         }
+ 
++        if (newPath instanceof org.leavesx.leavesx.path.LeavesXAsyncPath pending && !pending.isCurrentRequest()) return false;
++        if (!(newPath instanceof org.leavesx.leavesx.path.LeavesXAsyncPath)
++            && this.path instanceof org.leavesx.leavesx.path.LeavesXAsyncPath) ++this.leavesX$pathRequest;
++
+         if (!newPath.isProcessed()) {
+             this.path = newPath;
+             this.speedModifier = speedModifier;
+@@ -323,6 +316,7 @@ public abstract class PathNavigation {
+             this.path = resolved;
+             this.targetPos = resolved.getTarget();
+             this.resetStuckTimeout();
++            this.moveTo(resolved, this.speedModifier); // Apply the same trimming and stuck-detection initialization as a synchronous path.
+         }
+ 
+         if (!this.isDone()) {
+@@ -545,6 +539,7 @@ public abstract class PathNavigation {
+     }
+ 
+     public void stop() {
++        ++this.leavesX$pathRequest; // A completed old request must not revive navigation after stop().
+         this.path = null;
+     }
+ 
+diff --git a/net/minecraft/world/entity/ai/sensing/NearestBedSensor.java b/net/minecraft/world/entity/ai/sensing/NearestBedSensor.java
+index 55940fbe..745c57eb 100644
+--- a/net/minecraft/world/entity/ai/sensing/NearestBedSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/NearestBedSensor.java
+@@ -7,7 +7,6 @@ import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
+ import java.util.Optional;
+ import java.util.Set;
+ import java.util.function.Predicate;
+-import java.util.stream.Collectors;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.core.Holder;
+ import net.minecraft.server.level.ServerLevel;
+@@ -55,11 +54,14 @@ public class NearestBedSensor extends Sensor<Mob> {
+                 this.batchCache.put(key, this.lastUpdate + 40L);
+                 return true;
+             };
+-            Set<Pair<Holder<PoiType>, BlockPos>> pois = poiManager.findAllWithType(
+-                    e -> e.is(PoiTypes.HOME), cacheTest, body.blockPosition(), AcquirePoi.SCAN_RANGE, PoiManager.Occupancy.ANY
+-                )
+-                .collect(Collectors.toSet());
+-            Path path = AcquirePoi.findPathToPois(body, pois);
++            // Keep Paper's POI loading semantics when collecting beds across chunk boundaries.
++            final java.util.List<Pair<Holder<PoiType>, BlockPos>> leavesXPois = new java.util.ArrayList<>();
++            ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.findAnyPoiPositions(
++                poiManager, e -> e.is(PoiTypes.HOME), cacheTest, body.blockPosition(),
++                AcquirePoi.SCAN_RANGE, PoiManager.Occupancy.ANY, ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.LOAD_FOR_SEARCHING, Integer.MAX_VALUE, leavesXPois
++            );
++            Path path = AcquirePoi.findPathToPois(body, new java.util.HashSet<>(leavesXPois));
++            // LeavesX end - regionized POI
+             if (path != null && path.canReach()) {
+                 BlockPos targetPos = path.getTarget();
+                 Optional<Holder<PoiType>> type = poiManager.getType(targetPos);
+diff --git a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
+index 5a5bb995..c6d6f1f2 100644
+--- a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
+@@ -16,6 +16,21 @@ public class NearestItemSensor extends Sensor<Mob> {
+     private static final long XZ_RANGE = 32L;
+     private static final long Y_RANGE = 16L;
+     public static final int MAX_DISTANCE_TO_WANTED_ITEM = 32;
++    // LeavesX start - L2/L3: per-instance reusable scan buffer (sensor instances are Brain-private)
++    private ObjectArrayList<ItemEntity> leavesX$reusableScanList;
++
++    private ObjectArrayList<ItemEntity> leavesX$acquireScanList() {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.sensorListReuseOptimization()) {
++            if (this.leavesX$reusableScanList == null) {
++                this.leavesX$reusableScanList = new ObjectArrayList<>();
++            } else {
++                this.leavesX$reusableScanList.clear();
++            }
++            return this.leavesX$reusableScanList;
++        }
++        return new ObjectArrayList<>();
++    }
++    // LeavesX end - L2/L3
+ 
+     @Override
+     public Set<MemoryModuleType<?>> requires() {
+@@ -30,7 +45,9 @@ public class NearestItemSensor extends Sensor<Mob> {
+         final List<ItemEntity> items;
+         if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
+             // Collect directly into the list consumed by the sensor, avoiding the generic return-list path.
+-            final ObjectArrayList<ItemEntity> bufferedItems = new ObjectArrayList<>();
++            // LeavesX start - L2/L3: reuse this instance's buffer instead of allocating per tick
++            final ObjectArrayList<ItemEntity> bufferedItems = this.leavesX$acquireScanList();
++            // LeavesX end - L2/L3
+             level.leavesX$getEntitiesOfClass(
+                 ItemEntity.class,
+                 null,
+diff --git a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
+index 9cd5e8e6..0eff648f 100644
+--- a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
++++ b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
+@@ -14,6 +14,11 @@ import net.minecraft.world.entity.ai.memory.NearestVisibleLivingEntities;
+ import net.minecraft.world.phys.AABB;
+ 
+ public class NearestLivingEntitySensor<T extends LivingEntity> extends Sensor<T> {
++    // Brain stores this list and the visibility wrapper retains it between scans.
++    private ObjectArrayList<LivingEntity> leavesX$acquireScanList() {
++        return new ObjectArrayList<>();
++    }
++
+     @Override
+     protected void doTick(final ServerLevel level, final T body) {
+         double followRange = body.getAttributeValue(Attributes.FOLLOW_RANGE);
+@@ -21,7 +26,7 @@ public class NearestLivingEntitySensor<T extends LivingEntity> extends Sensor<T>
+         final List<LivingEntity> livingEntities;
+         if (org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
+             // Moonrise can exclude the sensing entity before evaluating the shared, non-capturing predicate.
+-            final ObjectArrayList<LivingEntity> bufferedEntities = new ObjectArrayList<>();
++            final ObjectArrayList<LivingEntity> bufferedEntities = this.leavesX$acquireScanList();
+             level.leavesX$getEntitiesOfClass(LivingEntity.class, body, boundingBox, LivingEntity::isAlive, bufferedEntities);
+             livingEntities = bufferedEntities;
+         } else {
+diff --git a/net/minecraft/world/entity/ai/village/poi/PoiManager.java b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
+index e126a7ac..7207a433 100644
+--- a/net/minecraft/world/entity/ai/village/poi/PoiManager.java
++++ b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
+@@ -441,6 +441,13 @@ public class PoiManager extends SectionStorage<PoiSection, PoiSection.Packed> im
+         return this.getOrLoad(SectionPos.asLong(pos)).flatMap(section -> section.getType(pos));
+     }
+ 
++    // LeavesX start - regionized POI: never trigger chunk loads from competitor scans
++    // (ported from Leaf 0285 by HaHaWTH, GPL-3.0; same behavior, config-gated below)
++    public Optional<Holder<PoiType>> getTypeIfLoaded(final BlockPos pos) {
++        return this.get(SectionPos.asLong(pos)).flatMap(section -> section.getType(pos));
++    }
++    // LeavesX end - regionized POI
++
+     @VisibleForDebug
+     public @Nullable DebugPoiInfo getDebugPoiInfo(final BlockPos pos) {
+         return this.getOrLoad(SectionPos.asLong(pos)).flatMap(section -> section.getDebugPoiInfo(pos)).orElse(null);
+diff --git a/net/minecraft/world/entity/item/ItemEntity.java b/net/minecraft/world/entity/item/ItemEntity.java
+index 0ea8edfc..e6ed7fb9 100644
+--- a/net/minecraft/world/entity/item/ItemEntity.java
++++ b/net/minecraft/world/entity/item/ItemEntity.java
+@@ -269,9 +269,21 @@ public class ItemEntity extends Entity implements TraceableEntity, ChangePublish
+     private void mergeWithNeighbours() {
+         if (this.isMergable()) {
+             double radius = this.level().spigotConfig.itemMerge; // Spigot
+-            for (ItemEntity entity : this.level()
++            // LeavesX start - beta8 C4: reuse the pooled entity-query buffer for merge scans;
++            // dense item farms run this once per item per tick and previously allocated a fresh
++            // result list each time. Candidate order and merge behavior are unchanged.
++            final Level.LeavesXEntityQueryBuffer leavesX$mergeBuffer
++                = org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()
++                    ? Level.leavesX$acquireEntityQueryBuffer()
++                    : null;
++            try {
++            for (ItemEntity entity : leavesX$mergeBuffer != null
++                    ? leavesX$mergeBuffer.queryOfClass(this.level(), ItemEntity.class, this,
++                        this.getBoundingBox().inflate(radius, this.level().paperConfig().entities.behavior.onlyMergeItemsHorizontally ? 0 : radius - 0.5D, radius),
++                        ItemEntity::isMergable)
++                    : this.level()
+                 .getEntitiesOfClass(ItemEntity.class, this.getBoundingBox().inflate(radius, this.level().paperConfig().entities.behavior.onlyMergeItemsHorizontally ? 0 : radius - 0.5D, radius), other -> other != this && other.isMergable())) { // Spigot // Paper - configuration to only merge items horizontally
+-                if (entity.isMergable()) {
++                if (entity != this && entity.isMergable()) {
+                     // Paper start - Fix items merging through walls
+                     if (this.level().paperConfig().fixes.fixItemsMergingThroughWalls) {
+                         if (this.level().clipDirect(this.position(), entity.position(),
+@@ -296,6 +308,11 @@ public class ItemEntity extends Entity implements TraceableEntity, ChangePublish
+                     // LeavesX end - avoid scanning the remaining neighbours once this stack is full
+                 }
+             }
++            } finally {
++                if (leavesX$mergeBuffer != null) {
++                    leavesX$mergeBuffer.close();
++                }
++            }
+         }
+     }
+ 
+diff --git a/net/minecraft/world/entity/monster/Slime.java b/net/minecraft/world/entity/monster/Slime.java
+index e19da253..ac0accb7 100644
+--- a/net/minecraft/world/entity/monster/Slime.java
++++ b/net/minecraft/world/entity/monster/Slime.java
+@@ -320,7 +320,11 @@ public class Slime extends Mob implements Enemy {
+             }
+ 
+             ChunkPos chunkPos = ChunkPos.containing(pos);
+-            boolean slimeChunk = level.getMinecraftWorld().paperConfig().entities.spawning.allChunksAreSlimeChunks || WorldgenRandom.seedSlimeChunk(chunkPos.x(), chunkPos.z(), ((WorldGenLevel) level).getSeed(), level.getMinecraftWorld().spigotConfig.slimeSeed).nextInt(10) == 0; // Paper
++            final var world = level.getMinecraftWorld();
++            boolean slimeChunk = world.paperConfig().entities.spawning.allChunksAreSlimeChunks
++                || (world.leavesX$secureSeed == null
++                    ? WorldgenRandom.seedSlimeChunk(chunkPos.x(), chunkPos.z(), ((WorldGenLevel) level).getSeed(), world.spigotConfig.slimeSeed).nextInt(10) == 0
++                    : world.leavesX$secureSeed.isSlimeChunk(chunkPos.x(), chunkPos.z(), world.spigotConfig.slimeSeed));
+                 // Paper start - Replace rules for Height in Slime Chunks
+                 final double maxHeightSlimeChunk = level.getMinecraftWorld().paperConfig().entities.spawning.slimeSpawnHeight.slimeChunk.maximum;
+                 if (random.nextInt(10) == 0 && slimeChunk && pos.getY() < maxHeightSlimeChunk) {
+diff --git a/net/minecraft/world/entity/npc/villager/Villager.java b/net/minecraft/world/entity/npc/villager/Villager.java
+index dc85983a..13c84b97 100644
+--- a/net/minecraft/world/entity/npc/villager/Villager.java
++++ b/net/minecraft/world/entity/npc/villager/Villager.java
+@@ -127,6 +127,36 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+     public int numberOfRestocksToday = 0;
+     private long lastRestockCheckDay;
+     private boolean assignProfessionWhenSpawned = false;
++    private boolean leavesX$tradeOnly;
++
++    public boolean leavesX$isTradeOnly() {
++        return this.leavesX$tradeOnly;
++    }
++
++    public void leavesX$setTradeOnly(final boolean enabled) {
++        this.getBrain().stopAll(this.level().getMinecraftWorld(), this);
++        this.getNavigation().stop();
++        this.setXxa(0.0F);
++        this.setZza(0.0F);
++        this.leavesX$tradeOnly = enabled;
++        // Keep NoAI clear so the maintenance hook runs, including after switching an existing NoAI villager.
++        this.setNoAi(false);
++        if (!enabled) this.refreshBrain(this.level().getMinecraftWorld());
++    }
++
++    /** No sensors or behaviors run here. Restocking retains the workstation, schedule and event checks. */
++    public void leavesX$tickTradeOnly(final ServerLevel level) {
++        this.customServerAiStep(level, true);
++        if (this.isBaby() || this.tickCount % 20 != 0
++            || level.environmentAttributes().getValue(EnvironmentAttributes.VILLAGER_ACTIVITY, this.position()) != Activity.WORK) return;
++        this.getBrain().getMemory(MemoryModuleType.JOB_SITE).ifPresent(site -> {
++            if (site.dimension() == level.dimension() && site.pos().closerToCenterThan(this.position(), 1.73)
++                && level.getPoiManager().getType(site.pos()).filter(this.getVillagerData().profession().value().heldJobSite()).isPresent()
++                && this.shouldRestock(level)) {
++                this.restock();
++            }
++        });
++    }
+     private static final Brain.Provider<Villager> BRAIN_PROVIDER = Brain.provider(
+         List.of(
+             SensorType.NEAREST_LIVING_ENTITIES,
+@@ -247,6 +277,11 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+     // Paper start - EAR 2
+     @Override
+     public void inactiveTick() {
++        if (this.leavesX$tradeOnly) {
++            this.leavesX$tickTradeOnly(this.level().getMinecraftWorld());
++            super.inactiveTick();
++            return;
++        }
+         final boolean previousCompatibilityContext = org.leavesx.leavesx.config.LeavesXRuntime.enterVillagerCompatibilityContext();
+         try {
+             // SPIGOT-3874, SPIGOT-3894, SPIGOT-3846, SPIGOT-5286 :(
+@@ -553,6 +588,7 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+     @Override
+     protected void addAdditionalSaveData(final ValueOutput output) {
+         super.addAdditionalSaveData(output);
++        output.putBoolean("LeavesXTradeOnly", this.leavesX$tradeOnly);
+         output.store("VillagerData", VillagerData.CODEC, this.getVillagerData());
+         output.putBoolean("VillagerDataFinalized", this.entityData.get(DATA_VILLAGER_DATA_FINALIZED));
+         output.putByte("FoodLevel", (byte)this.foodLevel);
+@@ -569,6 +605,7 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+     @Override
+     protected void readAdditionalSaveData(final ValueInput input) {
+         super.readAdditionalSaveData(input);
++        this.leavesX$tradeOnly = input.getBooleanOr("LeavesXTradeOnly", false);
+         Optional<VillagerData> villagerDataOptional = input.read("VillagerData", VillagerData.CODEC);
+         if (input.getBooleanOr("VillagerDataFinalized", false) || villagerDataOptional.isPresent()) {
+             this.entityData.set(DATA_VILLAGER_DATA_FINALIZED, true);
+diff --git a/net/minecraft/world/inventory/AbstractContainerMenu.java b/net/minecraft/world/inventory/AbstractContainerMenu.java
+index 9c0e6a9d..040ece4d 100644
+--- a/net/minecraft/world/inventory/AbstractContainerMenu.java
++++ b/net/minecraft/world/inventory/AbstractContainerMenu.java
+@@ -38,6 +38,9 @@ import org.slf4j.Logger;
+ 
+ public abstract class AbstractContainerMenu {
+     private static final Logger LOGGER = LogUtils.getLogger();
++    // Inspired by Leaf's container copy supplier; recursive plugin callbacks use the original local supplier.
++    private final LeavesXItemStackCopySupplier leavesX$slotCopySupplier = new LeavesXItemStackCopySupplier();
++    private boolean leavesX$broadcastingSlots;
+     public static final int SLOT_CLICKED_OUTSIDE = -999;
+     public static final int QUICKCRAFT_TYPE_CHARITABLE = 0;
+     public static final int QUICKCRAFT_TYPE_GREEDY = 1;
+@@ -257,11 +260,27 @@ public abstract class AbstractContainerMenu {
+     }
+ 
+     public void broadcastChanges() {
+-        for (int i = 0; i < this.slots.size(); i++) {
+-            ItemStack current = this.slots.get(i).getItem();
+-            Supplier<ItemStack> currentCopy = Suppliers.memoize(current::copy);
+-            this.triggerSlotListeners(i, current, currentCopy);
+-            this.synchronizeSlotToRemote(i, current, currentCopy);
++        final boolean reuse = !this.leavesX$broadcastingSlots
++            && org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().containerCopyReuse();
++        if (reuse) this.leavesX$broadcastingSlots = true;
++        try {
++            for (int i = 0; i < this.slots.size(); i++) {
++                ItemStack current = this.slots.get(i).getItem();
++                final Supplier<ItemStack> currentCopy;
++                if (reuse) {
++                    this.leavesX$slotCopySupplier.reset(current);
++                    currentCopy = this.leavesX$slotCopySupplier;
++                } else {
++                    currentCopy = Suppliers.memoize(current::copy);
++                }
++                this.triggerSlotListeners(i, current, currentCopy);
++                this.synchronizeSlotToRemote(i, current, currentCopy);
++            }
++        } finally {
++            if (reuse) {
++                this.leavesX$slotCopySupplier.reset(ItemStack.EMPTY);
++                this.leavesX$broadcastingSlots = false;
++            }
+         }
+ 
+         this.synchronizeCarriedToRemote();
+@@ -277,6 +296,25 @@ public abstract class AbstractContainerMenu {
+         }
+     }
+ 
++    /** Memoizes one item copy without allocating a Supplier for every synchronized slot. */
++    private static final class LeavesXItemStackCopySupplier implements Supplier<ItemStack> {
++        private ItemStack source = ItemStack.EMPTY;
++        private ItemStack copy;
++
++        void reset(final ItemStack source) {
++            this.source = source;
++            this.copy = null;
++        }
++
++        @Override
++        public ItemStack get() {
++            if (this.copy == null) {
++                this.copy = this.source.copy();
++            }
++            return this.copy;
++        }
++    }
++
+     public void broadcastFullState() {
+         for (int i = 0; i < this.slots.size(); i++) {
+             ItemStack current = this.slots.get(i).getItem();
+diff --git a/net/minecraft/world/item/crafting/RecipeManager.java b/net/minecraft/world/item/crafting/RecipeManager.java
+index 6812ade4..74f86b79 100644
+--- a/net/minecraft/world/item/crafting/RecipeManager.java
++++ b/net/minecraft/world/item/crafting/RecipeManager.java
+@@ -91,12 +91,14 @@ public class RecipeManager extends SimplePreparableReloadListener<RecipeMap> imp
+     public void addRecipe(RecipeHolder<?> holder) {
+         org.spigotmc.AsyncCatcher.catchOp("Recipe Add"); // Spigot
+         this.recipes.addRecipe(holder);
++        this.recipes.leavesX$invalidateCountIndex(); // LeavesX - beta8 B1
+         this.finalizeRecipeLoading();
+     }
+ 
+     private FeatureFlagSet enabledFlags;
+ 
+     public void finalizeRecipeLoading() {
++            this.recipes.leavesX$invalidateCountIndex(); // LeavesX - beta8 B1
+         if (this.enabledFlags != null) {
+             this.finalizeRecipeLoading(this.enabledFlags);
+ 
+@@ -164,6 +166,29 @@ public class RecipeManager extends SimplePreparableReloadListener<RecipeMap> imp
+ 
+     public <I extends RecipeInput, T extends Recipe<I>> Optional<RecipeHolder<T>> getRecipeFor(final RecipeType<T> type, final I input, final Level level) {
+         // CraftBukkit start
++        // LeavesX start - beta8 B1: crafting-grid lookups consult the (type, ingredientCount) index;
++        // crafting recipes reject on a count mismatch before anything else, so the bucket skips
++        // every recipe that cannot match. Bucket order preserves registration order, so the last
++        // match still wins exactly as before. Non-crafting inputs take the vanilla path.
++        if (org.leavesx.leavesx.config.LeavesXRuntime.recipeIndexOptimization()
++            && type == RecipeType.CRAFTING
++            && input instanceof final CraftingInput craftingInput) {
++            if (input.isEmpty()) {
++                return Optional.empty();
++            }
++            RecipeHolder<T> matched = null;
++            // The index only narrows candidates; materials, shape and item components still need validation.
++            // Keep registration order so the last matching recipe retains Bukkit's priority (SPIGOT-4638).
++            for (final RecipeHolder<?> candidate : this.recipes.leavesX$countBucketWithSpecials(type, craftingInput.ingredientCount())) {
++                @SuppressWarnings("unchecked")
++                final RecipeHolder<T> recipe = (RecipeHolder<T>)candidate;
++                if (recipe.value().matches(input, level)) {
++                    matched = recipe;
++                }
++            }
++            return Optional.ofNullable(matched);
++        }
++        // LeavesX end - beta8 B1
+         List<RecipeHolder<T>> list = this.recipes.getRecipesFor(type, input, level).toList();
+         return (list.isEmpty()) ? Optional.empty() : Optional.of(list.getLast()); // CraftBukkit - SPIGOT-4638: last recipe gets priority
+         // CraftBukkit end
+@@ -222,6 +247,7 @@ public class RecipeManager extends SimplePreparableReloadListener<RecipeMap> imp
+     public boolean removeRecipe(ResourceKey<Recipe<?>> id) {
+         boolean removed = this.recipes.removeRecipe(id);
+         if (removed) {
++            this.recipes.leavesX$invalidateCountIndex(); // LeavesX - beta8 B1
+             this.finalizeRecipeLoading();
+         }
+ 
+diff --git a/net/minecraft/world/item/crafting/RecipeMap.java b/net/minecraft/world/item/crafting/RecipeMap.java
+index ca18f048..fb044d06 100644
+--- a/net/minecraft/world/item/crafting/RecipeMap.java
++++ b/net/minecraft/world/item/crafting/RecipeMap.java
+@@ -72,4 +72,118 @@ public class RecipeMap {
+     public <I extends RecipeInput, T extends Recipe<I>> Stream<RecipeHolder<T>> getRecipesFor(final RecipeType<T> type, final I container, final Level level) {
+         return container.isEmpty() ? Stream.empty() : this.byType(type).stream().filter(r -> r.value().matches(container, level));
+     }
++
++    // LeavesX start - beta8 B1: ingredient-count index for crafting-grid lookups.
++    // Shaped and shapeless crafting recipes reject on a plain ingredient-count mismatch before
++    // any other check, so bucketing by (type, count) skips every recipe that cannot match while
++    // preserving registration order inside each bucket — the last match still wins as before.
++    public <I extends RecipeInput, T extends Recipe<I>> Stream<RecipeHolder<T>> getCraftingRecipesForCount(
++        final RecipeType<T> type, final int ingredientCount
++    ) {
++        // LeavesX beta9 fix: must go through the lazy accessor — the field is null until first
++        // build and after every invalidate, so a direct read NPEs (observed on Crafter queries
++        // following a datapack reload).
++        final java.util.List<RecipeHolder<?>> bucket = this.leavesX$countIndex()
++            .get(new CountKey(type, ingredientCount));
++        return (bucket == null)
++            ? Stream.empty()
++            : bucket.stream().map(holder -> (RecipeHolder<T>)holder);
++    }
++
++    public record CountKey(RecipeType<?> type, int ingredientCount) {}
++
++    private volatile java.util.Map<CountKey, java.util.List<RecipeHolder<?>>> leavesX$countIndex;
++    private final java.util.Map<RecipeHolder<?>, Integer> leavesX$holderRank = new java.util.IdentityHashMap<>();
++
++    private java.util.Map<CountKey, java.util.List<RecipeHolder<?>>> leavesX$countIndex() {
++        java.util.Map<CountKey, java.util.List<RecipeHolder<?>>> index = this.leavesX$countIndex;
++        if (index == null) {
++            synchronized (this) {
++                index = this.leavesX$countIndex;
++                if (index == null) {
++                    final java.util.Map<CountKey, java.util.List<RecipeHolder<?>>> built =
++                        new java.util.LinkedHashMap<>();
++                    // Global registration-order rank per holder so merged buckets can be sorted
++                    // back into vanilla traversal order in O(n log n) instead of O(n*m).
++                    this.leavesX$holderRank.clear();
++                    int rank = 0;
++                    for (final RecipeHolder<?> holder : this.byKey.values()) {
++                        this.leavesX$holderRank.put(holder, rank++);
++                        final Integer count = leavesX$craftingIngredientCount(holder);
++                        // Special recipes (flexible ingredient counts) go to the -1 sentinel bucket.
++                        built.computeIfAbsent(
++                            new CountKey(holder.value().getType(), count == null ? -1 : count),
++                            key -> new java.util.ArrayList<>()
++                        ).add(holder);
++                    }
++                    final var comparator = java.util.Comparator.comparingInt(
++                        (RecipeHolder<?> holder) -> this.leavesX$holderRank.getOrDefault(holder, Integer.MAX_VALUE)
++                    );
++                    for (final java.util.List<RecipeHolder<?>> list : built.values()) {
++                        list.sort(comparator);
++                    }
++                    index = java.util.Collections.unmodifiableMap(built);
++                    this.leavesX$countIndex = index;
++                }
++            }
++        }
++        return index;
++    }
++
++    /** Returns the fast-reject count for the two crafting families; {@code null} for others. */
++    private static @org.jetbrains.annotations.Nullable Integer leavesX$craftingIngredientCount(final RecipeHolder<?> holder) {
++        final var value = holder.value();
++        if (value instanceof final ShapedRecipe shaped) {
++            return shaped.pattern().ingredientCount();
++        }
++        if (value instanceof final ShapelessRecipe shapeless) {
++            return shapeless.ingredients().size();
++        }
++        return null;
++    }
++
++    /** Drops the cached count index after recipe registration changes. */
++    public void leavesX$invalidateCountIndex() {
++        this.leavesX$countIndex = null;
++    }
++
++    // LeavesX beta9 fix start: special crafting recipes (tool repair, dyeing, book cloning, map
++    // extending, banner duplication, firework rockets/stars, decorated pots) accept flexible
++    // ingredient counts, so they cannot live in a single count bucket. The index now returns the
++    // count bucket MERGED with every unbucketed (special) recipe, both pre-sorted in registration
++    // order at build time, so "last match wins" stays identical to the vanilla scan. The caller
++    // in RecipeManager runs matches() over the merged stream exactly as it did over byType().
++    public java.util.List<RecipeHolder<?>> leavesX$countBucketWithSpecials(final RecipeType<?> type, final int ingredientCount) {
++        final java.util.Map<CountKey, java.util.List<RecipeHolder<?>>> index = this.leavesX$countIndex();
++        final java.util.List<RecipeHolder<?>> bucket = index.get(new CountKey(type, ingredientCount));
++        final java.util.List<RecipeHolder<?>> specials = index.get(new CountKey(type, -1));
++        if (bucket == null) {
++            return specials == null ? java.util.List.of() : specials;
++        }
++        if (specials == null) {
++            return bucket;
++        }
++        // Both lists are pre-sorted by registration rank at build time; merge linearly.
++        final java.util.List<RecipeHolder<?>> merged = new java.util.ArrayList<>(bucket.size() + specials.size());
++        int i = 0;
++        int j = 0;
++        while (i < bucket.size() && j < specials.size()) {
++            // Interleave by original registration order using a stable rank stored at build time;
++            // since both lists are individually sorted, take the smaller-ranked head first.
++            merged.add(rankOf(bucket.get(i)) <= rankOf(specials.get(j)) ? bucket.get(i++) : specials.get(j++));
++        }
++        while (i < bucket.size()) {
++            merged.add(bucket.get(i++));
++        }
++        while (j < specials.size()) {
++            merged.add(specials.get(j++));
++        }
++        return java.util.Collections.unmodifiableList(merged);
++    }
++
++    private int rankOf(final RecipeHolder<?> holder) {
++        return this.leavesX$holderRank.getOrDefault(holder, Integer.MAX_VALUE);
++    }
++    // LeavesX beta9 fix end
++    // LeavesX end - beta8 B1
+ }
+diff --git a/net/minecraft/world/item/crafting/ShapedRecipe.java b/net/minecraft/world/item/crafting/ShapedRecipe.java
+index f6836d6b..a6a49e7a 100644
+--- a/net/minecraft/world/item/crafting/ShapedRecipe.java
++++ b/net/minecraft/world/item/crafting/ShapedRecipe.java
+@@ -48,6 +48,12 @@ public class ShapedRecipe extends NormalCraftingRecipe {
+         this.result = result;
+     }
+ 
++    // LeavesX start - beta8 B1: pattern accessor for the recipe count index
++    public ShapedRecipePattern pattern() {
++        return this.pattern;
++    }
++    // LeavesX end - beta8 B1
++
+     @Override
+     public RecipeSerializer<ShapedRecipe> getSerializer() {
+         return SERIALIZER;
+diff --git a/net/minecraft/world/item/crafting/ShapedRecipePattern.java b/net/minecraft/world/item/crafting/ShapedRecipePattern.java
+index b2ca30b8..7d73f96c 100644
+--- a/net/minecraft/world/item/crafting/ShapedRecipePattern.java
++++ b/net/minecraft/world/item/crafting/ShapedRecipePattern.java
+@@ -199,6 +199,12 @@ public final class ShapedRecipePattern {
+         return this.height;
+     }
+ 
++    // LeavesX start - beta8 B1: expose the non-empty ingredient count for the recipe count index
++    public int ingredientCount() {
++        return this.ingredientCount;
++    }
++    // LeavesX end - beta8 B1
++
+     public List<Optional<Ingredient>> ingredients() {
+         return this.ingredients;
+     }
+diff --git a/net/minecraft/world/item/crafting/ShapelessRecipe.java b/net/minecraft/world/item/crafting/ShapelessRecipe.java
+index 53a818f1..cc050aa0 100644
+--- a/net/minecraft/world/item/crafting/ShapelessRecipe.java
++++ b/net/minecraft/world/item/crafting/ShapelessRecipe.java
+@@ -47,6 +47,12 @@ public class ShapelessRecipe extends NormalCraftingRecipe {
+         this.ingredients = ingredients;
+     }
+ 
++    // LeavesX start - beta8 B1: ingredient accessor for the recipe count index
++    public List<Ingredient> ingredients() {
++        return this.ingredients;
++    }
++    // LeavesX end - beta8 B1
++
+     // CraftBukkit start
+     @Override
+     public org.bukkit.inventory.ShapelessRecipe toBukkitRecipe(org.bukkit.NamespacedKey id) {
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index 55288a99..a81fff8f 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -136,7 +136,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+     public float rainLevel;
+     protected float oThunderLevel;
+     public float thunderLevel;
+-    protected final RandomSource random = new ca.spottedleaf.moonrise.common.util.ThreadUnsafeRandom(net.minecraft.world.level.levelgen.RandomSupport.generateUniqueSeed()); // Paper - replace random
++    protected final RandomSource random = org.leavesx.leavesx.random.LeavesXRandomSources.worldEvents(net.minecraft.world.level.levelgen.RandomSupport.generateUniqueSeed()); // LeavesX - optional runtime RNG
+     @Deprecated
+     private final RandomSource soundSeedGenerator = RandomSource.createThreadSafe();
+     private final Holder<DimensionType> dimensionTypeRegistration;
+diff --git a/net/minecraft/world/level/NaturalSpawner.java b/net/minecraft/world/level/NaturalSpawner.java
+index 034ae43d..bbb56f0b 100644
+--- a/net/minecraft/world/level/NaturalSpawner.java
++++ b/net/minecraft/world/level/NaturalSpawner.java
+@@ -523,7 +523,8 @@ public final class NaturalSpawner {
+         final RandomSource random,
+         final BlockPos pos
+     ) {
+-        Holder<Biome> biome = level.getBiome(pos);
++        Holder<Biome> biome = org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().cacheBiomeSpawning()
++            ? level.getBiomeManager().leavesX$getBiomeCached(pos) : level.getBiome(pos);
+         return mobCategory == MobCategory.WATER_AMBIENT && biome.is(BiomeTags.REDUCED_WATER_AMBIENT_SPAWNS) && random.nextFloat() < 0.98F
+             ? Optional.empty()
+             : mobsAt(level, structureManager, generator, mobCategory, pos, biome).getRandom(random);
+@@ -550,7 +551,9 @@ public final class NaturalSpawner {
+     ) {
+         return isInNetherFortressBounds(pos, level, mobCategory, structureManager)
+             ? NetherFortressStructure.FORTRESS_ENEMIES
+-            : generator.getMobsAt(biome != null ? biome : level.getBiome(pos), structureManager, mobCategory, pos);
++            : generator.getMobsAt(biome != null ? biome
++                : (org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().cacheBiomeSpawning()
++                    ? level.getBiomeManager().leavesX$getBiomeCached(pos) : level.getBiome(pos)), structureManager, mobCategory, pos);
+     }
+ 
+     public static boolean isInNetherFortressBounds(
+diff --git a/net/minecraft/world/level/PathNavigationRegion.java b/net/minecraft/world/level/PathNavigationRegion.java
+index 24e82cff..6305e8d6 100644
+--- a/net/minecraft/world/level/PathNavigationRegion.java
++++ b/net/minecraft/world/level/PathNavigationRegion.java
+@@ -76,7 +76,7 @@ public class PathNavigationRegion implements CollisionGetter {
+ 
+     // Paper start - if loaded util
+     @Nullable
+-    private ChunkAccess getChunkIfLoaded(int x, int z) {
++    public ChunkAccess getChunkIfLoaded(int x, int z) {
+         // Based on getChunk(int, int)
+         int xx = x - this.centerX;
+         int zz = z - this.centerZ;
+diff --git a/net/minecraft/world/level/biome/BiomeManager.java b/net/minecraft/world/level/biome/BiomeManager.java
+index c69b1cb6..4dd3157f 100644
+--- a/net/minecraft/world/level/biome/BiomeManager.java
++++ b/net/minecraft/world/level/biome/BiomeManager.java
+@@ -16,6 +16,9 @@ public class BiomeManager {
+     private static final double[] FIDDLE_OFFSETS = createFiddleOffsets();
+     private final BiomeManager.NoiseBiomeSource noiseBiomeSource;
+     private final long biomeZoomSeed;
++    // Per-thread coordinates avoid shared mutable caches during concurrent generation/query calls.
++    private final ThreadLocal<org.leavesx.leavesx.worldgen.BiomeCornerCache> leavesX$corners =
++        ThreadLocal.withInitial(org.leavesx.leavesx.worldgen.BiomeCornerCache::new);
+ 
+     public BiomeManager(final BiomeManager.NoiseBiomeSource noiseBiomeSource, final long seed) {
+         this.noiseBiomeSource = noiseBiomeSource;
+@@ -31,6 +34,24 @@ public class BiomeManager {
+     }
+ 
+     public Holder<Biome> getBiome(final BlockPos pos) {
++        return this.leavesX$getBiome(pos, null);
++    }
++
++    public Holder<Biome> leavesX$getBiomeCached(final BlockPos pos) {
++        if (!org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().cacheBiome()) return this.getBiome(pos);
++        final var cache = this.leavesX$corners.get();
++        final int corner = cache.get(pos.getX(), pos.getY(), pos.getZ());
++        if (corner >= 0) {
++            // Read the current biome every time, so setBiome, chunk reloads and datapacks cannot leave stale results.
++            return this.noiseBiomeSource.getNoiseBiome(
++                ((pos.getX() - 2) >> 2) + ((corner >>> 2) & 1),
++                ((pos.getY() - 2) >> 2) + ((corner >>> 1) & 1),
++                ((pos.getZ() - 2) >> 2) + (corner & 1));
++        }
++        return this.leavesX$getBiome(pos, cache);
++    }
++
++    private Holder<Biome> leavesX$getBiome(final BlockPos pos, final org.leavesx.leavesx.worldgen.@org.jspecify.annotations.Nullable BiomeCornerCache cache) {
+         int absX = pos.getX() - 2;
+         int absY = pos.getY() - 2;
+         int absZ = pos.getZ() - 2;
+@@ -64,6 +85,7 @@ public class BiomeManager {
+         int biomeX = (minI & 4) == 0 ? parentX : parentX + 1;
+         int biomeY = (minI & 2) == 0 ? parentY : parentY + 1;
+         int biomeZ = (minI & 1) == 0 ? parentZ : parentZ + 1;
++        if (cache != null) cache.put(pos.getX(), pos.getY(), pos.getZ(), minI);
+         return this.noiseBiomeSource.getNoiseBiome(biomeX, biomeY, biomeZ);
+     }
+ 
+diff --git a/net/minecraft/world/level/block/PoweredRailBlock.java b/net/minecraft/world/level/block/PoweredRailBlock.java
+index 03c878a4..964bb42e 100644
+--- a/net/minecraft/world/level/block/PoweredRailBlock.java
++++ b/net/minecraft/world/level/block/PoweredRailBlock.java
+@@ -28,6 +28,10 @@ public class PoweredRailBlock extends BaseRailBlock {
+     }
+ 
+     protected boolean findPoweredRailSignal(final Level level, final BlockPos pos, final BlockState state, final boolean forward, final int searchDepth) {
++        if (this.getClass() == PoweredRailBlock.class
++            && org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().optimizedPoweredRails()) {
++            return org.leavesx.leavesx.blocks.PoweredRailSignal.find(this, level, pos, state, forward, searchDepth);
++        }
+         if (searchDepth >= 8) {
+             return false;
+         }
+diff --git a/net/minecraft/world/level/chunk/ChunkGenerator.java b/net/minecraft/world/level/chunk/ChunkGenerator.java
+index aed69011..2cd1e801 100644
+--- a/net/minecraft/world/level/chunk/ChunkGenerator.java
++++ b/net/minecraft/world/level/chunk/ChunkGenerator.java
+@@ -285,7 +285,8 @@ public abstract class ChunkGenerator {
+                     // Paper end - Perf: iterate over border chunks instead of entire square chunk area
+                     int sectorX = chunkOriginX + spacing * x;
+                     int sectorZ = chunkOriginZ + spacing * z;
+-                    ChunkPos chunkTarget = config.getPotentialStructureChunk(seed, sectorX, sectorZ);
++                    ChunkPos chunkTarget = config.leavesX$getPotentialStructureChunk(seed, sectorX, sectorZ,
++                        level instanceof ServerLevel serverLevel ? serverLevel.leavesX$secureSeed : null);
+                     Pair<BlockPos, Holder<Structure>> generating = getStructureGeneratingAt(
+                         structures, level, structureManager, createReference, config, chunkTarget
+                     );
+@@ -343,7 +344,9 @@ public abstract class ChunkGenerator {
+             Map<Integer, List<Structure>> structuresByStep = structuresRegistry.stream()
+                 .collect(Collectors.groupingBy(structure -> structure.step().ordinal()));
+             List<FeatureSorter.StepFeatureData> featureList = this.featuresPerStep.get();
+-            WorldgenRandom random = new WorldgenRandom(new XoroshiroRandomSource(RandomSupport.generateUniqueSeed()));
++            WorldgenRandom random = level.getLevel().leavesX$secureSeed == null
++                ? new WorldgenRandom(new XoroshiroRandomSource(RandomSupport.generateUniqueSeed()))
++                : level.getLevel().leavesX$secureSeed.random("decoration", origin.getX(), origin.getZ(), 0);
+             long decorationSeed = random.setDecorationSeed(level.getSeed(), origin.getX(), origin.getZ());
+             Set<Holder<Biome>> possibleBiomes = new ObjectArraySet<>();
+             ChunkPos.rangeClosed(sectionPos.chunk(), 1).forEach(chunkPos -> {
+@@ -567,7 +570,9 @@ public abstract class ChunkGenerator {
+                             } else {
+                                 ArrayList<StructureSet.StructureSelectionEntry> options = new ArrayList<>(structures.size());
+                                 options.addAll(structures);
+-                                WorldgenRandom random = new WorldgenRandom(new LegacyRandomSource(0L));
++                                WorldgenRandom random = state.leavesX$secureSeed() == null
++                                    ? new WorldgenRandom(new LegacyRandomSource(0L))
++                                    : state.leavesX$secureSeed().random("structure-choice", sourceChunkPos.x(), sourceChunkPos.z(), 0);
+                                 random.setLargeFeatureSeed(state.getLevelSeed(), sourceChunkPos.x(), sourceChunkPos.z());
+                                 int total = 0;
+ 
+diff --git a/net/minecraft/world/level/chunk/ChunkGeneratorStructureState.java b/net/minecraft/world/level/chunk/ChunkGeneratorStructureState.java
+index 8b4ea2b1..cc4f4566 100644
+--- a/net/minecraft/world/level/chunk/ChunkGeneratorStructureState.java
++++ b/net/minecraft/world/level/chunk/ChunkGeneratorStructureState.java
+@@ -34,6 +34,9 @@ import org.slf4j.Logger;
+ public class ChunkGeneratorStructureState {
+     private static final Logger LOGGER = LogUtils.getLogger();
+     private final RandomState randomState;
++    public org.leavesx.leavesx.worldgen.SecureFeatureSeed.@Nullable Context leavesX$secureSeed() {
++        return this.randomState.leavesX$secureSeed;
++    }
+     private final BiomeSource biomeSource;
+     private final long levelSeed;
+     private final long concentricRingsSeed;
+@@ -203,7 +206,8 @@ public class ChunkGeneratorStructureState {
+         List<CompletableFuture<ChunkPos>> tasks = new ArrayList<>(count);
+         int spread = placement.spread();
+         HolderSet<Biome> preferredBiomes = placement.preferredBiomes();
+-        RandomSource random = RandomSource.create();
++        RandomSource random = this.leavesX$secureSeed() == null ? RandomSource.create()
++            : this.leavesX$secureSeed().random("strongholds", 0, 0, this.concentricRingsSeed);
+         // Paper start - Add missing structure set seed configs
+         if (this.conf.strongholdSeed != null && structureSet.is(net.minecraft.world.level.levelgen.structure.BuiltinStructureSets.STRONGHOLDS)) {
+             random.setSeed(this.conf.strongholdSeed);
+diff --git a/net/minecraft/world/level/levelgen/RandomState.java b/net/minecraft/world/level/levelgen/RandomState.java
+index 7b74440f..e89affb0 100644
+--- a/net/minecraft/world/level/levelgen/RandomState.java
++++ b/net/minecraft/world/level/levelgen/RandomState.java
+@@ -14,6 +14,8 @@ import net.minecraft.world.level.levelgen.synth.BlendedNoise;
+ import net.minecraft.world.level.levelgen.synth.NormalNoise;
+ 
+ public final class RandomState {
++    // Initialized by ChunkMap before structure state is published to generation workers.
++    public volatile org.leavesx.leavesx.worldgen.SecureFeatureSeed.Context leavesX$secureSeed;
+     private final PositionalRandomFactory random;
+     private final HolderGetter<NormalNoise.NoiseParameters> noises;
+     private final NoiseRouter router;
+diff --git a/net/minecraft/world/level/levelgen/WorldOptions.java b/net/minecraft/world/level/levelgen/WorldOptions.java
+index 22c67e0b..78ce60f1 100644
+--- a/net/minecraft/world/level/levelgen/WorldOptions.java
++++ b/net/minecraft/world/level/levelgen/WorldOptions.java
+@@ -14,18 +14,26 @@ public class WorldOptions {
+                 Codec.LONG.fieldOf("seed").stable().forGetter(WorldOptions::seed),
+                 Codec.BOOL.fieldOf("generate_structures").orElse(true).stable().forGetter(WorldOptions::generateStructures),
+                 Codec.BOOL.fieldOf("bonus_chest").orElse(false).stable().forGetter(WorldOptions::generateBonusChest),
+-                Codec.STRING.lenientOptionalFieldOf("legacy_custom_options").stable().forGetter(s -> s.legacyCustomOptions)
++                Codec.STRING.lenientOptionalFieldOf("legacy_custom_options").stable().forGetter(s -> s.legacyCustomOptions),
++                org.leavesx.leavesx.worldgen.SecureFeatureSeed.CODEC.optionalFieldOf("leavesx_secure_seed_v1")
++                    .forGetter(s -> s.leavesX$featureSeed)
+             )
+             .apply(i, i.stable(WorldOptions::new))
+     );
+     public static final WorldOptions DEMO_OPTIONS = new WorldOptions("North Carolina".hashCode(), true, true);
+     private final long seed;
++    private final Optional<org.leavesx.leavesx.worldgen.SecureFeatureSeed> leavesX$featureSeed;
++
++    public Optional<org.leavesx.leavesx.worldgen.SecureFeatureSeed> leavesX$featureSeed() {
++        return this.leavesX$featureSeed;
++    }
+     private final boolean generateStructures;
+     private final boolean generateBonusChest;
+     private final Optional<String> legacyCustomOptions;
+ 
+     public WorldOptions(final long seed, final boolean generateStructures, final boolean generateBonusChest) {
+-        this(seed, generateStructures, generateBonusChest, Optional.empty());
++        this(seed, generateStructures, generateBonusChest, Optional.empty(),
++            org.leavesx.leavesx.worldgen.SecureFeatureSeed.forNewWorld());
+     }
+ 
+     public static WorldOptions defaultWithRandomSeed() {
+@@ -36,8 +44,12 @@ public class WorldOptions {
+         return new WorldOptions(randomSeed(), false, false);
+     }
+ 
+-    private WorldOptions(final long seed, final boolean generateStructures, final boolean generateBonusChest, final Optional<String> legacyCustomOptions) {
++    private WorldOptions(final long seed, final boolean generateStructures, final boolean generateBonusChest,
++                         final Optional<String> legacyCustomOptions,
++                         final Optional<org.leavesx.leavesx.worldgen.SecureFeatureSeed> featureSeed) {
+         this.seed = seed;
++        // Absence in a loaded world means vanilla forever, even when the new-world switch is enabled.
++        this.leavesX$featureSeed = featureSeed;
+         this.generateStructures = generateStructures;
+         this.generateBonusChest = generateBonusChest;
+         this.legacyCustomOptions = legacyCustomOptions;
+@@ -60,15 +72,15 @@ public class WorldOptions {
+     }
+ 
+     public WorldOptions withBonusChest(final boolean generateBonusChest) {
+-        return new WorldOptions(this.seed, this.generateStructures, generateBonusChest, this.legacyCustomOptions);
++        return new WorldOptions(this.seed, this.generateStructures, generateBonusChest, this.legacyCustomOptions, this.leavesX$featureSeed);
+     }
+ 
+     public WorldOptions withStructures(final boolean generateStructures) {
+-        return new WorldOptions(this.seed, generateStructures, this.generateBonusChest, this.legacyCustomOptions);
++        return new WorldOptions(this.seed, generateStructures, this.generateBonusChest, this.legacyCustomOptions, this.leavesX$featureSeed);
+     }
+ 
+     public WorldOptions withSeed(final OptionalLong seed) {
+-        return new WorldOptions(seed.orElse(randomSeed()), this.generateStructures, this.generateBonusChest, this.legacyCustomOptions);
++        return new WorldOptions(seed.orElse(randomSeed()), this.generateStructures, this.generateBonusChest, this.legacyCustomOptions, this.leavesX$featureSeed);
+     }
+ 
+     public static OptionalLong parseSeed(String seedString) {
+diff --git a/net/minecraft/world/level/levelgen/feature/GeodeFeature.java b/net/minecraft/world/level/levelgen/feature/GeodeFeature.java
+index 410f97b2..9fa37a56 100644
+--- a/net/minecraft/world/level/levelgen/feature/GeodeFeature.java
++++ b/net/minecraft/world/level/levelgen/feature/GeodeFeature.java
+@@ -41,7 +41,9 @@ public class GeodeFeature extends Feature<GeodeConfiguration> {
+         int maxGenOffset = config.maxGenOffset;
+         List<Pair<BlockPos, Integer>> points = Lists.newLinkedList();
+         int numPoints = config.distributionPoints.sample(random);
+-        WorldgenRandom random1 = new WorldgenRandom(new LegacyRandomSource(level.getSeed()));
++        WorldgenRandom random1 = level.getLevel().leavesX$secureSeed == null
++            ? new WorldgenRandom(new LegacyRandomSource(level.getSeed()))
++            : level.getLevel().leavesX$secureSeed.random("geode", 0, 0, 0);
+         NormalNoise noise = NormalNoise.create(random1, -4, 1.0);
+         List<BlockPos> crackPoints = Lists.newLinkedList();
+         double crackSizeAdjustment = (double)numPoints / config.outerWallDistance.maxInclusive();
+diff --git a/net/minecraft/world/level/levelgen/structure/Structure.java b/net/minecraft/world/level/levelgen/structure/Structure.java
+index f1e13ede..c5d1515f 100644
+--- a/net/minecraft/world/level/levelgen/structure/Structure.java
++++ b/net/minecraft/world/level/levelgen/structure/Structure.java
+@@ -239,7 +239,8 @@ public abstract class Structure {
+                 biomeSource,
+                 randomState,
+                 structureTemplateManager,
+-                makeRandom(seed, chunkPos),
++                randomState.leavesX$secureSeed == null ? makeRandom(seed, chunkPos)
++                    : randomState.leavesX$secureSeed.random("structure", chunkPos.x(), chunkPos.z(), seed),
+                 seed,
+                 chunkPos,
+                 heightAccessor,
+diff --git a/net/minecraft/world/level/levelgen/structure/StructureCheck.java b/net/minecraft/world/level/levelgen/structure/StructureCheck.java
+index ce7856fa..badbd65d 100644
+--- a/net/minecraft/world/level/levelgen/structure/StructureCheck.java
++++ b/net/minecraft/world/level/levelgen/structure/StructureCheck.java
+@@ -108,7 +108,8 @@ public class StructureCheck {
+             return storageCheckResult;
+         }
+ 
+-        if (!placement.applyAdditionalChunkRestrictions(pos.x(), pos.z(), this.seed, this.getSaltOverride(structure))) { // Paper - add missing structure seed configs
++        if (!placement.leavesX$applyAdditionalChunkRestrictions(pos.x(), pos.z(), this.seed, this.getSaltOverride(structure),
++            this.randomState.leavesX$secureSeed)) {
+             return StructureCheckResult.START_NOT_PRESENT;
+         }
+ 
+diff --git a/net/minecraft/world/level/levelgen/structure/placement/RandomSpreadStructurePlacement.java b/net/minecraft/world/level/levelgen/structure/placement/RandomSpreadStructurePlacement.java
+index 1310b2ca..edb4db9c 100644
+--- a/net/minecraft/world/level/levelgen/structure/placement/RandomSpreadStructurePlacement.java
++++ b/net/minecraft/world/level/levelgen/structure/placement/RandomSpreadStructurePlacement.java
+@@ -65,9 +65,15 @@ public class RandomSpreadStructurePlacement extends StructurePlacement {
+     }
+ 
+     public ChunkPos getPotentialStructureChunk(final long seed, final int sourceX, final int sourceZ) {
++        return this.leavesX$getPotentialStructureChunk(seed, sourceX, sourceZ, null);
++    }
++
++    public ChunkPos leavesX$getPotentialStructureChunk(final long seed, final int sourceX, final int sourceZ,
++        final org.leavesx.leavesx.worldgen.SecureFeatureSeed.@org.jspecify.annotations.Nullable Context secureSeed) {
+         int spacedGridX = Math.floorDiv(sourceX, this.spacing);
+         int spacedGridZ = Math.floorDiv(sourceZ, this.spacing);
+-        WorldgenRandom random = new WorldgenRandom(new LegacyRandomSource(0L));
++        WorldgenRandom random = secureSeed == null ? new WorldgenRandom(new LegacyRandomSource(0L))
++            : secureSeed.random("structure-placement", spacedGridX, spacedGridZ, this.salt());
+         random.setLargeFeatureWithSalt(seed, spacedGridX, spacedGridZ, this.salt());
+         int limit = this.spacing - this.separation;
+         int spreadX = this.spreadType.evaluate(random, limit);
+@@ -77,7 +83,7 @@ public class RandomSpreadStructurePlacement extends StructurePlacement {
+ 
+     @Override
+     protected boolean isPlacementChunk(final ChunkGeneratorStructureState state, final int sourceX, final int sourceZ) {
+-        ChunkPos chunkPos = this.getPotentialStructureChunk(state.getLevelSeed(), sourceX, sourceZ);
++        ChunkPos chunkPos = this.leavesX$getPotentialStructureChunk(state.getLevelSeed(), sourceX, sourceZ, state.leavesX$secureSeed());
+         return chunkPos.x() == sourceX && chunkPos.z() == sourceZ;
+     }
+ 
+diff --git a/net/minecraft/world/level/levelgen/structure/placement/StructurePlacement.java b/net/minecraft/world/level/levelgen/structure/placement/StructurePlacement.java
+index 646df023..45be1175 100644
+--- a/net/minecraft/world/level/levelgen/structure/placement/StructurePlacement.java
++++ b/net/minecraft/world/level/levelgen/structure/placement/StructurePlacement.java
+@@ -96,7 +96,7 @@ public abstract class StructurePlacement {
+         }
+         // Paper end - Add missing structure set seed configs
+         return this.isPlacementChunk(state, sourceX, sourceZ)
+-            && this.applyAdditionalChunkRestrictions(sourceX, sourceZ, state.getLevelSeed(), saltOverride) // Paper - Add missing structure set seed configs
++            && this.leavesX$applyAdditionalChunkRestrictions(sourceX, sourceZ, state.getLevelSeed(), saltOverride, state.leavesX$secureSeed())
+             && this.applyInteractionsWithOtherStructures(state, sourceX, sourceZ);
+     }
+ 
+@@ -106,6 +106,16 @@ public abstract class StructurePlacement {
+         // Paper end - Add missing structure set seed configs
+     }
+ 
++    public boolean leavesX$applyAdditionalChunkRestrictions(final int x, final int z, final long seed,
++        final @org.jspecify.annotations.Nullable Integer saltOverride,
++        final org.leavesx.leavesx.worldgen.SecureFeatureSeed.@org.jspecify.annotations.Nullable Context secureSeed) {
++        if (secureSeed == null) return this.applyAdditionalChunkRestrictions(x, z, seed, saltOverride);
++        if (this.frequency >= 1.0F) return true;
++        final WorldgenRandom random = secureSeed.random("structure-frequency/" + this.frequencyReductionMethod.name(),
++            x, z, saltOverride == null ? this.salt : saltOverride);
++        return random.nextDouble() < this.frequency;
++    }
++
+     public boolean applyInteractionsWithOtherStructures(final ChunkGeneratorStructureState state, final int sourceX, final int sourceZ) {
+         return !this.exclusionZone.isPresent() || !this.exclusionZone.get().isPlacementForbidden(state, sourceX, sourceZ);
+     }
+diff --git a/net/minecraft/world/level/pathfinder/PathFinder.java b/net/minecraft/world/level/pathfinder/PathFinder.java
+index d1d9aec3..9d51896c 100644
+--- a/net/minecraft/world/level/pathfinder/PathFinder.java
++++ b/net/minecraft/world/level/pathfinder/PathFinder.java
+@@ -40,6 +40,28 @@ public class PathFinder {
+         this.maxVisitedNodes = maxVisitedNodes;
+     }
+ 
++    public int leavesX$maxVisitedNodes() {
++        return this.maxVisitedNodes;
++    }
++
++    /** Must be checked on the server thread; debug subscribers belong to the live server. */
++    public boolean leavesX$capturesDebug() {
++        return this.captureDebug.getAsBoolean();
++    }
++
++    /** Runs the original search with a fresh, detached evaluator; no live preparation or cleanup is performed. */
++    public @Nullable Path leavesX$findSnapshotPath(
++        final List<BlockPos> targets, final float maxPathLength, final int reachRange, final float multiplier
++    ) {
++        final Node from = this.nodeEvaluator.getStart();
++        if (from == null) return null;
++        final List<Map.Entry<Target, BlockPos>> entries = Lists.newArrayListWithExpectedSize(targets.size());
++        for (final BlockPos pos : targets) {
++            entries.add(new java.util.AbstractMap.SimpleEntry<>(this.nodeEvaluator.getTarget(pos.getX(), pos.getY(), pos.getZ()), pos));
++        }
++        return this.findPath(from, entries, maxPathLength, reachRange, multiplier);
++    }
++
+     public @Nullable Path findPath(
+         final PathNavigationRegion level,
+         final Mob entity,
+diff --git a/net/minecraft/world/level/pathfinder/SwimNodeEvaluator.java b/net/minecraft/world/level/pathfinder/SwimNodeEvaluator.java
+index e5555844..91ff50a3 100644
+--- a/net/minecraft/world/level/pathfinder/SwimNodeEvaluator.java
++++ b/net/minecraft/world/level/pathfinder/SwimNodeEvaluator.java
+@@ -86,12 +86,12 @@ public class SwimNodeEvaluator extends NodeEvaluator {
+         Node best = null;
+         PathType pathType = this.getCachedBlockType(x, y, z);
+         if (this.allowBreaching && pathType == PathType.BREACH || pathType == PathType.WATER) {
+-            float pathCost = this.mob.getPathfindingMalus(pathType);
++            float pathCost = this.leavesX$pathfindingMalus(pathType);
+             if (pathCost >= 0.0F) {
+                 best = this.getNode(x, y, z);
+                 best.type = pathType;
+                 best.costMalus = Math.max(best.costMalus, pathCost);
+-                if (this.currentContext.level().getFluidState(new BlockPos(x, y, z)).isEmpty()) {
++                if (this.leavesX$emptyFluid(x, y, z)) {
+                     best.costMalus += 8.0F;
+                 }
+             }
+@@ -100,6 +100,19 @@ public class SwimNodeEvaluator extends NodeEvaluator {
+         return best;
+     }
+ 
++    // Snapshot evaluators override these reads without retaining a live mob or level.
++    protected float leavesX$pathfindingMalus(final PathType type) {
++        return this.mob.getPathfindingMalus(type);
++    }
++
++    protected boolean leavesX$emptyFluid(final int x, final int y, final int z) {
++        return this.currentContext.level().getFluidState(new BlockPos(x, y, z)).isEmpty();
++    }
++
++    public boolean leavesX$allowBreaching() {
++        return this.allowBreaching;
++    }
++
+     protected PathType getCachedBlockType(final int x, final int y, final int z) {
+         return this.pathTypesByPosCache.computeIfAbsent(BlockPos.asLong(x, y, z), k -> this.getPathType(this.currentContext, x, y, z));
+     }
+diff --git a/net/minecraft/world/level/storage/PlayerDataStorage.java b/net/minecraft/world/level/storage/PlayerDataStorage.java
+index 4d74ea48..5a266870 100644
+--- a/net/minecraft/world/level/storage/PlayerDataStorage.java
++++ b/net/minecraft/world/level/storage/PlayerDataStorage.java
+@@ -44,8 +44,24 @@ public class PlayerDataStorage {
+         }
+     }
+ 
+-    /** Encodes one immutable save image before handing disk I/O to the ordered LeavesX writer. */
++    /** Detaches player data before compression and disk I/O enter the per-UUID save lane. */
+     public void save(final String playerName, final UUID uniqueId, final String stringId, final CompoundTag dataToStore) {
++        if (org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().asyncPlayerCompression()
++            && org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.enabled(
++                org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE)) {
++            // Detach every nested tag before returning to plugins/player ticks. Compression and writing share
++            // the UUID lane, so a later small save can never overtake an earlier large save.
++            final CompoundTag snapshot = dataToStore.copy();
++            org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.submitKeyedOrRun(
++                org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE,
++                uniqueId,
++                () -> this.writeEncoded(playerName, stringId, encode(snapshot))
++            ).exceptionally(failure -> {
++                LOGGER.warn("Failed to compress or save player data for {} ({})", playerName, uniqueId, failure);
++                return null;
++            });
++            return;
++        }
+         final byte[] encoded;
+         try (ByteArrayOutputStream output = new ByteArrayOutputStream(65_536)) {
+             NbtIo.writeCompressed(dataToStore, output);
+@@ -65,6 +81,15 @@ public class PlayerDataStorage {
+         });
+     }
+ 
++    private static byte[] encode(final CompoundTag snapshot) {
++        try (ByteArrayOutputStream output = new ByteArrayOutputStream(65_536)) {
++            NbtIo.writeCompressed(snapshot, output);
++            return output.toByteArray();
++        } catch (final java.io.IOException failure) {
++            throw new java.io.UncheckedIOException("Failed to compress detached player data", failure);
++        }
++    }
++
+     private void writeEncoded(final String playerName, final String stringId, final byte[] encoded) {
+         Path temporaryFile = null;
+         try {

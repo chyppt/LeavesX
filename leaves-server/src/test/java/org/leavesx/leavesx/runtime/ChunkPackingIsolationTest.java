@@ -18,13 +18,12 @@ class ChunkPackingIsolationTest {
     void floodedChunkQueueDoesNotStarvePathfinding() throws Exception {
         assumeTrue(Runtime.getRuntime().availableProcessors() >= 4, "Requires multiple compute lanes");
         LeavesXComputeExecutor.shutdown();
-        LeavesXAsyncRuntime.configure(LeavesXConfig.AsyncSettings.safeDefaults(), true);
+        LeavesXAsyncRuntime.configure(new LeavesXConfig.AsyncSettings(
+            true, 256, true, true, 2, 1_024, 60, true, 1_024, true, 2, 1_024), true);
         final CountDownLatch release = new CountDownLatch(1);
         final var pending = new ArrayList<CompletableFuture<Void>>();
         try {
-            // A disabled workload executes on the caller. Never submit latch-blocked tasks in that mode.
-            assumeTrue(LeavesXAsyncRuntime.enabled(LeavesXAsyncRuntime.Workload.CHUNK_SEND),
-                "Live chunk packet packing is disabled until detached snapshots are available");
+            assertTrue(LeavesXAsyncRuntime.enabled(LeavesXAsyncRuntime.Workload.CHUNK_SEND));
             for (int i = 0; i < 64; i++) {
                 pending.add(LeavesXAsyncRuntime.submitOrRun(LeavesXAsyncRuntime.Workload.CHUNK_SEND, () -> {
                     try { release.await(10, TimeUnit.SECONDS); }

@@ -1,0 +1,106 @@
+From 52889edb9e32c0e58faa42e5f0ceef87541fe15c Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sun, 27 Sep 2026 00:07:49 +0800
+Subject: [PATCH] Keep restart notices and expose bounded health reports
+
+---
+ .../java/org/leavesx/leavesx/command/LeavesXCommand.java | 5 ++++-
+ .../leavesx/leavesx/config/LeavesXConfigBootstrap.java   | 7 +++++--
+ .../leavesx/leavesx/runtime/PoiBatchScanRoutingTest.java | 9 ++++++---
+ 3 files changed, 15 insertions(+), 6 deletions(-)
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 26772bc7c..dfa8dc363 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -71,7 +71,7 @@ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
+ public final class LeavesXCommand extends Command {
+ 
+     private static final List<String> SUBCOMMANDS = List.of(
+-        "ai", "status", "all", "gui", "worlds", "entities", "hotspots", "blockentities", "blockhotspots",
++        "ai", "health", "report", "status", "all", "gui", "worlds", "entities", "hotspots", "blockentities", "blockhotspots",
+         "villagers", "activity", "tickets", "plugins", "memory", "network", "threads", "parallel", "system", "stalls",
+         "regions", "safety", "config", "reload", "help"
+     );
+@@ -97,6 +97,8 @@ public final class LeavesXCommand extends Command {
+         final String subcommand = args.length == 0 ? "status" : args[0].toLowerCase(Locale.ROOT);
+         switch (subcommand) {
+             case "ai" -> org.leavesx.leavesx.gameplay.EntityAiTool.give(sender);
++            case "health" -> org.leavesx.leavesx.diagnostics.LeavesXHealthReport.show(sender, false);
++            case "report" -> org.leavesx.leavesx.diagnostics.LeavesXHealthReport.show(sender, true);
+             case "status" -> sendStatus(sender);
+             case "all" -> sendAll(sender, args);
+             case "gui" -> LeavesXDiagnosticsGui.open(sender);
+@@ -1447,6 +1449,7 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(Component.text("/leavesx regions - 区域化流水线模式与配置", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx safety - 区域化降级、重放与线程域违规计数", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx reload - 只重载 leavesx.yml，并提示需重启的配置", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx health | report - 查看健康检查或导出脱敏报告", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx memory|network|threads|system|config - 对应详细状态", NamedTextColor.GRAY));
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index c9e9b1c57..bff3b0f15 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -11,6 +11,8 @@ public final class LeavesXConfigBootstrap {
+ 
+     private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXConfigBootstrap.class);
+     private static volatile Path configuredPath;
++    // Startup-only options must be compared with the running pools, not the previous reload's requested values.
++    private static volatile LeavesXConfig startupConfiguration;
+ 
+     private LeavesXConfigBootstrap() {
+     }
+@@ -40,6 +42,7 @@ public final class LeavesXConfigBootstrap {
+             org.leavesx.leavesx.diagnostics.LeavesXSystemDiagnostics.initialize();
+         }
+         configuredPath = path;
++        startupConfiguration = config;
+         if (config.extensions().poiAsyncSerialization() || config.extensions().poiCompetitorScanNoLoad()) {
+             LOGGER.warn("LeavesX POI async serialization and non-loading villager job-site scans are disabled in this build to preserve POI data and vanilla villager behavior; the existing settings are retained for migration.");
+         }
+@@ -86,10 +89,10 @@ public final class LeavesXConfigBootstrap {
+             server.getBotList().refreshLeavesXPresentation();
+         }
+         LOGGER.info("Reloaded LeavesX configuration from {}", path);
+-        return new ReloadResult(next, restartRequiredChanges(previous, next));
++        return new ReloadResult(next, restartRequiredChanges(startupConfiguration, next));
+     }
+ 
+-    private static java.util.List<String> restartRequiredChanges(
++    static java.util.List<String> restartRequiredChanges(
+         final LeavesXConfig previous,
+         final LeavesXConfig next
+     ) {
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/PoiBatchScanRoutingTest.java b/src/test/java/org/leavesx/leavesx/runtime/PoiBatchScanRoutingTest.java
+index e5e97c9bc..6fc28d648 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/PoiBatchScanRoutingTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/PoiBatchScanRoutingTest.java
+@@ -66,7 +66,9 @@ public class PoiBatchScanRoutingTest {
+         final ClassNode node = classNode(
+             net.minecraft.world.entity.ai.behavior.SetClosestHomeAsWalkTarget.class);
+         final MethodNode trigger = node.methods.stream()
+-            .filter(m -> m.name.equals("lambda$create$0") || m.name.startsWith("lambda$"))
++            // Lambda numbering/order is a compiler detail. Select the actual behavior callback by signature.
++            .filter(m -> m.name.startsWith("lambda$") && m.desc.contains("Lnet/minecraft/server/level/ServerLevel;")
++                && m.desc.endsWith(")Z"))
+             .findFirst().orElseThrow();
+         final List<MethodInsnNode> calls = invocations(trigger);
+ 
+@@ -79,11 +81,12 @@ public class PoiBatchScanRoutingTest {
+         final ClassNode node = classNode(
+             net.minecraft.world.entity.ai.behavior.PoiCompetitorScan.class);
+         final MethodNode lambda = node.methods.stream()
+-            .filter(m -> m.name.startsWith("lambda$"))
++            .filter(m -> m.name.startsWith("lambda$") && m.desc.contains("Lnet/minecraft/server/level/ServerLevel;")
++                && m.desc.endsWith(")Z"))
+             .findFirst().orElseThrow();
+         final List<MethodInsnNode> calls = invocations(lambda);
+ 
+         assertTrue(calls.stream().anyMatch(call -> call.name.equals("poiCompetitorScanNoLoadOptimization")),
+             "competitor scan must consult LeavesXRuntime.poiCompetitorScanNoLoadOptimization");
+     }
+-}
+\ No newline at end of file
++}

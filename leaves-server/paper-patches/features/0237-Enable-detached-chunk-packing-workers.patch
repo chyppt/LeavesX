@@ -1,0 +1,109 @@
+From: chyppt <pptwxo@163.com>
+Subject: [PATCH] Enable detached chunk packing workers
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index faf54324a0..f9ecd88e9d 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1454,7 +1454,10 @@ public final class LeavesXCommand extends Command {
+                 sender.sendMessage(Component.text("以下项目需要重启后生效：" + String.join("、", result.restartRequiredChanges()), NamedTextColor.YELLOW));
+             }
+             if (result.configuration().asyncSettings().chunkSendEnabled()) {
+-                sender.sendMessage(Component.text("提示：异步区块发送当前仍受安全门控，运行时不会读取实时区块状态进行打包。", NamedTextColor.YELLOW));
++                sender.sendMessage(Component.text("提示：异步区块发送仅编码区块节副本；反矿透保持原路径，发包和事件顺序不变。", NamedTextColor.YELLOW));
++            }
++            for (final String warning : org.leavesx.leavesx.config.LeavesXConfigInspection.compatibilityWarnings(result.configuration())) {
++                sender.sendMessage(Component.text("提示：" + warning, NamedTextColor.YELLOW));
+             }
+             if (result.configuration().asyncSettings().mobSpawningEnabled()) {
+                 for (final World world : Bukkit.getWorlds()) {
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 286311c601..196f31b527 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -573,8 +573,8 @@ public final class LeavesXConfigWriter {
+         comments.put("messages.join", "自定义进入提示；支持 <player>、<name>、<display_name>、%player_name% 和颜色代码。默认：空，使用原版提示。");
+         comments.put("messages.quit", "自定义退出提示；支持 <player>、<name>、<display_name>、%player_name% 和颜色代码。默认：空，使用原版提示。");
+         comments.put("messages.core-prefix", "服务端核心提示的统一前缀，例如假人创建成功或配置重载提示；支持 MiniMessage 和 &/§ 颜色代码。默认：空。");
+-        comments.put("async.chunk-send.enabled", "当前版本暂不可用：区块、光照和方块实体尚未完整快照，打包保持主线程执行。默认：false。");
+-        comments.put("async.chunk-send.queue-size", "异步区块发送最多排队任务数；队列满时延后重试，不阻塞主线程。默认：256。");
++        comments.put("async.chunk-send.enabled", "异步编码区块节副本；光照、方块实体和事件保持主线程，反矿透保持原路径。默认：false。");
++        comments.put("async.chunk-send.queue-size", "区块节编码最多排队任务数；队列满时在当前线程完整编码，不丢包。默认：256。");
+         comments.put("async.mob-spawning", "是否异步计算生物生成统计；需同时开启 Paper 的 per-player-mob-spawns。默认：true。");
+         comments.put("async.pathfinding.enabled", "允许快照寻路使用工作线程；需同时打开对应的快照开关，陆地和飞行寻路仍在主线程。默认：true。");
+         comments.put("async.pathfinding.water-snapshot", "实验性水中寻路：完整路径搜索在后台完成，可能延后一刻或数刻开始移动；地形变化或搜索越界时主线程重算，陆地、飞行和自定义导航不受影响。默认：false。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index e560d3010f..827893cc4e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -292,7 +292,7 @@ public final class LeavesXRuntime {
+     }
+ 
+     public static boolean asyncChunkSend() {
+-        return false;
++        return asyncSettings.chunkSendEnabled();
+     }
+ 
+     public static boolean asyncMobSpawning() {
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+index 6ef5faf162..9b33f09c45 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+@@ -36,8 +36,8 @@ public final class LeavesXAsyncRuntime {
+     private static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(60L);
+     private static final int MAX_GENERAL_THREADS = 16;
+     private static final int MAX_OWNED_TASKS_PER_DRAIN = 8;
+-    // Live chunk state is not a detached packet snapshot yet.
+-    private static final boolean CHUNK_SEND_EXPERIMENTAL = false;
++    // CHUNK_SEND accepts detached section palettes only; live packet construction stays on the owner.
++    private static final boolean CHUNK_SEND_EXPERIMENTAL = true;
+     private static final Object GLOBAL_ORDER_OWNER = new Object();
+     private static volatile Map<Workload, ExecutorState> executors = Map.of();
+     private static volatile boolean configured;
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java
+index 0cb6302dd9..1f632c1c96 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java
+@@ -3,6 +3,7 @@ package org.leavesx.leavesx.runtime;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertNotEquals;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import java.util.ArrayList;
+@@ -114,27 +115,21 @@ class LeavesXAsyncRuntimeTest {
+     }
+ 
+     @Test
+-    void liveChunkPacketWorkloadStaysOnCallerEvenWithOldEnabledConfig() {
++    void detachedChunkWorkloadUsesWorkerWhenEnabled() {
+         final LeavesXConfig.AsyncSettings chunkSettings = new LeavesXConfig.AsyncSettings(
+             true, 64, false, false, 0, 64, 30, false, 64, false, 0, 64
+         );
+         LeavesXAsyncRuntime.configure(chunkSettings);
+-        assertFalse(LeavesXAsyncRuntime.enabled(LeavesXAsyncRuntime.Workload.CHUNK_SEND));
+-        assertEquals(0, LeavesXAsyncRuntime.generalThreadCount(chunkSettings));
++        assertTrue(LeavesXAsyncRuntime.enabled(LeavesXAsyncRuntime.Workload.CHUNK_SEND));
++        assertTrue(LeavesXAsyncRuntime.generalThreadCount(chunkSettings) > 0);
+         final Thread caller = Thread.currentThread();
+         final List<Thread> execution = new ArrayList<>();
+         LeavesXAsyncRuntime.submitOrRun(LeavesXAsyncRuntime.Workload.CHUNK_SEND,
+             () -> execution.add(Thread.currentThread())).join();
+-        assertEquals(List.of(caller), execution);
+-        final AtomicBoolean ranOnCaller = new AtomicBoolean();
+-        assertNull(LeavesXAsyncRuntime.trySubmitValue(
+-            LeavesXAsyncRuntime.Workload.CHUNK_SEND,
+-            () -> {
+-                ranOnCaller.set(true);
+-                return null;
+-            }
+-        ));
+-        assertFalse(ranOnCaller.get());
++        assertEquals(1, execution.size());
++        assertNotEquals(caller, execution.getFirst());
++        assertNotEquals(caller, LeavesXAsyncRuntime.trySubmitValue(
++            LeavesXAsyncRuntime.Workload.CHUNK_SEND, Thread::currentThread).join());
+     }
+ 
+     @Test

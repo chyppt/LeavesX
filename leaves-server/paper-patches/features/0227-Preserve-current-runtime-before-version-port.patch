@@ -1,0 +1,2136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Sat, 26 Sep 2026 00:00:00 +0800
+Subject: [PATCH] Preserve current runtime before version port
+
+diff --git a/src/main/java/ca/spottedleaf/moonrise/common/misc/SingleUserAreaMap.java b/src/main/java/ca/spottedleaf/moonrise/common/misc/SingleUserAreaMap.java
+index 7e85bb58b8..6791137cb8 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/common/misc/SingleUserAreaMap.java
++++ b/src/main/java/ca/spottedleaf/moonrise/common/misc/SingleUserAreaMap.java
+@@ -87,6 +87,12 @@ public abstract class SingleUserAreaMap<T> {
+             return false;
+         }
+ 
++        // Leaf: no callbacks or state changes are needed while both chunk and view distance are unchanged.
++        if (fromX == toX && fromZ == toZ && oldViewDistance == newViewDistance
++            && org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().optimizePlayerMovement()) {
++            return true;
++        }
++
+         this.lastChunkX = toX;
+         this.lastChunkZ = toZ;
+         this.distance = newViewDistance;
+diff --git a/src/main/java/ca/spottedleaf/moonrise/common/util/SimpleThreadUnsafeRandom.java b/src/main/java/ca/spottedleaf/moonrise/common/util/SimpleThreadUnsafeRandom.java
+index 8d57b9c141..bea56d85b2 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/common/util/SimpleThreadUnsafeRandom.java
++++ b/src/main/java/ca/spottedleaf/moonrise/common/util/SimpleThreadUnsafeRandom.java
+@@ -38,6 +38,24 @@ public final class SimpleThreadUnsafeRandom implements BitRandomSource {
+         return (int)(this.advanceSeed() >>> (BITS - bits));
+     }
+ 
++    @Override
++    public void consumeCount(final int count) {
++        // Compose affine LCG steps in O(log n). The next output is bit-identical to count calls to nextInt().
++        long multiplier = MULTIPLIER;
++        long increment = ADDEND;
++        long accumulatedMultiplier = 1L;
++        long accumulatedIncrement = 0L;
++        for (int remaining = count; remaining > 0; remaining >>>= 1) {
++            if ((remaining & 1) != 0) {
++                accumulatedMultiplier = (accumulatedMultiplier * multiplier) & MASK;
++                accumulatedIncrement = (accumulatedIncrement * multiplier + increment) & MASK;
++            }
++            increment = (increment * (multiplier + 1L)) & MASK;
++            multiplier = (multiplier * multiplier) & MASK;
++        }
++        this.value = (this.value * accumulatedMultiplier + accumulatedIncrement) & MASK;
++    }
++
+     @Override
+     public int nextInt() {
+         final long seed = this.advanceSeed();
+diff --git a/src/main/java/com/destroystokyo/paper/entity/PaperPathfinder.java b/src/main/java/com/destroystokyo/paper/entity/PaperPathfinder.java
+index 0a9da3d25d..dd94d96611 100644
+--- a/src/main/java/com/destroystokyo/paper/entity/PaperPathfinder.java
++++ b/src/main/java/com/destroystokyo/paper/entity/PaperPathfinder.java
+@@ -37,13 +37,14 @@ public class PaperPathfinder implements com.destroystokyo.paper.entity.Pathfinde
+ 
+     @Override
+     public boolean hasPath() {
+-        return this.entity.getNavigation().getPath() != null && !this.entity.getNavigation().getPath().isDone();
++        final Path path = resolvePath(this.entity.getNavigation().getPath());
++        return path != null && !path.isDone();
+     }
+ 
+     @Nullable
+     @Override
+     public PathResult getCurrentPath() {
+-        Path path = this.entity.getNavigation().getPath();
++        Path path = resolvePath(this.entity.getNavigation().getPath());
+         return path != null && !path.isDone() ? new PaperPathResult(path) : null;
+     }
+ 
+@@ -51,7 +52,7 @@ public class PaperPathfinder implements com.destroystokyo.paper.entity.Pathfinde
+     @Override
+     public PathResult findPath(Location loc) {
+         Preconditions.checkArgument(loc != null, "Location can not be null");
+-        Path path = this.entity.getNavigation().createPath(loc.getX(), loc.getY(), loc.getZ(), 0);
++        Path path = resolvePath(this.entity.getNavigation().createPath(loc.getX(), loc.getY(), loc.getZ(), 0));
+         return path != null ? new PaperPathResult(path) : null;
+     }
+ 
+@@ -59,7 +60,7 @@ public class PaperPathfinder implements com.destroystokyo.paper.entity.Pathfinde
+     @Override
+     public PathResult findPath(Entity target) {
+         Preconditions.checkArgument(target != null, "Target can not be null");
+-        Path path = this.entity.getNavigation().createPath(((CraftEntity) target).getHandle(), 0);
++        Path path = resolvePath(this.entity.getNavigation().createPath(((CraftEntity) target).getHandle(), 0));
+         return path != null ? new PaperPathResult(path) : null;
+     }
+ 
+@@ -70,6 +71,11 @@ public class PaperPathfinder implements com.destroystokyo.paper.entity.Pathfinde
+         return this.entity.getNavigation().moveTo(pathEntity, speed);
+     }
+ 
++    /** The plugin API remains synchronous, including null for failed requests and immediately available point lists. */
++    private static @Nullable Path resolvePath(final @Nullable Path path) {
++        return path instanceof org.leavesx.leavesx.path.LeavesXAsyncPath pending ? pending.resolvedPath() : path;
++    }
++
+     @Override
+     public boolean canOpenDoors() {
+         return this.entity.getNavigation().pathFinder.nodeEvaluator.canOpenDoors();
+diff --git a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+index 847e05d280..59b68ddb5b 100644
+--- a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
++++ b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+@@ -313,7 +313,8 @@ public class GlobalConfiguration extends ConfigurationPart {
+                     _chatExecutorMaxSize = _chatExecutorCoreSize;
+                 }
+ 
+-                java.util.concurrent.ThreadPoolExecutor executor = (java.util.concurrent.ThreadPoolExecutor) net.minecraft.server.MinecraftServer.getServer().chatExecutor;
++                // Inspect the running executor, not the reloaded configuration (switching requires a restart).
++                if (!(net.minecraft.server.MinecraftServer.getServer().chatExecutor instanceof java.util.concurrent.ThreadPoolExecutor executor)) return;
+                 executor.setCorePoolSize(_chatExecutorCoreSize);
+                 executor.setMaximumPoolSize(_chatExecutorMaxSize);
+             }
+diff --git a/src/main/java/io/papermc/paper/plugin/manager/PaperEventManager.java b/src/main/java/io/papermc/paper/plugin/manager/PaperEventManager.java
+index cada376607..2155404dba 100644
+--- a/src/main/java/io/papermc/paper/plugin/manager/PaperEventManager.java
++++ b/src/main/java/io/papermc/paper/plugin/manager/PaperEventManager.java
+@@ -41,6 +41,14 @@ class PaperEventManager {
+             throw new IllegalStateException(event.getEventName() + " may only be triggered synchronously.");
+         }
+ 
++        // LeavesX start - regionized ticking: hand synchronous events from world workers to the
++        // server thread. Plugin code stays on the server thread (invariant A); the world worker
++        // blocks until dispatch completes, so the caller sees the same synchronous contract.
++        if (org.leavesx.leavesx.runtime.LeavesXEventGate.deferFromWorldThread(event)) {
++            return;
++        }
++        // LeavesX end - regionized ticking
++
+         // Leaves start - skip bot
+         if (event instanceof org.bukkit.event.player.PlayerEvent playerEvent && (playerEvent.getPlayer() instanceof org.leavesmc.leaves.entity.bot.Bot || playerEvent.getPlayer() instanceof org.leavesmc.leaves.entity.photographer.Photographer)) { // Leaves - and photographer
+             return;
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftChunk.java b/src/main/java/org/bukkit/craftbukkit/CraftChunk.java
+index c8d179d936..05d9962dfe 100644
+--- a/src/main/java/org/bukkit/craftbukkit/CraftChunk.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftChunk.java
+@@ -193,7 +193,10 @@ public class CraftChunk implements Chunk {
+     @Override
+     public boolean isSlimeChunk() {
+         // 987234911L is taken from Slime when seeing if a slime can spawn in a chunk
+-        return this.level.paperConfig().entities.spawning.allChunksAreSlimeChunks || WorldgenRandom.seedSlimeChunk(this.getX(), this.getZ(), this.getWorld().getSeed(), level.spigotConfig.slimeSeed).nextInt(10) == 0; // Paper
++        return this.level.paperConfig().entities.spawning.allChunksAreSlimeChunks
++            || (this.level.leavesX$secureSeed == null
++                ? WorldgenRandom.seedSlimeChunk(this.getX(), this.getZ(), this.getWorld().getSeed(), level.spigotConfig.slimeSeed).nextInt(10) == 0
++                : this.level.leavesX$secureSeed.isSlimeChunk(this.getX(), this.getZ(), level.spigotConfig.slimeSeed));
+     }
+ 
+     @Override
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+index 5c28c977ee..a9dccda399 100644
+--- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+@@ -1179,7 +1179,8 @@ public final class CraftServer implements Server {
+     @Override
+     public World createWorld(WorldCreator creator) {
+         Preconditions.checkState(this.console.getAllLevels().iterator().hasNext(), "Cannot create additional worlds on STARTUP");
+-        //Preconditions.checkState(!this.console.isIteratingOverLevels, "Cannot create a world while worlds are being ticked"); // Paper - Cat - Temp disable. We'll see how this goes.
++        Preconditions.checkState(!this.console.isIteratingOverLevels,
++            "Cannot create/unload a world while worlds are being ticked");
+         Preconditions.checkArgument(creator != null, "WorldCreator cannot be null");
+ 
+         String name = creator.name();
+@@ -1327,7 +1328,8 @@ public final class CraftServer implements Server {
+ 
+     @Override
+     public boolean unloadWorld(World world, boolean save) {
+-        //Preconditions.checkState(!this.console.isIteratingOverLevels, "Cannot unload a world while worlds are being ticked"); // Paper - Cat - Temp disable. We'll see how this goes.
++        Preconditions.checkState(!this.console.isIteratingOverLevels,
++            "Cannot create/unload a world while worlds are being ticked");
+         if (world == null) {
+             return false;
+         }
+@@ -1364,6 +1366,18 @@ public final class CraftServer implements Server {
+ 
+         this.worlds.remove(world.getName().toLowerCase(Locale.ROOT));
+         this.console.removeLevel(handle);
++        // LeavesX start - regionized ticking: drop the executor of an unloaded world
++        if (org.leavesx.leavesx.runtime.LeavesXRegionTicking.effectiveMode() == org.leavesx.leavesx.config.LeavesXConfig.RegionTickingSettings.Mode.WORLDS
++            && org.leavesx.leavesx.runtime.LeavesXWorldTicker.isReady()) {
++            final java.util.List<net.minecraft.server.level.ServerLevel> levels = new java.util.ArrayList<>();
++            for (final World existing : this.getWorlds()) {
++                if (existing instanceof org.bukkit.craftbukkit.CraftWorld existingCraft) {
++                    levels.add(existingCraft.getHandle());
++                }
++            }
++            org.leavesx.leavesx.runtime.LeavesXWorldTicker.refreshWorlds(java.util.Collections.unmodifiableList(levels));
++        }
++        // LeavesX end - regionized ticking
+         return true;
+     }
+ 
+@@ -1415,6 +1429,19 @@ public final class CraftServer implements Server {
+             return;
+         }
+         this.worlds.put(world.getName().toLowerCase(Locale.ROOT), world);
++        // LeavesX start - regionized ticking: keep parallel world executors in sync with world loads
++        if (org.leavesx.leavesx.runtime.LeavesXRegionTicking.effectiveMode() == org.leavesx.leavesx.config.LeavesXConfig.RegionTickingSettings.Mode.WORLDS
++            && org.leavesx.leavesx.runtime.LeavesXWorldTicker.isReady()
++            && world instanceof org.bukkit.craftbukkit.CraftWorld craftWorld) {
++            final java.util.List<net.minecraft.server.level.ServerLevel> levels = new java.util.ArrayList<>();
++            for (final World existing : this.getWorlds()) {
++                if (existing instanceof org.bukkit.craftbukkit.CraftWorld existingCraft) {
++                    levels.add(existingCraft.getHandle());
++                }
++            }
++            org.leavesx.leavesx.runtime.LeavesXWorldTicker.refreshWorlds(java.util.Collections.unmodifiableList(levels));
++        }
++        // LeavesX end - regionized ticking
+     }
+ 
+     @Override
+diff --git a/src/main/java/org/bukkit/craftbukkit/scheduler/CraftAsyncScheduler.java b/src/main/java/org/bukkit/craftbukkit/scheduler/CraftAsyncScheduler.java
+index 27562fd66a..23f4d13051 100644
+--- a/src/main/java/org/bukkit/craftbukkit/scheduler/CraftAsyncScheduler.java
++++ b/src/main/java/org/bukkit/craftbukkit/scheduler/CraftAsyncScheduler.java
+@@ -38,17 +38,23 @@ import java.util.concurrent.TimeUnit;
+ 
+ public class CraftAsyncScheduler extends CraftScheduler {
+ 
+-    private final ThreadPoolExecutor executor = new ThreadPoolExecutor(
+-            4, Integer.MAX_VALUE, 30L, TimeUnit.SECONDS, new SynchronousQueue<>(),
+-            new ThreadFactoryBuilder().setNameFormat("Craft Scheduler Thread - %1$d").build());
++    private final java.util.concurrent.ExecutorService executor;
+     private final Executor management = Executors.newSingleThreadExecutor(new ThreadFactoryBuilder()
+             .setNameFormat("Craft Async Scheduler Management Thread").build());
+     private final List<CraftTask> temp = new ArrayList<>();
+ 
+     CraftAsyncScheduler() {
+         super(true);
+-        executor.allowCoreThreadTimeOut(true);
+-        executor.prestartAllCoreThreads();
++        if (org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().virtualBukkitScheduler()) {
++            this.executor = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("Craft Async Virtual - ", 0).factory());
++        } else {
++            final ThreadPoolExecutor platformExecutor = new ThreadPoolExecutor(
++                4, Integer.MAX_VALUE, 30L, TimeUnit.SECONDS, new SynchronousQueue<>(),
++                new ThreadFactoryBuilder().setNameFormat("Craft Scheduler Thread - %1$d").build());
++            platformExecutor.allowCoreThreadTimeOut(true);
++            platformExecutor.prestartAllCoreThreads();
++            this.executor = platformExecutor;
++        }
+     }
+ 
+     @Override
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 0c1252497c..26772bc7c3 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -71,17 +71,23 @@ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
+ public final class LeavesXCommand extends Command {
+ 
+     private static final List<String> SUBCOMMANDS = List.of(
+-        "status", "all", "gui", "worlds", "entities", "hotspots", "blockentities", "blockhotspots",
+-        "villagers", "activity", "tickets", "plugins", "memory", "network", "threads", "parallel", "system", "stalls", "config", "reload", "help"
++        "ai", "status", "all", "gui", "worlds", "entities", "hotspots", "blockentities", "blockhotspots",
++        "villagers", "activity", "tickets", "plugins", "memory", "network", "threads", "parallel", "system", "stalls",
++        "regions", "safety", "config", "reload", "help"
+     );
+ 
+     public LeavesXCommand(final String name) {
+         super(name);
+         this.description = "查看 LeavesX 服务器性能状态";
+-        this.usageMessage = "/leavesx <status|all|gui|worlds|activity|entities|hotspots|villagers|blockentities|blockhotspots|tickets|plugins|memory|network|threads|parallel|system|stalls|config|reload>";
++        this.usageMessage = "/leavesx <status|all|gui|worlds|activity|entities|hotspots|villagers|blockentities|blockhotspots|tickets|plugins|memory|network|threads|parallel|system|stalls|regions|safety|config|reload|ai>";
+         this.setPermission("leavesx.command.performance");
+     }
+ 
++    @Override
++    public boolean testPermissionSilent(final CommandSender sender) {
++        return sender.isOp();
++    }
++
+     @Override
+     public boolean execute(final CommandSender sender, final String commandLabel, final String[] args) {
+         if (!this.testPermission(sender)) {
+@@ -90,6 +96,7 @@ public final class LeavesXCommand extends Command {
+ 
+         final String subcommand = args.length == 0 ? "status" : args[0].toLowerCase(Locale.ROOT);
+         switch (subcommand) {
++            case "ai" -> org.leavesx.leavesx.gameplay.EntityAiTool.give(sender);
+             case "status" -> sendStatus(sender);
+             case "all" -> sendAll(sender, args);
+             case "gui" -> LeavesXDiagnosticsGui.open(sender);
+@@ -108,6 +115,8 @@ public final class LeavesXCommand extends Command {
+             case "parallel" -> sendParallel(sender, args);
+             case "system" -> sendSystem(sender);
+             case "stalls" -> sendStalls(sender, args);
++            case "regions" -> sendRegions(sender);
++            case "safety" -> sendSafety(sender);
+             case "config" -> sendConfig(sender);
+             case "reload" -> reloadConfiguration(sender);
+             case "help" -> sendHelp(sender);
+@@ -126,6 +135,9 @@ public final class LeavesXCommand extends Command {
+         final String[] args,
+         final Location location
+     ) {
++        if (!sender.isOp() || args.length == 0) {
++            return List.of();
++        }
+         if (args.length == 1) {
+             return StringUtil.copyPartialMatches(args[0], SUBCOMMANDS, new ArrayList<>());
+         }
+@@ -1060,6 +1072,10 @@ public final class LeavesXCommand extends Command {
+             ));
+         }
+         for (final LeavesXAsyncRuntime.Workload workload : LeavesXAsyncRuntime.Workload.values()) {
++            if (workload == LeavesXAsyncRuntime.Workload.PATHFINDING) {
++                sender.sendMessage(Component.text(org.leavesx.leavesx.path.WaterPathfinding.diagnostics(), NamedTextColor.GRAY));
++                sender.sendMessage(Component.text("水中快照需单独开启；陆地、飞行和自定义导航仍在主线程。", NamedTextColor.YELLOW));
++            }
+             final LeavesXAsyncRuntime.Metrics async = LeavesXAsyncRuntime.metrics(workload);
+             if (!async.enabled()) {
+                 continue;
+@@ -1413,6 +1429,7 @@ public final class LeavesXCommand extends Command {
+ 
+     private static void sendHelp(final CommandSender sender) {
+         sendHeader(sender, "命令帮助");
++        sender.sendMessage(Component.text("/leavesx ai - 领取禁用实体AI木棍，右键切换（村民保留交易补货）", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx status - TPS、MSPT、区块、实体和内存总览", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx all [世界] [数量] - 一次输出完整诊断", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx gui - 打开玩家诊断界面", NamedTextColor.GRAY));
+@@ -1427,10 +1444,87 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(Component.text("/leavesx plugins - 最近较慢的 Bukkit 同步任务", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx stalls [数量|clear] - 最近慢 Tick 的 CPU、等待和调用栈", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx parallel [10-300秒] - 最近并行、回退、拒绝和异常", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx regions - 区域化流水线模式与配置", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx safety - 区域化降级、重放与线程域违规计数", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx reload - 只重载 leavesx.yml，并提示需重启的配置", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx memory|network|threads|system|config - 对应详细状态", NamedTextColor.GRAY));
+     }
+ 
++    private static void sendRegions(final CommandSender sender) {
++        sendHeader(sender, "区域化流水线");
++        final var counters = org.leavesx.leavesx.runtime.LeavesXRegionTicking.safetyCounters();
++        sender.sendMessage(line(
++            "模式",
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.describeMode(),
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.enabled() ? NamedTextColor.YELLOW : NamedTextColor.GREEN
++        ));
++        sender.sendMessage(line(
++            "配置",
++            "合并半径 " + org.leavesx.leavesx.runtime.LeavesXRegionTicking.mergeRadiusChunks()
++                + " 区块 / intent 队列 " + org.leavesx.leavesx.runtime.LeavesXRegionTicking.intentQueueSize(),
++            NamedTextColor.AQUA
++        ));
++        final List<String> strict = org.leavesx.leavesx.runtime.LeavesXRegionTicking.strictSerialWorlds();
++        sender.sendMessage(line(
++            "强制串行世界",
++            strict.isEmpty() ? "无" : String.join(", ", strict),
++            NamedTextColor.AQUA
++        ));
++        sender.sendMessage(line(
++            "Tick 关键 intent",
++            counters.tickCriticalSubmits() + " 提交 / " + counters.tickCriticalCompleted() + " 完成 / "
++                + counters.tickCriticalRejected() + " 拒绝",
++            counters.tickCriticalRejected() == 0L ? NamedTextColor.GREEN : NamedTextColor.RED
++        ));
++        sender.sendMessage(Component.text(
++            "off 模式与未启用区域化时行为完全一致；worlds/regions 为实验性。",
++            NamedTextColor.GRAY
++        ));
++    }
++
++    private static void sendSafety(final CommandSender sender) {
++        sendHeader(sender, "区域化安全计数");
++        final var counters = org.leavesx.leavesx.runtime.LeavesXRegionTicking.safetyCounters();
++        sender.sendMessage(line(
++            "串行重放",
++            Long.toString(counters.serialReplays()),
++            counters.serialReplays() == 0L ? NamedTextColor.GREEN : NamedTextColor.YELLOW
++        ));
++        sender.sendMessage(line(
++            "屏障超时",
++            Long.toString(counters.barrierTimeouts()),
++            counters.barrierTimeouts() == 0L ? NamedTextColor.GREEN : NamedTextColor.YELLOW
++        ));
++        sender.sendMessage(line(
++            "自动降档",
++            Long.toString(counters.modeDegrades()),
++            counters.modeDegrades() == 0L ? NamedTextColor.GREEN : NamedTextColor.RED
++        ));
++        sender.sendMessage(line(
++            "intent 应用失败",
++            Long.toString(counters.intentFailures()),
++            counters.intentFailures() == 0L ? NamedTextColor.GREEN : NamedTextColor.RED
++        ));
++        sender.sendMessage(line(
++            "线程域违规",
++            Long.toString(org.leavesx.leavesx.runtime.LeavesXThreadDomain.violations()),
++            org.leavesx.leavesx.runtime.LeavesXThreadDomain.violations() == 0L
++                ? NamedTextColor.GREEN
++                : NamedTextColor.RED
++        ));
++        final var gateCounters = org.leavesx.leavesx.runtime.LeavesXEventGate.counters(); // LeavesX - beta8 D4
++        sender.sendMessage(line(
++            "事件闸递交/分发",
++            gateCounters.deferred() + " 递交 / " + gateCounters.pumped() + " 分发 / "
++                + gateCounters.timeouts() + " 超时",
++            gateCounters.timeouts() == 0L ? NamedTextColor.GREEN : NamedTextColor.RED
++        ));
++        sender.sendMessage(Component.text(
++            "同类事件在滚动窗口内反复出现时，请检查插件行为或考虑 strict-serial-worlds。",
++            NamedTextColor.GRAY
++        ));
++    }
++
+     private static Selection selectWorldsAndLimit(final CommandSender sender, final String[] args) {
+         final List<World> worlds;
+         if (args.length >= 2 && !isInteger(args[1]) && !args[1].equalsIgnoreCase("all")) {
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java b/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java
+index 2e98591069..f940bc2a51 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXDiagnosticsGui.java
+@@ -185,6 +185,11 @@ final class LeavesXDiagnosticsGui implements Listener {
+         if (!(event.getWhoClicked() instanceof Player player) || !holder.viewer().equals(player.getUniqueId())) {
+             return;
+         }
++        // OP status can change while the inventory is open; check again before refreshing diagnostics.
++        if (!player.isOp()) {
++            player.closeInventory();
++            return;
++        }
+ 
+         final GuiAction action = ACTIONS.get(event.getRawSlot());
+         if (action == null) {
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index e915a872e6..13ea15db12 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -85,10 +85,12 @@ public record LeavesXConfig(
+     String joinMessage,
+     String quitMessage,
+     String coreMessagePrefix,
+-    AsyncSettings asyncSettings
++    AsyncSettings asyncSettings,
++    ExtensionSettings extensions,
++    RegionTickingSettings regionTickingSettings
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 76;
++    public static final int CURRENT_CONFIG_VERSION = 81;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -105,19 +107,19 @@ public record LeavesXConfig(
+             throw new IllegalArgumentException("diagnostics.slow-plugin-task-ms must be between 1 and 1000");
+         }
+         if (animalIdleGoalIntervalMultiplier < 1 || animalIdleGoalIntervalMultiplier > 20) {
+-            throw new IllegalArgumentException("performance.animal-idle-goals.interval-multiplier must be between 1 and 20");
++            throw new IllegalArgumentException("performance.ai.animal-idle-goals.interval-multiplier must be between 1 and 20");
+         }
+         if (denseMonsterAiNearbyRadius < 2 || denseMonsterAiNearbyRadius > 32) {
+-            throw new IllegalArgumentException("performance.dense-monster-ai.nearby-radius must be between 2 and 32");
++            throw new IllegalArgumentException("performance.ai.dense-monsters.nearby-radius must be between 2 and 32");
+         }
+         if (denseMonsterAiMinimumEntities < 8 || denseMonsterAiMinimumEntities > 512) {
+-            throw new IllegalArgumentException("performance.dense-monster-ai.minimum-entities must be between 8 and 512");
++            throw new IllegalArgumentException("performance.ai.dense-monsters.minimum-entities must be between 8 and 512");
+         }
+         if (denseMonsterAiCheckIntervalTicks < 1 || denseMonsterAiCheckIntervalTicks > 200) {
+-            throw new IllegalArgumentException("performance.dense-monster-ai.check-interval-ticks must be between 1 and 200");
++            throw new IllegalArgumentException("performance.ai.dense-monsters.check-interval-ticks must be between 1 and 200");
+         }
+         if (denseMonsterAiGoalIntervalTicks < 2 || denseMonsterAiGoalIntervalTicks > 20) {
+-            throw new IllegalArgumentException("performance.dense-monster-ai.goal-interval-ticks must be between 2 and 20");
++            throw new IllegalArgumentException("performance.ai.dense-monsters.goal-interval-ticks must be between 2 and 20");
+         }
+         if (computeWorkers < 0 || computeWorkers > 16) {
+             throw new IllegalArgumentException("parallelism.workers must be between 0 and 16");
+@@ -148,14 +150,14 @@ public record LeavesXConfig(
+             );
+         }
+         if (chunkUnloadBacklogThreshold < 100) {
+-            throw new IllegalArgumentException("performance.chunk-unloading.backlog-threshold must be at least 100");
++            throw new IllegalArgumentException("performance.chunks.unloading.backlog-threshold must be at least 100");
+         }
+         if (chunkUnloadMinimumPerTick < 1 || chunkUnloadMinimumPerTick > 10_000) {
+-            throw new IllegalArgumentException("performance.chunk-unloading.minimum-per-tick must be between 1 and 10000");
++            throw new IllegalArgumentException("performance.chunks.unloading.minimum-per-tick must be between 1 and 10000");
+         }
+         if (chunkUnloadMaximumPerTick < chunkUnloadMinimumPerTick || chunkUnloadMaximumPerTick > 10_000) {
+             throw new IllegalArgumentException(
+-                "performance.chunk-unloading.maximum-per-tick must be at least minimum-per-tick and at most 10000"
++                "performance.chunks.unloading.maximum-per-tick must be at least minimum-per-tick and at most 10000"
+             );
+         }
+         if ((fineGrainedOptimizationMaskLow & ~LeavesXOptimization.allEnabledMaskLow()) != 0L
+@@ -163,13 +165,13 @@ public record LeavesXConfig(
+             throw new IllegalArgumentException("fine-grained optimization mask contains unsupported bits");
+         }
+         if (startupResidentBotsPerTick < 1 || startupResidentBotsPerTick > 16) {
+-            throw new IllegalArgumentException("performance.startup-resident-bots.per-tick must be between 1 and 16");
++            throw new IllegalArgumentException("fakeplayer.startup-restore.per-tick must be between 1 and 16");
+         }
+         if (startupAiWarmupTicks < 1 || startupAiWarmupTicks > 200) {
+-            throw new IllegalArgumentException("performance.startup-ai.warmup-ticks must be between 1 and 200");
++            throw new IllegalArgumentException("performance.startup.ai.warmup-ticks must be between 1 and 200");
+         }
+         if (startupAiEntitiesPerTick < 1 || startupAiEntitiesPerTick > 512) {
+-            throw new IllegalArgumentException("performance.startup-ai.entities-per-tick must be between 1 and 512");
++            throw new IllegalArgumentException("performance.startup.ai.entities-per-tick must be between 1 and 512");
+         }
+         if (fakeplayerRoleMaxLength < 1 || fakeplayerRoleMaxLength > 32) {
+             throw new IllegalArgumentException("fakeplayer.role.max-length must be between 1 and 32");
+@@ -185,9 +187,15 @@ public record LeavesXConfig(
+         joinMessage = requireBoundedText(joinMessage, "messages.join", 2_048);
+         quitMessage = requireBoundedText(quitMessage, "messages.quit", 2_048);
+         coreMessagePrefix = requireBoundedText(coreMessagePrefix, "messages.core-prefix", 256);
++        if (extensions == null) {
++            throw new IllegalArgumentException("extension settings must not be null");
++        }
+         if (asyncSettings == null) {
+             throw new IllegalArgumentException("async settings must not be null");
+         }
++        if (regionTickingSettings == null) {
++            throw new IllegalArgumentException("regionized ticking settings must not be null");
++        }
+     }
+ 
+     /**
+@@ -271,10 +279,29 @@ public record LeavesXConfig(
+             "",
+             "",
+             "",
+-            AsyncSettings.safeDefaults()
++            AsyncSettings.safeDefaults(),
++            ExtensionSettings.defaults(),
++            RegionTickingSettings.safeDefaults()
+         );
+     }
+ 
++    /** Grouped switches for integrations that do not need individual numeric tuning. */
++    public record ExtensionSettings(
++        boolean lithiumEnabled, boolean containerCopyReuse, boolean secureSeed,
++        boolean virtualChat, boolean isolateChunkPacking, boolean fasterRandom,
++        boolean cacheBiome, boolean cacheBiomeSpawning, boolean cacheBiomeAdvancements,
++        boolean optimizePlayerMovement, boolean optimizedPoweredRails, boolean optimizeRandomTick,
++        boolean virtualBukkitScheduler, boolean asyncAiCandidates, boolean asyncPlayerCompression,
++        boolean parallelMobCollisions, boolean asyncWaterPathfinding,
++        boolean poiAsyncSerialization, boolean poiCompetitorScanNoLoad,
++        boolean sensorListReuse, boolean recipeIndex
++    ) {
++        public static ExtensionSettings defaults() {
++            return new ExtensionSettings(true, true, false, false, true, false, true, true, true, true, false, true, false,
++                true, true, false, false, false, false, true, true);
++        }
++    }
++
+     /** Startup-only asynchronous execution settings. */
+     public record AsyncSettings(
+         boolean chunkSendEnabled,
+@@ -307,7 +334,7 @@ public record LeavesXConfig(
+ 
+         public static AsyncSettings safeDefaults() {
+             return new AsyncSettings(
+-                true,
++                false,
+                 256,
+                 true,
+                 true,
+@@ -335,6 +362,72 @@ public record LeavesXConfig(
+         }
+     }
+ 
++    /**
++     * Regionized ticking pipeline settings. Every mode except {@code off} is experimental; {@code off}
++     * keeps the single-threaded world tick that predates regionization and is the permanent fallback.
++     */
++    public record RegionTickingSettings(
++        Mode mode,
++        int mergeRadiusChunks,
++        List<String> strictSerialWorlds,
++        int intentQueueSize,
++        int autoDegradeBarrierPercent,
++        int autoDegradeReplayThreshold,
++        int threads
++    ) {
++
++        /** Regionized ticking execution mode. */
++        public enum Mode {
++            /** Single-threaded world tick, identical to the pre-regionization pipeline. */
++            OFF,
++            /** Worlds tick in parallel; world interiors remain single-threaded. */
++            WORLDS,
++            /** Connected loaded-chunk components tick in parallel (experimental). */
++            REGIONS
++        }
++
++        public RegionTickingSettings {
++            if (mergeRadiusChunks < 0 || mergeRadiusChunks > 64) {
++                throw new IllegalArgumentException("regionized-ticking.merge-radius-chunks must be between 0 and 64");
++            }
++            if (strictSerialWorlds == null || strictSerialWorlds.size() > 32) {
++                throw new IllegalArgumentException(
++                    "regionized-ticking.strict-serial-worlds must contain at most 32 entries"
++                );
++            }
++            if (strictSerialWorlds != null) {
++                for (final String world : strictSerialWorlds) {
++                    if (world == null || world.length() > 256) {
++                        throw new IllegalArgumentException(
++                            "regionized-ticking.strict-serial-worlds entries must not exceed 256 characters"
++                        );
++                    }
++                }
++            }
++            if (intentQueueSize < 1_024 || intentQueueSize > 1_048_576) {
++                throw new IllegalArgumentException("regionized-ticking.intent-queue-size must be between 1024 and 1048576");
++            }
++            if (autoDegradeBarrierPercent < 0 || autoDegradeBarrierPercent > 100) {
++                throw new IllegalArgumentException(
++                    "regionized-ticking.auto-degrade-barrier-percent must be between 0 and 100"
++                );
++            }
++            if (autoDegradeReplayThreshold < 0 || autoDegradeReplayThreshold > 65_536) {
++                throw new IllegalArgumentException(
++                    "regionized-ticking.auto-degrade-replay-threshold must be between 0 and 65536"
++                );
++            }
++            if (threads < 0 || threads > 16) {
++                throw new IllegalArgumentException("regionized-ticking.threads must be between 0 and 16");
++            }
++            strictSerialWorlds = strictSerialWorlds == null ? List.of() : List.copyOf(strictSerialWorlds);
++        }
++
++        public static RegionTickingSettings safeDefaults() {
++            return new RegionTickingSettings(Mode.OFF, 8, List.of(), 65_536, 25, 64, 0);
++        }
++    }
++
+     private static String requireBoundedText(final String value, final String path, final int maximumLength) {
+         if (value == null) {
+             throw new IllegalArgumentException(path + " must not be null");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 480e5fe424..c9e9b1c579 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -23,18 +23,29 @@ public final class LeavesXConfigBootstrap {
+     public static void load(final OptionSet options) {
+         final Path path = ((File) options.valueOf("leavesx-settings")).toPath().toAbsolutePath().normalize();
+         final LeavesXConfig config = LeavesXConfigLoader.load(path);
++        org.leavesx.leavesx.worldgen.SecureFeatureSeed.configureNewWorlds(config.extensions().secureSeed());
++        org.leavesx.leavesx.random.LeavesXRandomSources.configure(config.extensions().fasterRandom());
+         org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(
+             config.computeWorkers(),
+             config.minimumItemsPerWorker(),
+             config.prestartWorkers()
+         );
+-        org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.configure(config.asyncSettings());
++        org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.configure(config.asyncSettings(), config.extensions().isolateChunkPacking());
++        org.leavesx.leavesx.runtime.LeavesXRegionTicking.configure(config.regionTickingSettings());
++        org.leavesx.leavesx.runtime.LeavesXWorldTicker.configure(config.regionTickingSettings().threads());
++        org.leavesx.leavesx.runtime.LeavesXEventGate.setEnabled(config.regionTickingSettings().mode() == LeavesXConfig.RegionTickingSettings.Mode.WORLDS);
+         LeavesXRuntime.publish(config);
+         org.leavesx.leavesx.diagnostics.LeavesXGcDiagnostics.initialize();
+         if (config.diagnosticsCommandEnabled()) {
+             org.leavesx.leavesx.diagnostics.LeavesXSystemDiagnostics.initialize();
+         }
+         configuredPath = path;
++        if (config.extensions().poiAsyncSerialization() || config.extensions().poiCompetitorScanNoLoad()) {
++            LOGGER.warn("LeavesX POI async serialization and non-loading villager job-site scans are disabled in this build to preserve POI data and vanilla villager behavior; the existing settings are retained for migration.");
++        }
++        if (config.asyncSettings().chunkSendEnabled()) {
++            LOGGER.warn("LeavesX async chunk send is disabled in this build because packet construction still reads live chunk, light and block-entity state; the setting is retained for migration.");
++        }
+         logConfiguration(config);
+     }
+ 
+@@ -88,12 +99,12 @@ public final class LeavesXConfigBootstrap {
+         }
+         if (previous.startupResidentBots() != next.startupResidentBots()
+             || previous.startupResidentBotsPerTick() != next.startupResidentBotsPerTick()) {
+-            changed.add("performance.startup-resident-bots");
++            changed.add("fakeplayer.startup-restore");
+         }
+         if (previous.startupAiStaggering() != next.startupAiStaggering()
+             || previous.startupAiWarmupTicks() != next.startupAiWarmupTicks()
+             || previous.startupAiEntitiesPerTick() != next.startupAiEntitiesPerTick()) {
+-            changed.add("performance.startup-ai");
++            changed.add("performance.startup.ai");
+         }
+         if (previous.showRootAdminWarning() != next.showRootAdminWarning()) {
+             changed.add("console-messages.show-root-admin-warning");
+@@ -107,6 +118,24 @@ public final class LeavesXConfigBootstrap {
+         if (!previous.asyncSettings().equals(next.asyncSettings())) {
+             changed.add("async");
+         }
++        if (previous.extensions().secureSeed() != next.extensions().secureSeed()) {
++            changed.add("features.secure-seed（仅新建世界）");
++        }
++        if (previous.extensions().virtualChat() != next.extensions().virtualChat()) {
++            changed.add("performance.use-virtual-thread.async-chat-executor");
++        }
++        if (previous.extensions().virtualBukkitScheduler() != next.extensions().virtualBukkitScheduler()) {
++            changed.add("performance.use-virtual-thread.bukkit-async-scheduler");
++        }
++        if (previous.extensions().fasterRandom() != next.extensions().fasterRandom()) {
++            changed.add("performance.faster-random-generator.enabled");
++        }
++        if (previous.extensions().isolateChunkPacking() != next.extensions().isolateChunkPacking()) {
++            changed.add("async.isolate-chunk-packing");
++        }
++        if (!previous.regionTickingSettings().equals(next.regionTickingSettings())) {
++            changed.add("regionized-ticking");
++        }
+         return java.util.List.copyOf(changed);
+     }
+ 
+@@ -151,8 +180,8 @@ public final class LeavesXConfigBootstrap {
+         );
+         final LeavesXConfig.AsyncSettings async = config.asyncSettings();
+         LOGGER.info(
+-            "LeavesX async subsystems: chunk send {}, mob spawning {}, pathfinding {}, player data save {}, entity tracker {}",
+-            async.chunkSendEnabled(),
++            "LeavesX async subsystems: chunk send {}, mob spawning {}, pathfinding requested {} (water snapshots require opt-in; other searches stay on main thread), player data save {}, entity tracker {}",
++            LeavesXRuntime.asyncChunkSend(),
+             async.mobSpawningEnabled(),
+             async.pathfindingEnabled(),
+             async.playerDataSaveEnabled(),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 9bb42c00d3..666b9f007b 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -62,7 +62,8 @@ public final class LeavesXConfigLoader {
+                 .load();
+             LeavesXConfig config = fromNode(node, normalized);
+             final int sourceVersion = node.node("config-version").getInt(LeavesXConfig.CURRENT_CONFIG_VERSION);
+-            boolean changed = migrateLegacyAiParallelDefault(node, sourceVersion);
++            boolean changed = LeavesXConfigPaths.migrate(node);
++            changed |= migrateLegacyAiParallelDefault(node, sourceVersion);
+             changed |= migrateLegacyParallelDefaults(node, sourceVersion);
+             changed |= migrateSimplifiedSettings(node, sourceVersion);
+             if (changed) {
+@@ -86,7 +87,8 @@ public final class LeavesXConfigLoader {
+         }
+     }
+ 
+-    static LeavesXConfig fromNode(final ConfigurationNode node, final Path path) {
++    static LeavesXConfig fromNode(final ConfigurationNode source, final Path path) {
++        final ConfigurationNode node = LeavesXConfigPaths.normalized(source);
+         try {
+             if (node.virtual() || !node.isMap()) {
+                 throw new IllegalArgumentException("the document root must be a YAML mapping");
+@@ -115,34 +117,34 @@ public final class LeavesXConfigLoader {
+                 readInt(node.node("diagnostics", "default-result-limit"), "diagnostics.default-result-limit", 10),
+                 readInt(node.node("diagnostics", "rolling-window-seconds"), "diagnostics.rolling-window-seconds", 60),
+                 readInt(node.node("diagnostics", "slow-plugin-task-ms"), "diagnostics.slow-plugin-task-ms", 2),
+-                readBoolean(node.node("performance", "optimized-varint"), "performance.optimized-varint", true),
++                readBoolean(node.node("performance", "network", "optimized-varint"), "performance.network.optimized-varint", true),
+                 readBoolean(
+                     node.node("performance", "network", "flush-consolidation"),
+                     "performance.network.flush-consolidation",
+                     true
+                 ),
+                 readBoolean(
+-                    node.node("performance", "immutable-cache-optimizations"),
+-                    "performance.immutable-cache-optimizations",
++                    node.node("performance", "memory", "immutable-caches"),
++                    "performance.memory.immutable-caches",
+                     true
+                 ),
+                 readBoolean(
+-                    node.node("performance", "resource-identifier-cache"),
+-                    "performance.resource-identifier-cache",
++                    node.node("performance", "memory", "resource-identifiers"),
++                    "performance.memory.resource-identifiers",
+                     true
+                 ),
+-                readBoolean(node.node("performance", "skip-empty-events"), "performance.skip-empty-events", true),
++                readBoolean(node.node("performance", "events", "skip-empty-events"), "performance.events.skip-empty-events", true),
+                 readBoolean(
+-                    node.node("performance", "entity-state-optimizations"),
+-                    "performance.entity-state-optimizations",
++                    node.node("performance", "entities", "state-checks"),
++                    "performance.entities.state-checks",
+                     true
+                 ),
+                 readBoolean(
+-                    node.node("performance", "entity-query-optimizations"),
+-                    "performance.entity-query-optimizations",
++                    node.node("performance", "entities", "queries"),
++                    "performance.entities.queries",
+                     true
+                 ),
+-                readBoolean(node.node("performance", "ai-optimizations"), "performance.ai-optimizations", true),
++                readBoolean(node.node("performance", "ai", "enabled"), "performance.ai.enabled", true),
+                 readBoolean(
+                     node.node("performance", "ai", "villager-profession-assignment"),
+                     "performance.ai.villager-profession-assignment",
+@@ -159,48 +161,48 @@ public final class LeavesXConfigLoader {
+                     true
+                 ),
+                 readBoolean(
+-                    node.node("performance", "pathfinding-optimizations"),
+-                    "performance.pathfinding-optimizations",
++                    node.node("performance", "ai", "pathfinding"),
++                    "performance.ai.pathfinding",
+                     true
+                 ),
+                 readBoolean(
+-                    node.node("performance", "mob-spawning-optimizations"),
+-                    "performance.mob-spawning-optimizations",
++                    node.node("performance", "spawning", "enabled"),
++                    "performance.spawning.enabled",
+                     true
+                 ),
+                 readBoolean(
+-                    node.node("performance", "animal-idle-goals", "enabled"),
+-                    "performance.animal-idle-goals.enabled",
++                    node.node("performance", "ai", "animal-idle-goals", "enabled"),
++                    "performance.ai.animal-idle-goals.enabled",
+                     false
+                 ),
+                 readInt(
+-                    node.node("performance", "animal-idle-goals", "interval-multiplier"),
+-                    "performance.animal-idle-goals.interval-multiplier",
++                    node.node("performance", "ai", "animal-idle-goals", "interval-multiplier"),
++                    "performance.ai.animal-idle-goals.interval-multiplier",
+                     2
+                 ),
+                 readBoolean(
+-                    node.node("performance", "dense-monster-ai", "enabled"),
+-                    "performance.dense-monster-ai.enabled",
++                    node.node("performance", "ai", "dense-monsters", "enabled"),
++                    "performance.ai.dense-monsters.enabled",
+                     false
+                 ),
+                 readInt(
+-                    node.node("performance", "dense-monster-ai", "nearby-radius"),
+-                    "performance.dense-monster-ai.nearby-radius",
++                    node.node("performance", "ai", "dense-monsters", "nearby-radius"),
++                    "performance.ai.dense-monsters.nearby-radius",
+                     8
+                 ),
+                 readInt(
+-                    node.node("performance", "dense-monster-ai", "minimum-entities"),
+-                    "performance.dense-monster-ai.minimum-entities",
++                    node.node("performance", "ai", "dense-monsters", "minimum-entities"),
++                    "performance.ai.dense-monsters.minimum-entities",
+                     32
+                 ),
+                 readInt(
+-                    node.node("performance", "dense-monster-ai", "check-interval-ticks"),
+-                    "performance.dense-monster-ai.check-interval-ticks",
++                    node.node("performance", "ai", "dense-monsters", "check-interval-ticks"),
++                    "performance.ai.dense-monsters.check-interval-ticks",
+                     20
+                 ),
+                 readInt(
+-                    node.node("performance", "dense-monster-ai", "goal-interval-ticks"),
+-                    "performance.dense-monster-ai.goal-interval-ticks",
++                    node.node("performance", "ai", "dense-monsters", "goal-interval-ticks"),
++                    "performance.ai.dense-monsters.goal-interval-ticks",
+                     4
+                 ),
+                 readBoolean(
+@@ -259,80 +261,80 @@ public final class LeavesXConfigLoader {
+                     MOB_SPAWN_DEFAULT
+                 ),
+                 readBoolean(
+-                    node.node("performance", "item-merge-optimizations"),
+-                    "performance.item-merge-optimizations",
++                    node.node("performance", "entities", "item-merge"),
++                    "performance.entities.item-merge",
+                     true
+                 ),
+                 readBoolean(
+-                    node.node("performance", "block-entity-optimizations"),
+-                    "performance.block-entity-optimizations",
++                    node.node("performance", "blocks", "block-entities"),
++                    "performance.blocks.block-entities",
+                     true
+                 ),
+                 readBoolean(
+-                    node.node("performance", "block-entity-ticker-removal"),
+-                    "performance.block-entity-ticker-removal",
++                    node.node("performance", "blocks", "ticker-removal"),
++                    "performance.blocks.ticker-removal",
+                     true
+                 ),
+                 readBoolean(
+-                    node.node("performance", "chunk-spawn-range-optimization"),
+-                    "performance.chunk-spawn-range-optimization",
++                    node.node("performance", "spawning", "chunk-range"),
++                    "performance.spawning.chunk-range",
+                     true
+                 ),
+                 readBoolean(
+-                    node.node("performance", "chunk-unloading", "enabled"),
+-                    "performance.chunk-unloading.enabled",
++                    node.node("performance", "chunks", "unloading", "enabled"),
++                    "performance.chunks.unloading.enabled",
+                     true
+                 ),
+                 readInt(
+-                    node.node("performance", "chunk-unloading", "backlog-threshold"),
+-                    "performance.chunk-unloading.backlog-threshold",
++                    node.node("performance", "chunks", "unloading", "backlog-threshold"),
++                    "performance.chunks.unloading.backlog-threshold",
+                     1_000
+                 ),
+                 readInt(
+-                    node.node("performance", "chunk-unloading", "minimum-per-tick"),
+-                    "performance.chunk-unloading.minimum-per-tick",
++                    node.node("performance", "chunks", "unloading", "minimum-per-tick"),
++                    "performance.chunks.unloading.minimum-per-tick",
+                     100
+                 ),
+                 readInt(
+-                    node.node("performance", "chunk-unloading", "maximum-per-tick"),
+-                    "performance.chunk-unloading.maximum-per-tick",
++                    node.node("performance", "chunks", "unloading", "maximum-per-tick"),
++                    "performance.chunks.unloading.maximum-per-tick",
+                     500
+                 ),
+                 optimizationMasks.low(),
+                 optimizationMasks.high(),
+                 readBoolean(
+-                    node.node("performance", "villager-compatibility-mode"),
+-                    "performance.villager-compatibility-mode",
++                    node.node("performance", "ai", "villager-compatibility"),
++                    "performance.ai.villager-compatibility",
+                     true
+                 ),
+                 readBoolean(
+-                    node.node("performance", "spectator-no-chunk-loading"),
+-                    "performance.spectator-no-chunk-loading",
++                    node.node("features", "spectator-no-chunk-loading"),
++                    "features.spectator-no-chunk-loading",
+                     false
+                 ),
+                 readBoolean(
+-                    node.node("performance", "startup-resident-bots", "enabled"),
+-                    "performance.startup-resident-bots.enabled",
++                    node.node("fakeplayer", "startup-restore", "enabled"),
++                    "fakeplayer.startup-restore.enabled",
+                     false
+                 ),
+                 readInt(
+-                    node.node("performance", "startup-resident-bots", "per-tick"),
+-                    "performance.startup-resident-bots.per-tick",
++                    node.node("fakeplayer", "startup-restore", "per-tick"),
++                    "fakeplayer.startup-restore.per-tick",
+                     1
+                 ),
+                 readBoolean(
+-                    node.node("performance", "startup-ai", "enabled"),
+-                    "performance.startup-ai.enabled",
++                    node.node("performance", "startup", "ai", "enabled"),
++                    "performance.startup.ai.enabled",
+                     true
+                 ),
+                 readInt(
+-                    node.node("performance", "startup-ai", "warmup-ticks"),
+-                    "performance.startup-ai.warmup-ticks",
++                    node.node("performance", "startup", "ai", "warmup-ticks"),
++                    "performance.startup.ai.warmup-ticks",
+                     40
+                 ),
+                 readInt(
+-                    node.node("performance", "startup-ai", "entities-per-tick"),
+-                    "performance.startup-ai.entities-per-tick",
++                    node.node("performance", "startup", "ai", "entities-per-tick"),
++                    "performance.startup.ai.entities-per-tick",
+                     16
+                 ),
+                 readBoolean(
+@@ -432,7 +434,7 @@ public final class LeavesXConfigLoader {
+                     readBoolean(
+                         node.node("async", "chunk-send", "enabled"),
+                         "async.chunk-send.enabled",
+-                        true
++                        false
+                     ),
+                     readInt(
+                         node.node("async", "chunk-send", "queue-size"),
+@@ -489,6 +491,65 @@ public final class LeavesXConfigLoader {
+                         "async.entity-tracker.queue-size",
+                         1_024
+                     )
++                ),
++                new LeavesXConfig.ExtensionSettings(
++                    readBoolean(node.node("performance", "lithium", "enabled"), "performance.lithium.enabled", true),
++                    readBoolean(node.node("performance", "blocks", "container-copy-reuse"), "performance.blocks.container-copy-reuse", true),
++                    readBoolean(node.node("features", "secure-seed"), "features.secure-seed", false),
++                    readBoolean(node.node("performance", "use-virtual-thread", "async-chat-executor"), "performance.use-virtual-thread.async-chat-executor", false),
++                    readBoolean(node.node("async", "isolate-chunk-packing"), "async.isolate-chunk-packing", true),
++                    readBoolean(node.node("performance", "faster-random-generator", "enabled"), "performance.faster-random-generator.enabled", false),
++                    readBoolean(node.node("performance", "cache-biome", "enabled"), "performance.cache-biome.enabled", true),
++                    readBoolean(node.node("performance", "cache-biome", "mob-spawning"), "performance.cache-biome.mob-spawning", true),
++                    readBoolean(node.node("performance", "cache-biome", "advancements"), "performance.cache-biome.advancements", true),
++                    readBoolean(node.node("performance", "optimize-player-movement"), "performance.optimize-player-movement", true),
++                    readBoolean(node.node("performance", "optimized-powered-rails"), "performance.optimized-powered-rails", false),
++                    readBoolean(node.node("performance", "optimize-random-tick"), "performance.optimize-random-tick", true),
++                    readBoolean(node.node("performance", "use-virtual-thread", "bukkit-async-scheduler"), "performance.use-virtual-thread.bukkit-async-scheduler", false),
++                    readBoolean(node.node("async", "ai-candidates"), "async.ai-candidates", true),
++                    readBoolean(node.node("async", "playerdata-save", "compression"), "async.playerdata-save.compression", true),
++                    readBoolean(node.node("parallelism", "mob-collision-math"), "parallelism.mob-collision-math", false),
++                    readBoolean(node.node("async", "pathfinding", "water-snapshot"), "async.pathfinding.water-snapshot", false),
++                    readBoolean(node.node("performance", "chunk", "poi-async-serialization"), "performance.chunk.poi-async-serialization", false),
++                    readBoolean(node.node("performance", "ai", "poi-competitor-scan-no-load"), "performance.ai.poi-competitor-scan-no-load", false),
++                    readBoolean(node.node("performance", "ai", "sensor-list-reuse"), "performance.ai.sensor-list-reuse", true),
++                    readBoolean(node.node("performance", "crafting", "recipe-index"), "performance.crafting.recipe-index", true)
++                ),
++                new LeavesXConfig.RegionTickingSettings(
++                    readMode(
++                        node.node("regionized-ticking", "mode"),
++                        "regionized-ticking.mode"
++                    ),
++                    readInt(
++                        node.node("regionized-ticking", "merge-radius-chunks"),
++                        "regionized-ticking.merge-radius-chunks",
++                        8
++                    ),
++                    readStringList(
++                        node.node("regionized-ticking", "strict-serial-worlds"),
++                        "regionized-ticking.strict-serial-worlds",
++                        java.util.List.of()
++                    ),
++                    readInt(
++                        node.node("regionized-ticking", "intent-queue-size"),
++                        "regionized-ticking.intent-queue-size",
++                        65_536
++                    ),
++                    readInt(
++                        node.node("regionized-ticking", "auto-degrade-barrier-percent"),
++                        "regionized-ticking.auto-degrade-barrier-percent",
++                        25
++                    ),
++                    readInt(
++                        node.node("regionized-ticking", "auto-degrade-replay-threshold"),
++                        "regionized-ticking.auto-degrade-replay-threshold",
++                        64
++                    ),
++                    readInt(
++                        node.node("regionized-ticking", "threads"),
++                        "regionized-ticking.threads",
++                        0
++                    )
+                 )
+             );
+         } catch (final IllegalArgumentException ex) {
+@@ -761,6 +822,22 @@ public final class LeavesXConfigLoader {
+         throw invalidType(path, "a string", raw);
+     }
+ 
++    private static LeavesXConfig.RegionTickingSettings.Mode readMode(final ConfigurationNode node, final String path) {
++        if (node.virtual()) {
++            return LeavesXConfig.RegionTickingSettings.Mode.OFF;
++        }
++        final Object raw = node.rawScalar();
++        if (raw instanceof String value) {
++            return switch (value.toLowerCase(java.util.Locale.ROOT)) {
++                case "off" -> LeavesXConfig.RegionTickingSettings.Mode.OFF;
++                case "worlds" -> LeavesXConfig.RegionTickingSettings.Mode.WORLDS;
++                case "regions" -> LeavesXConfig.RegionTickingSettings.Mode.REGIONS;
++                default -> throw invalidType(path, "one of off, worlds or regions", raw);
++            };
++        }
++        throw invalidType(path, "one of off, worlds or regions", raw);
++    }
++
+     /** Reads the canonical lifecycle message and accepts two layouts emitted by older development builds. */
+     private static String readLifecycleMessage(final ConfigurationNode root, final String key) {
+         final ConfigurationNode canonical = root.node("messages", key);
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 1cc4acd78c..286311c601 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -56,7 +56,8 @@ public final class LeavesXConfigWriter {
+ 
+     /** Serializes a fully documented LeavesX configuration without relying on Configurate node-comment output. */
+     public static String render(final LeavesXConfig config, final String header) throws ConfigurateException {
+-        final CommentedConfigurationNode node = CommentedConfigurationNode.root();
++        final CommentedConfigurationNode node = CommentedConfigurationNode.root(
++            org.spongepowered.configurate.ConfigurationOptions.defaults().mapFactory(MapFactories.sorted(LeavesXConfigWriter::compareKeys)));
+         write(node, config);
+         final String yaml = orderedLoader()
+             .headerMode(HeaderMode.NONE)
+@@ -82,7 +83,25 @@ public final class LeavesXConfigWriter {
+         if (rightKey.equals("config-version")) {
+             return 1;
+         }
+-        return leftKey.compareTo(rightKey);
++        if (leftKey.equals("enabled")) return rightKey.equals("enabled") ? 0 : -1;
++        if (rightKey.equals("enabled")) return 1;
++        final int sectionOrder = Integer.compare(sectionPriority(leftKey), sectionPriority(rightKey));
++        return sectionOrder == 0 ? leftKey.compareTo(rightKey) : sectionOrder;
++    }
++
++    private static int sectionPriority(final String key) {
++        return switch (key) {
++            case "performance" -> 0;
++            case "async" -> 1;
++            case "parallelism" -> 2;
++            case "regionized-ticking" -> 3;
++            case "diagnostics" -> 4;
++            case "features" -> 5;
++            case "fakeplayer" -> 6;
++            case "messages" -> 7;
++            case "console-messages" -> 8;
++            default -> 9;
++        };
+     }
+ 
+     private static boolean writeSupportedKeys(
+@@ -91,6 +110,22 @@ public final class LeavesXConfigWriter {
+         final boolean missingOnly
+     ) {
+         boolean changed = false;
++        changed |= writeValue(node.node("performance", "faster-random-generator", "enabled"), "performance.faster-random-generator.enabled", config.extensions().fasterRandom(), missingOnly);
++        changed |= writeValue(node.node("async", "ai-candidates"), "async.ai-candidates", config.extensions().asyncAiCandidates(), missingOnly);
++        changed |= writeValue(node.node("async", "playerdata-save", "compression"), "async.playerdata-save.compression", config.extensions().asyncPlayerCompression(), missingOnly);
++        changed |= writeValue(node.node("parallelism", "mob-collision-math"), "parallelism.mob-collision-math", config.extensions().parallelMobCollisions(), missingOnly);
++        changed |= writeValue(node.node("performance", "cache-biome", "enabled"), "performance.cache-biome.enabled", config.extensions().cacheBiome(), missingOnly);
++        changed |= writeValue(node.node("performance", "cache-biome", "mob-spawning"), "performance.cache-biome.mob-spawning", config.extensions().cacheBiomeSpawning(), missingOnly);
++        changed |= writeValue(node.node("performance", "cache-biome", "advancements"), "performance.cache-biome.advancements", config.extensions().cacheBiomeAdvancements(), missingOnly);
++        changed |= writeValue(node.node("performance", "optimize-player-movement"), "performance.optimize-player-movement", config.extensions().optimizePlayerMovement(), missingOnly);
++        changed |= writeValue(node.node("performance", "optimized-powered-rails"), "performance.optimized-powered-rails", config.extensions().optimizedPoweredRails(), missingOnly);
++        changed |= writeValue(node.node("performance", "optimize-random-tick"), "performance.optimize-random-tick", config.extensions().optimizeRandomTick(), missingOnly);
++        changed |= writeValue(node.node("performance", "use-virtual-thread", "bukkit-async-scheduler"), "performance.use-virtual-thread.bukkit-async-scheduler", config.extensions().virtualBukkitScheduler(), missingOnly);
++        changed |= writeValue(node.node("performance", "lithium", "enabled"), "performance.lithium.enabled", config.extensions().lithiumEnabled(), missingOnly);
++        changed |= writeValue(node.node("performance", "blocks", "container-copy-reuse"), "performance.blocks.container-copy-reuse", config.extensions().containerCopyReuse(), missingOnly);
++        changed |= writeValue(node.node("features", "secure-seed"), "features.secure-seed", config.extensions().secureSeed(), missingOnly);
++        changed |= writeValue(node.node("performance", "use-virtual-thread", "async-chat-executor"), "performance.use-virtual-thread.async-chat-executor", config.extensions().virtualChat(), missingOnly);
++        changed |= writeValue(node.node("async", "isolate-chunk-packing"), "async.isolate-chunk-packing", config.extensions().isolateChunkPacking(), missingOnly);
+         changed |= writeValue(node.node("config-version"), "config-version", config.configVersion(), missingOnly);
+         changed |= writeValue(
+             node.node("console-messages", "show-root-admin-warning"),
+@@ -163,6 +198,11 @@ public final class LeavesXConfigWriter {
+         changed |= writeValue(node.node("async", "chunk-send", "queue-size"), "async.chunk-send.queue-size", async.chunkSendQueueSize(), missingOnly);
+         changed |= writeValue(node.node("async", "mob-spawning"), "async.mob-spawning", async.mobSpawningEnabled(), missingOnly);
+         changed |= writeValue(node.node("async", "pathfinding", "enabled"), "async.pathfinding.enabled", async.pathfindingEnabled(), missingOnly);
++        changed |= writeValue(node.node("async", "pathfinding", "water-snapshot"), "async.pathfinding.water-snapshot", config.extensions().asyncWaterPathfinding(), missingOnly);
++        changed |= writeValue(node.node("performance", "chunk", "poi-async-serialization"), "performance.chunk.poi-async-serialization", config.extensions().poiAsyncSerialization(), missingOnly);
++        changed |= writeValue(node.node("performance", "ai", "poi-competitor-scan-no-load"), "performance.ai.poi-competitor-scan-no-load", config.extensions().poiCompetitorScanNoLoad(), missingOnly);
++        changed |= writeValue(node.node("performance", "ai", "sensor-list-reuse"), "performance.ai.sensor-list-reuse", config.extensions().sensorListReuse(), missingOnly);
++        changed |= writeValue(node.node("performance", "crafting", "recipe-index"), "performance.crafting.recipe-index", config.extensions().recipeIndex(), missingOnly);
+         changed |= writeValue(node.node("async", "pathfinding", "threads"), "async.pathfinding.threads", async.pathfindingThreads(), missingOnly);
+         changed |= writeValue(node.node("async", "pathfinding", "queue-size"), "async.pathfinding.queue-size", async.pathfindingQueueSize(), missingOnly);
+         changed |= writeValue(node.node("async", "pathfinding", "keepalive-seconds"), "async.pathfinding.keepalive-seconds", async.pathfindingKeepaliveSeconds(), missingOnly);
+@@ -171,6 +211,14 @@ public final class LeavesXConfigWriter {
+         changed |= writeValue(node.node("async", "entity-tracker", "enabled"), "async.entity-tracker.enabled", async.entityTrackerEnabled(), missingOnly);
+         changed |= writeValue(node.node("async", "entity-tracker", "threads"), "async.entity-tracker.threads", async.entityTrackerThreads(), missingOnly);
+         changed |= writeValue(node.node("async", "entity-tracker", "queue-size"), "async.entity-tracker.queue-size", async.entityTrackerQueueSize(), missingOnly);
++        final LeavesXConfig.RegionTickingSettings regionized = config.regionTickingSettings();
++        changed |= writeValue(node.node("regionized-ticking", "mode"), "regionized-ticking.mode", regionized.mode().name().toLowerCase(java.util.Locale.ROOT), missingOnly);
++        changed |= writeValue(node.node("regionized-ticking", "merge-radius-chunks"), "regionized-ticking.merge-radius-chunks", regionized.mergeRadiusChunks(), missingOnly);
++        changed |= writeValue(node.node("regionized-ticking", "strict-serial-worlds"), "regionized-ticking.strict-serial-worlds", regionized.strictSerialWorlds(), missingOnly);
++        changed |= writeValue(node.node("regionized-ticking", "intent-queue-size"), "regionized-ticking.intent-queue-size", regionized.intentQueueSize(), missingOnly);
++        changed |= writeValue(node.node("regionized-ticking", "auto-degrade-barrier-percent"), "regionized-ticking.auto-degrade-barrier-percent", regionized.autoDegradeBarrierPercent(), missingOnly);
++        changed |= writeValue(node.node("regionized-ticking", "auto-degrade-replay-threshold"), "regionized-ticking.auto-degrade-replay-threshold", regionized.autoDegradeReplayThreshold(), missingOnly);
++        changed |= writeValue(node.node("regionized-ticking", "threads"), "regionized-ticking.threads", regionized.threads(), missingOnly);
+         changed |= writeValue(
+             node.node("diagnostics", "command-enabled"),
+             "diagnostics.command-enabled",
+@@ -196,8 +244,8 @@ public final class LeavesXConfigWriter {
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "optimized-varint"),
+-            "performance.optimized-varint",
++            node.node("performance", "network", "optimized-varint"),
++            "performance.network.optimized-varint",
+             config.optimizedVarInt(),
+             missingOnly
+         );
+@@ -208,80 +256,80 @@ public final class LeavesXConfigWriter {
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "immutable-cache-optimizations"),
+-            "performance.immutable-cache-optimizations",
++            node.node("performance", "memory", "immutable-caches"),
++            "performance.memory.immutable-caches",
+             config.immutableCacheOptimizations(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "resource-identifier-cache"),
+-            "performance.resource-identifier-cache",
++            node.node("performance", "memory", "resource-identifiers"),
++            "performance.memory.resource-identifiers",
+             config.resourceIdentifierCache(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "skip-empty-events"),
+-            "performance.skip-empty-events",
++            node.node("performance", "events", "skip-empty-events"),
++            "performance.events.skip-empty-events",
+             config.skipEmptyEvents(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "entity-state-optimizations"),
+-            "performance.entity-state-optimizations",
++            node.node("performance", "entities", "state-checks"),
++            "performance.entities.state-checks",
+             config.entityStateOptimizations(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "entity-query-optimizations"),
+-            "performance.entity-query-optimizations",
++            node.node("performance", "entities", "queries"),
++            "performance.entities.queries",
+             config.entityQueryOptimizations(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "ai-optimizations"),
+-            "performance.ai-optimizations",
++            node.node("performance", "ai", "enabled"),
++            "performance.ai.enabled",
+             config.aiOptimizations(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "villager-compatibility-mode"),
+-            "performance.villager-compatibility-mode",
++            node.node("performance", "ai", "villager-compatibility"),
++            "performance.ai.villager-compatibility",
+             config.villagerCompatibilityMode(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "spectator-no-chunk-loading"),
+-            "performance.spectator-no-chunk-loading",
++            node.node("features", "spectator-no-chunk-loading"),
++            "features.spectator-no-chunk-loading",
+             config.spectatorNoChunkLoading(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "startup-resident-bots", "enabled"),
+-            "performance.startup-resident-bots.enabled",
++            node.node("fakeplayer", "startup-restore", "enabled"),
++            "fakeplayer.startup-restore.enabled",
+             config.startupResidentBots(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "startup-resident-bots", "per-tick"),
+-            "performance.startup-resident-bots.per-tick",
++            node.node("fakeplayer", "startup-restore", "per-tick"),
++            "fakeplayer.startup-restore.per-tick",
+             config.startupResidentBotsPerTick(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "startup-ai", "enabled"),
+-            "performance.startup-ai.enabled",
++            node.node("performance", "startup", "ai", "enabled"),
++            "performance.startup.ai.enabled",
+             config.startupAiStaggering(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "startup-ai", "warmup-ticks"),
+-            "performance.startup-ai.warmup-ticks",
++            node.node("performance", "startup", "ai", "warmup-ticks"),
++            "performance.startup.ai.warmup-ticks",
+             config.startupAiWarmupTicks(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "startup-ai", "entities-per-tick"),
+-            "performance.startup-ai.entities-per-tick",
++            node.node("performance", "startup", "ai", "entities-per-tick"),
++            "performance.startup.ai.entities-per-tick",
+             config.startupAiEntitiesPerTick(),
+             missingOnly
+         );
+@@ -304,56 +352,56 @@ public final class LeavesXConfigWriter {
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "pathfinding-optimizations"),
+-            "performance.pathfinding-optimizations",
++            node.node("performance", "ai", "pathfinding"),
++            "performance.ai.pathfinding",
+             config.pathfindingOptimizations(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "mob-spawning-optimizations"),
+-            "performance.mob-spawning-optimizations",
++            node.node("performance", "spawning", "enabled"),
++            "performance.spawning.enabled",
+             config.mobSpawningOptimizations(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "animal-idle-goals", "enabled"),
+-            "performance.animal-idle-goals.enabled",
++            node.node("performance", "ai", "animal-idle-goals", "enabled"),
++            "performance.ai.animal-idle-goals.enabled",
+             config.animalIdleGoalThrottling(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "animal-idle-goals", "interval-multiplier"),
+-            "performance.animal-idle-goals.interval-multiplier",
++            node.node("performance", "ai", "animal-idle-goals", "interval-multiplier"),
++            "performance.ai.animal-idle-goals.interval-multiplier",
+             config.animalIdleGoalIntervalMultiplier(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "dense-monster-ai", "enabled"),
+-            "performance.dense-monster-ai.enabled",
++            node.node("performance", "ai", "dense-monsters", "enabled"),
++            "performance.ai.dense-monsters.enabled",
+             config.denseMonsterAiThrottling(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "dense-monster-ai", "nearby-radius"),
+-            "performance.dense-monster-ai.nearby-radius",
++            node.node("performance", "ai", "dense-monsters", "nearby-radius"),
++            "performance.ai.dense-monsters.nearby-radius",
+             config.denseMonsterAiNearbyRadius(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "dense-monster-ai", "minimum-entities"),
+-            "performance.dense-monster-ai.minimum-entities",
++            node.node("performance", "ai", "dense-monsters", "minimum-entities"),
++            "performance.ai.dense-monsters.minimum-entities",
+             config.denseMonsterAiMinimumEntities(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "dense-monster-ai", "check-interval-ticks"),
+-            "performance.dense-monster-ai.check-interval-ticks",
++            node.node("performance", "ai", "dense-monsters", "check-interval-ticks"),
++            "performance.ai.dense-monsters.check-interval-ticks",
+             config.denseMonsterAiCheckIntervalTicks(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "dense-monster-ai", "goal-interval-ticks"),
+-            "performance.dense-monster-ai.goal-interval-ticks",
++            node.node("performance", "ai", "dense-monsters", "goal-interval-ticks"),
++            "performance.ai.dense-monsters.goal-interval-ticks",
+             config.denseMonsterAiGoalIntervalTicks(),
+             missingOnly
+         );
+@@ -394,26 +442,26 @@ public final class LeavesXConfigWriter {
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "item-merge-optimizations"),
+-            "performance.item-merge-optimizations",
++            node.node("performance", "entities", "item-merge"),
++            "performance.entities.item-merge",
+             config.itemMergeOptimizations(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "block-entity-optimizations"),
+-            "performance.block-entity-optimizations",
++            node.node("performance", "blocks", "block-entities"),
++            "performance.blocks.block-entities",
+             config.blockEntityOptimizations(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "block-entity-ticker-removal"),
+-            "performance.block-entity-ticker-removal",
++            node.node("performance", "blocks", "ticker-removal"),
++            "performance.blocks.ticker-removal",
+             config.blockEntityTickerRemovalOptimization(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "chunk-spawn-range-optimization"),
+-            "performance.chunk-spawn-range-optimization",
++            node.node("performance", "spawning", "chunk-range"),
++            "performance.spawning.chunk-range",
+             config.chunkSpawnRangeOptimization(),
+             missingOnly
+         );
+@@ -443,26 +491,26 @@ public final class LeavesXConfigWriter {
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "chunk-unloading", "enabled"),
+-            "performance.chunk-unloading.enabled",
++            node.node("performance", "chunks", "unloading", "enabled"),
++            "performance.chunks.unloading.enabled",
+             config.adaptiveChunkUnloading(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "chunk-unloading", "backlog-threshold"),
+-            "performance.chunk-unloading.backlog-threshold",
++            node.node("performance", "chunks", "unloading", "backlog-threshold"),
++            "performance.chunks.unloading.backlog-threshold",
+             config.chunkUnloadBacklogThreshold(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "chunk-unloading", "minimum-per-tick"),
+-            "performance.chunk-unloading.minimum-per-tick",
++            node.node("performance", "chunks", "unloading", "minimum-per-tick"),
++            "performance.chunks.unloading.minimum-per-tick",
+             config.chunkUnloadMinimumPerTick(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("performance", "chunk-unloading", "maximum-per-tick"),
+-            "performance.chunk-unloading.maximum-per-tick",
++            node.node("performance", "chunks", "unloading", "maximum-per-tick"),
++            "performance.chunks.unloading.maximum-per-tick",
+             config.chunkUnloadMaximumPerTick(),
+             missingOnly
+         );
+@@ -484,7 +532,26 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("config-version", "配置版本，请勿修改。默认：76。");
++        comments.put("performance", "性能优化：按功能分组，关闭开关可使用原处理逻辑。");
++        comments.put("async", "异步任务：区块打包、刷怪统计、追踪计算和玩家存档。");
++        comments.put("parallelism", "计算线程：控制线程数量和任务达到多大规模时并行。");
++        comments.put("performance.faster-random-generator.enabled", "更换运行时随机算法，天气、作物等随机结果会改变，依赖 RNG 序列的装置可能受影响；不改地形和史莱姆区块，需重启。默认：false。");
++        comments.put("async.ai-candidates", "后台准备山羊和青蛙的长跳候选位置；保持候选顺序、随机抽取及跳跃时机，共用计算池。默认：true。");
++        comments.put("async.playerdata-save.compression", "后台压缩玩家存档，减少自动保存卡顿；需要启用异步玩家保存，同一玩家仍按顺序保存。默认：true。");
++        comments.put("parallelism.mob-collision-math", "实验性：仅并行普通生物的大批简单碰撞盒计算，小批量走原流程；不处理村民、TNT和复杂形状，实际收益取决于场景。默认：false。");
++        comments.put("performance.cache-biome.enabled", "用少量缓存内存减少群系计算；保持精确群系边界，插件修改群系后立即生效。默认：true。");
++        comments.put("performance.cache-biome.mob-spawning", "刷怪检查使用群系计算缓存。默认：true。");
++        comments.put("performance.cache-biome.advancements", "进度条件检查使用群系计算缓存。默认：true。");
++        comments.put("performance.optimize-player-movement", "玩家未跨区块且视距未变时跳过重复的范围更新，保留碰撞和潜行检查。默认：true。");
++        comments.put("performance.optimized-powered-rails", "仅减少动力和激活铁轨查电开销，不批量改写轨道，保留传播范围、更新顺序和红石事件。默认：false。");
++        comments.put("performance.optimize-random-tick", "用少量坐标缓存减少随机刻开销；不降频，不改生长概率、执行顺序和随机数序列。默认：true。");
++        comments.put("performance.use-virtual-thread.bukkit-async-scheduler", "异步插件任务使用虚拟线程；依赖固定线程的插件可能不兼容，同步任务不变，需重启。默认：false。");
++        comments.put("performance.lithium.enabled", "启用 Lithium 的空闲实体和漏斗槽位优化；关闭后走原检查逻辑。默认：true。");
++        comments.put("performance.blocks.container-copy-reuse", "复用容器同步的临时副本，减少背包和箱子操作时的内存分配。默认：true。");
++        comments.put("features.secure-seed", "新世界使用独立安全种子保护结构和资源分布；不改已有世界，需重启。默认：false。");
++        comments.put("performance.use-virtual-thread.async-chat-executor", "异步聊天使用虚拟线程；依赖固定聊天线程的插件可能不兼容，聊天事件流程不变，需重启。默认：false。");
++        comments.put("async.isolate-chunk-packing", "区块打包使用独立队列，避免进服或传送时堵住寻路计算；线程总预算不增加，需重启。默认：true。");
++        comments.put("config-version", "配置版本，请勿修改。默认：" + LeavesXConfig.CURRENT_CONFIG_VERSION + "。");
+         comments.put("console-messages.show-root-admin-warning", "是否显示使用 root 或管理员启动的警告。默认：false。");
+         comments.put("console-messages.show-offline-mode-warning", "是否显示离线模式安全警告。默认：false。");
+         comments.put("console-messages.show-collision-conversion-warning", "是否显示碰撞模式自动转换提示。默认：false。");
+@@ -506,65 +573,75 @@ public final class LeavesXConfigWriter {
+         comments.put("messages.join", "自定义进入提示；支持 <player>、<name>、<display_name>、%player_name% 和颜色代码。默认：空，使用原版提示。");
+         comments.put("messages.quit", "自定义退出提示；支持 <player>、<name>、<display_name>、%player_name% 和颜色代码。默认：空，使用原版提示。");
+         comments.put("messages.core-prefix", "服务端核心提示的统一前缀，例如假人创建成功或配置重载提示；支持 MiniMessage 和 &/§ 颜色代码。默认：空。");
+-        comments.put("async.chunk-send.enabled", "是否异步打包区块数据；多人进服、传送或高速飞行时可降低主线程负载。默认：true。");
++        comments.put("async.chunk-send.enabled", "当前版本暂不可用：区块、光照和方块实体尚未完整快照，打包保持主线程执行。默认：false。");
+         comments.put("async.chunk-send.queue-size", "异步区块发送最多排队任务数；队列满时延后重试，不阻塞主线程。默认：256。");
+         comments.put("async.mob-spawning", "是否异步计算生物生成统计；需同时开启 Paper 的 per-player-mob-spawns。默认：true。");
+-        comments.put("async.pathfinding.enabled", "是否异步计算生物寻路；结果按实体代次校验后在主线程使用。默认：true。");
++        comments.put("async.pathfinding.enabled", "允许快照寻路使用工作线程；需同时打开对应的快照开关，陆地和飞行寻路仍在主线程。默认：true。");
++        comments.put("async.pathfinding.water-snapshot", "实验性水中寻路：完整路径搜索在后台完成，可能延后一刻或数刻开始移动；地形变化或搜索越界时主线程重算，陆地、飞行和自定义导航不受影响。默认：false。");
+         comments.put("async.pathfinding.threads", "寻路为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");
+-        comments.put("async.pathfinding.queue-size", "异步寻路最多排队任务数；队列满时等待空位，不会打乱同一生物的寻路顺序。默认：1024。");
++        comments.put("async.pathfinding.queue-size", "寻路线程队列容量；水中快照另有内存上限，队列或快照名额用完时主线程完整计算。默认：1024。");
+         comments.put("async.pathfinding.keepalive-seconds", "通用计算线程空闲保留时间，单位为秒。默认：60。");
+-        comments.put("async.playerdata-save.enabled", "是否异步写入玩家数据；NBT 编码和同一玩家保存顺序保持不变。默认：true。");
++        comments.put("async.playerdata-save.enabled", "是否异步保存玩家数据；采集玩家状态仍在主线程，同一玩家按顺序保存。默认：true。");
+         comments.put("async.playerdata-save.queue-size", "玩家数据写入最多排队任务数；队列满时等待空位，不会让新存档越过旧存档。默认：1024。");
+         comments.put("async.entity-tracker.enabled", "是否并行计算实体追踪变化；发包、事件和追踪关系提交仍在主线程。默认：true。");
+         comments.put("async.entity-tracker.threads", "实体追踪为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");
+         comments.put("async.entity-tracker.queue-size", "实体追踪计算最多排队任务数；队列满时回到主线程。默认：1024。");
++        comments.put("performance.crafting.recipe-index", "合成台查询按材料数量索引直达候选配方，跳过不可能匹配的配方；结果顺序与原版一致。默认：true。");
++        comments.put("performance.ai.sensor-list-reuse", "物品传感器复用扫描列表；生物扫描结果会存入 Brain，不复用，避免旧记忆被清空。默认：true。");
+         comments.put("performance.chunk.poi-async-serialization", "暂不可用：异步编码失败时可能丢失床和工作站数据；当前仍在 Tick 线程编码、异步写盘。默认：false。");
+         comments.put("performance.ai.poi-competitor-scan-no-load", "暂不可用：村民竞争扫描保留原版 POI 加载行为，避免漏判工作站。默认：false。");
++        comments.put("regionized-ticking.mode", "世界并行模式，修改需重启；包含原版维度时自动整组串行，保留传送门和刷沙时序，不关闭独立异步计算。worlds/regions 仍为实验性。默认：off。");
++        comments.put("regionized-ticking.merge-radius-chunks", "空间间隔小于该区块数的加载分量合并为同一区域，仅 regions 模式使用。默认：8。");
++        comments.put("regionized-ticking.strict-serial-worlds", "需串行保护的世界名，不区分大小写；任一匹配时所有世界按原顺序更新，避免跨世界传送竞争，修改需重启。默认：[]。");
++        comments.put("regionized-ticking.intent-queue-size", "跨区域意图队列上限；溢出时该区域本 Tick 串行重放。默认：65536。");
++        comments.put("regionized-ticking.auto-degrade-barrier-percent", "屏障等待占 Tick 预算比例持续超过该值时超时区域自动降级，0 关闭。默认：25。");
++        comments.put("regionized-ticking.auto-degrade-replay-threshold", "单 Tick 内串行重放累计超过该次数自动降档（regions→worlds→off），0 关闭。默认：64。");
++        comments.put("regionized-ticking.threads", "并行世界/区域线程上限，0 为自动（CPU-1，不超过世界数）。默认：0。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+         comments.put("diagnostics.slow-plugin-task-ms", "记录超过多少毫秒的同步插件任务。默认：2。");
+-        comments.put("performance.optimized-varint", "加快网络整数编码，不改变数据内容。默认：true。");
++        comments.put("performance.network.optimized-varint", "加快网络整数编码，不改变数据内容。默认：true。");
+         comments.put("performance.network.flush-consolidation", "合并网络 flush，减少系统调用。默认：true。");
+-        comments.put("performance.immutable-cache-optimizations", "缓存不变的碰撞结果。默认：true。");
+-        comments.put("performance.resource-identifier-cache", "缓存资源名称和哈希值。默认：true。");
+-        comments.put("performance.skip-empty-events", "没有监听器时跳过事件对象创建。默认：true。");
+-        comments.put("performance.entity-state-optimizations", "减少实体装备等状态检查的临时对象。默认：true。");
+-        comments.put("performance.entity-query-optimizations", "只查一个实体时立即停止搜索并复用临时列表。默认：true。");
+-        comments.put("performance.ai-optimizations", "减少 AI 和村民 POI 搜索的重复计算。默认：true。");
++        comments.put("performance.memory.immutable-caches", "缓存不变的碰撞结果。默认：true。");
++        comments.put("performance.memory.resource-identifiers", "缓存资源名称和哈希值。默认：true。");
++        comments.put("performance.events.skip-empty-events", "没有监听器时跳过事件对象创建。默认：true。");
++        comments.put("performance.entities.state-checks", "减少实体装备等状态检查的临时对象。默认：true。");
++        comments.put("performance.entities.queries", "只查一个实体时立即停止搜索并复用临时列表。默认：true。");
++        comments.put("performance.ai.enabled", "减少 AI 和村民 POI 搜索的重复计算。默认：true。");
+         comments.put(
+-            "performance.villager-compatibility-mode",
++            "performance.ai.villager-compatibility",
+             "村民 Tick 使用原版 AI、目标检测和寻路，保障恐慌与刷铁机行为。默认：true。"
+         );
+         comments.put(
+-            "performance.spectator-no-chunk-loading",
++            "features.spectator-no-chunk-loading",
+             "开启后，旁观者且 spectators_generate_chunks=false 时不加载或观察区块，按无玩家处理。默认：false。"
+         );
+-        comments.put("performance.startup-resident-bots.enabled", "启动时分批恢复常驻假人，降低重启瞬间的区块和实体尖峰。默认：false。");
+-        comments.put("performance.startup-resident-bots.per-tick", "启动分批恢复时每 Tick 最多恢复的假人数。默认：1。");
+-        comments.put("performance.startup-ai.enabled", "启动前几秒分批执行生物 AI，降低重启瞬间的寻路尖峰。默认：true。");
+-        comments.put("performance.startup-ai.warmup-ticks", "启动分批 AI 持续的 Tick 数。默认：40。");
+-        comments.put("performance.startup-ai.entities-per-tick", "启动阶段每 Tick 最多完整执行的普通生物 AI 数；兼容模式下村民不受此限制。默认：16。");
++        comments.put("fakeplayer.startup-restore.enabled", "启动时分批恢复常驻假人，降低重启瞬间的区块和实体尖峰。默认：false。");
++        comments.put("fakeplayer.startup-restore.per-tick", "启动分批恢复时每 Tick 最多恢复的假人数。默认：1。");
++        comments.put("performance.startup.ai.enabled", "启动前几秒分批执行生物 AI，降低重启瞬间的寻路尖峰。默认：true。");
++        comments.put("performance.startup.ai.warmup-ticks", "启动分批 AI 持续的 Tick 数。默认：40。");
++        comments.put("performance.startup.ai.entities-per-tick", "启动阶段每 Tick 最多完整执行的普通生物 AI 数；兼容模式下村民不受此限制。默认：16。");
+         comments.put("performance.ai.villager-profession-assignment", "优化村民领取职业时的职业查找，关闭后使用原版查找。默认：true。");
+         comments.put("performance.ai.long-jump-candidates", "优化山羊和青蛙准备长跳时的候选位置构建，关闭后使用原版构建。默认：true。");
+         comments.put("performance.ai.ram-position-selection", "优化山羊蓄力冲撞时的起点排序与筛选，关闭后使用原版流程。默认：true。");
+-        comments.put("performance.pathfinding-optimizations", "减少寻路重建和临时对象开销。默认：true。");
+-        comments.put("performance.mob-spawning-optimizations", "减少刷怪统计的临时对象和重复遍历。默认：true。");
+-        comments.put("performance.animal-idle-goals.enabled", "降低动物空闲游走和环顾频率，会改变空闲行为。默认：false。");
+-        comments.put("performance.animal-idle-goals.interval-multiplier", "动物空闲行为间隔倍数，仅在上一项开启时生效。默认：2。");
+-        comments.put("performance.dense-monster-ai.enabled", "怪物在小范围大量聚集且没有攻击目标时降低目标选择频率。默认：false。");
+-        comments.put("performance.dense-monster-ai.nearby-radius", "统计怪物密度的水平和垂直范围，单位为方块。默认：8。");
+-        comments.put("performance.dense-monster-ai.minimum-entities", "范围内达到此数量才降低怪物 AI 频率。默认：32。");
+-        comments.put("performance.dense-monster-ai.check-interval-ticks", "重新检查局部怪物密度的间隔，单位为 Tick。默认：20。");
+-        comments.put("performance.dense-monster-ai.goal-interval-ticks", "密集且无目标时完整选择 AI 目标的间隔，单位为 Tick。默认：4。");
+-        comments.put("performance.item-merge-optimizations", "物品堆满后停止无用合并扫描。默认：true。");
+-        comments.put("performance.block-entity-optimizations", "减少漏斗等方块实体每刻创建的临时对象。默认：true。");
+-        comments.put("performance.block-entity-ticker-removal", "加快区块卸载时清理方块实体更新项。默认：true。");
+-        comments.put("performance.chunk-spawn-range-optimization", "减少刷怪范围判断的重复计算。默认：true。");
+-        comments.put("performance.chunk-unloading.enabled", "有 tick 余量时加快处理积压的区块卸载。默认：true。");
+-        comments.put("performance.chunk-unloading.backlog-threshold", "达到此积压数量后提高卸载速度。默认：1000。");
+-        comments.put("performance.chunk-unloading.minimum-per-tick", "加速卸载时的起始处理量。默认：100。");
+-        comments.put("performance.chunk-unloading.maximum-per-tick", "加速卸载时的最大处理量。默认：500。");
++        comments.put("performance.ai.pathfinding", "减少寻路重建和临时对象开销。默认：true。");
++        comments.put("performance.spawning.enabled", "减少刷怪统计的临时对象和重复遍历。默认：true。");
++        comments.put("performance.ai.animal-idle-goals.enabled", "降低动物空闲游走和环顾频率，会改变空闲行为。默认：false。");
++        comments.put("performance.ai.animal-idle-goals.interval-multiplier", "动物空闲行为间隔倍数，仅在上一项开启时生效。默认：2。");
++        comments.put("performance.ai.dense-monsters.enabled", "怪物在小范围大量聚集且没有攻击目标时降低目标选择频率。默认：false。");
++        comments.put("performance.ai.dense-monsters.nearby-radius", "统计怪物密度的水平和垂直范围，单位为方块。默认：8。");
++        comments.put("performance.ai.dense-monsters.minimum-entities", "范围内达到此数量才降低怪物 AI 频率。默认：32。");
++        comments.put("performance.ai.dense-monsters.check-interval-ticks", "重新检查局部怪物密度的间隔，单位为 Tick。默认：20。");
++        comments.put("performance.ai.dense-monsters.goal-interval-ticks", "密集且无目标时完整选择 AI 目标的间隔，单位为 Tick。默认：4。");
++        comments.put("performance.entities.item-merge", "物品堆满后停止无用合并扫描。默认：true。");
++        comments.put("performance.blocks.block-entities", "减少漏斗等方块实体每刻创建的临时对象。默认：true。");
++        comments.put("performance.blocks.ticker-removal", "加快区块卸载时清理方块实体更新项。默认：true。");
++        comments.put("performance.spawning.chunk-range", "减少刷怪范围判断的重复计算。默认：true。");
++        comments.put("performance.chunks.unloading.enabled", "有 tick 余量时加快处理积压的区块卸载。默认：true。");
++        comments.put("performance.chunks.unloading.backlog-threshold", "达到此积压数量后提高卸载速度。默认：1000。");
++        comments.put("performance.chunks.unloading.minimum-per-tick", "加速卸载时的起始处理量。默认：100。");
++        comments.put("performance.chunks.unloading.maximum-per-tick", "加速卸载时的最大处理量。默认：500。");
+         comments.put("parallelism.workers", "LeavesX 纯计算线程数，0 为自动。默认：0。");
+         comments.put("parallelism.minimum-items-per-worker", "每个计算分片至少处理的项目数。默认：64。");
+         comments.put("parallelism.prestart-workers", "启动时预热计算线程，减少重启后第一次并行任务的延迟。默认：true。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index 612e35e2ea..bd94a21fe4 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -250,11 +250,11 @@ enum LeavesXOptimization {
+     ),
+     POI_BOUNDED_TRAVERSAL(
+         "performance.ai.poi-bounded-traversal",
+-        "限制 POI 搜索只遍历需要的范围，关闭后使用原版遍历。默认：true。"
++        "限制 POI 搜索只遍历需要的范围，关闭后使用原版遍历。源自 Leaf（GPL-3.0）。默认：true。"
+     ),
+     POI_SECTION_BITSET(
+         "performance.ai.poi-section-bitset",
+-        "使用位图记录已检查的 POI 区段，关闭后使用哈希集合。默认：true。"
++        "使用位图记录已检查的 POI 区段，关闭后使用哈希集合。移植自 Leaf（GPL-3.0，作者 HaHaWTH）。默认：true。"
+     ),
+     VILLAGER_GOLEM_AGREEMENT(
+         "performance.ai.villager-golem-agreement",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index c3a6ed6f78..e560d3010f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -620,17 +620,17 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether maintained Lithium slot counters may answer non-sided hopper fullness checks. */
+     public static boolean hopperSlotStateCacheOptimization() {
+-        return blockEntityOptimizations && enabled(LeavesXOptimization.HOPPER_SLOT_STATE_CACHE);
++        return configuration.extensions().lithiumEnabled() && blockEntityOptimizations && enabled(LeavesXOptimization.HOPPER_SLOT_STATE_CACHE);
+     }
+ 
+     /** Returns whether non-sided hopper scans may traverse slots directly without a temporary index array. */
+     public static boolean hopperDirectSlotScansOptimization() {
+-        return blockEntityOptimizations && enabled(LeavesXOptimization.HOPPER_DIRECT_SLOT_SCANS);
++        return configuration.extensions().lithiumEnabled() && blockEntityOptimizations && enabled(LeavesXOptimization.HOPPER_DIRECT_SLOT_SCANS);
+     }
+ 
+     /** Returns whether fixed block hoppers may reuse storage while scanning input item entities. */
+     public static boolean hopperItemEntityQueryBufferOptimization() {
+-        return blockEntityOptimizations && enabled(LeavesXOptimization.HOPPER_ITEM_ENTITY_QUERY_BUFFER);
++        return configuration.extensions().lithiumEnabled() && blockEntityOptimizations && enabled(LeavesXOptimization.HOPPER_ITEM_ENTITY_QUERY_BUFFER);
+     }
+ 
+     /** Returns whether container opener recounts may reuse their immutable search box. */
+@@ -1278,6 +1278,16 @@ public final class LeavesXRuntime {
+         return false;
+     }
+ 
++    /** Returns whether sensors may reuse their instance-scoped scan lists across ticks. */
++    public static boolean sensorListReuseOptimization() {
++        return configuration.extensions().sensorListReuse();
++    }
++
++    /** Returns whether crafting-grid recipe lookups may consult the ingredient-count index. */
++    public static boolean recipeIndexOptimization() {
++        return configuration.extensions().recipeIndex();
++    }
++
+     /** Returns whether villager golem agreement counting may stop at the required threshold. */
+     public static boolean villagerGolemAgreementOptimization() {
+         return false;
+@@ -1447,12 +1457,12 @@ public final class LeavesXRuntime {
+ 
+     /** Returns whether the Lithium idle-swing early return may skip an otherwise empty state update. */
+     public static boolean lithiumIdleSwingOptimization() {
+-        return entityStateOptimizations && enabled(LeavesXOptimization.LITHIUM_IDLE_SWING);
++        return configuration.extensions().lithiumEnabled() && entityStateOptimizations && enabled(LeavesXOptimization.LITHIUM_IDLE_SWING);
+     }
+ 
+     /** Returns whether the Lithium idle-glide early return may skip an otherwise empty equipment scan. */
+     public static boolean lithiumIdleGlideOptimization() {
+-        return entityStateOptimizations && enabled(LeavesXOptimization.LITHIUM_IDLE_GLIDE);
++        return configuration.extensions().lithiumEnabled() && entityStateOptimizations && enabled(LeavesXOptimization.LITHIUM_IDLE_GLIDE);
+     }
+ 
+     /** Returns whether area-effect clouds may scan applicable effects directly. */
+diff --git a/src/main/java/org/leavesx/leavesx/path/LeavesXAsyncPath.java b/src/main/java/org/leavesx/leavesx/path/LeavesXAsyncPath.java
+index 25361ad1fa..d61dd1c70d 100644
+--- a/src/main/java/org/leavesx/leavesx/path/LeavesXAsyncPath.java
++++ b/src/main/java/org/leavesx/leavesx/path/LeavesXAsyncPath.java
+@@ -5,6 +5,7 @@ import java.util.Objects;
+ import java.util.Set;
+ import java.util.concurrent.CompletableFuture;
+ import java.util.concurrent.CompletionException;
++import java.util.function.BiFunction;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.network.FriendlyByteBuf;
+ import net.minecraft.world.entity.Entity;
+@@ -22,16 +23,58 @@ public final class LeavesXAsyncPath extends Path {
+     private final CompletableFuture<@Nullable Path> future;
+     private volatile boolean processed;
+     private @Nullable Path resolved;
++    private final Thread owner = Thread.currentThread();
++    private @Nullable BiFunction<@Nullable Path, @Nullable Throwable, @Nullable Path> adoption;
++    private java.util.function.BooleanSupplier currentRequest = () -> true;
+ 
+     public LeavesXAsyncPath(
+         final Set<BlockPos> targets,
+         final CompletableFuture<@Nullable Path> future
+     ) {
+-        super(List.of(), BlockPos.ZERO, false);
++        this(targets, future, new DeferredNodes());
++    }
++
++    private LeavesXAsyncPath(final Set<BlockPos> targets, final CompletableFuture<@Nullable Path> future, final DeferredNodes nodes) {
++        super(nodes, BlockPos.ZERO, false);
++        nodes.owner = this;
+         this.targets = Set.copyOf(targets);
+         this.future = Objects.requireNonNull(future, "future");
+     }
+ 
++    /** Path.nodes is public: consumers that bypass getters must see the adopted path too. */
++    private static final class DeferredNodes extends java.util.AbstractList<Node> {
++        private LeavesXAsyncPath owner;
++        private List<Node> delegate() {
++            if (this.owner == null) return List.of(); // Path's constructor probes an initially empty list.
++            final Path path = this.owner.path();
++            return path == null ? List.of() : path.nodes;
++        }
++        @Override public Node get(final int index) { return this.delegate().get(index); }
++        @Override public int size() { return this.delegate().size(); }
++        @Override public Node set(final int index, final Node node) { return this.delegate().set(index, node); }
++        @Override public Node remove(final int index) { return this.delegate().remove(index); }
++        @Override public void add(final int index, final Node node) { this.delegate().add(index, node); }
++    }
++
++    /** Validation and fallback execute on the requesting thread, never in a completion callback. */
++    public LeavesXAsyncPath(final Set<BlockPos> targets, final CompletableFuture<@Nullable Path> future,
++        final BiFunction<@Nullable Path, @Nullable Throwable, @Nullable Path> adoption) {
++        this(targets, future);
++        this.adoption = Objects.requireNonNull(adoption, "adoption");
++    }
++
++    public LeavesXAsyncPath(final Set<BlockPos> targets, final CompletableFuture<@Nullable Path> future,
++        final BiFunction<@Nullable Path, @Nullable Throwable, @Nullable Path> adoption,
++        final java.util.function.BooleanSupplier currentRequest) {
++        this(targets, future, adoption);
++        this.currentRequest = currentRequest;
++    }
++
++    public boolean isCurrentRequest() {
++        if (Thread.currentThread() != this.owner) throw new IllegalStateException("Path ownership must be checked by its requesting thread");
++        return this.currentRequest.getAsBoolean();
++    }
++
+     public boolean hasSameTargets(final Set<BlockPos> otherTargets) {
+         return this.targets.equals(otherTargets);
+     }
+@@ -62,12 +105,21 @@ public final class LeavesXAsyncPath extends Path {
+             if (this.processed) {
+                 return;
+             }
++            if (Thread.currentThread() != this.owner) {
++                throw new IllegalStateException("A pending path may only be adopted on its requesting thread");
++            }
++            Throwable computationFailure = null;
+             try {
+                 this.resolved = this.future.join();
+-            } catch (final CompletionException failure) {
+-                LOGGER.error("LeavesX asynchronous path calculation failed; this path request will be discarded", failure.getCause());
++            } catch (final CompletionException | java.util.concurrent.CancellationException failure) {
++                computationFailure = failure;
++                if (this.adoption == null) LOGGER.error("LeavesX asynchronous path calculation failed; this path request will be discarded", failure);
+                 this.resolved = null;
+             }
++            if (this.adoption != null) {
++                this.resolved = this.adoption.apply(this.resolved, computationFailure);
++                this.adoption = null; // Do not retain the snapshot or the mob after adoption.
++            }
+             this.processed = true;
+         }
+     }
+@@ -202,8 +254,13 @@ public final class LeavesXAsyncPath extends Path {
+         return path == null ? new Path(List.of(), BlockPos.ZERO, false) : path.copy();
+     }
+ 
++    @Override public Path.@Nullable DebugData debugData() {
++        final Path path = this.path();
++        return path == null ? null : path.debugData();
++    }
++
+     @Override
+     public String toString() {
+         return this.isProcessed() ? "LeavesXAsyncPath(" + this.resolved + ")" : "LeavesXAsyncPath(pending)";
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+index 3c59d0e3e3..604a19a68b 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+@@ -47,19 +47,33 @@ public final class LeavesXAsyncRuntime {
+ 
+     /** Creates startup-only executors from one validated configuration snapshot. */
+     public static synchronized void configure(final LeavesXConfig.AsyncSettings settings) {
++        configure(settings, true);
++    }
++
++    public static synchronized void configure(final LeavesXConfig.AsyncSettings settings, final boolean isolateChunkPacking) {
+         Objects.requireNonNull(settings, "settings");
+         shutdown();
+ 
+         final EnumMap<Workload, ExecutorState> next = new EnumMap<>(Workload.class);
+         final int generalThreads = generalThreadCount(settings);
++        // Reserve a bounded slice for packet packing. A login burst must not queue hundreds of packets ahead of AI.
++        // A single-worker host keeps one pool to avoid exceeding its CPU budget.
++        final int chunkThreads = CHUNK_SEND_EXPERIMENTAL && isolateChunkPacking && settings.chunkSendEnabled() && generalThreads > 1
++            && (settings.mobSpawningEnabled() || settings.pathfindingEnabled() || settings.entityTrackerEnabled())
++            ? Math.max(1, Math.min(4, generalThreads / 3)) : 0;
+         if (generalThreads > 0) {
+             final ThreadPoolExecutor generalExecutor = create(
+                 "Async Compute",
+-                generalThreads,
++                generalThreads - chunkThreads,
+                 generalQueueSize(settings),
+                 settings.pathfindingKeepaliveSeconds()
+             );
+             registerGeneral(next, settings, generalExecutor);
++            if (chunkThreads > 0) {
++                next.put(Workload.CHUNK_SEND, new ExecutorState(
++                    create("Chunk Packing", chunkThreads, settings.chunkSendQueueSize(), settings.pathfindingKeepaliveSeconds()),
++                    settings.chunkSendQueueSize() + chunkThreads));
++            }
+         }
+ 
+         if (settings.playerDataSaveEnabled()) {
+@@ -89,6 +103,8 @@ public final class LeavesXAsyncRuntime {
+         final ThreadPoolExecutor executor
+     ) {
+         final int workers = executor.getMaximumPoolSize();
++        // Candidate construction contains only coordinates and weights, and shares the existing CPU budget.
++        states.put(Workload.AI_CANDIDATES, new ExecutorState(executor, settings.pathfindingQueueSize() + workers));
+         if (CHUNK_SEND_EXPERIMENTAL && settings.chunkSendEnabled()) {
+             states.put(
+                 Workload.CHUNK_SEND,
+@@ -591,6 +607,7 @@ public final class LeavesXAsyncRuntime {
+         CHUNK_SEND("Async Chunk Send"),
+         MOB_SPAWNING("Async Mob Spawning"),
+         PATHFINDING("Async Pathfinding"),
++        AI_CANDIDATES("AI 长跳候选准备"),
+         PLAYER_DATA_SAVE("Async Player Data"),
+         ENTITY_TRACKER("Async Entity Tracker");
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 8454dff8dd..2db14b347f 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -492,8 +492,10 @@ public final class LeavesXComputeExecutor {
+      * Selects a small claim width for the shared overflow cursor.
+      *
+      * <p>When a batch has only a few more ranges than workers, claiming one range at a time keeps the tail
+-     * distributed instead of allowing the first worker to consume the whole remainder. Larger batches use two ranges
+-     * per atomic claim to reduce contention on the cursor.</p>
++     * distributed instead of allowing the first worker to consume the whole remainder. Larger batches claim more
++     * ranges per atomic update to reduce cursor contention. LeavesX beta8 D1: the width scales continuously
++     * with the mean overflow per worker instead of stepping between fixed thresholds, so very large snapshots
++     * stay at the cap while medium batches converge to a fine tail without a jump.</p>
+      */
+     static int rangesPerClaim(final int taskCount, final int workerTaskCount) {
+         if (taskCount <= 0 || workerTaskCount <= 0) {
+@@ -503,9 +505,10 @@ public final class LeavesXComputeExecutor {
+         if (overflowRanges <= workerTaskCount) {
+             return 1;
+         }
+-        // Very large snapshots benefit from fewer cursor updates. Keep short and medium batches at two ranges so
+-        // their tail remains fine-grained; only batches with a substantial overflow use four.
+-        return overflowRanges >= workerTaskCount * 8 ? MAX_RANGES_PER_CLAIM : 2;
++        // Continuous scaling: overflow-per-worker rounded down plus one, clamped to [2, MAX_RANGES_PER_CLAIM].
++        // A batch with 3x overflow per worker reaches the cap; anything smaller sits proportionally between.
++        final int scaled = overflowRanges / workerTaskCount + 1;
++        return Math.max(2, Math.min(MAX_RANGES_PER_CLAIM, scaled));
+     }
+ 
+     /** Shrinks the last claim so a worker cannot strand a tiny tail while another worker is still running. */
+@@ -617,14 +620,14 @@ public final class LeavesXComputeExecutor {
+     private static boolean supportsAdaptiveScheduling(final Workload workload) {
+         return switch (workload) {
+             case AI_TARGET_SORT, AI_TARGET_SELECT, ENTITY_ACTIVATION, ENTITY_TRACKING, MOB_SPAWN_COUNTING -> true;
+-            case UNSPECIFIED, AI_TARGET_MERGE -> false;
++            case UNSPECIFIED, AI_TARGET_MERGE, MOB_COLLISION -> false;
+         };
+     }
+ 
+     private static boolean supportsAdaptivePartitioning(final Workload workload) {
+         return switch (workload) {
+             case AI_TARGET_SORT, AI_TARGET_SELECT, ENTITY_ACTIVATION, ENTITY_TRACKING -> true;
+-            case UNSPECIFIED, AI_TARGET_MERGE, MOB_SPAWN_COUNTING -> false;
++            case UNSPECIFIED, AI_TARGET_MERGE, MOB_SPAWN_COUNTING, MOB_COLLISION -> false;
+         };
+     }
+ 
+@@ -891,7 +894,8 @@ public final class LeavesXComputeExecutor {
+         AI_TARGET_SELECT("AI 目标选择"),
+         ENTITY_ACTIVATION("实体激活范围"),
+         ENTITY_TRACKING("实体追踪计算"),
+-        MOB_SPAWN_COUNTING("刷怪统计");
++        MOB_SPAWN_COUNTING("刷怪统计"),
++        MOB_COLLISION("生物碰撞数值计算");
+ 
+         private final String displayName;
+ 
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index 828b1f0d79..d46bd646cb 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -40,7 +40,7 @@ class LeavesXConfigLoaderTest {
+         assertFalse(created.namedCceShulkerBoxes());
+         assertFalse(created.quickOpenShulkerBoxes());
+         assertFalse(created.carpetPlayerCommand());
+-        assertTrue(created.asyncSettings().chunkSendEnabled());
++        assertFalse(created.asyncSettings().chunkSendEnabled());
+         assertTrue(created.asyncSettings().mobSpawningEnabled());
+         assertTrue(created.asyncSettings().pathfindingEnabled());
+         assertTrue(created.asyncSettings().playerDataSaveEnabled());
+@@ -72,7 +72,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(generated.contains("villager-profession-assignment:"));
+         assertTrue(generated.contains("long-jump-candidates:"));
+         assertTrue(generated.contains("ram-position-selection:"));
+-        assertTrue(generated.contains("dense-monster-ai:"));
++        assertTrue(generated.contains("dense-monsters:"));
+         assertTrue(generated.contains("nearby-radius:"));
+         assertTrue(generated.contains("workers:"));
+         assertTrue(generated.contains("entity-activation:"));
+@@ -80,7 +80,10 @@ class LeavesXConfigLoaderTest {
+         assertFalse(generated.contains("warden-target-sensor:"));
+         assertFalse(generated.contains("unload-section-snapshot-cache:"));
+         assertTrue(generated.contains("# 是否异步计算生物生成统计"));
+-        assertTrue(generated.contains("# 是否异步写入玩家数据"));
++        assertTrue(generated.contains("# 是否异步保存玩家数据"));
++        assertTrue(generated.contains("ai-candidates: true"));
++        assertTrue(generated.contains("compression: true"));
++        assertTrue(generated.contains("mob-collision-math: false"));
+         assertFalse(generated.contains("threading:"));
+         assertFalse(generated.contains("folia"));
+         assertTrue(generated.lines().count() < 300L, "Default configuration should stay operator-sized");
+@@ -199,26 +202,26 @@ class LeavesXConfigLoaderTest {
+         assertTrue(config.longJumpCandidateOptimization());
+         assertTrue(config.ramPositionSelectionOptimization());
+         assertEquals(LeavesXConfig.fineGrainedOptimizationCount(), config.enabledFineGrainedOptimizationCount());
+-        assertFalse(reloaded.node("performance", "optimized-varint").getBoolean());
+-        assertTrue(reloaded.node("performance", "item-merge-optimizations").getBoolean());
+-        assertTrue(reloaded.node("performance", "block-entity-optimizations").getBoolean());
+-        assertTrue(reloaded.node("performance", "block-entity-ticker-removal").getBoolean());
+-        assertTrue(reloaded.node("performance", "chunk-spawn-range-optimization").getBoolean());
+-        assertTrue(reloaded.node("performance", "mob-spawning-optimizations").getBoolean());
+-        assertTrue(reloaded.node("performance", "entity-state-optimizations").getBoolean());
+-        assertTrue(reloaded.node("performance", "entity-query-optimizations").getBoolean());
++        assertFalse(reloaded.node("performance", "network", "optimized-varint").getBoolean());
++        assertTrue(reloaded.node("performance", "entities", "item-merge").getBoolean());
++        assertTrue(reloaded.node("performance", "blocks", "block-entities").getBoolean());
++        assertTrue(reloaded.node("performance", "blocks", "ticker-removal").getBoolean());
++        assertTrue(reloaded.node("performance", "spawning", "chunk-range").getBoolean());
++        assertTrue(reloaded.node("performance", "spawning", "enabled").getBoolean());
++        assertTrue(reloaded.node("performance", "entities", "state-checks").getBoolean());
++        assertTrue(reloaded.node("performance", "entities", "queries").getBoolean());
+         assertTrue(reloaded.node("performance", "ai", "villager-profession-assignment").getBoolean());
+         assertTrue(reloaded.node("performance", "ai", "long-jump-candidates").getBoolean());
+         assertTrue(reloaded.node("performance", "ai", "ram-position-selection").getBoolean());
+         assertTrue(reloaded.node("custom-extension", "retained").getBoolean());
+         assertTrue(upgraded.contains("# User-managed LeavesX settings."), upgraded);
+-        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.item-merge-optimizations")));
+-        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.block-entity-optimizations")));
+-        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.block-entity-ticker-removal")));
+-        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.chunk-spawn-range-optimization")));
+-        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.mob-spawning-optimizations")));
+-        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.entity-state-optimizations")));
+-        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.entity-query-optimizations")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.entities.item-merge")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.blocks.block-entities")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.blocks.ticker-removal")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.spawning.chunk-range")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.spawning.enabled")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.entities.state-checks")));
++        assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.entities.queries")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.ai.villager-profession-assignment")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.ai.long-jump-candidates")));
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.ai.ram-position-selection")));
+@@ -932,7 +935,7 @@ class LeavesXConfigLoaderTest {
+             () -> LeavesXConfigLoader.load(path)
+         );
+ 
+-        assertTrue(exception.getMessage().contains("performance.optimized-varint"));
++        assertTrue(exception.getMessage().contains("performance.network.optimized-varint"));
+         assertTrue(exception.getMessage().contains(path.toAbsolutePath().toString()));
+     }
+ 
+@@ -972,7 +975,7 @@ class LeavesXConfigLoaderTest {
+         final String text = Files.readString(path);
+         assertTrue(text.startsWith("# 旧版配置注释。"), "用户文件头必须保留");
+         assertFalse(text.contains("旧版网络优化长注释"));
+-        assertTrue(text.contains("# " + LeavesXConfigWriter.comments().get("performance.optimized-varint")));
++        assertTrue(text.contains("# " + LeavesXConfigWriter.comments().get("performance.network.optimized-varint")));
+     }
+ 
+     @Test
+@@ -1089,7 +1092,7 @@ class LeavesXConfigLoaderTest {
+             () -> LeavesXConfigLoader.load(path)
+         );
+ 
+-        assertTrue(exception.getMessage().contains("performance.chunk-unloading.maximum-per-tick"));
++        assertTrue(exception.getMessage().contains("performance.chunks.unloading.maximum-per-tick"));
+     }
+ 
+     private Path write(final String content) throws IOException {
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+index af20ad6c0a..40883433eb 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+@@ -92,7 +92,7 @@ final class LeavesXPlayerPresentationTest {
+             true, false, false, 1, true, 40, 16,
+             false, false, false, true, false, false, false, "&a[假人]", List.of(),
+             true, false, true, 4, false, true, true, "[", "]", "", "", "",
+-            LeavesXConfig.AsyncSettings.safeDefaults()
++            LeavesXConfig.AsyncSettings.safeDefaults(), LeavesXConfig.ExtensionSettings.defaults(), LeavesXConfig.RegionTickingSettings.safeDefaults()
+         ));
+         assertEquals("\u00A7a[假人][\u00A7b建筑]\u00A7abot", LEGACY.serialize(
+             LeavesXPlayerPresentation.fakeplayerDisplayName("bot", "&b建筑")
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+index 9c9c37c702..1826b9cf39 100644
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -275,7 +275,7 @@ class VillagerCompatibilityContextTest {
+             "",
+             "",
+             "",
+-            LeavesXConfig.AsyncSettings.safeDefaults()
++            LeavesXConfig.AsyncSettings.safeDefaults(), LeavesXConfig.ExtensionSettings.defaults(), LeavesXConfig.RegionTickingSettings.safeDefaults()
+         );
+     }
+ 
+diff --git a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+index ab1a19f59a..5ab6d8f64b 100644
+--- a/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/migration/LeavesConfigMigratorTest.java
+@@ -70,9 +70,9 @@ class LeavesConfigMigratorTest {
+ 
+         final String leavesXText = Files.readString(target);
+         for (final Map.Entry<String, String> comment : LeavesXConfigWriter.comments().entrySet()) {
+-            assertTrue(comment.getValue().contains("默认："), comment.getKey());
+-            assertFalse(comment.getValue().contains("\n"), comment.getKey());
+             final ConfigurationNode setting = leavesX.node((Object[])comment.getKey().split("\\."));
++            if (!setting.isMap()) assertTrue(comment.getValue().contains("默认："), comment.getKey());
++            assertFalse(comment.getValue().contains("\n"), comment.getKey());
+             if (!setting.virtual()) {
+                 assertTrue(leavesXText.contains("# " + comment.getValue()), comment.getKey());
+             }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/NearestEntitySensorQueryHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/NearestEntitySensorQueryHotPathTest.java
+index 3b9703ee42..8cbdf99590 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/NearestEntitySensorQueryHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/NearestEntitySensorQueryHotPathTest.java
+@@ -49,7 +49,10 @@ class NearestEntitySensorQueryHotPathTest {
+         final MethodNode doTick = method(classNode(NearestLivingEntitySensor.class), "doTick");
+ 
+         assertBufferedQuery(doTick);
+-        assertUsesObjectArrayList(doTick);
++        // LeavesX beta7: the fresh-list allocation moved into the config-gated
++        // leavesX$acquireScanList helper; doTick must route through it.
++        assertAcquiresScanList(doTick);
++        assertUsesObjectArrayList(method(classNode(NearestLivingEntitySensor.class), "leavesX$acquireScanList"));
+         assertTrue(methodCalls(doTick).stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
+         assertTrue(methodCalls(doTick).stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+         assertTrue(Arrays.stream(doTick.instructions.toArray())
+@@ -63,7 +66,8 @@ class NearestEntitySensorQueryHotPathTest {
+         final MethodNode doTick = method(classNode(NearestItemSensor.class), "doTick");
+ 
+         assertBufferedQuery(doTick);
+-        assertUsesObjectArrayList(doTick);
++        assertAcquiresScanList(doTick);
++        assertUsesObjectArrayList(method(classNode(NearestItemSensor.class), "leavesX$acquireScanList"));
+         assertTrue(methodCalls(doTick).stream().anyMatch(call -> call.name.equals("entityQueryOptimizations")));
+         assertTrue(methodCalls(doTick).stream().anyMatch(call -> call.name.equals("getEntitiesOfClass")));
+     }
+@@ -75,6 +79,12 @@ class NearestEntitySensorQueryHotPathTest {
+         ));
+     }
+ 
++    private static void assertAcquiresScanList(final MethodNode method) {
++        assertTrue(methodCalls(method).stream().anyMatch(call ->
++            call.name.equals("leavesX$acquireScanList") && !call.owner.endsWith("SensorReusableLists")
++        ), "doTick must acquire the scan list through the instance helper");
++    }
++
+     private static void assertUsesObjectArrayList(final MethodNode method) {
+         assertTrue(Arrays.stream(method.instructions.toArray())
+             .filter(TypeInsnNode.class::isInstance)
+diff --git a/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java
+index 4317900b4b..4cb3ad3bc8 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/SensorMemoryLookupHotPathTest.java
+@@ -26,7 +26,7 @@ class SensorMemoryLookupHotPathTest {
+     void targetingRangeWritesAreSkippedWhenTheRangeIsUnchanged() throws IOException {
+         final ClassNode sensor = classNode(Sensor.class);
+         assertTrue(sensor.fields.stream().anyMatch(field -> field.name.equals("leavesXLastTargetingRangeBits")
+-            && field.desc.equals("J")
++            && field.desc.equals("Ljava/lang/ThreadLocal;")
+             && (field.access & Opcodes.ACC_STATIC) != 0));
+ 
+         final MethodNode updateRanges = method(sensor, "updateTargetingConditionRanges");
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java
+index 809db15527..0cb6302dd9 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntimeTest.java
+@@ -114,33 +114,18 @@ class LeavesXAsyncRuntimeTest {
+     }
+ 
+     @Test
+-    void retryableSubmissionNeverRunsRejectedChunkWorkOnCaller() throws Exception {
++    void liveChunkPacketWorkloadStaysOnCallerEvenWithOldEnabledConfig() {
+         final LeavesXConfig.AsyncSettings chunkSettings = new LeavesXConfig.AsyncSettings(
+             true, 64, false, false, 0, 64, 30, false, 64, false, 0, 64
+         );
+         LeavesXAsyncRuntime.configure(chunkSettings);
+-        final int workers = LeavesXAsyncRuntime.generalThreadCount(chunkSettings);
+-        final CountDownLatch workersStarted = new CountDownLatch(workers);
+-        final CountDownLatch releaseWorkers = new CountDownLatch(1);
+-        final List<CompletableFuture<Void>> blockers = new ArrayList<>(workers);
+-        for (int index = 0; index < workers; index++) {
+-            blockers.add(LeavesXAsyncRuntime.submitOrRun(
+-                LeavesXAsyncRuntime.Workload.CHUNK_SEND,
+-                () -> {
+-                    workersStarted.countDown();
+-                    try {
+-                        releaseWorkers.await();
+-                    } catch (final InterruptedException interruption) {
+-                        Thread.currentThread().interrupt();
+-                    }
+-                }
+-            ));
+-        }
+-        assertTrue(workersStarted.await(5L, TimeUnit.SECONDS));
+-        for (int index = 0; index < 64; index++) {
+-            LeavesXAsyncRuntime.submitOrRun(LeavesXAsyncRuntime.Workload.CHUNK_SEND, () -> { });
+-        }
+-
++        assertFalse(LeavesXAsyncRuntime.enabled(LeavesXAsyncRuntime.Workload.CHUNK_SEND));
++        assertEquals(0, LeavesXAsyncRuntime.generalThreadCount(chunkSettings));
++        final Thread caller = Thread.currentThread();
++        final List<Thread> execution = new ArrayList<>();
++        LeavesXAsyncRuntime.submitOrRun(LeavesXAsyncRuntime.Workload.CHUNK_SEND,
++            () -> execution.add(Thread.currentThread())).join();
++        assertEquals(List.of(caller), execution);
+         final AtomicBoolean ranOnCaller = new AtomicBoolean();
+         assertNull(LeavesXAsyncRuntime.trySubmitValue(
+             LeavesXAsyncRuntime.Workload.CHUNK_SEND,
+@@ -150,14 +135,6 @@ class LeavesXAsyncRuntimeTest {
+             }
+         ));
+         assertFalse(ranOnCaller.get());
+-
+-        releaseWorkers.countDown();
+-        CompletableFuture.allOf(blockers.toArray(CompletableFuture[]::new)).join();
+-        final LeavesXAsyncRuntime.Metrics metrics = LeavesXAsyncRuntime.metrics(
+-            LeavesXAsyncRuntime.Workload.CHUNK_SEND
+-        );
+-        assertTrue(metrics.rejectedTasks() >= 1L);
+-        assertEquals(0L, metrics.callerRuns());
+     }
+ 
+     @Test
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index 4ea8812b4d..e74cf21334 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -278,7 +278,10 @@ public class LeavesXComputeExecutorTest {
+     void usesSingleRangeClaimsForShortTailsAndBatchedClaimsForLargeWorkloads() {
+         assertEquals(1, LeavesXComputeExecutor.rangesPerClaim(8, 4));
+         assertEquals(1, LeavesXComputeExecutor.rangesPerClaim(9, 4));
+-        assertEquals(2, LeavesXComputeExecutor.rangesPerClaim(16, 4));
++        // beta8 D1: the width scales continuously with mean overflow per worker.
++        // (16,4): overflow 11, 11/4+1 = 3 claims per update.
++        assertEquals(3, LeavesXComputeExecutor.rangesPerClaim(16, 4));
++        // (40,2): overflow 37, 37/2+1 = 19 -> clamped to the cap of 4.
+         assertEquals(4, LeavesXComputeExecutor.rangesPerClaim(40, 2));
+         assertEquals(1, LeavesXComputeExecutor.rangesPerClaim(1, 0));
+     }

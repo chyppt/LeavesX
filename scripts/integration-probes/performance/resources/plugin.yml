@@ -1,0 +1,4 @@
+name: LeavesXPerformanceProbe
+version: 1.0
+main: org.leavesx.probe.PerformanceProbe
+api-version: '26.1.2'

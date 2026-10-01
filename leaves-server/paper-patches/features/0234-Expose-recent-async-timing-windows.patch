@@ -1,0 +1,30 @@
+From: chyppt <pptwxo@163.com>
+Date: Sun, 27 Sep 2026 12:00:00 +0800
+Subject: [PATCH] Expose recent async timing windows
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+index c77ca524..6ef5faf1 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+@@ -357,6 +357,20 @@ public final class LeavesXAsyncRuntime {
+             : state.queueTiming.snapshot();
+     }
+ 
++    public static org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot recentTaskTiming(final Workload workload) {
++        final ExecutorState state = executors.get(workload);
++        return state == null
++            ? new org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot(0L, 0L, 0L)
++            : state.taskTiming.recentSnapshot();
++    }
++
++    public static org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot recentQueueTiming(final Workload workload) {
++        final ExecutorState state = executors.get(workload);
++        return state == null
++            ? new org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot(0L, 0L, 0L)
++            : state.queueTiming.recentSnapshot();
++    }
++
+     /** Stops accepting work and waits for queued data writes and computations to finish. */
+     public static synchronized void shutdown() {
+         final Map<Workload, ExecutorState> previous = executors;
+

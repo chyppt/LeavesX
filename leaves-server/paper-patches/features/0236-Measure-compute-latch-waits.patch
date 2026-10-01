@@ -1,0 +1,49 @@
+From: chyppt <pptwxo@163.com>
+Date: Sun, 27 Sep 2026 12:00:00 +0800
+Subject: [PATCH] Measure compute latch waits
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 2db14b34..8950bdab 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -1398,7 +1398,8 @@ public final class LeavesXComputeExecutor {
+             boolean interrupted = false;
+             while (true) {
+                 try {
+-                    this.workersDone.await();
++                    org.leavesx.leavesx.diagnostics.OwnerThreadWaits.await(
++                        org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.COMPUTE_RANGES, this.workersDone, 0L);
+                     break;
+                 } catch (final InterruptedException interruption) {
+                     interrupted = true;
+@@ -1445,7 +1446,8 @@ public final class LeavesXComputeExecutor {
+                     idleSpins = 0;
+                     try {
+                         timedWorkerWaitCount.incrementAndGet();
+-                        this.workersDone.await(WAIT_PARK_NANOS, TimeUnit.NANOSECONDS);
++                        org.leavesx.leavesx.diagnostics.OwnerThreadWaits.await(
++                            org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.COMPUTE_RANGES, this.workersDone, WAIT_PARK_NANOS);
+                     } catch (final InterruptedException interruption) {
+                         interrupted = true;
+                         this.recordFailure(interruption);
+@@ -1470,7 +1472,8 @@ public final class LeavesXComputeExecutor {
+                 idleSpins = 0;
+                 try {
+                     timedWorkerWaitCount.incrementAndGet();
+-                    this.workersDone.await(WAIT_PARK_NANOS, TimeUnit.NANOSECONDS);
++                    org.leavesx.leavesx.diagnostics.OwnerThreadWaits.await(
++                        org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.COMPUTE_RANGES, this.workersDone, WAIT_PARK_NANOS);
+                 } catch (final InterruptedException interruption) {
+                     interrupted = true;
+                     this.recordFailure(interruption);
+@@ -1526,7 +1529,8 @@ public final class LeavesXComputeExecutor {
+             boolean interrupted = false;
+             while (true) {
+                 try {
+-                    this.workerBatchesDone.await();
++                    org.leavesx.leavesx.diagnostics.OwnerThreadWaits.await(
++                        org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.COMPUTE_BATCHES, this.workerBatchesDone, 0L);
+                     break;
+                 } catch (final InterruptedException interruption) {
+                     interrupted = true;
+

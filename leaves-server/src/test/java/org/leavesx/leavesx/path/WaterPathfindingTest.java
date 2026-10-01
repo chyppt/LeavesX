@@ -155,6 +155,42 @@ class WaterPathfindingTest {
         LeavesXAsyncRuntime.configure(new LeavesXConfig.AsyncSettings(false, 64, false, true, 2, 64, 60, false, 64, false, 0, 64));
     }
 
+    @Test void staleQueuedSearchesSkipWorkAndReleaseEverySnapshotPermit() throws Exception {
+        configure();
+        final var entered = new CountDownLatch(2);
+        final var release = new CountDownLatch(1);
+        for (int i = 0; i < 2; i++) LeavesXAsyncRuntime.trySubmitValue(LeavesXAsyncRuntime.Workload.PATHFINDING, () -> {
+            entered.countDown();
+            try { assertTrue(release.await(20, TimeUnit.SECONDS)); }
+            catch (InterruptedException failure) { throw new AssertionError(failure); }
+            return null;
+        });
+        final AtomicBoolean cancelled = new AtomicBoolean();
+        final java.util.concurrent.atomic.AtomicInteger skipped = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            final var region = region(pos -> Blocks.WATER.defaultBlockState());
+            final var mob = mob(BlockPos.ZERO, 0.8F);
+            final var finder = new PathFinder(new SwimNodeEvaluator(false), 1024);
+            for (int i = 0; i < 16; i++) {
+                assertNotNull(WaterPathfinding.tryCreate(mob, finder, region, Set.of(new BlockPos(10, 0, 0)),
+                    24, 1, 1, () -> !cancelled.get(), () -> region, () -> {
+                        assertTrue(cancelled.get());
+                        skipped.incrementAndGet();
+                        return true;
+                    }));
+            }
+            cancelled.set(true);
+        } finally {
+            release.countDown();
+            LeavesXAsyncRuntime.shutdown();
+        }
+        assertEquals(16, skipped.get());
+        final var field = WaterPathfinding.class.getDeclaredField("SNAPSHOTS");
+        field.setAccessible(true);
+        assertEquals(16, ((java.util.concurrent.Semaphore) field.get(null)).availablePermits());
+    }
+
     private static Mob mob(final BlockPos start, final float width) {
         final Mob mob = mock(Mob.class);
         when(mob.getBoundingBox()).thenReturn(new AABB(start.getX(), start.getY(), start.getZ(), start.getX() + width, start.getY() + 0.8, start.getZ() + width));
