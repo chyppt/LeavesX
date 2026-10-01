@@ -12,7 +12,7 @@ index f38f8e5851ec65a8f3f98018d55de74ea6ff165c..58595549b0be56cb104190e895fdb2fa
      private static final String ATTRIBUTE_GIT_BRANCH = "Git-Branch";
      private static final String ATTRIBUTE_GIT_COMMIT = "Git-Commit";
  
--    private static final String BRAND_PAPER_NAME = "Leaves"; // Leaves - Paper -> Leaves
+-    private static final String BRAND_PAPER_NAME = "Paper";
 +    private static final Key BRAND_LEAVES_ID = Key.key("leavesmc", "leaves");
 +    private static final Key BRAND_LEAVESX_ID = Key.key("leavesx", "leavesx");
 +    private static final String BRAND_LEAVESX_NAME = "LeavesX";

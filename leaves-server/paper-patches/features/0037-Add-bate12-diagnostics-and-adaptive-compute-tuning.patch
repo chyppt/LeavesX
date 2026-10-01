@@ -8,10 +8,9 @@ diff --git a/src/main/java/io/papermc/paper/command/PaperCommands.java b/src/mai
 index 6dfd0b1a85d518828b15158c01472ae4383b8882..cbcffe38116339dc3508494267f1d4f34734d1c1 100644
 --- a/src/main/java/io/papermc/paper/command/PaperCommands.java
 +++ b/src/main/java/io/papermc/paper/command/PaperCommands.java
-@@ -24,6 +24,9 @@ public final class PaperCommands {
+@@ -24,5 +24,8 @@ public final class PaperCommands {
      public static void registerCommands(final MinecraftServer server) {
          COMMANDS.put("paper", new PaperCommand("paper"));
-         COMMANDS.put("mspt", new MSPTCommand("mspt"));
 +        if (org.leavesx.leavesx.config.LeavesXRuntime.diagnosticsCommandEnabled()) {
 +            COMMANDS.put("leavesx", new org.leavesx.leavesx.command.LeavesXCommand("leavesx"));
 +        }

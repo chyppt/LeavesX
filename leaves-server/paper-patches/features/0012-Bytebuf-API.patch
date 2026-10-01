@@ -18,9 +18,9 @@ index 864ca0644ae904909c294de43ac66466adf5ffe8..4783fa48d63f2237e2af3b08236d007a
              this.getLogger().info("Console input is disabled due to --noconsole command argument");
          }
 @@ -2980,4 +2982,11 @@ public final class CraftServer implements Server {
-         return photographerManager;
+         return botManager;
      }
-     // Leaves end - replay mod api
+     // Leaves end - Bot API
 +
 +    // Leaves start - Bytebuf API
 +    @Override

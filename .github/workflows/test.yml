@@ -1,4 +1,4 @@
-name: Leaves Test CI
+name: LeavesX 构建与回归测试
 
 on:
   push:
@@ -24,11 +24,13 @@ jobs:
           cache-read-only: false
       - name: Setup Git Config
         run: |
-          git config --global user.email "ci-test@leavesmc.org"
-          git config --global user.name "LeavesMC Test CI"
+          git config --global user.email "ci@leavesx.local"
+          git config --global user.name "LeavesX CI"
       - name: Apply Patches
         run: ./gradlew applyAllPatches
-      - name: Create Leavesclip Jar
+      - name: Run regression tests
+        run: ./gradlew test
+      - name: Create LeavesX server JAR
         run: ./gradlew createLeavesclipJar
       - name: Move Jar
         run: |
@@ -37,20 +39,28 @@ jobs:
             awk -F= -v key="$1" '$1 == key { val = $2; sub(/[[:space:]]*#.*$/, "", val); gsub(/^[[:space:]]+|[[:space:]]+$/, "", val); print val }' gradle.properties
           }
 
-          jarName="leavesx-$(prop mcVersion).jar"
-          sourceJar="$(find leaves-server/build/libs -maxdepth 1 -type f -name 'leavesx-*.jar' -print -quit)"
-          if [[ -z "$sourceJar" ]]; then
-            # Keep compatibility with older CreateLeavesclipJar output names.
-            sourceJar="$(find leaves-server/build/libs -maxdepth 1 -type f -name '*leavesclip*.jar' -print -quit)"
-          fi
-          if [[ -z "$sourceJar" ]]; then
+          jarName="LeavesX-$(prop leavesXVersion)-$(prop mcVersion).jar"
+          sourceJar="leaves-server/build/libs/leavesx-$(prop mcVersion).jar"
+          if [[ ! -f "$sourceJar" ]]; then
             echo "No LeavesX distributable jar found in leaves-server/build/libs" >&2
             exit 1
           fi
           cp "$sourceJar" "$jarName"
+          sha256sum "$jarName" > "$jarName.sha256"
           echo "jar=$jarName" >> "$GITHUB_ENV"
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.jar }}
-          path: ${{ env.jar }}
+          path: |
+            ${{ env.jar }}
+            ${{ env.jar }}.sha256
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            leaves-server/build/reports/tests/
+            leaves-server/build/test-results/
+          if-no-files-found: ignore

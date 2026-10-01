@@ -3,6 +3,7 @@ From: LeavesX Build <build@leavesx.local>
 Date: Wed, 12 Aug 2026 18:44:23 +0800
 Subject: [PATCH] Keep bundled MPL license bytes stable
 
+Apply before the documentation resource is created so Windows checks it out with LF.
 
 diff --git a/.gitattributes b/.gitattributes
 new file mode 100644
@@ -10,4 +11,4 @@ index 0000000000000000000000000000000000000000..85edd8b2babfa0f4c18467bc5ea2073f
 --- /dev/null
 +++ b/.gitattributes
 @@ -0,0 +1 @@
-+/src/main/resources/META-INF/licenses/leaves-documentation-MPL-2.0.txt -text
++/src/main/resources/META-INF/licenses/leaves-documentation-MPL-2.0.txt text eol=lf

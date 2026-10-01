@@ -17,7 +17,7 @@ index bf59ea6025abad4e3688e04316dbbc171c5343d2..4d80d1356bdc71714e4f15b554f7114a
  import net.minecraft.core.Holder;
  import net.minecraft.core.registries.Registries;
  import org.bukkit.NamespacedKey;
-@@ -15,15 +17,30 @@ import org.bukkit.entity.EntityType;
+@@ -15,12 +17,28 @@ import org.bukkit.entity.EntityType;
  
  public class CraftEntityType {
  
@@ -35,11 +35,9 @@ index bf59ea6025abad4e3688e04316dbbc171c5343d2..4d80d1356bdc71714e4f15b554f7114a
 +            }
 +        }
  
-         net.minecraft.core.Registry<net.minecraft.world.entity.EntityType<?>> registry = CraftRegistry.getMinecraftRegistry(Registries.ENTITY_TYPE);
-         EntityType bukkit = Registry.ENTITY_TYPE.get(CraftNamespacedKey.fromMinecraft(registry.getResourceKey(minecraft).orElseThrow().identifier()));
- 
+         EntityType bukkit = Registry.ENTITY_TYPE.get(CraftNamespacedKey.fromMinecraft(net.minecraft.world.entity.EntityType.getKey(minecraft)));
          Preconditions.checkArgument(bukkit != null);
- 
++
 -        return bukkit;
 +        if (!cacheEnabled) {
 +            return bukkit;
@@ -192,7 +190,7 @@ index 0000000000000000000000000000000000000000..e8d5546f0298e41060c73f04128dd220
 +        assertEquals(1L, countCall(calls, "org/leavesx/leavesx/config/LeavesXRuntime", "bukkitEntityTypeCacheOptimization"));
 +        assertEquals(1L, countCall(calls, "java/util/concurrent/ConcurrentMap", "get"));
 +        assertEquals(1L, countCall(calls, "java/util/concurrent/ConcurrentMap", "putIfAbsent"));
-+        assertEquals(1L, countCall(calls, "org/bukkit/craftbukkit/CraftRegistry", "getMinecraftRegistry"));
++        assertEquals(1L, countCall(calls, "net/minecraft/world/entity/EntityType", "getKey"));
 +    }
 +
 +    private LeavesXConfig configuration(final boolean enabled, final String fileName) throws IOException {

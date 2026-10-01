@@ -70,21 +70,23 @@ index 0a9da3d25d..dd94d96611 100644
          return path != null && !path.isDone() ? new PaperPathResult(path) : null;
      }
  
-@@ -51,7 +52,7 @@ public class PaperPathfinder implements com.destroystokyo.paper.entity.Pathfinde
+@@ -51,8 +52,8 @@ public class PaperPathfinder implements com.destroystokyo.paper.entity.Pathfinde
      @Override
-     public PathResult findPath(Location loc) {
+     public PathResult findPath(final Location loc, final int reachRange) {
          Preconditions.checkArgument(loc != null, "Location can not be null");
--        Path path = this.entity.getNavigation().createPath(loc.getX(), loc.getY(), loc.getZ(), 0);
-+        Path path = resolvePath(this.entity.getNavigation().createPath(loc.getX(), loc.getY(), loc.getZ(), 0));
+         Preconditions.checkArgument(reachRange >= 0, "Reach range can not be negative");
+-        Path path = this.entity.getNavigation().createPath(loc.getX(), loc.getY(), loc.getZ(), reachRange);
++        Path path = resolvePath(this.entity.getNavigation().createPath(loc.getX(), loc.getY(), loc.getZ(), reachRange));
          return path != null ? new PaperPathResult(path) : null;
      }
  
-@@ -59,7 +60,7 @@ public class PaperPathfinder implements com.destroystokyo.paper.entity.Pathfinde
+@@ -59,8 +60,8 @@ public class PaperPathfinder implements com.destroystokyo.paper.entity.Pathfinde
      @Override
-     public PathResult findPath(Entity target) {
+     public PathResult findPath(final Entity target, final int reachRange) {
          Preconditions.checkArgument(target != null, "Target can not be null");
--        Path path = this.entity.getNavigation().createPath(((CraftEntity) target).getHandle(), 0);
-+        Path path = resolvePath(this.entity.getNavigation().createPath(((CraftEntity) target).getHandle(), 0));
+         Preconditions.checkArgument(reachRange >= 0, "Reach range can not be negative");
+-        Path path = this.entity.getNavigation().createPath(((CraftEntity) target).getHandle(), reachRange);
++        Path path = resolvePath(this.entity.getNavigation().createPath(((CraftEntity) target).getHandle(), reachRange));
          return path != null ? new PaperPathResult(path) : null;
      }
  
@@ -131,7 +133,7 @@ index cada376607..2155404dba 100644
 +        // LeavesX end - regionized ticking
 +
          // Leaves start - skip bot
-         if (event instanceof org.bukkit.event.player.PlayerEvent playerEvent && (playerEvent.getPlayer() instanceof org.leavesmc.leaves.entity.bot.Bot || playerEvent.getPlayer() instanceof org.leavesmc.leaves.entity.photographer.Photographer)) { // Leaves - and photographer
+         if (event instanceof org.bukkit.event.player.PlayerEvent playerEvent && playerEvent.getPlayer() instanceof org.leavesmc.leaves.entity.bot.Bot) {
              return;
 diff --git a/src/main/java/org/bukkit/craftbukkit/CraftChunk.java b/src/main/java/org/bukkit/craftbukkit/CraftChunk.java
 index c8d179d936..05d9962dfe 100644
