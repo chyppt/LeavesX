@@ -100,6 +100,14 @@ public abstract class InputSlotCrafter<T extends AbstractContainerMenu> {
         if (takenSlot != null) {
             ItemStack takenStack = takenSlot.getItemStack().copy();
             if (!takenStack.isEmpty()) {
+                // Validate before taking anything: a rejected/full destination must never consume an ingredient.
+                ItemStack current = slot.getItemStack();
+                if (!slot.canPlace(takenStack) || (!current.isEmpty()
+                    && (!ItemStack.isSameItemSameComponents(current, takenStack)
+                        || current.getCount() >= slot.maxStackSize(takenStack)))
+                    || slot.maxStackSize(takenStack) < 1) {
+                    return;
+                }
                 if (takenStack.getCount() > 1) {
                     takenSlot.takeStack(1);
                 } else {
@@ -107,10 +115,6 @@ public abstract class InputSlotCrafter<T extends AbstractContainerMenu> {
                 }
 
                 takenStack.setCount(1);
-                if (!slot.canPlace(takenStack)) {
-                    return;
-                }
-
                 if (slot.getItemStack().isEmpty()) {
                     slot.setItemStack(takenStack);
                 } else {

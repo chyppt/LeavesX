@@ -94,4 +94,57 @@ class PlayerCompressionTest {
         this.storage().save("probe", id, id.toString(), data);
         assertEquals(9, NbtIo.readCompressed(this.directory.resolve(id + ".dat"), NbtAccounter.unlimitedHeap()).getIntOr("revision", 0));
     }
+
+    @Test void shutdownFlushesTheLastPlayerSaveAndItsBackupBeforeReturning() throws Exception {
+        publish(LeavesXConfig.safeDefaults());
+        LeavesXAsyncRuntime.configure(LeavesXConfig.AsyncSettings.safeDefaults());
+        final var storage = this.storage();
+        final UUID id = UUID.randomUUID();
+        // The server saves/removes players before shutting down the runtime. Exercise the
+        // same order without a separate awaitKey barrier that could hide a shutdown bug.
+        for (int revision = 1; revision <= 32; revision++) {
+            final CompoundTag data = new CompoundTag();
+            data.putInt("revision", revision);
+            storage.save("probe", id, id.toString(), data);
+        }
+        LeavesXAsyncRuntime.shutdown();
+        assertFalse(LeavesXAsyncRuntime.enabled(LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE));
+        assertEquals(32, NbtIo.readCompressed(this.directory.resolve(id + ".dat"), NbtAccounter.unlimitedHeap()).getIntOr("revision", 0));
+        assertEquals(31, NbtIo.readCompressed(this.directory.resolve(id + ".dat_old"), NbtAccounter.unlimitedHeap()).getIntOr("revision", 0));
+        try (var files = java.nio.file.Files.list(this.directory)) {
+            assertEquals(2L, files.count(), "Successful shutdown must not leave temporary saves behind");
+        }
+    }
+
+    @Test void failedReplacementIsCountedAndLaterSaveCanRecover() throws Exception {
+        publish(LeavesXConfig.safeDefaults());
+        LeavesXAsyncRuntime.configure(LeavesXConfig.AsyncSettings.safeDefaults());
+        final var storage = this.storage();
+        final UUID id = UUID.randomUUID();
+        final CompoundTag first = new CompoundTag();
+        first.putInt("revision", 1);
+        storage.save("probe", id, id.toString(), first);
+        LeavesXAsyncRuntime.awaitKey(LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE, id);
+
+        // A non-empty directory reliably prevents backup replacement on Windows and Unix.
+        final Path backup = java.nio.file.Files.createDirectory(this.directory.resolve(id + ".dat_old"));
+        final Path obstruction = java.nio.file.Files.writeString(backup.resolve("keep"), "test fixture");
+        final long failures = LeavesXAsyncRuntime.metrics(LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE).failedTasks();
+        final CompoundTag second = new CompoundTag();
+        second.putInt("revision", 2);
+        storage.save("probe", id, id.toString(), second);
+        LeavesXAsyncRuntime.awaitKey(LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE, id);
+        assertEquals(failures + 1, LeavesXAsyncRuntime.metrics(LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE).failedTasks());
+        assertEquals(1, NbtIo.readCompressed(this.directory.resolve(id + ".dat"), NbtAccounter.unlimitedHeap()).getIntOr("revision", 0));
+        try (var files = java.nio.file.Files.list(this.directory)) {
+            assertEquals(2L, files.count(), "Failed save must remove its temporary file");
+        }
+
+        java.nio.file.Files.delete(obstruction);
+        java.nio.file.Files.delete(backup);
+        storage.save("probe", id, id.toString(), second);
+        LeavesXAsyncRuntime.awaitKey(LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE, id);
+        assertEquals(2, NbtIo.readCompressed(this.directory.resolve(id + ".dat"), NbtAccounter.unlimitedHeap()).getIntOr("revision", 0));
+        assertEquals(1, NbtIo.readCompressed(backup, NbtAccounter.unlimitedHeap()).getIntOr("revision", 0));
+    }
 }

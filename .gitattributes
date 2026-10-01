@@ -6,3 +6,6 @@ gradlew text eol=lf
 *.bat text eol=crlf
 
 *.jar binary
+
+# Bundled license checksums must be identical on Windows and Linux.
+**/leaves-documentation-MPL-2.0.txt text eol=lf

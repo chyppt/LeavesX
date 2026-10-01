@@ -34,8 +34,8 @@ index fe105d07ec7a67245950839209149c869bb6349b..96857c4f18ab56ad1b655c7b92b1ac94
 --- a/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
 +++ b/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
 @@ -3367,4 +3367,16 @@ public class CraftPlayer extends CraftHumanEntity implements Player, PluginMessa
-         super.knockback(strength, directionX, directionZ);
-         this.entity.hurtMarked = true;
+         this.getHandle().fixedPose = false;
+         this.getHandle().updatePlayerPose();
      }
 +
 +    // Leaves start - Bytebuf API

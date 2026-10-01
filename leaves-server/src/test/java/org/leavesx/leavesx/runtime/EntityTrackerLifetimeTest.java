@@ -28,6 +28,35 @@ import org.junit.jupiter.api.Test;
 class EntityTrackerLifetimeTest {
 
     @Test
+    void indexedPlayerLookupPreservesFirstIdentityAndClearsReferences() throws Exception {
+        final Fixture fixture = new Fixture();
+        final Object frame = fixture.frame;
+        final Class<?> type = frame.getClass();
+        final Method capacity = type.getDeclaredMethod("ensureCapacity", int.class);
+        final Method capture = type.getDeclaredMethod("capture", int.class, ServerPlayer.class, double.class);
+        final Method lookup = type.getDeclaredMethod("indexOfOrAdd", ServerPlayer.class, double.class);
+        final Method clear = type.getDeclaredMethod("clear");
+        for (final Method method : List.of(capacity, capture, lookup, clear)) method.setAccessible(true);
+        capacity.invoke(frame, 64);
+        set(frame, "indexed", true);
+        final ServerPlayer[] players = new ServerPlayer[32];
+        for (int index = 0; index < players.length; index++) {
+            players[index] = mock(ServerPlayer.class);
+            capture.invoke(frame, index, players[index], 128.0);
+        }
+        set(frame, "size", 32);
+        // A duplicate frame entry must retain the original linear scan's first-match semantics.
+        capture.invoke(frame, 32, players[0], 256.0);
+        set(frame, "size", 33);
+        for (int index = 0; index < players.length; index++) assertEquals(index, lookup.invoke(frame, players[index], 128.0));
+        assertEquals(33, lookup.invoke(frame, mock(ServerPlayer.class), 128.0));
+        clear.invoke(frame);
+        final Field indices = type.getDeclaredField("playerIndices");
+        indices.setAccessible(true);
+        assertEquals(0, ((java.util.Map<?, ?>) indices.get(frame)).size());
+    }
+
+    @Test
     void fallbackNeverComputesSnapshotsBeyondCurrentEntityCount() throws Exception {
         final Fixture fixture = new Fixture();
         // An obsolete tail snapshot has no coordinate frame. Touching it in fallback must fail the test.

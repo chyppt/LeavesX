@@ -62,4 +62,9 @@ public class VanillaSlotAccessor implements SlotAccessor {
     public boolean canPlace(ItemStack stack) {
         return slot.mayPlace(stack);
     }
+
+    @Override
+    public int maxStackSize(ItemStack stack) {
+        return slot.getMaxStackSize(stack);
+    }
 }

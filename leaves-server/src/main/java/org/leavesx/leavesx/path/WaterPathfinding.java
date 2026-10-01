@@ -29,6 +29,13 @@ public final class WaterPathfinding {
     public static @Nullable Path tryCreate(final Mob mob, final PathFinder finder, final PathNavigationRegion region,
         final Set<BlockPos> targets, final float length, final int reach, final float multiplier,
         final BooleanSupplier current, final Supplier<PathNavigationRegion> freshRegion) {
+        return tryCreate(mob, finder, region, targets, length, reach, multiplier, current, freshRegion, () -> false);
+    }
+
+    /** The cancellation supplier must read only detached state, never an entity or world. */
+    public static @Nullable Path tryCreate(final Mob mob, final PathFinder finder, final PathNavigationRegion region,
+        final Set<BlockPos> targets, final float length, final int reach, final float multiplier,
+        final BooleanSupplier current, final Supplier<PathNavigationRegion> freshRegion, final BooleanSupplier cancelled) {
         if (!LeavesXRuntime.configuration().extensions().asyncWaterPathfinding()
             || !LeavesXRuntime.asyncPathfinding() || !LeavesXAsyncRuntime.enabled(LeavesXAsyncRuntime.Workload.PATHFINDING)
             || finder.getClass() != PathFinder.class || finder.nodeEvaluator.getClass() != SwimNodeEvaluator.class
@@ -45,7 +52,12 @@ public final class WaterPathfinding {
             final List<BlockPos> orderedTargets = targets.stream().map(BlockPos::immutable).toList();
             // Only snapshot + immutable scalar inputs are captured by this supplier. Different mobs can run concurrently.
             calculation = LeavesXAsyncRuntime.trySubmitValue(LeavesXAsyncRuntime.Workload.PATHFINDING,
-                () -> snapshot.search(orderedTargets, visited, length, reach, multiplier));
+                () -> {
+                    // Skip stale queued searches, but let the admitted task finish normally: its
+                    // completion callback must release the snapshot permit exactly once.
+                    if (cancelled.getAsBoolean()) { CANCELLED.increment(); return null; }
+                    return snapshot.search(orderedTargets, visited, length, reach, multiplier);
+                });
         } catch (final RuntimeException failure) {
             SNAPSHOTS.release();
             FAILED.increment();
@@ -59,13 +71,14 @@ public final class WaterPathfinding {
         ACCEPTED.increment();
         final Set<BlockPos> stableTargets = new java.util.LinkedHashSet<>();
         for (final BlockPos pos : targets) stableTargets.add(pos.immutable());
-        return new LeavesXAsyncPath(stableTargets, calculation.thenApply(WaterPathSnapshot.Result::path), (path, failure) -> {
+        return new LeavesXAsyncPath(stableTargets, calculation.thenApply(result -> result == null ? null : result.path()), (path, failure) -> {
             if (!current.getAsBoolean() || mob.isRemoved() || !mob.isAlive()) { CANCELLED.increment(); return null; }
             final PathNavigationRegion liveRegion = freshRegion.get();
             if (failure != null) {
                 FAILED.increment();
             } else {
                 final WaterPathSnapshot.Result result = calculation.join();
+                if (result == null) return null; // Detached cancellation before the search started.
                 if (result.outside()) OUTSIDE.increment();
                 else if (finder.leavesX$maxVisitedNodes() == visited && !finder.leavesX$capturesDebug()
                     && body.equals(WaterPathSnapshot.Body.capture(mob, body.breaching())) && result.matches(liveRegion)) {
