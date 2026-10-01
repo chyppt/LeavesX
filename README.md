@@ -69,17 +69,17 @@ LeavesX 会在服务端启动时生成或迁移 `leavesx.yml`。配置项均带�
 
 ## 构建
 
-当前 1.1.0 的 Minecraft 26.1.2 和 26.2 构建使用 JDK 25，需要可以访问 GitHub 和 Maven 仓库的网络环境：
+当前 1.1.1 的 Minecraft 26.1.2 和 26.2 构建使用 JDK 25，需要可以访问 GitHub 和 Maven 仓库的网络环境：
 
 ```bash
 ./gradlew applyAllPatches
-./gradlew :leaves-server:createBundlerJar
+./gradlew test createLeavesclipJar
 ```
 
 生成的服务端位于：
 
 ```text
-leaves-server/build/libs/leaves-bundler-26.1.2-R0.1-SNAPSHOT.jar
+leaves-server/build/libs/leavesx-26.1.2.jar
 ```
 
 如果只需要运行测试，可以执行：
@@ -92,7 +92,7 @@ leaves-server/build/libs/leaves-bundler-26.1.2-R0.1-SNAPSHOT.jar
 
 ## 上游关系
 
-LeavesX 保留 GitHub fork 的上游关联，便于查看 Leaves 的历史和手动同步。1.1.0 的两个版本分别维护在 `leavesx/26.1.2` 和 `leavesx/26.2` 分支，不会自动合并或推送到 `LeavesMC/Leaves`。26.2 从 LeavesX 源码手动适配，不以 Leaf 源码作为底包。
+LeavesX 保留 GitHub fork 的上游关联，便于查看 Leaves 的历史和手动同步。1.1.1 的两个版本分别维护在 `leavesx/26.1.2` 和 `leavesx/26.2` 分支，不会自动合并或推送到 `LeavesMC/Leaves`。26.2 从 LeavesX 源码手动适配，不以 Leaf 源码作为底包。
 
 ## 开源协议
 

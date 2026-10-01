@@ -29,9 +29,9 @@ jobs:
       - name: Apply Patches
         run: ./gradlew applyAllPatches
       - name: Run regression tests
-        run: ./gradlew :leaves-server:test
-      - name: Create server bundle
-        run: ./gradlew :leaves-server:createBundlerJar
+        run: ./gradlew test
+      - name: Create LeavesX server JAR
+        run: ./gradlew createLeavesclipJar
       - name: Move Jar
         run: |
           set -euo pipefail
@@ -40,7 +40,7 @@ jobs:
           }
 
           jarName="LeavesX-$(prop leavesXVersion)-$(prop mcVersion).jar"
-          sourceJar="leaves-server/build/libs/leaves-bundler-$(prop mcVersion)-R0.1-SNAPSHOT.jar"
+          sourceJar="leaves-server/build/libs/leavesx-$(prop mcVersion).jar"
           if [[ ! -f "$sourceJar" ]]; then
             echo "No LeavesX distributable jar found in leaves-server/build/libs" >&2
             exit 1

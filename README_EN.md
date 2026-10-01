@@ -68,17 +68,17 @@ The server creates or migrates `leavesx.yml` on startup. Options include comment
 
 ## Building
 
-The 1.1.0 builds for Minecraft 26.1.2 and 26.2 use JDK 25. A network connection that can reach GitHub and Maven repositories is required:
+The 1.1.1 builds for Minecraft 26.1.2 and 26.2 use JDK 25. A network connection that can reach GitHub and Maven repositories is required:
 
 ```bash
 ./gradlew applyAllPatches
-./gradlew :leaves-server:createBundlerJar
+./gradlew test createLeavesclipJar
 ```
 
 The generated server JAR is written under:
 
 ```text
-leaves-server/build/libs/leaves-bundler-26.1.2-R0.1-SNAPSHOT.jar
+leaves-server/build/libs/leavesx-26.1.2.jar
 ```
 
 To run the test suite:
@@ -89,7 +89,7 @@ To run the test suite:
 
 ## Releases
 
-LeavesX 1.1.0 supports Minecraft 26.1.2 and 26.2, maintained separately on `leavesx/26.1.2` and `leavesx/26.2`. Release assets use the form `LeavesX-1.1.0-<minecraft-version>.jar`.
+LeavesX 1.1.1 supports Minecraft 26.1.2 and 26.2, maintained separately on `leavesx/26.1.2` and `leavesx/26.2`. Release assets use the form `LeavesX-1.1.1-<minecraft-version>.jar`.
 
 The 26.2 build is manually adapted from LeavesX, retaining its Leaves foundation. It does not use Leaf as its source baseline and is not an official LeavesMC release.
 
