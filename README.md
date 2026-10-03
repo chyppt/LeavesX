@@ -2,98 +2,93 @@
 
 [中文](README.md) | [English](README_EN.md)
 
-**LeavesX 新一代 Minecraft 服务端**
+LeavesX 是 [Leaves](https://github.com/LeavesMC/Leaves) 的独立分支，基于 Paper，主要改进多线程计算、性能和服务器诊断，面向生电服和插件服。
 
-LeavesX 是 [Leaves](https://github.com/LeavesMC/Leaves) 的独立分支，基于 Paper 服务端架构，专注于多线程计算、性能优化、稳定性以及 Paper/Bukkit 兼容性。
+[QQ 群：1104241735](https://qm.qq.com/q/dT9f4qnieI)
 
-在保留原版机制、生电特性和插件 API 的基础上，LeavesX 针对 AI、自然生成和实体处理等高负载路径引入经过验证的并行计算与热路径优化，更充分地利用多核 CPU，改善高实体量和高区块负载场景下的运行表现。
+## 版本
 
-LeavesX 提供 100+ 可配置选项，适用于生电服、插件服及其他高负载服务器。
+当前版本为 **1.2.1**，本分支对应 **Minecraft 26.2**。
 
-## 社区交流
+| Minecraft | 源码分支 |
+| --- | --- |
+| 26.1.2 | `leavesx/26.1.2` |
+| 26.2 | `leavesx/26.2` |
 
-- [QQ 群：1104241735](https://qm.qq.com/q/dT9f4qnieI)
+两个分支分别适配和构建，功能并非完全同步。26.1.2 已包含本轮配方候选缓存重构、网络缓冲优化和 AI 木铲调整；26.2 尚未同步这些改动，AI 工具仍为木棍。相同的 LeavesX 版本号不表示两个构建包含相同的优化。
 
-LeavesX 保留 Paper、Bukkit 和 Leaves 的公开 API 及传统插件加载语义，适合生电服、插件服和需要保持原版机制的服务端环境。
+发布文件采用 `LeavesX-1.2.1-<Minecraft版本>.jar` 命名。请使用与服务器版本对应的文件，不要跨版本替换。
 
-## 项目定位
+## 功能
 
-LeavesX 不使用 Folia 的区域线程模型，也不会要求插件改写为 Folia 插件。世界状态仍由服务器线程统一管理，只有经过边界审计的纯计算任务才会交给 LeavesX 计算线程。
-现阶段LeavesX性能并不如Folia，勉强可以与Leaf持平，LeavesX是在安全与稳定的基础上进行性能优化，如果您需要极致的性能，LeavesX不是您的首选，稳定+安全+性能+生电+兼容才是LeavesX的定位，LeavesX有部分代码为Leaf移植，同时开发过程中使用了Vibe coding（AI开发 非100% AI产物）若有介意请不要使用。
+- 多线程计算：AI 候选排序、实体激活判定、生物生成统计，以及满足条件的快照计算任务。
+- 区块与网络：区块发送快照、延迟编码和实体追踪计算，减少主线程的重复工作。
+- 算法优化：查询缓存、稳定排序、配方候选筛选和临时对象复用。
+- 假人：显示前缀、作用标签、名称限制及加入/退出消息配置。
+- 管理工具：实体 AI 切换、性能 GUI，以及区块、实体、内存、网络和线程诊断。
 
-LeavesX 当前不以超越 Folia 为目标，重点是在安全、稳定、生电兼容和 Paper/Bukkit 兼容的前提下提升性能。部分优化参考并移植了 Leaf 的低风险实现，其余功能由 LeavesX 独立开发；性能表现会因版本、插件、区块和实体负载而不同。
+并行计算并不等于整个 Tick 异步执行，也不能保证 CPU 的每个核心持续满载。任务量不足、结果失效或线程池繁忙时，部分工作仍会同步处理。
 
-项目开发过程中使用了 AI 辅助编程，并非全部代码由 AI 生成。请根据自己的使用需求决定是否采用。
+LeavesX 保留 Paper/Bukkit 插件接口，不要求插件改写为 Folia 插件。线程相关选项仍需按配置注释使用；修改运行方式不代表所有插件组合都已经过兼容性验证。
 
-核心原则：
+## 配置与命令
 
-- 不改变实体、方块、红石、TNT、活塞和区块状态的所有权。
-- 不在异步线程调用 Bukkit、Paper、插件或世界写入 API。
-- 计算线程只读取不可变快照、基本类型数组和确定性参数。
-- 计算异常、线程池繁忙或任务拒绝时，自动执行一次完整的主线程计算，不混用不完整结果。
-- 优化默认保持 Paper、Leaves 和原版行为；高风险功能不会默认开启。
+- `leaves.yml`：Leaves 原有功能和兼容性设置。
+- `leavesx.yml`：LeavesX 的性能、多线程、诊断和显示设置。
 
-## 当前优化方向
+配置在启动时生成或迁移。使用 `/leavesx reload` 重载 LeavesX 配置，需要重启的改动会单独提示；Leaves 配置使用原有的 `/leaves reload`。
 
-### 多线程纯计算
+常用命令：
 
-- AI 目标距离排序和候选选择。
-- 实体激活范围的数值判断。
-- 自然刷怪快照统计和局部计数合并。
-- 大批量快照的稳定分片、归并和尾部负载平衡。
-- 有界计算线程池、空闲线程准入、队列背压和主线程协助执行。
+| 命令 | 用途 |
+| --- | --- |
+| `/leavesx status` | TPS、MSPT、区块、实体和内存概览 |
+| `/leavesx gui` | 打开性能诊断界面 |
+| `/leavesx health` | 检查服务器运行状态 |
+| `/leavesx report` | 保存诊断报告 |
+| `/leavesx parallel 60` | 查看最近 60 秒的并行计算和回退情况 |
+| `/leavesx network` | 查看网络与区块编码统计 |
+| `/leavesx config check` | 检查配置，不修改文件或重载运行状态 |
+| `/leavesx ai` | 获取实体 AI 切换工具，仅游戏内 OP 可用 |
 
-### 同步热路径优化
-
-- 区块光照通知、光照快照和区块数据包组装的批处理与去重。
-- 实体查询、碰撞键、资源标识和状态检查的缓存与对象复用。
-- 容器、方块实体、票据和区块生命周期中的分配优化。
-- 网络整数编码和批量写入优化。
-
-### 兼容性与诊断
-
-- 村民恐慌、工作、繁殖和铁傀儡生成保留原版/Paper 语义。
-- TNT、红石、活塞、压力板和复制特性不移入异步线程。
-- 假人数据加载、损坏登记清理、显示前缀和加入/退出消息可配置。
-- 支持旁观者区块加载策略、启动阶段负载平滑和配置迁移。
-- `/leavesx` 提供区块、实体、方块实体、票据、插件任务、内存、网络、线程和并行回退诊断。
-
-## 配置文件
-
-LeavesX 不覆盖 Leaves 的配置职责：
-
-- `leaves.yml`：Leaves 原有配置和兼容性选项。
-- `leavesx.yml`：LeavesX 的性能、多线程、诊断和显示选项。
-
-LeavesX 会在服务端启动时生成或迁移 `leavesx.yml`。配置项均带有注释；不支持热重载的选项会在 `/leavesx reload` 时明确提示需要重启。
+其余命令见 `/leavesx help`。
 
 ## 构建
 
-当前 1.2.1 的 Minecraft 26.1.2 和 26.2 构建使用 JDK 25，需要可以访问 GitHub 和 Maven 仓库的网络环境：
+两个分支均使用 **JDK 25**。需要能够访问 GitHub 和构建依赖仓库。
+
+Linux / macOS：
 
 ```bash
 ./gradlew applyAllPatches
 ./gradlew test createLeavesclipJar
 ```
 
-生成的服务端位于：
+Windows PowerShell：
+
+```powershell
+.\gradlew.bat applyAllPatches
+.\gradlew.bat test createLeavesclipJar
+```
+
+本分支生成的服务端文件为：
 
 ```text
 leaves-server/build/libs/leavesx-26.2.jar
 ```
 
-如果只需要运行测试，可以执行：
+仅运行服务端测试可执行 `./gradlew :leaves-server:test`，Windows 使用 `.\gradlew.bat :leaves-server:test`。
 
-```bash
-./gradlew :leaves-server:test
-```
+## 使用注意
 
-项目中的测试覆盖配置迁移、Bukkit/Paper 兼容性、假人数据、村民行为、TNT/技术特性探针，以及 LeavesX 计算线程池的分片、回退和异常处理。
+更新前备份世界、插件和配置，先在副本上验证刷铁机、TNT 设备、跨维度加载器和常用插件。自动化测试与空服启动检查不能代替实际存档的长期测试。
 
-## 上游关系
+性能取决于版本、插件和负载，目前没有统一条件下的对比结果可以证明 LeavesX 与 Leaf 或 Folia 性能持平。
 
-LeavesX 保留 GitHub fork 的上游关联，便于查看 Leaves 的历史和手动同步。1.2.1 的两个版本分别维护在 `leavesx/26.1.2` 和 `leavesx/26.2` 分支，不会自动合并或推送到 `LeavesMC/Leaves`。26.2 从 LeavesX 源码手动适配，不以 Leaf 源码作为底包。
+## 项目说明
 
-## 开源协议
+部分优化参考或移植自 Leaf 等开源项目。LeavesX 以 Leaves/Paper 为基础维护，不是 LeavesMC 官方发行版；26.2 从 LeavesX 手动适配，不以 Leaf 源码作为底包。源码在本仓库的独立分支中维护。
 
-LeavesX 继承上游项目的开源协议。具体许可和第三方声明请参阅 [LICENSE.md](LICENSE.md) 及 `licenses/` 目录。
+项目开发过程中使用了 AI 辅助编程，并非全部代码由 AI 生成。请根据自己的使用需求决定是否采用。
+
+项目保留上游许可证及第三方声明，见 [LICENSE.md](LICENSE.md) 和 `licenses/`。

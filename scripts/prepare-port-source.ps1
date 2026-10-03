@@ -41,8 +41,7 @@ if ((Invoke-Git $targetRoot @('rev-parse', 'HEAD')) -ne $sourceHead) {
 $scope = @(
     '.editorconfig', '.gitattributes', '.gitignore', 'build.gradle.kts', 'settings.gradle.kts',
     'gradle.properties', 'gradlew', 'gradlew.bat', 'gradle', 'build-data', 'licenses',
-    'LICENSE.md', 'README.md', 'README_EN.md', 'leaves-api', 'leaves-server', 'scripts',
-    'docs/leavesx.example.yml'
+    'LICENSE.md', 'README.md', 'README_EN.md', 'leaves-api', 'leaves-server', 'scripts'
 )
 $paths = @(Invoke-Git $sourceRoot (@('-c', 'core.quotepath=false', 'ls-files', '--cached', '--others', '--exclude-standard', '--') + $scope) | Sort-Object -Unique)
 $manifest = [Collections.Generic.List[object]]::new()

@@ -28,7 +28,7 @@ public final class ChunkSectionSnapshot {
         return new ChunkSectionSnapshot(sections);
     }
 
-    /** Encodes one complete result; a failed attempt never exposes a partially filled byte array. */
+    /** 仅在编码成功后返回完整字节数组。 */
     public byte[] encode() {
         int size = 0;
         for (final LevelChunkSection section : this.sections) {
@@ -40,7 +40,7 @@ public final class ChunkSectionSnapshot {
             bytes.writerIndex(0);
             final FriendlyByteBuf output = new FriendlyByteBuf(bytes);
             for (int index = 0; index < this.sections.length; index++) {
-                // Never pass live Anti-Xray state into this detached encoder.
+                // 快照编码不读取实时反 X 光状态。
                 this.sections[index].write(output, null, index);
             }
             if (output.writerIndex() != size) {
