@@ -8,16 +8,16 @@ LeavesX is an independent fork of [Leaves](https://github.com/LeavesMC/Leaves), 
 
 ## Versions
 
-The current version is **1.2.1**. This branch targets **Minecraft 26.1.2**.
+LeavesX maintains separate source branches and builds for each Minecraft version. See [Releases](https://github.com/chyppt/LeavesX/releases) for supported versions and downloads.
 
 | Minecraft | Source branch |
 | --- | --- |
 | 26.1.2 | `leavesx/26.1.2` |
 | 26.2 | `leavesx/26.2` |
 
-The branches are adapted and built separately and do not yet have feature parity. The 26.1.2 branch includes the recent recipe-candidate cache rework, network buffer optimizations and wooden-shovel AI tool. Those changes have not been ported to 26.2, which still uses a stick for the AI tool. A shared LeavesX version number does not imply identical optimizations.
+Each branch adapts Minecraft source and APIs while keeping LeavesX features and optimizations in sync. Changes, supported versions and known issues are documented in the release notes.
 
-Release files use `LeavesX-1.2.1-<Minecraft-version>.jar`. Use the file matching your server's Minecraft version.
+Release files use `LeavesX-<LeavesX-version>-<Minecraft-version>.jar`. Use the file matching your server's Minecraft version.
 
 ## Features
 
@@ -69,10 +69,10 @@ Windows PowerShell:
 .\gradlew.bat test createLeavesclipJar
 ```
 
-This branch produces:
+The server artifact is generated at:
 
 ```text
-leaves-server/build/libs/leavesx-26.1.2.jar
+leaves-server/build/libs/leavesx-<Minecraft-version>.jar
 ```
 
 To run only the server tests, use `./gradlew :leaves-server:test` or `.\gradlew.bat :leaves-server:test` on Windows.
