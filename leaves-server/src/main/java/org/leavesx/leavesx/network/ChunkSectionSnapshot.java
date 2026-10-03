@@ -27,7 +27,7 @@ public final class ChunkSectionSnapshot {
         return new ChunkSectionSnapshot(sections);
     }
 
-    /** 编码一个完整结果；失败尝试绝不会暴露只填充了一部分的字节数组。 */
+    /** 仅在编码成功后返回完整字节数组。 */
     public byte[] encode() {
         int size = 0;
         for (final LevelChunkSection section : this.sections) {
@@ -39,7 +39,7 @@ public final class ChunkSectionSnapshot {
             bytes.writerIndex(0);
             final FriendlyByteBuf output = new FriendlyByteBuf(bytes);
             for (int index = 0; index < this.sections.length; index++) {
-                // 绝不把实时反 X 光状态传给这个脱离世界的编码器。
+                // 快照编码不读取实时反 X 光状态。
                 this.sections[index].write(output, null, index);
             }
             if (output.writerIndex() != size) {
