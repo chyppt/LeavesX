@@ -9,6 +9,8 @@ import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 
 import ca.spottedleaf.moonrise.common.list.ReferenceList;
 import java.lang.reflect.Array;
@@ -23,9 +25,40 @@ import net.minecraft.world.entity.Entity;
 import org.bukkit.support.environment.Normal;
 import org.junit.jupiter.api.Test;
 
-/** Exercises the real tracker entry point without needing a running world or network connection. */
+/** 不需要运行中的世界或网络连接，直接验证真实实体追踪入口。 */
 @Normal
 class EntityTrackerLifetimeTest {
+    @Test
+    void rejectedAdmissionSkipsSnapshotPreparation() throws Exception {
+        final Fixture fixture = new Fixture();
+        final var lookup = mock(ca.spottedleaf.moonrise.patches.chunk_system.level.entity.server.ServerEntityLookup.class);
+        while (fixture.entities.size() < 256) fixture.entities.add(mock(Entity.class));
+        set(lookup, "trackerEntities", fixture.entities);
+        when(fixture.level.moonrise$getEntityLookup()).thenReturn(lookup);
+        when(fixture.level.players()).thenReturn(List.of(mock(ServerPlayer.class)));
+        // 故意清空快照准备依赖：误入快照路径会抛异常，不能靠统计数字掩盖额外复制。
+        set(fixture.map, "leavesX$trackerPlayerFrame", null);
+        final Method entry = ChunkMap.class.getDeclaredMethod("newTrackerTick");
+        entry.setAccessible(true);
+        try (var async = mockStatic(LeavesXAsyncRuntime.class);
+             var compute = mockStatic(LeavesXComputeExecutor.class)) {
+            async.when(() -> LeavesXAsyncRuntime.enabled(LeavesXAsyncRuntime.Workload.ENTITY_TRACKER)).thenReturn(true);
+            compute.when(() -> LeavesXComputeExecutor.shouldAttempt(
+                LeavesXComputeExecutor.Workload.ENTITY_TRACKING, 256, 256, 64
+            )).thenReturn(false);
+            entry.invoke(fixture.map);
+            compute.verify(() -> LeavesXComputeExecutor.shouldAttempt(
+                LeavesXComputeExecutor.Workload.ENTITY_TRACKING, 256, 256, 64
+            ));
+            compute.verify(() -> LeavesXComputeExecutor.invokeRangesWithCount(
+                any(LeavesXComputeExecutor.Workload.class), anyInt(), anyInt(), anyInt(), any()
+            ), never());
+        }
+        // 原串行入口仍逐个检查实体，不得因拒绝并行而漏掉追踪。
+        for (int index = 0; index < fixture.entities.size(); index++) {
+            verify(fixture.entities.getRawDataUnchecked()[index]).moonrise$getTrackedEntity();
+        }
+    }
 
     @Test
     void indexedPlayerLookupPreservesFirstIdentityAndClearsReferences() throws Exception {
@@ -45,7 +78,7 @@ class EntityTrackerLifetimeTest {
             capture.invoke(frame, index, players[index], 128.0);
         }
         set(frame, "size", 32);
-        // A duplicate frame entry must retain the original linear scan's first-match semantics.
+        // 重复帧条目必须保留原线性扫描的首个匹配语义。
         capture.invoke(frame, 32, players[0], 256.0);
         set(frame, "size", 33);
         for (int index = 0; index < players.length; index++) assertEquals(index, lookup.invoke(frame, players[index], 128.0));
@@ -59,7 +92,7 @@ class EntityTrackerLifetimeTest {
     @Test
     void fallbackNeverComputesSnapshotsBeyondCurrentEntityCount() throws Exception {
         final Fixture fixture = new Fixture();
-        // An obsolete tail snapshot has no coordinate frame. Touching it in fallback must fail the test.
+        // 过期尾部快照没有坐标帧；回退时触碰它必须让测试失败。
         final Class<?> snapshotType = fixture.snapshots.getClass().getComponentType();
         final var constructor = snapshotType.getDeclaredConstructors()[0];
         constructor.setAccessible(true);

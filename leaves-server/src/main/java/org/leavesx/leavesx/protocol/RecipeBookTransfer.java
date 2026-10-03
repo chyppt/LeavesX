@@ -12,12 +12,12 @@ import net.minecraft.world.item.crafting.*;
 import org.bukkit.craftbukkit.event.CraftEventFactory;
 import org.bukkit.craftbukkit.util.CraftNamespacedKey;
 
-/** Resolves client ingredient hints against server recipes, then uses the ordinary recipe-book placement path. */
+/** 用服务端配方解析客户端材料提示，再使用普通配方书放置路径。 */
 public final class RecipeBookTransfer {
     private RecipeBookTransfer() {}
 
     public static List<Integer> inputSlots(AbstractContainerMenu menu) {
-        // Exact classes exclude plugin-defined virtual containers and their arbitrary slot callbacks.
+        // 精确类匹配会排除插件定义的虚拟容器及其任意槽位回调。
         if (menu.getClass() == CraftingMenu.class || menu.getClass() == InventoryMenu.class) {
             return ((AbstractCraftingMenu) menu).getInputGridSlots().stream().map(slot -> slot.index).toList();
         }
@@ -66,7 +66,7 @@ public final class RecipeBookTransfer {
             || player.containerMenu != expected || player.isSpectator() || !player.isAlive() || !expected.stillValid(player)
             || !player.getRecipeBook().contains(recipe.id()) || !accepts(menu, recipe)) return false;
 
-        // Match Paper's recipe-book events. Plugins can veto/replace the recipe or close the menu here.
+        // 遵循 Paper 的配方书事件；插件可以在这里拒绝、替换配方或关闭菜单。
         final var event = new com.destroystokyo.paper.event.player.PlayerRecipeBookClickEvent(
             player.getBukkitEntity(), CraftNamespacedKey.fromMinecraft(recipe.id().identifier()), maximum);
         if (!event.callEvent()) return false;
@@ -85,7 +85,7 @@ public final class RecipeBookTransfer {
         if (recipe == null || player.containerMenu != expected || !expected.stillValid(player)
             || player.isSpectator() || !player.isAlive() || !expected.getCarried().isEmpty()
             || !player.getRecipeBook().contains(recipe.id()) || !accepts(menu, recipe)) return false;
-        // Never allow clearing the grid to drop items, even for creative players.
+        // 即使是创造模式玩家，也绝不允许清空网格导致物品掉落。
         final var action = menu.handlePlacement(maximum, false, recipe, player.level(), player.getInventory());
         menu.broadcastChanges();
         if (action == RecipeBookMenu.PostPlaceAction.PLACE_GHOST_RECIPE || player.containerMenu != menu) return false;

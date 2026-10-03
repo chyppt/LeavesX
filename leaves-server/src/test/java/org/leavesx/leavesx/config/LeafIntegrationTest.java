@@ -95,7 +95,7 @@ class LeafIntegrationTest {
         @Override public boolean stillValid(Player player) { return true; }
         @Override public ItemStack quickMoveStack(Player player, int slot) { return ItemStack.EMPTY; }
         @Override public void synchronizeSlotToRemote(int index, ItemStack current, Supplier<ItemStack> copy) {
-            // Observe the exact copy consumed after the listener. Recursion must never substitute another slot's stack.
+            // 观察监听器之后实际使用的副本；递归绝不能替换为其他槽位的物品堆。
             this.sent.add(index + ":" + copy.get());
             assertSame(copy.get(), copy.get());
         }

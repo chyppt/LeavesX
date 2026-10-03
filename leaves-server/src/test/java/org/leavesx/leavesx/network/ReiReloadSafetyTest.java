@@ -66,7 +66,7 @@ class ReiReloadSafetyTest {
     }
 
     private static void encode(int version) throws Exception {
-        // Run the real encoder; capture only the server-thread publication task. No test-only production hook.
+        // 运行真实编码器，只捕获服务器线程发布任务；不增加仅供测试的生产入口。
         final Method encode = REIServerProtocol.class.getDeclaredMethod("encodeAndPublish",
             DisplaySyncPayload.class, RegistryAccess.class, int.class);
         encode.setAccessible(true);

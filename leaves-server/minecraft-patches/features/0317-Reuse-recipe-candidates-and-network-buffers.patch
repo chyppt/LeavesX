@@ -1,0 +1,260 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 3 Oct 2026 01:00:00 +0800
+Subject: [PATCH] Reuse recipe candidates and network buffers safely
+
+diff --git a/net/minecraft/world/item/crafting/RecipeMap.java b/net/minecraft/world/item/crafting/RecipeMap.java
+--- a/net/minecraft/world/item/crafting/RecipeMap.java
++++ b/net/minecraft/world/item/crafting/RecipeMap.java
+@@ -42,6 +42,7 @@
+         } else {
+             recipes.add(holder);
+             this.byKey.put(holder.id(), holder);
++            this.leavesX$invalidateCountIndex();
+         }
+     }
+     // CraftBukkit end
+@@ -53,7 +54,9 @@
+             return false;
+         }
+         final Collection<? extends RecipeHolder<?>> recipes = this.byType(remove.value().getType());
+-        return recipes.remove(remove);
++        final boolean removed = recipes.remove(remove);
++        this.leavesX$invalidateCountIndex();
++        return removed;
+     }
+     // Paper end - replace removeRecipe implementation
+ 
+@@ -73,18 +76,12 @@
+         return container.isEmpty() ? Stream.empty() : this.byType(type).stream().filter(r -> r.value().matches(container, level));
+     }
+ 
+-    // LeavesX start - beta8 B1: ingredient-count index for crafting-grid lookups.
+-    // Shaped and shapeless crafting recipes reject on a plain ingredient-count mismatch before
+-    // any other check, so bucketing by (type, count) skips every recipe that cannot match while
+-    // preserving registration order inside each bucket — the last match still wins as before.
++    // LeavesX start - 按材料数量保存不可变候选表；注册和查询仍遵守原来的线程约束。
+     public <I extends RecipeInput, T extends Recipe<I>> Stream<RecipeHolder<T>> getCraftingRecipesForCount(
+         final RecipeType<T> type, final int ingredientCount
+     ) {
+-        // LeavesX beta9 fix: must go through the lazy accessor — the field is null until first
+-        // build and after every invalidate, so a direct read NPEs (observed on Crafter queries
+-        // following a datapack reload).
+         final java.util.List<RecipeHolder<?>> bucket = this.leavesX$countIndex()
+-            .get(new CountKey(type, ingredientCount));
++            .exact().get(new CountKey(type, ingredientCount));
+         return (bucket == null)
+             ? Stream.empty()
+             : bucket.stream().map(holder -> (RecipeHolder<T>)holder);
+@@ -92,37 +89,43 @@
+ 
+     public record CountKey(RecipeType<?> type, int ingredientCount) {}
+ 
+-    private volatile java.util.Map<CountKey, java.util.List<RecipeHolder<?>>> leavesX$countIndex;
+-    private final java.util.Map<RecipeHolder<?>, Integer> leavesX$holderRank = new java.util.IdentityHashMap<>();
++    private record CountIndex(
++        java.util.Map<CountKey, java.util.List<RecipeHolder<?>>> exact,
++        java.util.Map<CountKey, java.util.List<RecipeHolder<?>>> merged
++    ) {}
+ 
+-    private java.util.Map<CountKey, java.util.List<RecipeHolder<?>>> leavesX$countIndex() {
+-        java.util.Map<CountKey, java.util.List<RecipeHolder<?>>> index = this.leavesX$countIndex;
++    private volatile CountIndex leavesX$countIndex;
++
++    private CountIndex leavesX$countIndex() {
++        CountIndex index = this.leavesX$countIndex;
+         if (index == null) {
+             synchronized (this) {
+                 index = this.leavesX$countIndex;
+                 if (index == null) {
+                     final java.util.Map<CountKey, java.util.List<RecipeHolder<?>>> built =
+                         new java.util.LinkedHashMap<>();
+-                    // Global registration-order rank per holder so merged buckets can be sorted
+-                    // back into vanilla traversal order in O(n log n) instead of O(n*m).
+-                    this.leavesX$holderRank.clear();
++                    // 排名只在构建期间使用，发布后不再保留额外的配方引用表。
++                    final java.util.Map<RecipeHolder<?>, Integer> ranks = new java.util.IdentityHashMap<>();
+                     int rank = 0;
+-                    for (final RecipeHolder<?> holder : this.byKey.values()) {
+-                        this.leavesX$holderRank.put(holder, rank++);
++                    for (final RecipeHolder<?> holder : this.byType.values()) {
++                        ranks.put(holder, rank++);
+                         final Integer count = leavesX$craftingIngredientCount(holder);
+-                        // Special recipes (flexible ingredient counts) go to the -1 sentinel bucket.
++                        // 特殊配方和插件子类不能用数量排除，始终放入后备候选。
+                         built.computeIfAbsent(
+                             new CountKey(holder.value().getType(), count == null ? -1 : count),
+                             key -> new java.util.ArrayList<>()
+                         ).add(holder);
+                     }
+-                    final var comparator = java.util.Comparator.comparingInt(
+-                        (RecipeHolder<?> holder) -> this.leavesX$holderRank.getOrDefault(holder, Integer.MAX_VALUE)
+-                    );
+-                    for (final java.util.List<RecipeHolder<?>> list : built.values()) {
+-                        list.sort(comparator);
++                    built.replaceAll((key, list) -> java.util.List.copyOf(list));
++                    final java.util.Map<CountKey, java.util.List<RecipeHolder<?>>> merged = new java.util.HashMap<>();
++                    for (final var entry : built.entrySet()) {
++                        if (entry.getKey().ingredientCount() < 0) continue;
++                        final var specials = built.get(new CountKey(entry.getKey().type(), -1));
++                        merged.put(entry.getKey(), specials == null ? entry.getValue()
++                            : leavesX$mergeCandidates(entry.getValue(), specials, ranks));
+                     }
+-                    index = java.util.Collections.unmodifiableMap(built);
++                    // 将两张完整的不可变表一次发布，查询时无需复制、排序或合并列表。
++                    index = new CountIndex(java.util.Map.copyOf(built), java.util.Map.copyOf(merged));
+                     this.leavesX$countIndex = index;
+                 }
+             }
+@@ -130,47 +133,40 @@
+         return index;
+     }
+ 
+-    /** Returns the fast-reject count for the two crafting families; {@code null} for others. */
++    /** 只有已知的原版实现能按数量排除；子类可能覆写 matches()。 */
+     private static @org.jetbrains.annotations.Nullable Integer leavesX$craftingIngredientCount(final RecipeHolder<?> holder) {
+         final var value = holder.value();
+-        if (value instanceof final ShapedRecipe shaped) {
+-            return shaped.pattern().ingredientCount();
++        if (value.getClass() == ShapedRecipe.class) {
++            return ((ShapedRecipe)value).pattern().ingredientCount();
+         }
+-        if (value instanceof final ShapelessRecipe shapeless) {
+-            return shapeless.ingredients().size();
++        if (value.getClass() == ShapelessRecipe.class) {
++            return ((ShapelessRecipe)value).ingredients().size();
+         }
+         return null;
+     }
+ 
+-    /** Drops the cached count index after recipe registration changes. */
+-    public void leavesX$invalidateCountIndex() {
++    /** 插件增删、清空或重载配方后释放整个索引，下一次查询再重建。 */
++    public synchronized void leavesX$invalidateCountIndex() {
+         this.leavesX$countIndex = null;
+     }
+ 
+-    // LeavesX beta9 fix start: special crafting recipes (tool repair, dyeing, book cloning, map
+-    // extending, banner duplication, firework rockets/stars, decorated pots) accept flexible
+-    // ingredient counts, so they cannot live in a single count bucket. The index now returns the
+-    // count bucket MERGED with every unbucketed (special) recipe, both pre-sorted in registration
+-    // order at build time, so "last match wins" stays identical to the vanilla scan. The caller
+-    // in RecipeManager runs matches() over the merged stream exactly as it did over byType().
+     public java.util.List<RecipeHolder<?>> leavesX$countBucketWithSpecials(final RecipeType<?> type, final int ingredientCount) {
+-        final java.util.Map<CountKey, java.util.List<RecipeHolder<?>>> index = this.leavesX$countIndex();
+-        final java.util.List<RecipeHolder<?>> bucket = index.get(new CountKey(type, ingredientCount));
+-        final java.util.List<RecipeHolder<?>> specials = index.get(new CountKey(type, -1));
+-        if (bucket == null) {
+-            return specials == null ? java.util.List.of() : specials;
+-        }
+-        if (specials == null) {
+-            return bucket;
+-        }
+-        // Both lists are pre-sorted by registration rank at build time; merge linearly.
++        final CountIndex index = this.leavesX$countIndex();
++        final var candidates = index.merged().get(new CountKey(type, ingredientCount));
++        return candidates != null ? candidates : index.exact().getOrDefault(new CountKey(type, -1), java.util.List.of());
++    }
++
++    private static java.util.List<RecipeHolder<?>> leavesX$mergeCandidates(
++        final java.util.List<RecipeHolder<?>> bucket,
++        final java.util.List<RecipeHolder<?>> specials,
++        final java.util.Map<RecipeHolder<?>, Integer> ranks
++    ) {
++        // 两个桶都按类型视图的遍历顺序构建；线性合并保持 Bukkit 最后匹配优先。
+         final java.util.List<RecipeHolder<?>> merged = new java.util.ArrayList<>(bucket.size() + specials.size());
+         int i = 0;
+         int j = 0;
+         while (i < bucket.size() && j < specials.size()) {
+-            // Interleave by original registration order using a stable rank stored at build time;
+-            // since both lists are individually sorted, take the smaller-ranked head first.
+-            merged.add(rankOf(bucket.get(i)) <= rankOf(specials.get(j)) ? bucket.get(i++) : specials.get(j++));
++            merged.add(ranks.get(bucket.get(i)) <= ranks.get(specials.get(j)) ? bucket.get(i++) : specials.get(j++));
+         }
+         while (i < bucket.size()) {
+             merged.add(bucket.get(i++));
+@@ -178,12 +174,7 @@
+         while (j < specials.size()) {
+             merged.add(specials.get(j++));
+         }
+-        return java.util.Collections.unmodifiableList(merged);
++        return java.util.List.copyOf(merged);
+     }
+-
+-    private int rankOf(final RecipeHolder<?> holder) {
+-        return this.leavesX$holderRank.getOrDefault(holder, Integer.MAX_VALUE);
+-    }
+-    // LeavesX beta9 fix end
+-    // LeavesX end - beta8 B1
++    // LeavesX end
+ }
+diff --git a/net/minecraft/network/Utf8String.java b/net/minecraft/network/Utf8String.java
+--- a/net/minecraft/network/Utf8String.java
++++ b/net/minecraft/network/Utf8String.java
+@@ -37,6 +37,19 @@
+             throw new EncoderException("String too big (was " + value.length() + " characters, max " + maxLength + ")");
+         }
+ 
++        // 仅对不可变字符串预计算长度，防止可变 CharSequence 两次读取不一致。
++        if (value instanceof String string && org.leavesx.leavesx.config.LeavesXRuntime.networkBufferOptimizations()) {
++            final int encodedLength = ByteBufUtil.utf8Bytes(string);
++            final int maximumLength = ByteBufUtil.utf8MaxBytes(maxLength);
++            if (encodedLength > maximumLength) {
++                throw new EncoderException("String too big (was " + encodedLength + " bytes encoded, max " + maximumLength + ")");
++            }
++            output.ensureWritable(VarInt.getByteSize(encodedLength) + encodedLength);
++            VarInt.write(output, encodedLength);
++            ByteBufUtil.reserveAndWriteUtf8(output, string, encodedLength);
++            return;
++        }
++
+         int maxEncodedValueLength = ByteBufUtil.utf8MaxBytes(value);
+         ByteBuf tmp = output.alloc().buffer(maxEncodedValueLength);
+ 
+diff --git a/net/minecraft/network/CompressionEncoder.java b/net/minecraft/network/CompressionEncoder.java
+--- a/net/minecraft/network/CompressionEncoder.java
++++ b/net/minecraft/network/CompressionEncoder.java
+@@ -40,6 +40,33 @@
+             out.writeBytes(uncompressed);
+         } else {
+             if (this.deflater != null) { // Paper - Use Velocity cipher
++                if (org.leavesx.leavesx.config.LeavesXRuntime.networkBufferOptimizations()) {
++                    // 压缩在连接的事件循环内完成；借用输入缓冲区只持续到 finally 中的 reset。
++                    VarInt.write(out, uncompressedLength);
++                    try {
++                        if (uncompressed.hasArray()) {
++                            this.deflater.setInput(uncompressed.array(),
++                                uncompressed.arrayOffset() + uncompressed.readerIndex(), uncompressedLength);
++                        } else if (uncompressed.nioBufferCount() == 1) {
++                            this.deflater.setInput(uncompressed.nioBuffer(uncompressed.readerIndex(), uncompressedLength));
++                        } else {
++                            // 非连续缓冲区保持一次完整复制，不切片压缩以免改变压缩字节流。
++                            final byte[] input = new byte[uncompressedLength];
++                            uncompressed.getBytes(uncompressed.readerIndex(), input);
++                            this.deflater.setInput(input);
++                        }
++                        uncompressed.skipBytes(uncompressedLength);
++                        this.deflater.finish();
++                        while (!this.deflater.finished()) {
++                            final int written = this.deflater.deflate(this.encodeBuf);
++                            out.writeBytes(this.encodeBuf, 0, written);
++                        }
++                    } finally {
++                        // 编码异常也必须释放对输入的引用，不能带入下一包或持有池化缓冲区。
++                        this.deflater.reset();
++                    }
++                    return;
++                }
+             byte[] input = new byte[uncompressedLength];
+             uncompressed.readBytes(input);
+             VarInt.write(out, input.length);
+@@ -96,6 +123,9 @@
+ 
+     @Override
+     public void handlerRemoved(final ChannelHandlerContext ctx) {
++        if (this.deflater != null) {
++            this.deflater.end();
++        }
+         if (this.compressor != null) {
+             this.compressor.close();
+         }

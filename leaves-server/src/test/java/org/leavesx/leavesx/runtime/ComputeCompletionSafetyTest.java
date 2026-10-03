@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.bukkit.support.environment.Normal;
 import org.junit.jupiter.api.Test;
 
-/** A dead worker must not leave the tick thread waiting for ranges that nobody can complete. */
+/** 工作线程死亡时，Tick 线程不能一直等待无人完成的分片。 */
 @Normal
 class ComputeCompletionSafetyTest {
 
@@ -32,7 +32,7 @@ class ComputeCompletionSafetyTest {
             wait.get(3L, TimeUnit.SECONDS);
             assertNotNull(field(invocation, "failure"), "An orphaned range must request complete recomputation");
         } finally {
-            // The old implementation ignores interrupts while joining; release its latch even when the test fails.
+            // 旧实现 join 时忽略中断；即使测试失败，也要释放闩锁。
             rangesDone.countDown();
             executor.shutdown();
             executor.awaitTermination(5L, TimeUnit.SECONDS);

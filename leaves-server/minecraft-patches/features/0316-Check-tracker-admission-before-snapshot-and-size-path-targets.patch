@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Fri, 2 Oct 2026 13:00:00 +0800
+Subject: [PATCH] Check tracker admission before snapshot and size path targets
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1142,6 +1142,11 @@ public class ChunkMap {
+         if (org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.enabled(
+             org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.ENTITY_TRACKER
+         ) && trackerEntities.size() >= 256 && !this.level.players().isEmpty()
++            // 先检查计算池，避免繁忙时为整批实体复制快照后再串行重算。
++            && org.leavesx.leavesx.runtime.LeavesXComputeExecutor.shouldAttempt(
++                org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
++                trackerEntities.size(), 256, 64
++            )
+             && this.leavesX$parallelTrackerTick(trackerEntities)) {
+             return;
+         }
+diff --git a/net/minecraft/world/level/pathfinder/PathFinder.java b/net/minecraft/world/level/pathfinder/PathFinder.java
+--- a/net/minecraft/world/level/pathfinder/PathFinder.java
++++ b/net/minecraft/world/level/pathfinder/PathFinder.java
+@@ -77,7 +77,8 @@ public class PathFinder {
+         }
+ 
+         // Paper start - Perf: remove streams and optimize collection
+-        List<Map.Entry<Target, BlockPos>> tos = Lists.newArrayList();
++        // 每个目标只生成一个条目；预分配容量避免扩容，不改变搜索顺序或目标判定。
++        List<Map.Entry<Target, BlockPos>> tos = Lists.newArrayListWithExpectedSize(targets.size());
+         for (BlockPos pos : targets) {
+             tos.add(new java.util.AbstractMap.SimpleEntry<>(this.nodeEvaluator.getTarget(pos.getX(), pos.getY(), pos.getZ()), pos));
+         }

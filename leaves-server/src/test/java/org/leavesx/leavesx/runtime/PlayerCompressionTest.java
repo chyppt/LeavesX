@@ -100,8 +100,7 @@ class PlayerCompressionTest {
         LeavesXAsyncRuntime.configure(LeavesXConfig.AsyncSettings.safeDefaults());
         final var storage = this.storage();
         final UUID id = UUID.randomUUID();
-        // The server saves/removes players before shutting down the runtime. Exercise the
-        // same order without a separate awaitKey barrier that could hide a shutdown bug.
+        // 服务端先保存或移除玩家，再关闭运行时；按相同顺序验证，不用额外 awaitKey 屏障掩盖停服问题。
         for (int revision = 1; revision <= 32; revision++) {
             final CompoundTag data = new CompoundTag();
             data.putInt("revision", revision);
@@ -126,7 +125,7 @@ class PlayerCompressionTest {
         storage.save("probe", id, id.toString(), first);
         LeavesXAsyncRuntime.awaitKey(LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE, id);
 
-        // A non-empty directory reliably prevents backup replacement on Windows and Unix.
+        // 非空目录在 Windows 和 Unix 上都能可靠阻止备份替换。
         final Path backup = java.nio.file.Files.createDirectory(this.directory.resolve(id + ".dat_old"));
         final Path obstruction = java.nio.file.Files.writeString(backup.resolve("keep"), "test fixture");
         final long failures = LeavesXAsyncRuntime.metrics(LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE).failedTasks();

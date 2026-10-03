@@ -1,0 +1,36 @@
+import org.gradle.api.tasks.JavaExec
+import org.gradle.api.tasks.compile.JavaCompile
+import org.gradle.jvm.toolchain.JavaLanguageVersion
+
+// Kept outside the production build: this opt-in task times the compiled production algorithms.
+gradle.projectsEvaluated {
+    def server = gradle.rootProject.project(':leaves-server')
+    def benchmarkClasses = new File(gradle.rootProject.buildDir, 'tmp/compute-benchmark/classes')
+    def compileBenchmark = server.tasks.register('compileComputeBenchmark', JavaCompile) {
+        dependsOn(server.tasks.named('classes'))
+        source = new File(gradle.rootProject.projectDir, 'scripts/benchmarks/io')
+        classpath = server.sourceSets.main.runtimeClasspath
+        destinationDirectory = benchmarkClasses
+        options.encoding = 'UTF-8'
+        javaCompiler = server.javaToolchains.compilerFor {
+            languageVersion = JavaLanguageVersion.of(25)
+        }
+    }
+    server.tasks.register('benchmarkCompute', JavaExec) {
+        dependsOn(compileBenchmark)
+        classpath = server.files(benchmarkClasses) + server.sourceSets.main.runtimeClasspath
+        javaLauncher = server.javaToolchains.launcherFor {
+            languageVersion = JavaLanguageVersion.of(25)
+        }
+        mainClass = 'io.papermc.paper.entity.activation.ComputeBenchmark'
+        minHeapSize = '512m'
+        maxHeapSize = '512m'
+        def scratch = new File(gradle.rootProject.buildDir, 'tmp/compute-benchmark')
+        workingDir = scratch
+        systemProperty('java.io.tmpdir', scratch.absolutePath)
+        systemProperty('file.encoding', 'UTF-8')
+        args(gradle.rootProject.findProperty('benchmarkWorkers') ?: '4')
+        args(gradle.rootProject.findProperty('benchmarkOrder') ?: '0')
+        doFirst { scratch.mkdirs() }
+    }
+}

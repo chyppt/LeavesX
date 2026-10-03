@@ -7,7 +7,7 @@ diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/poi/PoiChunk.jav
 index 5adbeecd..f5d863ce 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/level/poi/PoiChunk.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/poi/PoiChunk.java
-@@ -148,6 +148,63 @@ public final class PoiChunk {
+@@ -148,6 +148,58 @@ public final class PoiChunk {
          return sections.isEmpty() ? null : ret;
      }
  
@@ -53,13 +53,8 @@ index 5adbeecd..f5d863ce 100644
 +        for (final PackedSection entry : snapshot) {
 +            final DataResult<Tag> serializedResult = PoiSection.Packed.CODEC.encodeStart(registryOps, entry.packed());
 +            final int finalSectionY = entry.sectionY();
-+            final Tag serialized = serializedResult.resultOrPartial((final String description) -> {
-+                LOGGER.error("Failed to serialize poi chunk for world: " + WorldUtil.getWorldName(world) + ", chunk: (" + chunkX + "," + finalSectionY + "," + chunkZ + "); description: " + description);
-+            }).orElse(null);
-+            if (serialized == null) {
-+                // failed, should be logged from the resultOrPartial
-+                continue;
-+            }
++            // Never replace the saved document with a partial codec result.
++            final Tag serialized = serializedResult.getOrThrow();
 +
 +            sections.put(Integer.toString(finalSectionY), serialized);
 +        }
@@ -464,63 +459,6 @@ index ddd734d5..fb1761b4 100644
          player.getBukkitEntity().disconnect();
  
          // CraftBukkit end
-diff --git a/net/minecraft/server/players/SleepStatus.java b/net/minecraft/server/players/SleepStatus.java
-index 61870e38..aff0672e 100644
---- a/net/minecraft/server/players/SleepStatus.java
-+++ b/net/minecraft/server/players/SleepStatus.java
-@@ -8,6 +8,11 @@ import net.minecraft.world.entity.player.Player;
- public class SleepStatus {
-     private int activePlayers;
-     private int sleepingPlayers;
-+    // LeavesX start - beta8 C7: maintain deep-sleeper statistics incrementally in update()
-+    // instead of streaming the player list on every sleep check after the percentage passes.
-+    private int deepSleepers;
-+    private boolean anyDeepSleep;
-+    // LeavesX end - beta8 C7
- 
-     public boolean areEnoughSleeping(final int sleepPercentageNeeded) {
-         return this.sleepingPlayers >= this.sleepersNeeded(sleepPercentageNeeded);
-@@ -15,9 +20,12 @@ public class SleepStatus {
- 
-     public boolean areEnoughDeepSleeping(final int sleepPercentageNeeded, final List<ServerPlayer> players) {
-         // CraftBukkit start
--        int deepSleepers = (int)players.stream().filter(player -> player.isSleepingLongEnough() || player.fauxSleeping).count();
--        boolean anyDeepSleep = players.stream().anyMatch(Player::isSleepingLongEnough);
--        return anyDeepSleep && deepSleepers >= this.sleepersNeeded(sleepPercentageNeeded);
-+        // LeavesX start - beta8 C7: the counters below are refreshed once per tick by update();
-+        // players only enter isSleepingLongEnough state between ticks while sleeping, and update()
-+        // runs every tick the world has players, so the snapshot is at most one tick stale in the
-+        // same way the sleepingPlayers counter already is.
-+        return this.anyDeepSleep && this.deepSleepers >= this.sleepersNeeded(sleepPercentageNeeded);
-+        // LeavesX end - beta8 C7
-         // CraftBukkit end
-     }
- 
-@@ -38,6 +46,10 @@ public class SleepStatus {
-         int oldSleepingPlayers = this.sleepingPlayers;
-         this.activePlayers = 0;
-         this.sleepingPlayers = 0;
-+        // LeavesX start - beta8 C7
-+        this.deepSleepers = 0;
-+        this.anyDeepSleep = false;
-+        // LeavesX end - beta8 C7
-         boolean anySleep = false; // CraftBukkit
- 
-         for (ServerPlayer player : players) {
-@@ -51,6 +63,14 @@ public class SleepStatus {
-                     anySleep = true;
-                 }
-                 // CraftBukkit end
-+                // LeavesX start - beta8 C7
-+                if (player.isSleepingLongEnough() || player.fauxSleeping) {
-+                    this.deepSleepers++;
-+                }
-+                if (player.isSleepingLongEnough()) {
-+                    this.anyDeepSleep = true;
-+                }
-+                // LeavesX end - beta8 C7
-             }
-         }
  
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
 index 3e5524f2..237b491e 100644

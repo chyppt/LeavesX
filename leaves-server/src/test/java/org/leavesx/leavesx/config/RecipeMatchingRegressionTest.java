@@ -2,6 +2,8 @@ package org.leavesx.leavesx.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -50,7 +52,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.spongepowered.configurate.CommentedConfigurationNode;
 
-/** Exercises real matching, including the live vanilla recipe set, rather than empty index buckets. */
+/** 验证真实配方匹配，包括当前原版配方集合，而不是空索引桶。 */
 @VanillaFeature
 class RecipeMatchingRegressionTest {
     private LeavesXConfig previousConfig;
@@ -246,7 +248,7 @@ class RecipeMatchingRegressionTest {
             }
             final CraftingInput input = CraftingInput.of(width, height, stacks);
             assertTrue(compare(manager, input).isPresent(), holder.id().toString());
-            // Mirroring is supported by shaped recipes; changing a material must not bypass matches().
+            // 有序配方支持镜像；更换材料不能绕过 matches()。
             final List<ItemStack> mirrored = new ArrayList<>(stacks);
             for (int y = 0; y < height; y++) {
                 for (int x = 0; x < width; x++) {
@@ -266,6 +268,72 @@ class RecipeMatchingRegressionTest {
         assertTrue(checked > 500, "Must exercise the actual vanilla recipe registry");
         System.out.println("Recipe equivalence: " + checked + " vanilla shaped/shapeless recipes; "
             + checked * 3 + " original, mirrored and wrong-material grids checked");
+    }
+
+    @Test
+    void unchangedLookupsReuseImmutableCandidates() {
+        final RecipeHolder<?> first = vanillaRecipe("oak_planks");
+        final RecipeHolder<?> special = vanillaRecipe("firework_rocket");
+        final RecipeHolder<?> last = shapeless("last", Items.STICK, Ingredient.of(Items.OAK_LOG));
+        final RecipeMap recipes = RecipeMap.create(List.of(first, special, last));
+        final List<RecipeHolder<?>> candidates = recipes.leavesX$countBucketWithSpecials(RecipeType.CRAFTING, 1);
+        assertEquals(List.of(first, special, last), candidates);
+        for (int attempt = 0; attempt < 100; attempt++) {
+            assertSame(candidates, recipes.leavesX$countBucketWithSpecials(RecipeType.CRAFTING, 1));
+        }
+        assertThrows(UnsupportedOperationException.class, () -> candidates.add(first));
+        assertEquals(List.of(first, last), recipes.getCraftingRecipesForCount(RecipeType.CRAFTING, 1).toList());
+    }
+
+    @Test
+    void directRecipeMapChangesInvalidateCandidatesAndKeepOldSnapshotsStable() {
+        final RecipeHolder<?> first = vanillaRecipe("oak_planks");
+        final RecipeHolder<?> second = shapeless("second", Items.STICK, Ingredient.of(Items.OAK_LOG));
+        final RecipeMap recipes = RecipeMap.create(List.of(first));
+        final List<RecipeHolder<?>> before = recipes.leavesX$countBucketWithSpecials(RecipeType.CRAFTING, 1);
+        recipes.addRecipe(second);
+        assertEquals(List.of(first, second), recipes.leavesX$countBucketWithSpecials(RecipeType.CRAFTING, 1));
+        assertTrue(recipes.removeRecipe(first.id()));
+        assertEquals(List.of(second), recipes.leavesX$countBucketWithSpecials(RecipeType.CRAFTING, 1));
+        assertEquals(List.of(first), before);
+        assertThrows(UnsupportedOperationException.class, before::clear);
+    }
+
+    @Test
+    void customShapelessSubclassKeepsItsOwnMatchingRules() {
+        // 插件子类可以覆写匹配条件，不能假定它仍遵守父类的材料数量约束。
+        final ShapelessRecipe custom = new ShapelessRecipe(new Recipe.CommonInfo(true),
+            new CraftingRecipe.CraftingBookInfo(CraftingBookCategory.MISC, ""),
+            new ItemStackTemplate(Items.STICK), List.of(Ingredient.of(Items.OAK_LOG))) {
+            @Override
+            public boolean matches(final CraftingInput input, final Level level) {
+                return input.ingredientCount() == 2;
+            }
+        };
+        final RecipeHolder<?> holder = new RecipeHolder<>(ResourceKey.create(Registries.RECIPE,
+            Identifier.fromNamespaceAndPath("leavesx_test", "custom_subclass")), custom);
+        assertEquals(holder.id(), compare(manager(List.of(holder)),
+            grid(2, 1, Items.OAK_LOG, Items.DIRT)).orElseThrow().id());
+    }
+
+    @Test
+    void explicitInvalidationReleasesRemovedSpecialRecipes() {
+        final RecipeHolder<?> first = vanillaRecipe("oak_planks");
+        final RecipeHolder<?> special = vanillaRecipe("firework_rocket");
+        final RecipeManager manager = manager(List.of(first, special));
+        final List<RecipeHolder<?>> before = manager.recipes.leavesX$countBucketWithSpecials(RecipeType.CRAFTING, 1);
+        // 与 Bukkit 配方迭代器一致：修改类型视图和键表后完成配方重建。
+        final var iterator = manager.recipes.byType.entries().iterator();
+        while (iterator.hasNext()) {
+            if (iterator.next().getValue() == special) {
+                iterator.remove();
+                manager.recipes.byKey.remove(special.id());
+                break;
+            }
+        }
+        manager.finalizeRecipeLoading();
+        assertEquals(List.of(first), manager.recipes.leavesX$countBucketWithSpecials(RecipeType.CRAFTING, 1));
+        assertEquals(List.of(first, special), before);
     }
 
     private Optional<RecipeHolder<CraftingRecipe>> compare(final RecipeManager manager, final CraftingInput input) {

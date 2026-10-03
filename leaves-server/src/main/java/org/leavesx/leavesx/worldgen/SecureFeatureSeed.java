@@ -11,7 +11,7 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import net.minecraft.world.level.levelgen.WorldgenRandom;
 
-/** Independent feature seed, inspired by Leaf/Matter. Immutable and explicitly owned by each world. */
+/** 独立的特征种子，参考 Leaf/Matter；不可变，并明确归属于各自世界。 */
 public final class SecureFeatureSeed {
     private static final int BYTES = 128;
     private static volatile boolean enableForNewWorlds;
@@ -70,7 +70,7 @@ public final class SecureFeatureSeed {
         return mac(key).doFinal(message);
     }
 
-    /** Never logs or exposes the secret; each request receives a separate mutable random stream. */
+    /** 绝不记录或暴露密钥；每次请求都会获得独立的可变随机流。 */
     public static final class Context {
         private final byte[] key;
 

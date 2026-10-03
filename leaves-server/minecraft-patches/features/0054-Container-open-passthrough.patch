@@ -48,7 +48,7 @@ index 32ddf56263e3882616a6d7ee45fe26f53d85eda4..a6739ae08a7d77f3009bc2044a9fbfaa
                  } else {
                      return InteractionResult.TRY_WITH_EMPTY_HAND;
                  }
-@@ -136,6 +148,25 @@ public abstract class SignBlock extends BaseEntityBlock implements SimpleWaterlo
+@@ -136,6 +148,30 @@ public abstract class SignBlock extends BaseEntityBlock implements SimpleWaterlo
                      return InteractionResult.SUCCESS_SERVER;
                  } else if (executedClickCommand) {
                      return InteractionResult.SUCCESS_SERVER;
@@ -68,6 +68,11 @@ index 32ddf56263e3882616a6d7ee45fe26f53d85eda4..a6739ae08a7d77f3009bc2044a9fbfaa
 +                    if (level.getBlockEntity(behindPos) instanceof net.minecraft.world.level.block.entity.RandomizableContainerBlockEntity) {
 +                        BlockState behindState = level.getBlockState(behindPos);
 +                        return behindState.useWithoutItem(level, player, hitResult.withPosition(behindPos));
++                    }
++                    // No container is behind the sign; preserve vanilla sign editing.
++                    if (!this.otherPlayerIsEditingSign(player, sign) && player.mayBuild() && this.hasEditableText(player, sign, isFrontText)) {
++                        this.openTextEdit(player, sign, isFrontText, io.papermc.paper.event.player.PlayerOpenSignEvent.Cause.INTERACT); // Paper - Add PlayerOpenSignEvent
++                        return InteractionResult.SUCCESS_SERVER;
 +                    }
 +                    return InteractionResult.PASS;
 +                // Leaves end - signContainerPassthrough

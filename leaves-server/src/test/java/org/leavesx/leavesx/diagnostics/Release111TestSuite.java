@@ -5,7 +5,7 @@ import org.junit.platform.suite.api.ExcludeTags;
 import org.junit.platform.suite.api.SelectPackages;
 import org.junit.platform.suite.api.Suite;
 
-/** Runs LeavesX normal-environment regression tests, including release diagnostics and configuration reload. */
+/** 运行 LeavesX 普通环境回归测试，包括发布诊断和配置重载。 */
 @Suite(failIfNoTests = true)
 @SelectPackages("org.leavesx.leavesx")
 @ExcludeTags("VanillaFeature")

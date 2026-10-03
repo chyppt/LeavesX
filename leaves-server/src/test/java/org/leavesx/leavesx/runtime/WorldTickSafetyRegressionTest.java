@@ -57,7 +57,7 @@ public class WorldTickSafetyRegressionTest {
         final Thread serverThread = Thread.currentThread();
         final List<ServerLevel> visited = new ArrayList<>();
         final boolean parallel = LeavesXWorldTicker.tickAllParallel(() -> true, (level, time) -> {
-            // Failing here also exercises the old ticker's swallowed worker exceptions.
+            // 此处失败也会覆盖旧 Tick 执行器吞掉工作线程异常的情况。
             assertSame(serverThread, Thread.currentThread());
             visited.add(level);
         });
@@ -113,7 +113,7 @@ public class WorldTickSafetyRegressionTest {
         final PluginManager manager = mock(PluginManager.class);
         final IllegalStateException cause = new IllegalStateException("event dispatch failed");
         doThrow(cause).when(manager).callEvent(any(Event.class));
-        // Wait until both submissions exist before allowing the pump to drain one batch.
+        // 等待两次提交都存在后，再允许事件泵排空一个批次。
         final List<Thread> workers = new ArrayList<>();
         final AtomicInteger failures = new AtomicInteger();
         try (var bukkit = mockStatic(Bukkit.class)) {
@@ -195,7 +195,7 @@ public class WorldTickSafetyRegressionTest {
         final ServerLevel destination = world("destination", Level.NETHER);
         LeavesXWorldTicker.refreshWorlds(List.of(source, destination));
         final List<String> trace = new ArrayList<>();
-        // A timing contract test, not a replacement for an in-game portal machine test.
+        // 这是时序契约测试，不能替代游戏内传送门机器测试。
         LeavesXWorldTicker.tickAllParallel(() -> true, (level, time) -> {
             if (level == source) {
                 trace.add("source-tick");

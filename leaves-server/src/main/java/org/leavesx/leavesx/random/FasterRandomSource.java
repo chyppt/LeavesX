@@ -7,7 +7,7 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.levelgen.BitRandomSource;
 import net.minecraft.world.level.levelgen.PositionalRandomFactory;
 
-/** JDK Xoroshiro adapter, following Leaf's FasterRandomSource by HaHaWTH. Each instance has one owner. */
+/** JDK Xoroshiro 适配器，参考 HaHaWTH 的 Leaf FasterRandomSource；每个实例只有一个所有者。 */
 public final class FasterRandomSource implements BitRandomSource {
     private static final RandomGeneratorFactory<RandomGenerator> FACTORY = RandomGeneratorFactory.of("Xoroshiro128PlusPlus");
     private RandomGenerator generator;

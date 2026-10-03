@@ -86,7 +86,7 @@ class ProtocolDispatchTest {
     private static ServerCommonPacketListenerImpl listener(PacketProcessor processor) throws Exception {
         final MinecraftServer server = mock(MinecraftServer.class);
         when(server.packetProcessor()).thenReturn(processor);
-        // Constructor starts keep-alive tracking; bypass only that unrelated lifecycle. The dispatch body is real.
+        // 构造器会启动心跳跟踪；只跳过这个无关生命周期，分发逻辑仍使用真实实现。
         final var listener = mock(ServerCommonPacketListenerImpl.class, CALLS_REAL_METHODS);
         final Field field = ServerCommonPacketListenerImpl.class.getDeclaredField("server");
         field.setAccessible(true);

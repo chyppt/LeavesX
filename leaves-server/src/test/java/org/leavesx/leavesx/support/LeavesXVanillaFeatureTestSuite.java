@@ -6,7 +6,7 @@ import org.junit.platform.suite.api.SelectPackages;
 import org.junit.platform.suite.api.Suite;
 import org.junit.platform.suite.api.SuiteDisplayName;
 
-/** Item components need real registry values, following Paper's test-environment convention. */
+/** 物品组件需要真实注册表值，遵循 Paper 测试环境的约定。 */
 @Suite(failIfNoTests = false)
 @SuiteDisplayName("LeavesX item and registry integration tests")
 @IncludeTags("VanillaFeature")

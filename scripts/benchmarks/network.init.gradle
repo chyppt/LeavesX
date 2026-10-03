@@ -1,0 +1,30 @@
+import org.gradle.api.tasks.JavaExec
+import org.gradle.api.tasks.compile.JavaCompile
+import org.gradle.jvm.toolchain.JavaLanguageVersion
+
+// 仅按需编译微基准，生产服务端和发布 JAR 不包含基准入口。
+gradle.projectsEvaluated {
+    def server = gradle.rootProject.project(':leaves-server')
+    def scratch = new File(gradle.rootProject.buildDir, 'tmp/network-benchmark')
+    def classes = new File(scratch, 'classes')
+    def compile = server.tasks.register('compileNetworkBufferBenchmark', JavaCompile) {
+        dependsOn(server.tasks.named('classes'))
+        source = new File(gradle.rootProject.projectDir, 'scripts/benchmarks/network')
+        classpath = server.sourceSets.main.runtimeClasspath
+        destinationDirectory = classes
+        options.encoding = 'UTF-8'
+        javaCompiler = server.javaToolchains.compilerFor { languageVersion = JavaLanguageVersion.of(25) }
+    }
+    server.tasks.register('benchmarkNetworkBuffers', JavaExec) {
+        dependsOn(compile)
+        classpath = server.files(classes) + server.sourceSets.main.runtimeClasspath
+        javaLauncher = server.javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+        mainClass = 'org.leavesx.leavesx.config.NetworkBufferBenchmark'
+        minHeapSize = '256m'
+        maxHeapSize = '256m'
+        workingDir = scratch
+        systemProperty('java.io.tmpdir', scratch.absolutePath)
+        args(gradle.rootProject.findProperty('benchmarkOrder') ?: '0')
+        doFirst { scratch.mkdirs() }
+    }
+}

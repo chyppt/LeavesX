@@ -1,0 +1,69 @@
+From 490121b585f959ca570e29509e04584632efb7be Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Thu, 1 Oct 2026 22:33:40 +0800
+Subject: [PATCH] Reuse stable chunk unload section order
+
+---
+ .../patches/chunk_system/queue/ChunkUnloadQueue.java  | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java b/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
+index c31ffc62..58285145 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/queue/ChunkUnloadQueue.java
+@@ -19,6 +19,7 @@ public final class ChunkUnloadQueue {
+ 
+     /** Exact number of chunk holders currently waiting for unload processing. */
+     private final AtomicLong pendingChunkCount = new AtomicLong();
++    /** Changes only when the set or ordering of unload sections changes. */
+     private final AtomicLong mutationVersion = new AtomicLong();
+     private final ConcurrentChainedLong2ReferenceHashTable<UnloadSection> unloadSections = new ConcurrentChainedLong2ReferenceHashTable<>();
+     private final Object snapshotLock = new Object();
+@@ -34,6 +35,10 @@ public final class ChunkUnloadQueue {
+         this.coordinateShift = coordinateShift;
+     }
+ 
++    /**
++     * An unload section in queue order. The count is a snapshot hint; callers that process chunks must read the
++     * current section under the scheduling lock because members may change without changing section order.
++     */
+     public static record SectionToUnload(int sectionX, int sectionZ, long order, int count) {}
+ 
+     /**
+@@ -113,12 +118,12 @@ public final class ChunkUnloadQueue {
+         if (section == null) {
+             section = new UnloadSection(this.orderGenerator.getAndIncrement());
+             this.unloadSections.put(sectionKey, section);
++            this.mutationVersion.incrementAndGet();
+         }
+ 
+         final boolean added = section.chunks.add(chunkKey);
+         if (added) {
+             this.pendingChunkCount.incrementAndGet();
+-            this.mutationVersion.incrementAndGet();
+         }
+         return added;
+     }
+@@ -143,10 +148,10 @@ public final class ChunkUnloadQueue {
+         }
+ 
+         this.pendingChunkCount.decrementAndGet();
+-        this.mutationVersion.incrementAndGet();
+ 
+         if (section.chunks.isEmpty()) {
+             this.unloadSections.remove(sectionKey);
++            this.mutationVersion.incrementAndGet();
+         }
+ 
+         return true;
+@@ -161,9 +166,9 @@ public final class ChunkUnloadQueue {
+     public long removeFirstChunk(final int sectionX, final int sectionZ, final UnloadSection section) {
+         final long chunkKey = section.chunks.removeFirstLong();
+         this.pendingChunkCount.decrementAndGet();
+-        this.mutationVersion.incrementAndGet();
+         if (section.chunks.isEmpty()) {
+             this.unloadSections.remove(CoordinateUtils.getChunkKey(sectionX, sectionZ));
++            this.mutationVersion.incrementAndGet();
+         }
+         return chunkKey;
+     }

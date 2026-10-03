@@ -1,0 +1,70 @@
+From b0fb3bcd75df8ac34e57bb7f375e891172533cc7 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Fri, 2 Oct 2026 11:37:25 +0800
+Subject: [PATCH] Skip ordered AI distance radix work
+
+---
+ .../performance/StableDistanceSorter.java     | 11 +++++++-
+ .../performance/StableDistanceSorterTest.java | 25 +++++++++++++++++++
+ 2 files changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+index 23fd59cc1f..f6e70f4ac4 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -437,9 +437,18 @@ public final class StableDistanceSorter {
+         }
+         final int[] resultOrder = order;
+         final long firstKey = keys[order[start]];
++        long previousKey = firstKey;
+         long varyingBits = 0L;
++        boolean alreadySorted = true;
+         for (int index = start + 1; index < end; index++) {
+-            varyingBits |= firstKey ^ keys[order[index]];
++            final long key = keys[order[index]];
++            varyingBits |= firstKey ^ key;
++            alreadySorted &= Long.compareUnsigned(previousKey, key) <= 0;
++            previousKey = key;
++        }
++        // 在原有差异位扫描中检查顺序，不额外遍历；相等键保持输入顺序，无需散射。
++        if (alreadySorted) {
++            return;
+         }
+         final int bucketBase = offsetBase;
+         for (int shift = 0; shift < Long.SIZE; shift += Byte.SIZE) {
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+index 5ad156b16d..21c9f03bb9 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -49,6 +49,31 @@ class StableDistanceSorterTest {
+         assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, 3.5, -2.25, 7.75, true, 64));
+     }
+ 
++    @Test
++    void preservesOrderedRunsAndReordersLateInversion() {
++        LeavesXComputeExecutor.configure(4, 64);
++        for (final int size : new int[] {64, 257, 1_027, 4_097}) {
++            final double[] x = new double[size];
++            final double[] zeros = new double[size];
++            for (int index = 0; index < size; index++) {
++                // 连续相等距离用于观察稳定性；无穷大和 NaN 覆盖原版 Double.compare 的末尾顺序。
++                x[index] = index / 3;
++            }
++            x[size - 2] = Double.POSITIVE_INFINITY;
++            x[size - 1] = Double.NaN;
++            for (final boolean parallel : new boolean[] {false, true}) {
++                assertArrayEquals(referenceOrder(x, zeros, zeros, 0.0, 0.0, 0.0),
++                    StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, parallel, 256));
++            }
++            // 最后一个有限距离发生逆序时必须完整排序，不能错误采用已扫描的有序前缀。
++            x[size - 3] = 0.0;
++            for (final boolean parallel : new boolean[] {false, true}) {
++                assertArrayEquals(referenceOrder(x, zeros, zeros, 0.0, 0.0, 0.0),
++                    StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, parallel, 256));
++            }
++        }
++    }
++
+     @Test
+     void matchesStableOrderWhenAdaptivePartitionUsesFewerLanes() {
+         final Random random = new Random(0x506172746974696fL);

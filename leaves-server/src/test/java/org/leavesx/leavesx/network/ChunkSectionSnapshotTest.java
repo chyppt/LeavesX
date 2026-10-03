@@ -58,7 +58,7 @@ class ChunkSectionSnapshotTest {
         try (var executor = Executors.newSingleThreadExecutor()) {
             assertArrayEquals(original, executor.submit(snapshot::encode).get(5, TimeUnit.SECONDS));
         }
-        // Retrying must allocate a fresh complete result, unaffected by an earlier consumer's buffer.
+        // 重试必须分配新的完整结果，不受之前消费者缓冲区的影响。
         final byte[] first = snapshot.encode();
         Arrays.fill(first, (byte) 0);
         assertArrayEquals(original, snapshot.encode());

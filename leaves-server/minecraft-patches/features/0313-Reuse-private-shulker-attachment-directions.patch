@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Fri, 2 Oct 2026 12:20:00 +0800
+Subject: [PATCH] Reuse private shulker attachment directions
+
+diff --git a/net/minecraft/world/entity/monster/Shulker.java b/net/minecraft/world/entity/monster/Shulker.java
+--- a/net/minecraft/world/entity/monster/Shulker.java
++++ b/net/minecraft/world/entity/monster/Shulker.java
+@@ -60,6 +60,8 @@ import org.joml.Vector3f;
+ import org.jspecify.annotations.Nullable;
+ 
+ public class Shulker extends AbstractGolem implements Enemy {
++    // 私有只读方向表保持枚举顺序，避免每次寻找附着面时复制六元素数组。
++    private static final Direction[] ATTACHMENT_DIRECTIONS = Direction.values();
+     private static final Identifier COVERED_ARMOR_MODIFIER_ID = Identifier.withDefaultNamespace("covered");
+     private static final AttributeModifier COVERED_ARMOR_MODIFIER = new AttributeModifier(
+         COVERED_ARMOR_MODIFIER_ID, 20.0, AttributeModifier.Operation.ADD_VALUE
+@@ -342,7 +344,7 @@ public class Shulker extends AbstractGolem implements Enemy {
+     }
+ 
+     protected @Nullable Direction findAttachableSurface(final BlockPos target) {
+-        for (Direction direction : Direction.values()) {
++        for (Direction direction : ATTACHMENT_DIRECTIONS) {
+             if (this.canStayAt(target, direction)) {
+                 return direction;
+             }

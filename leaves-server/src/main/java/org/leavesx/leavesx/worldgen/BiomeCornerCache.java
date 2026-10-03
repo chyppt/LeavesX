@@ -1,6 +1,6 @@
 package org.leavesx.leavesx.worldgen;
 
-/** Caches the deterministic zoom corner, never a biome Holder or chunk reference. */
+/** 缓存确定性的缩放角点，绝不缓存生物群系 Holder 或区块引用。 */
 public final class BiomeCornerCache {
     private static final int MASK = 1023;
     private final int[] x = new int[MASK + 1];

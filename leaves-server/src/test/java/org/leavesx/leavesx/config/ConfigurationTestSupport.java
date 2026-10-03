@@ -3,7 +3,7 @@ package org.leavesx.leavesx.config;
 import java.nio.file.Path;
 import org.spongepowered.configurate.ConfigurationNode;
 
-/** Allows behavioral tests in other packages to set configuration without widening the production API. */
+/** 允许其他包中的行为测试设置配置，不扩大生产 API。 */
 public final class ConfigurationTestSupport {
     private ConfigurationTestSupport() {}
 

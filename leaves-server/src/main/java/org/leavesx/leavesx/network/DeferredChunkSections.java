@@ -6,9 +6,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import org.leavesx.leavesx.runtime.LeavesXAsyncRuntime;
 
-/** Publishes complete detached section buffers without changing Paper's packet queue ordering. */
+/** 发布完整的脱离区段缓冲区，不改变 Paper 数据包队列顺序。 */
 public final class DeferredChunkSections {
-    // Guarded by this; release palette copies and the worker future once publication is terminal.
+    // 由当前对象保护；发布进入终态后释放调色板副本和工作任务。
     private ChunkSectionSnapshot snapshot;
     private CompletableFuture<byte[]> completion;
     private boolean resolving;
@@ -27,8 +27,7 @@ public final class DeferredChunkSections {
     }
 
     public boolean isReady() {
-        // Publish into the original packet buffer before reporting readiness to packet inspectors. A terminal
-        // failure is also ready so the regular packet encoder handles it in the usual connection path.
+        // 先写入原始数据包缓冲区，再向数据包检查器报告就绪。终态失败同样视为就绪，交给普通连接路径编码。
         this.resolve(false);
         return this.publication.isDone();
     }
@@ -58,11 +57,10 @@ public final class DeferredChunkSections {
         try {
             byte[] encoded;
             try {
-                // Waiting happens outside the monitor so a packet inspector cannot block another connection's
-                // readiness poll. Concurrent readers await the same publication and never repeat the retry.
+                // 等待发生在监视器之外，避免一个数据包检查器阻塞其他连接的就绪轮询。并发读取者等待同一次发布，不重复重试。
                 encoded = pending.join();
             } catch (final CompletionException | CancellationException failure) {
-                // Do not turn resource exhaustion into another allocation-heavy encoding attempt.
+                // 资源耗尽时不要再次发起高分配量的编码尝试。
                 if (failure.getCause() instanceof Error error) throw error;
                 LeavesXNetworkMetrics.recordFallback();
                 encoded = detached.encode();

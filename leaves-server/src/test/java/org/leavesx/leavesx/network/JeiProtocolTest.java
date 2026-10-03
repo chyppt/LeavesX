@@ -242,7 +242,7 @@ class JeiProtocolTest {
             when(player.getRecipeBook()).thenReturn(book);
             menu = spy(new CraftingMenu(1, inventory));
             menu.checkReachable = false;
-            // Only output broadcasting is stubbed. Inventory placement uses the real vanilla implementation.
+            // 只模拟输出广播；背包放置使用真实原版实现。
             doNothing().when(menu).finishPlacingRecipe(any(), any());
             player.containerMenu = menu;
             menu.getSlot(10).set(new ItemStack(Items.OAK_LOG, 16));

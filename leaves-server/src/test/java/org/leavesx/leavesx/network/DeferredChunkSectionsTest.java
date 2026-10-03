@@ -108,7 +108,7 @@ class DeferredChunkSectionsTest {
             if (!releaseRetry.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("Retry release timed out");
             return new byte[] {4};
         });
-        // The inline first attempt has already failed when the object is returned.
+        // 对象返回时，内联执行的首次尝试已经失败。
         final DeferredChunkSections pending = new DeferredChunkSections(snapshot);
         final long completedBefore = LeavesXNetworkMetrics.snapshot().completed();
         try (final var reader = java.util.concurrent.Executors.newFixedThreadPool(3)) {
@@ -208,8 +208,7 @@ class DeferredChunkSectionsTest {
         final CountDownLatch release = new CountDownLatch(1);
         final var jobs = new ArrayList<CompletableFuture<Boolean>>();
         try {
-            // Start every core worker before filling the queue. A prestarted worker can still be
-            // waiting to take its first job; an early queue rejection is not stable saturation.
+            // 填满队列前先让所有核心工作线程执行任务；预启动线程可能还在等待首次任务，过早拒绝不代表稳定饱和。
             final var executors = LeavesXAsyncRuntime.class.getDeclaredField("executors");
             executors.setAccessible(true);
             final Object state = ((java.util.Map<?, ?>) executors.get(null)).get(LeavesXAsyncRuntime.Workload.CHUNK_SEND);

@@ -1,0 +1,127 @@
+From f464c61b70def73ee2221250d604932134b96e53 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Fri, 2 Oct 2026 00:16:07 +0800
+Subject: [PATCH] Document entity tracking ownership in Chinese
+
+---
+ net/minecraft/server/level/ChunkMap.java | 30 +++++++++++-------------
+ 1 file changed, 14 insertions(+), 16 deletions(-)
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index 5691c29c..36725aea 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -738,7 +738,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         final int len = players.size();
+ 
+         Objects.checkFromIndexSize(0, len, raw.length);
+-        // LeavesX start - calculate the chunk center once for the hot spawning-range check
++        // LeavesX start - 刷怪范围检查复用一次计算的区块中心
+         if (org.leavesx.leavesx.config.LeavesXRuntime.chunkSpawnRangeOptimization()) {
+             final double chunkCenterX = (chunkPos.x() << 4) + 8.0D;
+             final double chunkCenterZ = (chunkPos.z() << 4) + 8.0D;
+@@ -769,7 +769,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+                 }
+             }
+         }
+-        // LeavesX end - calculate the chunk center once for the hot spawning-range check
++        // LeavesX end - 刷怪范围检查复用一次计算的区块中心
+ 
+         return false;
+     }
+@@ -850,7 +850,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         final int len = players.size();
+ 
+         Objects.checkFromIndexSize(0, len, raw.length);
+-        // LeavesX start - calculate the chunk center once for the hot spawning-range check
++        // LeavesX start - 刷怪范围检查复用一次计算的区块中心
+         if (org.leavesx.leavesx.config.LeavesXRuntime.chunkSpawnRangeOptimization()) {
+             final double chunkCenterX = (pos.x() << 4) + 8.0D;
+             final double chunkCenterZ = (pos.z() << 4) + 8.0D;
+@@ -886,7 +886,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+                 }
+             }
+         }
+-        // LeavesX end - calculate the chunk center once for the hot spawning-range check
++        // LeavesX end - 刷怪范围检查复用一次计算的区块中心
+ 
+         return false;
+         // Paper end - chunk tick iteration optimisation
+@@ -914,7 +914,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         final int len = players.size();
+ 
+         Objects.checkFromIndexSize(0, len, raw.length);
+-        // LeavesX start - reuse the chunk center and avoid a temporary position vector per player
++        // LeavesX start - 复用区块中心，避免为每个玩家创建临时坐标向量
+         if (org.leavesx.leavesx.config.LeavesXRuntime.chunkSpawnRangeOptimization()) {
+             final double chunkCenterX = (chunkX << 4) + 8.0D;
+             final double chunkCenterZ = (chunkZ << 4) + 8.0D;
+@@ -943,7 +943,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+                 }
+             }
+         }
+-        // LeavesX end - reuse the chunk center and avoid a temporary position vector per player
++        // LeavesX end - 复用区块中心，避免为每个玩家创建临时坐标向量
+ 
+         return ret == null ? new ArrayList<>() : ret;
+         // Paper end - chunk tick iteration optimisation
+@@ -1161,9 +1161,8 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+     }
+ 
+     /**
+-     * Parallelizes primitive range checks, then commits every tracking mutation in the original entity order.
+-     * Workers read only primitive fields captured in the snapshots; world, entity, player, connection, plugin, and
+-     * mutable tracking state are touched only while preparing or committing on the tick thread.
++     * 并行计算数值范围检查，再按原实体顺序提交追踪变化。
++     * 工作线程只读取快照数值；世界、实体、玩家、连接、插件及可变追踪状态仅由 Tick 线程准备和提交。
+      */
+     private boolean leavesX$parallelTrackerTick(
+         final ca.spottedleaf.moonrise.common.list.ReferenceList<Entity> trackerEntities
+@@ -1203,7 +1202,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+                 }
+             );
+             if (completedPartitions == 0) {
+-                // All workers have finished. Recompute this tick's active prefix, never the unused array capacity.
++                // 等全部工作线程结束后完整重算本 Tick 的有效前缀，不处理未使用的数组容量。
+                 for (int index = 0; index < entityCount; index++) {
+                     final LeavesXTrackerSnapshot snapshot = snapshots[index];
+                     if (snapshot != null) snapshot.computeRanges();
+@@ -1228,8 +1227,8 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             }
+             return true;
+         } finally {
+-            // Keep reusable primitive buffers, not references to removed entities, players or nearby chunks.
+-            // This also covers preparation/commit failures and the last parallel tick before switching to serial.
++            // 保留可复用的数值缓冲区，但释放实体、玩家和附近区块引用。
++            // 准备或提交失败、切回串行路径时也必须完整清理，防止数组尾部残留旧快照。
+             for (final LeavesXTrackerSnapshot snapshot : this.leavesX$trackerSnapshots) {
+                 if (snapshot != null) {
+                     snapshot.chunk = null;
+@@ -1801,7 +1800,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         }
+     }
+ 
+-    /** One immutable player-coordinate frame shared by all entity snapshots in a tracker tick. */
++    /** 单次追踪 Tick 内共享的玩家坐标帧，工作线程运行期间不再修改。 */
+     private final class LeavesXTrackerPlayerFrame {
+ 
+         private static final int COMPONENTS = 3;
+@@ -1817,8 +1816,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             final int previousSize = this.size;
+             this.size = 0;
+             this.playerIndices.clear();
+-            // Keep the short linear scan for small servers. Larger frames otherwise repeat
+-            // an O(players) identity lookup for every entity/player candidate pair.
++            // 小型玩家列表保留线性扫描；大型列表建立身份索引，避免每个实体候选都遍历所有玩家。
+             this.indexed = currentPlayers.size() >= 16;
+             this.ensureCapacity(currentPlayers.size());
+             for (int index = 0, count = currentPlayers.size(); index < count; index++) {
+@@ -1846,7 +1844,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         }
+ 
+         private void clear() {
+-            // Preparation may fail before overwriting every slot left by the previous frame.
++            // 准备过程可能提前失败，仍需清除上一帧所有槽位中的玩家引用。
+             java.util.Arrays.fill(this.players, null);
+             this.playerIndices.clear();
+             this.indexed = false;

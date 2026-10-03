@@ -127,8 +127,7 @@ class ChunkEncodingPipelineTest {
     }
 
     private static ClientboundLevelChunkWithLightPacket packet(final DeferredChunkSections pending) throws Exception {
-        // Decode a real minimal packet, then replace only the detached job. This exercises production readiness,
-        // packet codec and Connection error handling without requiring a live world or changing production hooks.
+        // 解码真实最小数据包，只替换脱离任务；无需实时世界或修改生产入口，即可验证就绪、编解码和 Connection 异常处理。
         final RegistryFriendlyByteBuf input = new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryHelper.registryAccess());
         try {
             input.writeInt(0);

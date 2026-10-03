@@ -62,4 +62,18 @@ class LeafConfigurationLayoutTest {
         assertThrows(LeavesXConfigException.class, () -> LeavesXConfigLoader.load(file));
         assertEquals(invalid, Files.readString(file));
     }
+
+    @Test
+    void networkBufferSwitchPersistsAndDoesNotOverwriteExistingChoices() throws Exception {
+        final Path file = this.directory.resolve("network.yml");
+        Files.writeString(file, "performance:\n  network:\n    buffer-optimizations: false\n    custom-field: keep\n");
+        assertFalse(LeavesXConfigLoader.load(file).extensions().networkBufferOptimizations());
+        final String written = Files.readString(file);
+        assertTrue(written.contains("减少字符串编码和 Java 压缩的临时缓冲区"));
+        assertTrue(written.contains("custom-field: keep"));
+        assertFalse(LeavesXConfigLoader.load(file).extensions().networkBufferOptimizations());
+        assertEquals(written, Files.readString(file));
+        assertTrue(LeavesXConfigLoader.load(this.directory.resolve("default-network.yml"))
+            .extensions().networkBufferOptimizations());
+    }
 }

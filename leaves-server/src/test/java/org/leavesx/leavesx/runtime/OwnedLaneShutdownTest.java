@@ -47,8 +47,7 @@ class OwnedLaneShutdownTest {
             assertFalse(first.isDone());
             assertFalse(second.isDone());
 
-            // Interrupt the retry as well: replacement must fail instead of starting a
-            // second generation while the original UUID lane is still writing.
+            // 重试也要中断：原 UUID 队列仍在写入时，替换必须失败，不能启动第二代执行器。
             Thread.currentThread().interrupt();
             assertThrows(IllegalStateException.class, () -> LeavesXAsyncRuntime.configure(settings));
             assertTrue(Thread.interrupted());
@@ -219,8 +218,7 @@ class OwnedLaneShutdownTest {
                 final int sequence = i;
                 completions.add(LeavesXAsyncRuntime.submitOrdered(workload, () -> executed.add(sequence)));
             }
-            // Only shut down the underlying executor so its existing lane must reject every
-            // resubmission. Reflection avoids a production-only test hook or changing the API.
+            // 只关闭底层执行器，使现有队列拒绝所有重新提交；通过反射避免新增生产测试入口或修改 API。
             final var executor = executor(workload);
             executor.shutdown();
             release.countDown();

@@ -1,0 +1,17 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Fri, 2 Oct 2026 12:40:00 +0800
+Subject: [PATCH] Preserve trade-only mode in inactive mob ticks
+
+diff --git a/net/minecraft/world/entity/Mob.java b/net/minecraft/world/entity/Mob.java
+--- a/net/minecraft/world/entity/Mob.java
++++ b/net/minecraft/world/entity/Mob.java
+@@ -222,6 +222,8 @@ public abstract class Mob extends LivingEntity implements EquipmentUser, Leashable {
+     public void inactiveTick() {
+         super.inactiveTick();
++        // 交易所村民仍保留父类年龄等维护，但不能从非活跃路径重新运行目标和行为 AI。
++        if (this instanceof net.minecraft.world.entity.npc.villager.Villager villager && villager.leavesX$isTradeOnly()) return;
+         if (!this.aware) return; // Paper - Do not tick AI for inactive unaware mobs
+         boolean isThrottled = org.leavesmc.leaves.LeavesConfig.performance.throttleInactiveGoalSelectorTick && (inactiveTickDisableCounter++ % 20 != 0); // Leaves - throttle inactive goal selector ticking
+         if (this.goalSelector.inactiveTick() && !isThrottled) { // Leaves - throttle inactive goal selector ticking
+             this.goalSelector.tick();

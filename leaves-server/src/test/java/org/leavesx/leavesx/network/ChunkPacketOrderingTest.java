@@ -43,7 +43,7 @@ class ChunkPacketOrderingTest {
         listenerField.set(connection, listener);
         connection.isPending = false;
         final EmbeddedChannel channel = new EmbeddedChannel(connection);
-        // No running server singleton exists here. Only stub ownership; exercise the real queue.
+        // 这里没有运行中的服务端单例；只模拟所有权，验证真实队列。
         try (final var mainThread = mockStatic(MCUtil.class, CALLS_REAL_METHODS)) {
             mainThread.when(MCUtil::isMainThread).thenReturn(true);
             final ChunkSectionSnapshot snapshot = mock(ChunkSectionSnapshot.class);

@@ -57,6 +57,12 @@ run
 *.sh
 
 # Local server/runtime artifacts
+/cache/
+/.local-worktrees/
+/versions-src/
+/leaves-server/logs/
+*.log
+*.rej
 /libraries/
 /versions/
 /logs/

@@ -17,7 +17,7 @@ import org.bukkit.craftbukkit.CraftWorld;
 import org.leavesx.leavesx.config.LeavesXRuntime;
 import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
 
-/** Bounded main-thread sampling; file I/O receives only immutable, privacy-safe text. */
+/** 有界的主线程采样；文件 I/O 只接收不可变且不含隐私的文本。 */
 public final class LeavesXHealthReport {
     private static final AtomicBoolean WRITING = new AtomicBoolean();
     private static final Path DIRECTORY = Path.of("logs", "leavesx-diagnostics");
@@ -41,7 +41,7 @@ public final class LeavesXHealthReport {
             sender.sendMessage(Component.text("诊断报告正在保存，请稍后再试。", NamedTextColor.YELLOW));
             return;
         }
-        // Capture before launching the writer: no world, player or CommandSender crosses the thread boundary.
+        // 先完成采样再启动写入器：世界、玩家和 CommandSender 不跨越线程边界。
         final List<String> lines;
         try {
             lines = capture();
@@ -83,7 +83,7 @@ public final class LeavesXHealthReport {
         int index = 0;
         for (final var world : Bukkit.getWorlds()) {
             final var level = ((CraftWorld) world).getHandle();
-            // Number worlds instead of exporting custom names, locations or player identities.
+            // 只记录世界数量，不导出自定义名称、坐标或玩家身份。
             lines.add("世界 " + (++index) + "：区块 " + level.getChunkSource().getFullChunksCount()
                 + " / 实体 " + level.getEntityCount() + " / 玩家 " + world.getPlayerCount());
         }
@@ -102,20 +102,33 @@ public final class LeavesXHealthReport {
             lines.add("  其中服务器主线程：" + mainWait.samples() + " 次 / 总计 "
                 + mainWait.totalNanos() / 1_000_000.0 + " ms / 最长 " + mainWait.maximumNanos() / 1_000_000.0 + " ms");
         }
-        lines.add("显式等待是调用线程的墙钟时间；有序屏障包含提交等待，不能相加，也不覆盖所有主线程等待。");
+        lines.add("显式等待是调用线程的墙钟时间；有序屏障不再提交空任务，容量等待单独统计；不覆盖所有主线程等待。");
         for (final var workload : org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.values()) {
             final var state = org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.metrics(workload);
             if (!state.enabled()) continue;
             final var timing = org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.recentTaskTiming(workload);
+            final var computation = org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.recentComputationTiming(workload);
+            final var callerRun = org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.recentCallerRunTiming(workload);
             final var queue = org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.recentQueueTiming(workload);
+            final var admissionWait = org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.recentAdmissionWaitTiming(workload);
+            final var barrierWait = org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.recentBarrierWaitTiming(workload);
             lines.add(workload.displayName() + "（启用以来累计）：完成 " + state.completedTasks()
                 + " / 回退 " + state.callerRuns() + " / 失败 " + state.failedTasks()
                 + " / 当前排队 " + state.queuedTasks() + " / 队列峰值 " + state.maximumQueueDepth());
             lines.add("  最近约 60 秒已接纳任务耗时：样本 " + timing.samples() + " / 平均 " + timing.averageMillis()
                 + " ms / 最长 " + timing.maximumNanos() / 1_000_000.0
                 + " ms（含完成回调及归属队列接管，不含普通同步回退；非 CPU 耗时）");
+            lines.add("  最近约 60 秒任务正文：样本 " + computation.samples() + " / 平均 " + computation.averageMillis()
+                + " ms / 最长 " + computation.maximumNanos() / 1_000_000.0 + " ms（不含 Future 完成回调；非 CPU 耗时）");
+            lines.add("  最近约 60 秒调用线程回退：样本 " + callerRun.samples() + " / 平均 " + callerRun.averageMillis()
+                + " ms / 最长 " + callerRun.maximumNanos() / 1_000_000.0 + " ms（可能是工作线程，不能全算成主线程耗时）");
             lines.add("  最近约 60 秒排队至执行：样本 " + queue.samples() + " / 平均 " + queue.averageMillis()
                 + " ms / 最长 " + queue.maximumNanos() / 1_000_000.0 + " ms（不含提交容量等待）");
+            lines.add("  最近约 60 秒容量等待：样本 " + admissionWait.samples() + " / 平均 " + admissionWait.averageMillis()
+                + " ms / 最长 " + admissionWait.maximumNanos() / 1_000_000.0
+                + " ms（并发等待会叠加；仅作墙钟诊断，不等于 Tick 时间）");
+            lines.add("  最近约 60 秒有序任务等待：样本 " + barrierWait.samples() + " / 平均 " + barrierWait.averageMillis()
+                + " ms / 最长 " + barrierWait.maximumNanos() / 1_000_000.0 + " ms（不含空闲查询）");
         }
         lines.add("GC 窗口：暂停 " + gc.windowPauseNanos() / 1_000_000.0 + " ms；最长 " + gc.maximumPauseNanos() / 1_000_000.0
             + " ms" + (gc.windowTruncated() ? "（记录不完整）" : ""));
@@ -135,7 +148,7 @@ public final class LeavesXHealthReport {
     }
 
     static TickSummary summarize(final long[] samples) {
-        // The startup ring has unused zero slots. Exclude them and never sort Bukkit's source array in place.
+        // 启动环形缓冲区有未使用的零值槽位；排除它们，绝不原地排序 Bukkit 的源数组。
         final long[] sorted = Arrays.stream(samples).filter(value -> value > 0).sorted().toArray();
         if (sorted.length == 0) return new TickSummary(0, 0, 0, 0, 0);
         final int percentile = (int) Math.ceil(sorted.length * 0.95) - 1;

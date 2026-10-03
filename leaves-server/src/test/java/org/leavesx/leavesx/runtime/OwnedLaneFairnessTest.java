@@ -11,7 +11,7 @@ import org.bukkit.support.environment.Normal;
 import org.junit.jupiter.api.Test;
 import org.leavesx.leavesx.config.LeavesXConfig;
 
-/** A busy UUID must yield to another UUID instead of monopolizing a single save worker. */
+/** 忙碌的 UUID 必须让出执行权给其他 UUID，不能独占保存工作线程。 */
 @Normal
 class OwnedLaneFairnessTest {
     @Test
