@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 3 Oct 2026 01:00:00 +0800
+Subject: [PATCH] Configure network buffer optimizations
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -295,11 +295,11 @@
+         boolean parallelMobCollisions, boolean asyncWaterPathfinding,
+         boolean poiAsyncSerialization, boolean poiCompetitorScanNoLoad,
+         boolean sensorListReuse, boolean recipeIndex,
+-        boolean jeiRecipeSync, boolean jeiRecipeTransfer
++        boolean jeiRecipeSync, boolean jeiRecipeTransfer, boolean networkBufferOptimizations
+     ) {
+         public static ExtensionSettings defaults() {
+             return new ExtensionSettings(true, true, false, false, true, false, true, true, true, true, false, true, false,
+-                true, true, false, false, false, false, true, true, false, false);
++                true, true, false, false, false, false, true, true, false, false, true);
+         }
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -515,7 +515,8 @@
+                     readBoolean(node.node("performance", "ai", "sensor-list-reuse"), "performance.ai.sensor-list-reuse", true),
+                     readBoolean(node.node("performance", "crafting", "recipe-index"), "performance.crafting.recipe-index", true),
+                     readBoolean(node.node("features", "just-enough-items", "recipe-sync"), "features.just-enough-items.recipe-sync", false),
+-                    readBoolean(node.node("features", "just-enough-items", "recipe-transfer"), "features.just-enough-items.recipe-transfer", false)
++                    readBoolean(node.node("features", "just-enough-items", "recipe-transfer"), "features.just-enough-items.recipe-transfer", false),
++                    readBoolean(node.node("performance", "network", "buffer-optimizations"), "performance.network.buffer-optimizations", true)
+                 ),
+                 new LeavesXConfig.RegionTickingSettings(
+                     readMode(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -205,6 +205,7 @@
+         changed |= writeValue(node.node("performance", "ai", "poi-competitor-scan-no-load"), "performance.ai.poi-competitor-scan-no-load", config.extensions().poiCompetitorScanNoLoad(), missingOnly);
+         changed |= writeValue(node.node("performance", "ai", "sensor-list-reuse"), "performance.ai.sensor-list-reuse", config.extensions().sensorListReuse(), missingOnly);
+         changed |= writeValue(node.node("performance", "crafting", "recipe-index"), "performance.crafting.recipe-index", config.extensions().recipeIndex(), missingOnly);
++        changed |= writeValue(node.node("performance", "network", "buffer-optimizations"), "performance.network.buffer-optimizations", config.extensions().networkBufferOptimizations(), missingOnly);
+         changed |= writeValue(node.node("async", "pathfinding", "threads"), "async.pathfinding.threads", async.pathfindingThreads(), missingOnly);
+         changed |= writeValue(node.node("async", "pathfinding", "queue-size"), "async.pathfinding.queue-size", async.pathfindingQueueSize(), missingOnly);
+         changed |= writeValue(node.node("async", "pathfinding", "keepalive-seconds"), "async.pathfinding.keepalive-seconds", async.pathfindingKeepaliveSeconds(), missingOnly);
+@@ -591,6 +592,7 @@
+         comments.put("async.entity-tracker.threads", "实体追踪为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");
+         comments.put("async.entity-tracker.queue-size", "实体追踪计算最多排队任务数；队列满时回到主线程。默认：1024。");
+         comments.put("performance.crafting.recipe-index", "合成台查询按材料数量索引直达候选配方，跳过不可能匹配的配方；结果顺序与原版一致。默认：true。");
++        comments.put("performance.network.buffer-optimizations", "减少字符串编码和 Java 压缩的临时缓冲区；不改协议，可重载，关闭后使用原路径。默认：true。");
+         comments.put("performance.ai.sensor-list-reuse", "物品传感器复用扫描列表；生物扫描结果会存入 Brain，不复用，避免旧记忆被清空。默认：true。");
+         comments.put("performance.chunk.poi-async-serialization", "暂不可用：异步编码失败时可能丢失床和工作站数据；当前仍在 Tick 线程编码、异步写盘。默认：false。");
+         comments.put("performance.ai.poi-competitor-scan-no-load", "暂不可用：村民竞争扫描保留原版 POI 加载行为，避免漏判工作站。默认：false。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -510,6 +510,11 @@
+         return networkFlushConsolidation;
+     }
+ 
++    /** 仅减少网络编码中的临时分配；不改变发包时机、协议或世界线程。 */
++    public static boolean networkBufferOptimizations() {
++        return configuration.extensions().networkBufferOptimizations();
++    }
++
+     /**
+      * Returns whether immutable lookup keys may retain precomputed hashes.
+      *

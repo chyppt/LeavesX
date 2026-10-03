@@ -1,0 +1,346 @@
+From 307251dfacf72ebfad7ca85413abe068ada1aa3d Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Thu, 1 Oct 2026 20:41:48 +0800
+Subject: [PATCH] Avoid synthetic owner barriers and separate async timing
+
+---
+ .../leavesx/command/LeavesXCommand.java       |  33 ++++
+ .../leavesx/runtime/LeavesXAsyncRuntime.java  | 154 ++++++++++++++++--
+ 2 files changed, 172 insertions(+), 15 deletions(-)
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index f7a97bc913..e257a1125a 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1117,6 +1117,39 @@ public final class LeavesXCommand extends Command {
+                     ? NamedTextColor.GRAY
+                     : NamedTextColor.YELLOW
+             ));
++            final var admissionWait = LeavesXAsyncRuntime.recentAdmissionWaitTiming(workload);
++            if (admissionWait.samples() > 0L) {
++                sender.sendMessage(line(
++                    "  最近约 60 秒容量等待",
++                    admissionWait.samples() + " 次 / 累计 " + oneDecimal(admissionWait.totalNanos() / 1_000_000.0D)
++                        + " ms / 单次最长 " + oneDecimal(admissionWait.maximumNanos() / 1_000_000.0D)
++                        + " ms（并发等待会叠加，不代表 Tick 时间）",
++                    NamedTextColor.DARK_GRAY
++                ));
++            }
++            final var barrierWait = LeavesXAsyncRuntime.recentBarrierWaitTiming(workload);
++            if (barrierWait.samples() > 0L) {
++                sender.sendMessage(line(
++                    "  最近约 60 秒有序任务等待",
++                    barrierWait.samples() + " 次 / 累计 " + oneDecimal(barrierWait.totalNanos() / 1_000_000.0D)
++                        + " ms / 单次最长 " + oneDecimal(barrierWait.maximumNanos() / 1_000_000.0D)
++                        + " ms（不含空闲查询，不等于 Tick 时间）",
++                    NamedTextColor.DARK_GRAY
++                ));
++            }
++            final var queue = LeavesXAsyncRuntime.recentQueueTiming(workload);
++            final var computation = LeavesXAsyncRuntime.recentComputationTiming(workload);
++            final var callerRun = LeavesXAsyncRuntime.recentCallerRunTiming(workload);
++            if (queue.samples() > 0L || callerRun.samples() > 0L) {
++                sender.sendMessage(line(
++                    "  最近约 60 秒单次平均",
++                    "排队 " + oneDecimal(queue.averageMillis()) + " ms / 任务正文 "
++                        + oneDecimal(computation.averageMillis()) + " ms / 调用线程回退 "
++                        + callerRun.samples() + " 次、最长 " + oneDecimal(callerRun.maximumNanos() / 1_000_000.0D)
++                        + " ms（墙钟时间，非 CPU 使用率）",
++                    NamedTextColor.DARK_GRAY
++                ));
++            }
+         }
+         sender.sendMessage(line(
+             "JVM 线程",
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+index 7e5fcf26e4..b680cd05dd 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+@@ -17,6 +17,7 @@ import java.util.concurrent.ThreadPoolExecutor;
+ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.atomic.AtomicInteger;
+ import java.util.concurrent.atomic.AtomicLong;
++import java.util.concurrent.atomic.AtomicReference;
+ import java.util.function.Supplier;
+ import org.leavesx.leavesx.config.LeavesXConfig;
+ import org.slf4j.Logger;
+@@ -274,13 +275,17 @@ public final class LeavesXAsyncRuntime {
+         }
+ 
+         final CompletableFuture<T> completion = new CompletableFuture<>();
++        // Keep an internal completion separate from the public future. A caller may cancel the
++        // returned future, but a save barrier must still wait for the actual write to finish.
++        final CompletableFuture<Void> taskDone = new CompletableFuture<>();
+         final long queuedAt = System.nanoTime();
+-        final OwnedTask ownedTask = new OwnedTask(() -> runValueTask(state, task, completion, queuedAt));
++        final OwnedTask ownedTask = new OwnedTask(() -> runValueTask(state, task, completion, taskDone, queuedAt));
+         final boolean[] scheduleDrain = new boolean[1];
+         state.ownedLanes.compute(ownerKey, (ignored, existing) -> {
+             final OwnedLane lane = existing == null ? new OwnedLane() : existing;
+             synchronized (lane) {
+                 lane.tasks.addLast(ownedTask);
++                lane.tail = taskDone;
+                 if (!lane.drainScheduled) {
+                     lane.drainScheduled = true;
+                     scheduleDrain[0] = true;
+@@ -303,23 +308,52 @@ public final class LeavesXAsyncRuntime {
+ 
+     /** Waits until all globally ordered work submitted before this call has completed. */
+     public static void awaitOrdered(final Workload workload) {
+-        org.leavesx.leavesx.diagnostics.OwnerThreadWaits.measure(
+-            org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.ORDERED_BARRIER,
+-            () -> submitOrdered(workload, () -> { }).join());
++        awaitLane(workload, new IdentityKey(GLOBAL_ORDER_OWNER));
+     }
+ 
+     /** Waits for work already submitted for one identity owner without blocking unrelated owners. */
+     public static void awaitOwner(final Workload workload, final Object owner) {
+-        org.leavesx.leavesx.diagnostics.OwnerThreadWaits.measure(
+-            org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.ORDERED_BARRIER,
+-            () -> submitOwnedOrRun(workload, owner, () -> { }).join());
++        Objects.requireNonNull(owner, "owner");
++        awaitLane(workload, new IdentityKey(owner));
+     }
+ 
+     /** Value-keyed counterpart used by persistent records that may recreate identifier objects between calls. */
+     public static void awaitKey(final Workload workload, final Object key) {
+-        org.leavesx.leavesx.diagnostics.OwnerThreadWaits.measure(
+-            org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.ORDERED_BARRIER,
+-            () -> submitKeyedOrRun(workload, key, () -> { }).join());
++        awaitLane(workload, new ValueKey(key));
++    }
++
++    /**
++     * Captures the lane tail without consuming executor capacity or adding a synthetic task.
++     *
++     * <p>A synthetic barrier can wait behind unrelated work when the shared queue is full. A
++     * lane tail is a linearizable snapshot: work appended afterwards is intentionally outside
++     * this barrier.</p>
++     */
++    private static void awaitLane(final Workload workload, final LaneKey ownerKey) {
++        Objects.requireNonNull(workload, "workload");
++        final ExecutorState state = executors.get(workload);
++        if (state == null) {
++            return;
++        }
++        final AtomicReference<CompletableFuture<Void>> captured = new AtomicReference<>();
++        // Capture under the same map operation as append/removal. Reading a detached lane
++        // could miss a replacement lane installed by a concurrent submission.
++        state.ownedLanes.computeIfPresent(ownerKey, (ignored, lane) -> {
++            synchronized (lane) {
++                captured.set(lane.tail);
++            }
++            return lane;
++        });
++        final CompletableFuture<Void> tail = captured.get();
++        if (tail != null && !tail.isDone()) {
++            final long started = System.nanoTime();
++            try {
++                org.leavesx.leavesx.diagnostics.OwnerThreadWaits.join(
++                    org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.ORDERED_BARRIER, tail);
++            } finally {
++                state.barrierWaitTiming.record(System.nanoTime() - started);
++            }
++        }
+     }
+ 
+     public static boolean enabled(final Workload workload) {
+@@ -369,6 +403,22 @@ public final class LeavesXAsyncRuntime {
+             : state.taskTiming.recentSnapshot();
+     }
+ 
++    /** Admitted task body wall time, excluding future completion callbacks and runtime cleanup. */
++    public static org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot recentComputationTiming(final Workload workload) {
++        final ExecutorState state = executors.get(workload);
++        return state == null
++            ? new org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot(0L, 0L, 0L)
++            : state.computationTiming.recentSnapshot();
++    }
++
++    /** Caller fallback wall time; includes owned-lane fallback but not disabled workloads. */
++    public static org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot recentCallerRunTiming(final Workload workload) {
++        final ExecutorState state = executors.get(workload);
++        return state == null
++            ? new org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot(0L, 0L, 0L)
++            : state.callerRunTiming.recentSnapshot();
++    }
++
+     public static org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot recentQueueTiming(final Workload workload) {
+         final ExecutorState state = executors.get(workload);
+         return state == null
+@@ -376,6 +426,22 @@ public final class LeavesXAsyncRuntime {
+             : state.queueTiming.recentSnapshot();
+     }
+ 
++    /** Wall time spent waiting to enter this workload's bounded owned-task queue. */
++    public static org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot recentAdmissionWaitTiming(final Workload workload) {
++        final ExecutorState state = executors.get(workload);
++        return state == null
++            ? new org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot(0L, 0L, 0L)
++            : state.admissionWaitTiming.recentSnapshot();
++    }
++
++    /** Wall time waiting for captured owner tails; does not include idle barriers. */
++    public static org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot recentBarrierWaitTiming(final Workload workload) {
++        final ExecutorState state = executors.get(workload);
++        return state == null
++            ? new org.leavesx.leavesx.diagnostics.AsyncTaskTiming.Snapshot(0L, 0L, 0L)
++            : state.barrierWaitTiming.recentSnapshot();
++    }
++
+     /** Closes ordered admission and waits for already admitted data writes and computations. */
+     public static synchronized void shutdown() {
+         shutdown(SHUTDOWN_TIMEOUT);
+@@ -549,8 +615,15 @@ public final class LeavesXAsyncRuntime {
+             }
+             if (callerFallback) {
+                 state.callerRuns.incrementAndGet();
++                final long started = System.nanoTime();
++                try {
++                    task.run();
++                } finally {
++                    state.callerRunTiming.record(System.nanoTime() - started);
++                }
++            } else {
++                task.run();
+             }
+-            task.run();
+             completedTasks++;
+         }
+ 
+@@ -581,7 +654,12 @@ public final class LeavesXAsyncRuntime {
+         state.queueTiming.record(started - queuedAt);
+         state.activeTasks.incrementAndGet();
+         try {
+-            task.run();
++            final long computationStarted = System.nanoTime();
++            try {
++                task.run();
++            } finally {
++                state.computationTiming.record(System.nanoTime() - computationStarted);
++            }
+             state.completed.incrementAndGet();
+             completion.complete(null);
+         } catch (final Throwable failure) {
+@@ -599,12 +677,29 @@ public final class LeavesXAsyncRuntime {
+         final Supplier<T> task,
+         final CompletableFuture<T> completion,
+         final long queuedAt
++    ) {
++        runValueTask(state, task, completion, null, queuedAt);
++    }
++
++    private static <T> void runValueTask(
++        final ExecutorState state,
++        final Supplier<T> task,
++        final CompletableFuture<T> completion,
++        final CompletableFuture<Void> taskDone,
++        final long queuedAt
+     ) {
+         final long started = System.nanoTime();
+         state.queueTiming.record(started - queuedAt);
+         state.activeTasks.incrementAndGet();
+         try {
+-            completion.complete(task.get());
++            final T result;
++            final long computationStarted = System.nanoTime();
++            try {
++                result = task.get();
++            } finally {
++                state.computationTiming.record(System.nanoTime() - computationStarted);
++            }
++            completion.complete(result);
+             state.completed.incrementAndGet();
+         } catch (final Throwable failure) {
+             state.failed.incrementAndGet();
+@@ -613,6 +708,11 @@ public final class LeavesXAsyncRuntime {
+             state.taskTiming.record(System.nanoTime() - started);
+             state.activeTasks.decrementAndGet();
+             state.release();
++            // Barriers observe the real task lifecycle, not public-future cancellation or
++            // completion callbacks that can run before capacity is returned.
++            if (taskDone != null) {
++                taskDone.complete(null);
++            }
+         }
+     }
+ 
+@@ -625,6 +725,7 @@ public final class LeavesXAsyncRuntime {
+         if (state != null) {
+             state.callerRuns.incrementAndGet();
+         }
++        final long started = state == null ? 0L : System.nanoTime();
+         try {
+             task.run();
+             if (state != null) {
+@@ -641,6 +742,10 @@ public final class LeavesXAsyncRuntime {
+                 LOGGER.error("LeavesX {} caller-thread fallback failed", workload.displayName, failure);
+             }
+             return completion;
++        } finally {
++            if (state != null) {
++                state.callerRunTiming.record(System.nanoTime() - started);
++            }
+         }
+     }
+ 
+@@ -653,6 +758,7 @@ public final class LeavesXAsyncRuntime {
+         if (state != null) {
+             state.callerRuns.incrementAndGet();
+         }
++        final long started = state == null ? 0L : System.nanoTime();
+         try {
+             final T result = task.get();
+             if (state != null) {
+@@ -669,6 +775,10 @@ public final class LeavesXAsyncRuntime {
+                 LOGGER.error("LeavesX {} caller-thread fallback failed", workload.displayName, failure);
+             }
+             return completion;
++        } finally {
++            if (state != null) {
++                state.callerRunTiming.record(System.nanoTime() - started);
++            }
+         }
+     }
+ 
+@@ -710,8 +820,16 @@ public final class LeavesXAsyncRuntime {
+ 
+         private final org.leavesx.leavesx.diagnostics.AsyncTaskTiming taskTiming =
+             new org.leavesx.leavesx.diagnostics.AsyncTaskTiming();
++        private final org.leavesx.leavesx.diagnostics.AsyncTaskTiming computationTiming =
++            new org.leavesx.leavesx.diagnostics.AsyncTaskTiming();
++        private final org.leavesx.leavesx.diagnostics.AsyncTaskTiming callerRunTiming =
++            new org.leavesx.leavesx.diagnostics.AsyncTaskTiming();
+         private final org.leavesx.leavesx.diagnostics.AsyncTaskTiming queueTiming =
+             new org.leavesx.leavesx.diagnostics.AsyncTaskTiming();
++        private final org.leavesx.leavesx.diagnostics.AsyncTaskTiming admissionWaitTiming =
++            new org.leavesx.leavesx.diagnostics.AsyncTaskTiming();
++        private final org.leavesx.leavesx.diagnostics.AsyncTaskTiming barrierWaitTiming =
++            new org.leavesx.leavesx.diagnostics.AsyncTaskTiming();
+ 
+         private final ThreadPoolExecutor executor;
+         private final Semaphore capacity;
+@@ -751,8 +869,13 @@ public final class LeavesXAsyncRuntime {
+                 if (!this.acceptingOwned) return false;
+                 if (this.reserve()) return true;
+             }
+-            return org.leavesx.leavesx.diagnostics.OwnerThreadWaits.measure(
+-                org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.ADMISSION, this::waitForOwnedCapacity);
++            final long started = System.nanoTime();
++            try {
++                return org.leavesx.leavesx.diagnostics.OwnerThreadWaits.measure(
++                    org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.ADMISSION, this::waitForOwnedCapacity);
++            } finally {
++                this.admissionWaitTiming.record(System.nanoTime() - started);
++            }
+         }
+ 
+         private boolean waitForOwnedCapacity() {
+@@ -853,6 +976,7 @@ public final class LeavesXAsyncRuntime {
+     private static final class OwnedLane {
+ 
+         private final ArrayDeque<OwnedTask> tasks = new ArrayDeque<>();
++        private CompletableFuture<Void> tail = CompletableFuture.completedFuture(null);
+         private boolean drainScheduled;
+     }
+ 

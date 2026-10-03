@@ -3,7 +3,7 @@ package org.leavesx.leavesx.config;
 import java.util.Map;
 import org.spongepowered.configurate.ConfigurationNode;
 
-/** One-way aliases: write only the organized schema, but keep accepting older files. */
+/** 单向别名：只写入整理后的结构，同时继续接受旧配置文件。 */
 final class LeavesXConfigPaths {
     private static final Map<String, String> ALIASES = Map.ofEntries(
         Map.entry("performance.optimized-varint", "performance.network.optimized-varint"),
@@ -50,7 +50,7 @@ final class LeavesXConfigPaths {
             final ConfigurationNode source = root.node(oldPath);
             if (source.virtual()) continue;
             final ConfigurationNode target = root.node((Object[]) alias.getValue().split("\\."));
-            // A new-path value wins when both are explicitly set; other old subtree keys are preserved.
+            // 新路径和旧路径同时设置时以新路径为准；旧子树中的其他键继续保留。
             target.mergeFrom(source);
             source.raw(null);
             for (int depth = oldPath.length - 1; depth > 0; depth--) {

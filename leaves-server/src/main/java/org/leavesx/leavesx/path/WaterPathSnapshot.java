@@ -19,7 +19,7 @@ import net.minecraft.world.level.pathfinder.PathType;
 import net.minecraft.world.level.pathfinder.SwimNodeEvaluator;
 import org.jspecify.annotations.Nullable;
 
-/** One privately owned search input. Only immutable block states and primitive mob data cross the thread boundary. */
+/** 一个私有的搜索输入；只有不可变方块状态和生物原始数据跨越线程边界。 */
 final class WaterPathSnapshot {
     private static final int RADIUS = 24;
     private static final int SIZE = RADIUS * 2 + 1;
@@ -44,10 +44,10 @@ final class WaterPathSnapshot {
         this.paletteFlags = paletteFlags;
     }
 
-    /** Returns null rather than loading a chunk to service a speculative background search. */
+    /** 若需要加载区块则返回 null，不为推测性的后台搜索加载区块。 */
     @SuppressWarnings("unchecked")
     static @Nullable WaterPathSnapshot capture(final PathNavigationRegion region, final Body body) {
-        // A 49-block side touches exactly four sections. Copy compressed palettes instead of 117,649 individual blocks.
+            // 49 格边长恰好涉及四个区段；复制压缩调色板，不复制 117,649 个独立方块。
         final PalettedContainer<BlockState>[] sections = new PalettedContainer[64];
         final Map<BlockState, Byte> paletteFlags = new IdentityHashMap<>();
         paletteFlags.put(net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), classify(net.minecraft.world.level.block.Blocks.AIR.defaultBlockState()));
@@ -63,7 +63,7 @@ final class WaterPathSnapshot {
                     if (!region.isOutsideBuildHeight(blockY)) {
                         final var copy = chunk.getSection(chunk.getSectionIndex(blockY)).getStates().copy();
                         final var palette = copy.leavesX$getData().palette();
-                        // Global palettes can contain every registered state; avoid turning capture into a registry scan.
+                        // 全局调色板可能包含所有已注册状态；避免捕获时扫描整个注册表。
                         if (palette.getSize() > 512) return null;
                         for (int i = 0; i < palette.getSize(); i++) paletteFlags.computeIfAbsent(palette.valueFor(i), WaterPathSnapshot::classify);
                         sections[(y * 4 + z) * 4 + x] = copy;
@@ -80,13 +80,13 @@ final class WaterPathSnapshot {
             | (fluid.isEmpty() ? EMPTY_FLUID : 0) | (state.isPathfindable(PathComputationType.WATER) ? WATER_PATH : 0));
     }
 
-    /** Each instance is searched once. Reuses vanilla neighbor ordering, costs and A*, including partial paths. */
+    /** 每个实例只搜索一次；复用原版邻居顺序、代价和 A*，包括部分路径。 */
     Result search(final List<BlockPos> targets, final int visited, final float length, final int reach, final float multiplier) {
         final Path path;
         try {
             path = new PathFinder(new Evaluator(), visited).leavesX$findSnapshotPath(targets, length, reach, multiplier);
         } catch (final OutsideSnapshot outside) {
-            // Treating the edge as a wall would silently change which route wins. Recompute the whole search instead.
+            // 把边界当作墙会悄悄改变胜出的路径；因此重新计算完整搜索。
             return new Result(null, new long[0], new BlockState[0], new byte[0], true);
         }
         final long[] positions = new long[this.reads.cardinality()];
@@ -101,7 +101,7 @@ final class WaterPathSnapshot {
             observedFlags[destination] = this.paletteFlags.get(observed[destination]);
             destination++;
         }
-        // The full cube can now be collected; an unobserved result retains only the cells the algorithm actually read.
+            // 现在可以收集完整立方体；未观察到的结果只保留算法实际读取过的单元。
         return new Result(path, positions, observed, observedFlags, false);
     }
 
@@ -134,7 +134,7 @@ final class WaterPathSnapshot {
             return (flagsAt(x, y, z) & EMPTY_FLUID) != 0;
         }
         @Override protected PathType getCachedBlockType(final int x, final int y, final int z) {
-            // Vanilla SwimNodeEvaluator caches classifications. This cache is per search, never shared with a live context.
+                // 原版 SwimNodeEvaluator 会缓存分类；该缓存只属于本次搜索，绝不与实时上下文共享。
             return this.types.computeIfAbsent(BlockPos.asLong(x, y, z), ignored -> this.classifyVolume(x, y, z));
         }
         private final it.unimi.dsi.fastutil.longs.Long2ObjectMap<PathType> types = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
@@ -170,7 +170,7 @@ final class WaterPathSnapshot {
             final Map<BlockState, Byte> currentFlags = new IdentityHashMap<>();
             for (int i = 0; i < this.positions.length; i++) {
                 if (region.getBlockStateIfLoaded(position.set(this.positions[i])) != this.states[i]) return false;
-                // Datapack reload may replace fluid tags without replacing block-state identities.
+                // 数据包重载可能替换流体标签，却不替换方块状态身份。
                 if (currentFlags.computeIfAbsent(this.states[i], WaterPathSnapshot::classify) != this.flags[i]) return false;
             }
             return true;

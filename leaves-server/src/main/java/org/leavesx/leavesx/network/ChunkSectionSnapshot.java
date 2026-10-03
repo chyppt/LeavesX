@@ -6,11 +6,10 @@ import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 
 /**
- * Privately owned section palettes for packet encoding. Capture must run on the chunk's owner thread.
- * No level, chunk, entity or light-engine reference crosses the worker boundary.
+ * 用于数据包编码的私有区段调色板。捕获必须在区块所有者线程执行。
+ * 世界、区块、实体和光照引擎引用都不会跨越工作线程边界。
  *
- * <p>This covers section bytes only. Anti-Xray, light and block-entity packets still require their
- * own owner-thread capture and publication ordering before a complete packet can be sent asynchronously.</p>
+ * <p>这里只覆盖区段字节；反 X 光、光照和方块实体数据包仍需在所有者线程捕获，并按顺序发布后才能异步发送。</p>
  */
 public final class ChunkSectionSnapshot {
     private final LevelChunkSection[] sections;
@@ -22,7 +21,7 @@ public final class ChunkSectionSnapshot {
     public static ChunkSectionSnapshot capture(final LevelChunkSection[] source) {
         final LevelChunkSection[] sections = new LevelChunkSection[source.length];
         for (int index = 0; index < source.length; index++) {
-            // copy() detaches palette storage as well as biome storage and section counters.
+            // copy() 同时分离调色板、生物群系存储和区段计数器。
             sections[index] = source[index].copy();
         }
         return new ChunkSectionSnapshot(sections);

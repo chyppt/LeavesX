@@ -8,16 +8,16 @@ LeavesX 是 [Leaves](https://github.com/LeavesMC/Leaves) 的独立分支，基�
 
 ## 版本
 
-当前版本为 **1.2.1**，本分支对应 **Minecraft 26.2**。
+LeavesX 按 Minecraft 版本维护独立源码分支和构建。支持版本及对应文件以 [Releases](https://github.com/chyppt/LeavesX/releases) 为准。
 
 | Minecraft | 源码分支 |
 | --- | --- |
 | 26.1.2 | `leavesx/26.1.2` |
 | 26.2 | `leavesx/26.2` |
 
-两个分支分别适配和构建，功能并非完全同步。26.1.2 已包含本轮配方候选缓存重构、网络缓冲优化和 AI 木铲调整；26.2 尚未同步这些改动，AI 工具仍为木棍。相同的 LeavesX 版本号不表示两个构建包含相同的优化。
+各分支分别适配 Minecraft 的源码和接口，并同步 LeavesX 的功能与优化。具体新增内容、适用版本和已知问题见对应发布说明。
 
-发布文件采用 `LeavesX-1.2.1-<Minecraft版本>.jar` 命名。请使用与服务器版本对应的文件，不要跨版本替换。
+发布文件采用 `LeavesX-<LeavesX版本>-<Minecraft版本>.jar` 命名。请使用与服务器版本对应的文件，不要跨版本替换。
 
 ## 功能
 
@@ -71,10 +71,10 @@ Windows PowerShell：
 .\gradlew.bat test createLeavesclipJar
 ```
 
-本分支生成的服务端文件为：
+生成的服务端文件位于：
 
 ```text
-leaves-server/build/libs/leavesx-26.2.jar
+leaves-server/build/libs/leavesx-<Minecraft版本>.jar
 ```
 
 仅运行服务端测试可执行 `./gradlew :leaves-server:test`，Windows 使用 `.\gradlew.bat :leaves-server:test`。

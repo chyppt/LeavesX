@@ -3,11 +3,11 @@ package org.leavesx.leavesx.config;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-/** Read-only inspection deliberately avoids load(), which can migrate and save the file. */
+/** 只读检查不会调用可能迁移并保存文件的 load()。 */
 public final class LeavesXConfigInspection {
     private LeavesXConfigInspection() {}
 
-    /** Explains known prerequisite and compatibility gates; never changes the operator's choices. */
+    /** 说明已知前置条件和兼容性门控，不修改管理员的配置选择。 */
     public static java.util.List<String> compatibilityWarnings(final LeavesXConfig config) {
         final var warnings = new java.util.ArrayList<String>();
         if (config.extensions().asyncWaterPathfinding() && !config.asyncSettings().pathfindingEnabled()) {
@@ -39,7 +39,7 @@ public final class LeavesXConfigInspection {
         }
     }
 
-    /** Unknown keys are advisory: keep extensions intact and never rewrite a checked file. */
+    /** 未知键只给出提示；保留扩展内容，不重写正在检查的文件。 */
     public static java.util.List<String> unknownKeys(final Path path) {
         try {
             final var source = LeavesXConfigPaths.normalized(LeavesXConfigWriter.orderedLoader().path(path).build().load());
@@ -59,7 +59,7 @@ public final class LeavesXConfigInspection {
     private static void collectUnknown(final org.spongepowered.configurate.ConfigurationNode source,
                                        final org.spongepowered.configurate.ConfigurationNode schema,
                                        final String prefix, final java.util.List<String> unknown) {
-        // Lists contain values, not keys. Bound output so a malformed file cannot flood the console.
+        // 列表保存的是值而不是键；限制输出长度，避免损坏配置刷屏。
         if (!source.isMap() || unknown.size() >= 32) return;
         for (final var entry : source.childrenMap().entrySet()) {
             if (unknown.size() >= 32) break;

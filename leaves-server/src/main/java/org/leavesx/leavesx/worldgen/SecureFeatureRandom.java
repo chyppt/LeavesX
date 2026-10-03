@@ -7,7 +7,7 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.levelgen.LegacyRandomSource;
 import net.minecraft.world.level.levelgen.PositionalRandomFactory;
 
-/** HMAC counter stream. Mutable state belongs to one generation task, never to a shared executor or world. */
+/** HMAC 计数器流；可变状态只属于一个生成任务，不属于共享执行器或世界。 */
 final class SecureFeatureRandom extends LegacyRandomSource {
     private final byte[] key;
     private final Mac mac;

@@ -2,7 +2,7 @@ package org.leavesx.leavesx.network;
 
 import java.util.concurrent.atomic.AtomicLong;
 
-/** Cumulative encoding counters, not delivery acknowledgements or a pending-queue gauge. */
+/** 累计编码计数，不代表送达确认，也不是待处理队列长度。 */
 public final class LeavesXNetworkMetrics {
     private static final AtomicLong submitted = new AtomicLong();
     private static final AtomicLong completed = new AtomicLong();
@@ -22,9 +22,9 @@ public final class LeavesXNetworkMetrics {
     }
 
     /**
-     * Requests include caller-thread work. Completion means publication of bytes, not network delivery.
-     * Fallback counts failed/cancelled encodings retried once; admission fallback is reported by the worker pool.
-     * Disconnected consumers need not publish, so submitted - completed must not be used as queue depth.
+     * 请求数包含调用线程执行的工作；完成表示字节已发布，不表示网络已送达。
+     * 回退数统计失败或取消后重试一次的编码；准入回退由工作线程池另行统计。
+     * 断开的消费者可能不会发布结果，因此 submitted - completed 不能当作队列深度。
      */
     public record Snapshot(long submitted, long completed, long fallback, long failed) {
     }

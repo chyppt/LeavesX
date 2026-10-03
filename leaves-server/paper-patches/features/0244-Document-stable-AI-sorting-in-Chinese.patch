@@ -1,0 +1,296 @@
+From c1986b52963d0298b66eeb1797f1d9112d00831a Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Fri, 2 Oct 2026 00:16:08 +0800
+Subject: [PATCH] Document stable AI sorting in Chinese
+
+---
+ .../performance/StableDistanceSorter.java     | 85 ++++++++-----------
+ ...EntityTrackerSnapshotReuseHotPathTest.java |  2 +-
+ 2 files changed, 36 insertions(+), 51 deletions(-)
+
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+index 82b1ffbebe..23fd59cc1f 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -7,19 +7,17 @@ import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
+ 
+ /**
+- * Stably orders immutable distance keys without exposing live entities to worker threads.
++ * 对不可变距离键做稳定排序，不向工作线程暴露实时实体。
+  *
+- * <p>The tick thread snapshots every live coordinate into private primitive storage. Workers may then calculate
+- * squared-distance keys and run radix passes without touching entity or world state, after which the tick thread
+- * applies the stable permutation to the original list. Reused workspaces remove per-sensor snapshot, merge-buffer,
+- * and boxed-index allocation churn.</p>
++ * <p>Tick 线程把坐标复制到独立数值数组，工作线程只计算距离和排序；最终由 Tick 线程重排实体列表。
++ * 复用工作区，减少传感器每次查询时的数组、归并缓冲区和装箱索引分配。</p>
+  */
+ public final class StableDistanceSorter {
+ 
+-    /** Below this size the vanilla TimSort path is consistently competitive and avoids workspace setup. */
++    /** 小列表保留原版 TimSort，避免建立工作区的固定开销。 */
+     public static final int MINIMUM_OPTIMIZED_ENTITY_COUNT = 64;
+     private static final int RADIX_BUCKETS = 256;
+-    /** Avoids dispatching a worker task for the final one or two merge pairs. */
++    /** 最后只有一两对归并任务时不再派发工作线程。 */
+     private static final int MIN_PARALLEL_MERGE_PAIRS = 4;
+     private static final int INITIAL_WORKSPACE_CAPACITY = 64;
+     private static final ThreadLocal<Workspace> WORKSPACE = ThreadLocal.withInitial(() -> new Workspace(true));
+@@ -28,10 +26,9 @@ public final class StableDistanceSorter {
+     }
+ 
+     /**
+-     * Sorts entities by squared distance while preserving the original order of equal-distance entries.
++     * 按距离平方排序，距离相同时保留原列表顺序。
+      *
+-     * <p>All entity coordinates are read exactly once on the calling thread. Worker threads only receive private
+-     * coordinate, key and index arrays, so Bukkit/Paper thread-affinity rules remain unchanged.</p>
++     * <p>实体坐标仅由调用线程读取；工作线程只处理独立的坐标、距离键和索引数组，不改变 Bukkit/Paper 线程约束。</p>
+      */
+     public static <T extends Entity> void sortEntitiesByDistance(
+         final List<T> entities,
+@@ -49,8 +46,7 @@ public final class StableDistanceSorter {
+             final double originX = origin.getX();
+             final double originY = origin.getY();
+             final double originZ = origin.getZ();
+-            // Admit medium snapshots when the compute pool is idle. The snapshot keeps all live-entity reads on the
+-            // caller, while the executor decides whether enough idle workers exist to amortize dispatch overhead.
++            // 建立快照前检查空闲线程和任务规模，避免没有并行收益时仍复制实体坐标。
+             final boolean parallelEligible = parallel
+                 && LeavesXComputeExecutor.shouldAttempt(
+                     LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
+@@ -72,13 +68,11 @@ public final class StableDistanceSorter {
+     }
+ 
+     /**
+-     * Finds the first nearest entity in a list whose coordinates were snapshotted on the calling thread.
++     * 从调用线程采集的坐标快照中查找最近实体；同距离时选择原列表中最先出现的项。
+      *
+-     * <p>The caller must perform all eligibility, visibility, event, and world checks before invoking this method.
+-     * Workers compare only sortable primitive distance keys. Returning an index instead of an entity keeps the live
+-     * object entirely on the tick thread and preserves vanilla's first-entry tie rule.</p>
++     * <p>资格、可见性、事件和世界检查由调用线程完成。工作线程只比较数值距离键，返回索引而非实体引用。</p>
+      *
+-     * @return the original list index, or {@code -1} when the list is empty
++     * @return 原列表索引；空列表返回 {@code -1}
+      */
+     public static <T extends Entity> int findNearestIndex(
+         final List<T> entities,
+@@ -109,9 +103,7 @@ public final class StableDistanceSorter {
+                 snapshotEntityDistanceKeys(entities, workspace, size, originX, originY, originZ);
+             }
+ 
+-            // Do not enter the shared scheduler for a small list. The coordinate snapshot is intentionally only
+-            // enabled at the configured threshold; calling the executor and immediately falling back would still
+-            // pay atomic counters on every ordinary AI sensor query.
++            // 小列表不进入共享调度器，避免每次普通传感器查询都付出原子计数和提交开销。
+             final int completedPartitions = useCoordinateSnapshot
+                 ? LeavesXComputeExecutor.invokeRangesWithCount(
+                     LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
+@@ -151,10 +143,10 @@ public final class StableDistanceSorter {
+     }
+ 
+     /**
+-     * Produces a stable index order for coordinate snapshots.
++     * 为坐标快照生成稳定排序后的索引。
+      *
+-     * <p>This compatibility entry point is retained for focused verification. Runtime AI sensors use
+-     * {@link #sortEntitiesByDistance(List, Entity, boolean, int)} to avoid allocating coordinate snapshots.</p>
++     * <p>此入口用于针对性验证；运行时传感器使用
++     * {@link #sortEntitiesByDistance(List, Entity, boolean, int)} 复用坐标存储。</p>
+      */
+     public static int[] sort(
+         final double[] x,
+@@ -174,8 +166,7 @@ public final class StableDistanceSorter {
+ 
+         final Workspace workspace = acquireWorkspace(size);
+         try {
+-            // Copy the compatibility entry point's mutable arrays before workers can observe them. Runtime entity
+-            // sorting writes the same private workspace directly while reading live coordinates on the tick thread.
++            // 先复制调用者的可变数组，再交给工作线程，防止并发修改输入。
+             workspace.ensureCoordinateCapacity(size);
+             System.arraycopy(x, 0, workspace.x, 0, size);
+             System.arraycopy(y, 0, workspace.y, 0, size);
+@@ -194,7 +185,7 @@ public final class StableDistanceSorter {
+         }
+     }
+ 
+-    /** Sorts keys that were calculated on the tick thread for a small or explicitly synchronous entity list. */
++    /** 对 Tick 线程已计算的距离键排序，供小列表和显式同步路径使用。 */
+     private static void sortPreparedKeys(
+         final Workspace workspace,
+         final int size,
+@@ -222,7 +213,7 @@ public final class StableDistanceSorter {
+ 
+         if (completedPartitions == 0) {
+             if (parallelEligible) {
+-                // A failed parallel attempt may have changed one or more ranges before fallback was requested.
++                // 并行失败可能已改写部分分片，回退前先恢复完整初始索引。
+                 initializeOrder(workspace.order, size);
+             }
+             stableRadixRange(workspace.order, workspace.scratch, workspace.keys, 0, size, workspace.offsets, 0);
+@@ -233,11 +224,9 @@ public final class StableDistanceSorter {
+     }
+ 
+     /**
+-     * Computes immutable distance keys and sorts each disjoint range in the same worker invocation.
++     * 在同一次工作线程调用中计算距离键并排序互不重叠的分片。
+      *
+-     * <p>Fusing these stages moves all distance arithmetic off the tick thread without adding another dispatch or
+-     * exposing live entities to workers. A failed invocation recomputes every key from the private snapshot before
+-     * taking the synchronous path, so partially completed ranges can never leak into the result.</p>
++     * <p>合并两个阶段以减少派发次数；失败后从独立快照完整重算，不混用已完成和未完成的分片。</p>
+      */
+     private static void sortCoordinateSnapshot(
+         final Workspace workspace,
+@@ -248,8 +237,7 @@ public final class StableDistanceSorter {
+         final boolean parallelEligible,
+         final int parallelThreshold
+     ) {
+-        // The caller performs the admission probe once before taking the coordinate snapshot. The executor still
+-        // owns the final backpressure decision, so a busy pool safely returns zero and the caller recomputes here.
++        // 建立快照前已做准入检查；提交时仍检查背压，线程池繁忙则返回零并在此完整重算。
+         final int completedPartitions = parallelEligible
+             ? LeavesXComputeExecutor.invokeRangesWithCount(
+                 LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
+@@ -287,7 +275,7 @@ public final class StableDistanceSorter {
+         mergeSortedPartitions(workspace, size, completedPartitions);
+     }
+ 
+-    /** Completes the stable merge tree after independently sorted contiguous ranges. */
++    /** 将独立排序的连续分片稳定归并。 */
+     private static void mergeSortedPartitions(
+         final Workspace workspace,
+         final int size,
+@@ -317,8 +305,7 @@ public final class StableDistanceSorter {
+                     )
+                 );
+                 if (mergedPartitions == 0) {
+-                    // A failed merge can leave individual disjoint ranges completed. Rebuild from identity so the
+-                    // fallback never consumes a mixture of pre-merge and post-merge ranges.
++                    // 归并失败后恢复完整初始索引，防止混用归并前后的分片。
+                     initializeOrder(workspace.order, size);
+                     stableRadixRange(workspace.order, workspace.scratch, workspace.keys, 0, size, workspace.offsets, 0);
+                     return;
+@@ -329,7 +316,7 @@ public final class StableDistanceSorter {
+         }
+     }
+ 
+-    /** Captures every live coordinate on the calling tick thread before any worker is scheduled. */
++    /** 派发工作线程前，在调用 Tick 线程上采集全部实时坐标。 */
+     private static <T extends Entity> void snapshotEntityCoordinates(
+         final List<T> entities,
+         final Workspace workspace,
+@@ -347,7 +334,7 @@ public final class StableDistanceSorter {
+         }
+     }
+ 
+-    /** Keeps small synchronous lists on the allocation-free single-pass path. */
++    /** 小型同步列表直接单次遍历计算距离键，不建立坐标数组。 */
+     private static <T extends Entity> void snapshotEntityDistanceKeys(
+         final List<T> entities,
+         final Workspace workspace,
+@@ -367,7 +354,7 @@ public final class StableDistanceSorter {
+         }
+     }
+ 
+-    /** Calculates one primitive snapshot range and initializes the matching stable identity order. */
++    /** 计算一个数值快照分片，同时初始化对应的原始顺序索引。 */
+     private static void computeDistanceKeysAndInitializeOrder(
+         final Workspace workspace,
+         final int start,
+@@ -389,7 +376,7 @@ public final class StableDistanceSorter {
+         }
+     }
+ 
+-    /** Calculates keys and returns the first nearest index inside one disjoint primitive snapshot range. */
++    /** 计算分片距离键，返回其中最先出现的最近索引。 */
+     private static int computeDistanceKeysAndFindNearest(
+         final Workspace workspace,
+         final int start,
+@@ -415,7 +402,7 @@ public final class StableDistanceSorter {
+         return nearest;
+     }
+ 
+-    /** Merges independent ordered range pairs; callers may safely assign disjoint pair indexes to workers. */
++    /** 归并互不重叠的有序区间对，可按区间对索引安全分配给工作线程。 */
+     private static void mergePairs(
+         final int[] order,
+         final int[] scratch,
+@@ -456,8 +443,7 @@ public final class StableDistanceSorter {
+         }
+         final int bucketBase = offsetBase;
+         for (int shift = 0; shift < Long.SIZE; shift += Byte.SIZE) {
+-            // A uniform digit cannot change stable order. Integer coordinates often share most low mantissa bytes,
+-            // and ordinary distances share the high byte, so avoid the histogram and scatter for those passes.
++            // 完全相同的字节不影响稳定顺序，跳过对应直方图和散射遍历。
+             if ((varyingBits >>> shift & 0xFFL) == 0L) {
+                 continue;
+             }
+@@ -483,7 +469,7 @@ public final class StableDistanceSorter {
+             order = scratch;
+             scratch = swap;
+         }
+-        // Skipped digits may leave an odd number of scatters. Callers always merge from the original order buffer.
++        // 跳过字节后散射次数可能为奇数；结果必须回到调用者使用的原索引缓冲区。
+         if (order != resultOrder) {
+             System.arraycopy(order, start, resultOrder, start, end - start);
+         }
+@@ -520,7 +506,7 @@ public final class StableDistanceSorter {
+         System.arraycopy(scratch, start, order, start, end - start);
+     }
+ 
+-    /** Applies destination-to-source indices in place and restores the index array to identity for reuse. */
++    /** 原地应用目标位置到来源位置的映射，并恢复索引数组以供复用。 */
+     private static <T> void applyPermutation(final List<T> values, final int[] order, final int size) {
+         for (int start = 0; start < size; start++) {
+             if (order[start] == start) {
+@@ -548,7 +534,7 @@ public final class StableDistanceSorter {
+         }
+     }
+ 
+-    /** Returns the first index with the smallest sortable key in one disjoint primitive range. */
++    /** 返回数值分片中最先出现的最小距离键索引。 */
+     private static int nearestInRange(final long[] keys, final int start, final int end) {
+         int nearest = -1;
+         for (int index = start; index < end; index++) {
+@@ -592,14 +578,13 @@ public final class StableDistanceSorter {
+         final Workspace cached = WORKSPACE.get();
+         final Workspace workspace;
+         if (cached.inUse) {
+-            // Sensor re-entry is not expected, but a private temporary workspace keeps that case behaviorally safe.
++            // 传感器重入时使用独立临时工作区，避免覆盖尚未完成的外层计算。
+             workspace = new Workspace(false);
+         } else {
+             cached.inUse = true;
+             workspace = cached;
+         }
+-        // The scheduler may use two deterministic ranges per physical lane. Reserve one private histogram slice for
+-        // every possible range so workers never contend for offsets or write outside the workspace.
++        // 每个可能的调度分片预留独立直方图，避免工作线程共享偏移量或越界写入。
+         workspace.ensureCapacity(size, LeavesXComputeExecutor.computePartitionCapacity());
+         return workspace;
+     }
+@@ -664,7 +649,7 @@ public final class StableDistanceSorter {
+             }
+         }
+ 
+-        /** Allocates coordinate storage only for a genuinely parallel snapshot, keeping small AI scans compact. */
++        /** 仅为实际需要并行的快照分配坐标存储，减少小型 AI 查询的内存开销。 */
+         private void ensureCoordinateCapacity(final int size) {
+             if (this.x.length >= size) {
+                 return;
+diff --git a/src/test/java/org/leavesx/leavesx/performance/EntityTrackerSnapshotReuseHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/EntityTrackerSnapshotReuseHotPathTest.java
+index cff2208dbd..5fee7733c2 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/EntityTrackerSnapshotReuseHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/EntityTrackerSnapshotReuseHotPathTest.java
+@@ -13,7 +13,7 @@ import org.objectweb.asm.tree.ClassNode;
+ import org.objectweb.asm.tree.MethodNode;
+ import org.objectweb.asm.tree.TypeInsnNode;
+ 
+-/** Guards the allocation-free steady-state layout of asynchronous entity tracking snapshots. */
++/** 检查实体追踪快照在稳定运行时复用内存，避免重复分配。 */
+ @Normal
+ class EntityTrackerSnapshotReuseHotPathTest {
+ 

@@ -1,0 +1,17 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Fri, 2 Oct 2026 12:30:00 +0800
+Subject: [PATCH] Update entity AI tool help
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1531,7 +1531,7 @@
+ 
+     private static void sendHelp(final CommandSender sender) {
+         sendHeader(sender, "命令帮助");
+-        sender.sendMessage(Component.text("/leavesx ai - 领取禁用实体AI木棍，右键切换（村民保留交易补货）", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx ai - 领取禁用实体AI木铲，右键切换", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx status - TPS、MSPT、区块、实体和内存总览", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx all [世界] [数量] - 一次输出完整诊断", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx gui - 打开玩家诊断界面", NamedTextColor.GRAY));

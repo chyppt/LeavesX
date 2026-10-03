@@ -18,7 +18,7 @@ import net.minecraft.world.item.crafting.RecipeHolder;
 import net.minecraft.world.item.crafting.RecipeSerializer;
 import org.leavesmc.leaves.LeavesLogger;
 
-/** Loader recipe-sync layouts for MC 26.1.2. Uses only registered vanilla serializers understood by both ends. */
+/** Minecraft 26.1.2 的加载器配方同步布局；只使用两端都认识的已注册原版序列化器。 */
 public final class JeiRecipeSync {
     public static final Identifier FABRIC = Identifier.parse("fabric:recipe_sync");
     public static final Identifier NEOFORGE = Identifier.parse("neoforge:recipe_content");
@@ -52,7 +52,7 @@ public final class JeiRecipeSync {
                 if (totalBytes > MAX_BYTES) throw new IllegalStateException("Recipe sync exceeds the client payload limit");
                 groups.computeIfAbsent(serializer, ignored -> new ArrayList<>()).add(bytes);
             } catch (io.netty.handler.codec.EncoderException | ClassCastException incompatible) {
-                // Plugin recipes (including unregistered custom serializers) must not corrupt the whole payload.
+                // 插件配方（包括未注册的自定义序列化器）不能破坏整个数据包。
                 skipped++;
             } finally {
                 entry.release();

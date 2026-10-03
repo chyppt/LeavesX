@@ -5,7 +5,7 @@ import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.function.LongSupplier;
 
-/** Cumulative wall-clock task timing. Concurrent task durations are not CPU time or tick time. */
+/** 累计任务墙钟时间；并发任务时长不等于 CPU 时间或 Tick 时间。 */
 public final class AsyncTaskTiming {
     private final LongAdder samples = new LongAdder();
     private final LongAdder totalNanos = new LongAdder();
@@ -40,7 +40,7 @@ public final class AsyncTaskTiming {
             }
             bucket = this.recent.get(index);
         }
-        // A writer delayed for a full window must not overwrite a newer bucket.
+        // 延迟了完整窗口的写入者不能覆盖更新的桶。
         if (bucket.second == second) {
             bucket.total.add(elapsed);
             bucket.maximum.accumulateAndGet(elapsed, Math::max);
@@ -48,12 +48,12 @@ public final class AsyncTaskTiming {
         }
     }
 
-    /** Live counters are approximate while workers update them. */
+    /** 工作线程更新期间，实时计数只保证近似值。 */
     public Snapshot snapshot() {
         return new Snapshot(this.samples.sum(), this.totalNanos.sum(), this.maximumNanos.get());
     }
 
-    /** Current second and previous 59 seconds, attributed to task completion; live reads are approximate. */
+    /** 当前秒和之前 59 秒按任务完成时间统计；实时读取只保证近似值。 */
     public Snapshot recentSnapshot() {
         final long second = (this.clock.getAsLong() - this.origin) / 1_000_000_000L;
         long count = 0L;

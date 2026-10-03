@@ -1,0 +1,17 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Fri, 2 Oct 2026 12:30:00 +0800
+Subject: [PATCH] Use wooden shovel for entity AI tool
+
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -2965,7 +2965,7 @@ public class ServerGamePacketListenerImpl
+                             return;
+                         }
+                         // CraftBukkit end
+-                        if (tool.is(Items.STICK) && org.leavesx.leavesx.gameplay.EntityAiTool.interact(
++                        if (tool.is(Items.WOODEN_SHOVEL) && org.leavesx.leavesx.gameplay.EntityAiTool.interact(
+                             this.getCraftPlayer(), target, org.bukkit.craftbukkit.inventory.CraftItemStack.asBukkitCopy(tool)
+                         )) {
+                             return;

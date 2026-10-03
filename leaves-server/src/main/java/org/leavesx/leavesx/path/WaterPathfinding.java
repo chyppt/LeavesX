@@ -17,9 +17,9 @@ import org.jspecify.annotations.Nullable;
 import org.leavesx.leavesx.config.LeavesXRuntime;
 import org.leavesx.leavesx.runtime.LeavesXAsyncRuntime;
 
-/** Main-thread admission and adoption around a detached water search. Never submits world access to the executor. */
+/** 主线程负责准入和采用脱离的水域搜索结果；绝不把世界访问提交给执行器。 */
 public final class WaterPathfinding {
-    // Bound snapshot memory independently of the shared pool's larger queue. No blocking admission on the tick thread.
+    // 独立限制快照内存，不受共享池较大队列影响；Tick 线程准入绝不阻塞。
     private static final Semaphore SNAPSHOTS = new Semaphore(16);
     private static final LongAdder ACCEPTED = new LongAdder(), ADOPTED = new LongAdder(), INVALID = new LongAdder();
     private static final LongAdder OUTSIDE = new LongAdder(), BUSY = new LongAdder(), FAILED = new LongAdder();
@@ -32,7 +32,7 @@ public final class WaterPathfinding {
         return tryCreate(mob, finder, region, targets, length, reach, multiplier, current, freshRegion, () -> false);
     }
 
-    /** The cancellation supplier must read only detached state, never an entity or world. */
+    /** 取消判断只能读取脱离状态，绝不能读取实体或世界。 */
     public static @Nullable Path tryCreate(final Mob mob, final PathFinder finder, final PathNavigationRegion region,
         final Set<BlockPos> targets, final float length, final int reach, final float multiplier,
         final BooleanSupplier current, final Supplier<PathNavigationRegion> freshRegion, final BooleanSupplier cancelled) {
@@ -50,11 +50,10 @@ public final class WaterPathfinding {
             final WaterPathSnapshot snapshot = WaterPathSnapshot.capture(region, body);
             if (snapshot == null) { UNAVAILABLE.increment(); SNAPSHOTS.release(); return null; }
             final List<BlockPos> orderedTargets = targets.stream().map(BlockPos::immutable).toList();
-            // Only snapshot + immutable scalar inputs are captured by this supplier. Different mobs can run concurrently.
+            // 供应器只捕获快照和不可变标量输入；不同生物可以并发运行。
             calculation = LeavesXAsyncRuntime.trySubmitValue(LeavesXAsyncRuntime.Workload.PATHFINDING,
                 () -> {
-                    // Skip stale queued searches, but let the admitted task finish normally: its
-                    // completion callback must release the snapshot permit exactly once.
+                    // 跳过过期的排队搜索，但让已准入任务正常完成：完成回调必须恰好释放一次快照许可。
                     if (cancelled.getAsBoolean()) { CANCELLED.increment(); return null; }
                     return snapshot.search(orderedTargets, visited, length, reach, multiplier);
                 });
@@ -86,7 +85,7 @@ public final class WaterPathfinding {
                     return path;
                 } else INVALID.increment();
             }
-            // Validation failures never combine partial nodes with a new result. All live reads remain on this owner thread.
+            // 校验失败时绝不把部分节点与新结果混合；所有实时读取仍在所有者线程完成。
             return finder.findPath(liveRegion, mob, stableTargets, length, reach, multiplier);
         }, current);
     }

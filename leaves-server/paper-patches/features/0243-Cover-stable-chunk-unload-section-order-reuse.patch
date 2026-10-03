@@ -1,0 +1,128 @@
+From cdc83b1e892061f277773e6d00eb8f5a017ef4c9 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Thu, 1 Oct 2026 22:33:40 +0800
+Subject: [PATCH] Cover stable chunk unload section order reuse
+
+---
+ .../performance/ChunkUnloadQueueTest.java     | 90 +++++++++++++++++++++++++-
+ 1 file changed, 85 insertions(+), 5 deletions(-)
+
+diff --git a/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadQueueTest.java b/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadQueueTest.java
+index bf29591c3d..de3c1ff7a6 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadQueueTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/ChunkUnloadQueueTest.java
+@@ -7,11 +7,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import ca.spottedleaf.moonrise.patches.chunk_system.queue.ChunkUnloadQueue;
+ import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.Test;
++import org.leavesx.leavesx.config.ConfigurationTestSupport;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.spongepowered.configurate.CommentedConfigurationNode;
+ 
+ @Normal
+ class ChunkUnloadQueueTest {
+ 
++    @AfterEach
++    void restoreDefaults() {
++        ConfigurationTestSupport.publish(LeavesXConfig.safeDefaults());
++    }
++
+     @Test
+     void tracksDuplicateAddsIndividualRemovesAndPartialDrainsExactly() {
+         final ChunkUnloadQueue queue = new ChunkUnloadQueue(2);
+@@ -46,7 +56,7 @@ class ChunkUnloadQueueTest {
+     }
+ 
+     @Test
+-    void reusesStableSectionSnapshotUntilQueueMembershipChanges() {
++    void reusesStableSectionSnapshotWhileASectionIsDrained() {
+         final ChunkUnloadQueue queue = new ChunkUnloadQueue(2);
+         queue.addChunk(0, 0);
+         queue.addChunk(8, 8);
+@@ -58,9 +68,79 @@ class ChunkUnloadQueueTest {
+         assertTrue(first.get(0).order() < first.get(1).order());
+ 
+         queue.addChunk(1, 1);
+-        final java.util.List<ChunkUnloadQueue.SectionToUnload> afterMutation = queue.retrieveForAllRegions();
+-        assertFalse(first == afterMutation);
+-        assertEquals(2, afterMutation.size());
+-        assertEquals(2, afterMutation.get(0).count());
++        assertEquals(3L, queue.pendingChunkCount());
++        assertTrue(first == queue.retrieveForAllRegions());
++
++        final ChunkUnloadQueue.UnloadSection section = queue.getSectionUnsynchronized(0, 0);
++        assertEquals(net.minecraft.world.level.ChunkPos.pack(0, 0), queue.removeFirstChunk(0, 0, section));
++        assertEquals(2L, queue.pendingChunkCount());
++        assertTrue(first == queue.retrieveForAllRegions());
++
++        assertEquals(net.minecraft.world.level.ChunkPos.pack(1, 1), queue.removeFirstChunk(0, 0, section));
++        assertEquals(1L, queue.pendingChunkCount());
++        final java.util.List<ChunkUnloadQueue.SectionToUnload> afterSectionRemoval = queue.retrieveForAllRegions();
++        assertFalse(first == afterSectionRemoval);
++        assertEquals(1, afterSectionRemoval.size());
++        assertEquals(2, afterSectionRemoval.getFirst().sectionX());
++        assertEquals(2, afterSectionRemoval.getFirst().sectionZ());
++    }
++
++    @Test
++    void addingASectionInvalidatesSnapshotAndKeepsOrderDeterministic() {
++        final ChunkUnloadQueue queue = new ChunkUnloadQueue(2);
++        queue.addChunk(0, 0);
++        final java.util.List<ChunkUnloadQueue.SectionToUnload> first = queue.retrieveForAllRegions();
++
++        queue.addChunk(16, 16);
++        final java.util.List<ChunkUnloadQueue.SectionToUnload> second = queue.retrieveForAllRegions();
++
++        assertFalse(first == second);
++        assertEquals(2, second.size());
++        assertTrue(second.get(0).order() < second.get(1).order());
++        assertEquals(2L, queue.pendingChunkCount());
++    }
++
++    @Test
++    void removingAndReaddingTheLastChunkRebuildsItsSectionOrder() {
++        final ChunkUnloadQueue queue = new ChunkUnloadQueue(2);
++        queue.addChunk(0, 0);
++        final java.util.List<ChunkUnloadQueue.SectionToUnload> first = queue.retrieveForAllRegions();
++
++        queue.addChunk(1, 0);
++        assertTrue(first == queue.retrieveForAllRegions());
++        assertEquals(2L, queue.pendingChunkCount());
++
++        assertTrue(queue.removeChunk(0, 0));
++        assertTrue(first == queue.retrieveForAllRegions());
++        assertTrue(queue.removeChunk(1, 0));
++        assertEquals(0L, queue.pendingChunkCount());
++        final java.util.List<ChunkUnloadQueue.SectionToUnload> empty = queue.retrieveForAllRegions();
++        assertFalse(first == empty);
++        assertTrue(empty.isEmpty());
++
++        queue.addChunk(0, 0);
++        final java.util.List<ChunkUnloadQueue.SectionToUnload> readded = queue.retrieveForAllRegions();
++        assertFalse(empty == readded);
++        assertEquals(1, readded.size());
++        assertTrue(readded.getFirst().order() > first.getFirst().order());
++        assertEquals(1L, queue.pendingChunkCount());
++    }
++
++    @Test
++    void disabledSnapshotCacheBuildsASeparateSnapshotForEachCall() {
++        final CommentedConfigurationNode config = CommentedConfigurationNode.root();
++        config.node("performance", "chunk", "unload-section-snapshot-cache").raw(false);
++        ConfigurationTestSupport.publish(config);
++        assertFalse(LeavesXRuntime.chunkUnloadSectionSnapshotCacheOptimization());
++
++        final ChunkUnloadQueue queue = new ChunkUnloadQueue(2);
++        queue.addChunk(0, 0);
++
++        final java.util.List<ChunkUnloadQueue.SectionToUnload> first = queue.retrieveForAllRegions();
++        final java.util.List<ChunkUnloadQueue.SectionToUnload> second = queue.retrieveForAllRegions();
++
++        assertFalse(first == second);
++        assertEquals(first, second);
++        assertEquals(1L, queue.pendingChunkCount());
+     }
+ }

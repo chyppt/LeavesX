@@ -12,7 +12,7 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 import org.leavesx.leavesx.config.LeavesXRuntime;
 import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
 
-/** Offloads only immutable AABB arithmetic. Gathering shapes and applying movement remain on the tick thread. */
+/** 只把不可变 AABB 算术移出主线程；收集形状和应用位移仍在 Tick 线程执行。 */
 public final class ParallelMobCollision {
     private static final int MIN_BOXES = 8_192;
     private static final int MIN_BOXES_PER_WORKER = 2_048;
@@ -32,7 +32,7 @@ public final class ParallelMobCollision {
     }
 
     static Vec3 compute(final Vec3 movement, AABB box, final List<AABB> boxes) {
-        // Copy the list; AABB coordinates themselves are final. No entity, world, or mutable shape reaches a worker.
+        // 复制列表；AABB 坐标本身是 final。实体、世界和可变形状都不会传给工作线程。
         final AABB[] snapshot = boxes.toArray(AABB[]::new);
         double x = movement.x;
         double y = movement.y;
@@ -68,8 +68,7 @@ public final class ParallelMobCollision {
                         case Y -> CollisionUtil.collideY(snapshot[i], box, limit);
                         case Z -> CollisionUtil.collideZ(snapshot[i], box, limit);
                     };
-                    // Contact epsilon can reverse a tiny displacement. That makes folding order-dependent;
-                    // reject the whole parallel axis and reproduce the original serial order, including signed zero.
+                    // 接触误差可能反转极小位移，使归并依赖顺序；整条并行轴直接回退，复现原版串行顺序（包括带符号零）。
                     if (!Double.isFinite(limit) || (positive ? limit <= 0.0 : limit >= 0.0)) {
                         limit = Double.NaN;
                         break;

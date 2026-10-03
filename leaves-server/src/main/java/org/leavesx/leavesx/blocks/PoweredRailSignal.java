@@ -6,7 +6,7 @@ import net.minecraft.world.level.block.PoweredRailBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.RailShape;
 
-/** Allocation-only rail optimization. Writes, neighbor updates and Bukkit events stay in PoweredRailBlock. */
+/** 只负责减少分配的铁轨优化；写入、邻居更新和 Bukkit 事件仍由 PoweredRailBlock 执行。 */
 public final class PoweredRailSignal {
     private PoweredRailSignal() {}
 
@@ -61,7 +61,7 @@ public final class PoweredRailSignal {
             || shape == RailShape.ASCENDING_NORTH || shape == RailShape.ASCENDING_SOUTH)) return false;
         if (direction == RailShape.NORTH_SOUTH && (shape == RailShape.EAST_WEST
             || shape == RailShape.ASCENDING_EAST || shape == RailShape.ASCENDING_WEST)) return false;
-        // No callbacks retain this cursor. Nested searches restore their own coordinates before every read.
+        // 没有回调会保存这个游标；嵌套搜索在每次读取前都会恢复自己的坐标。
         return state.getValue(PoweredRailBlock.POWERED) && (level.hasNeighborSignal(cursor)
             || find(rail, level, x, y, z, state, forward, depth + 1, cursor));
     }

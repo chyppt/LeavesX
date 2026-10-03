@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.network.FriendlyByteBuf;
 
-/** JEI's legacy and counted transfer wire formats. No item stacks are accepted from the client. */
+/** JEI 的旧版和计数传输格式；不接受客户端直接提交的物品堆。 */
 public record JeiTransferRequest(List<Operation> operations, List<Integer> craftingSlots,
                                  List<Integer> inventorySlots, boolean maximum, boolean completeSets, int transferId) {
     public record Operation(int source, int target, int count) {}

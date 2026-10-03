@@ -3,7 +3,7 @@ package org.leavesx.leavesx.diagnostics;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
-/** Bounded cumulative measurements of explicit blocking sites; does not infer CPU time. */
+/** 对明确阻塞点做有界累计测量；不会据此推断 CPU 时间。 */
 public final class OwnerThreadWaits {
     public enum Site { PATH_RESULT, ORDERED_BARRIER, ADMISSION, COMPUTE_RANGES, COMPUTE_BATCHES }
     private static final AsyncTaskTiming[] TIMINGS = java.util.Arrays.stream(Site.values())
@@ -30,7 +30,7 @@ public final class OwnerThreadWaits {
         }
     }
 
-    /** Measures only the latch wait, excluding useful ranges executed by the helping caller. */
+    /** 只测量闩锁等待，不包含帮助调用者执行有效计算的时间。 */
     public static void await(final Site site, final java.util.concurrent.CountDownLatch latch,
                              final long timeoutNanos) throws InterruptedException {
         if (latch.getCount() == 0L) return;

@@ -12,7 +12,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataType;
 
-/** Operator-only tool. Its persistent marker is independent of the visible item name. */
+/** 仅管理员可用的工具；持久标记与物品显示名称相互独立。 */
 public final class EntityAiTool {
     private static final NamespacedKey KEY = new NamespacedKey("leavesx", "entity_ai_toggle");
 
@@ -25,7 +25,7 @@ public final class EntityAiTool {
             sender.sendMessage("此命令只能由游戏内的 OP 使用。");
             return;
         }
-        final ItemStack item = new ItemStack(Material.STICK);
+        final ItemStack item = new ItemStack(Material.WOODEN_SHOVEL);
         item.editMeta(meta -> {
             meta.displayName(Component.text("禁用实体AI", NamedTextColor.GOLD));
             meta.getPersistentDataContainer().set(KEY, PersistentDataType.BYTE, (byte) 1);
@@ -34,12 +34,12 @@ public final class EntityAiTool {
             player.sendMessage("背包已满，请留出一个空位后重试。");
             return;
         }
-        player.sendMessage("已获得禁用实体AI木棍，右键生物切换；村民保留交易和补货。");
+        player.sendMessage("已获得禁用实体AI木铲，右键生物切换。");
     }
 
-    /** Called after Bukkit interaction cancellation and vanilla distance validation, on the server thread. */
+    /** 在 Bukkit 交互取消检查和原版距离校验之后，于服务器线程调用。 */
     public static boolean interact(final Player player, final Entity entity, final ItemStack item) {
-        if (item.getType() != Material.STICK
+        if (item.getType() != Material.WOODEN_SHOVEL
             || !Byte.valueOf((byte) 1).equals(item.getPersistentDataContainer().get(KEY, PersistentDataType.BYTE))) {
             return false;
         }
@@ -64,8 +64,7 @@ public final class EntityAiTool {
             mob.getNavigation().stop();
             mob.setNoAi(disabled);
         }
-        player.sendMessage(Component.text(disabled ? "已禁用实体 AI" : "已启用实体 AI", NamedTextColor.GREEN)
-            .append(Component.text(disabled && mob instanceof Villager ? "，村民仍可交易和补货。" : "。")));
+        player.sendMessage(Component.text(disabled ? "已禁用实体 AI。" : "已启用实体 AI。", NamedTextColor.GREEN));
         return true;
     }
 }

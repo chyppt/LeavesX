@@ -1,0 +1,622 @@
+From 6d6f241d7d89bc9f0c14d599a066237ba143e21b Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Thu, 1 Oct 2026 18:50:55 +0800
+Subject: [PATCH] Align compute admission and skip uniform radix digits
+
+---
+ .../activation/ActivationRangeSnapshot.java   |   3 +-
+ .../leavesx/command/LeavesXCommand.java       |   8 +-
+ .../performance/StableDistanceSorter.java     |  27 ++-
+ .../runtime/LeavesXComputeExecutor.java       | 125 +++++++---
+ .../performance/StableDistanceSorterTest.java |  36 +++
+ .../runtime/LeavesXComputeExecutorTest.java   | 220 ++++++++++++++++++
+ 6 files changed, 385 insertions(+), 34 deletions(-)
+
+diff --git a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+index 4fc06d064d..b36545e23b 100644
+--- a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
++++ b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+@@ -182,7 +182,8 @@ final class ActivationRangeSnapshot {
+             || !LeavesXComputeExecutor.shouldAttempt(
+                 LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION,
+                 size,
+-                minimumCandidates
++                minimumCandidates,
++                LeavesXRuntime.entityActivationMinimumItemsPerWorker()
+             )) {
+             return false;
+         }
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index c955af4c17..f7a97bc913 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1152,7 +1152,7 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(line(
+             "正常未并行",
+             "低于阈值 " + window.belowThresholdFallbacks() + " / 分区不足 "
+-                + window.insufficientPartitionFallbacks() + " / 线程池不可用 " + window.unavailableParallelismFallbacks(),
++                + window.insufficientPartitionFallbacks() + " / 池不可用或繁忙 " + window.unavailableParallelismFallbacks(),
+             NamedTextColor.GRAY
+         ));
+         sender.sendMessage(line(
+@@ -1178,6 +1178,12 @@ public final class LeavesXCommand extends Command {
+                     + " / 工作量 主 " + workload.callerItems() + "、工 " + workload.workerItems(),
+                 workload.failedInvocations() == 0L ? NamedTextColor.GRAY : NamedTextColor.RED
+             ));
++            sender.sendMessage(Component.text(
++                "   未并行：阈值 " + workload.belowThresholdFallbacks()
++                    + " / 分片不足 " + workload.insufficientPartitionFallbacks()
++                    + " / 池不可用或繁忙 " + workload.unavailableParallelismFallbacks(),
++                NamedTextColor.DARK_GRAY
++            ));
+         }
+         final LeavesXComputeExecutor.Metrics lifetime = LeavesXComputeExecutor.metrics();
+         sender.sendMessage(Component.text(
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+index e75bf62a05..82b1ffbebe 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -55,7 +55,8 @@ public final class StableDistanceSorter {
+                 && LeavesXComputeExecutor.shouldAttempt(
+                     LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
+                     size,
+-                    parallelThreshold
++                    parallelThreshold,
++                    LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker()
+                 );
+             if (parallelEligible) {
+                 snapshotEntityCoordinates(entities, workspace, size);
+@@ -99,7 +100,8 @@ public final class StableDistanceSorter {
+                 && LeavesXComputeExecutor.shouldAttempt(
+                     LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
+                     size,
+-                    parallelThreshold
++                    parallelThreshold,
++                    LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker()
+                 );
+             if (useCoordinateSnapshot) {
+                 snapshotEntityCoordinates(entities, workspace, size);
+@@ -182,7 +184,8 @@ public final class StableDistanceSorter {
+                 && LeavesXComputeExecutor.shouldAttempt(
+                     LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
+                     size,
+-                    parallelThreshold
++                    parallelThreshold,
++                    LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker()
+                 );
+             sortCoordinateSnapshot(workspace, size, originX, originY, originZ, parallelEligible, parallelThreshold);
+             return Arrays.copyOf(workspace.order, size);
+@@ -442,8 +445,22 @@ public final class StableDistanceSorter {
+         final int[] offsets,
+         final int offsetBase
+     ) {
++        if (end - start < 2) {
++            return;
++        }
++        final int[] resultOrder = order;
++        final long firstKey = keys[order[start]];
++        long varyingBits = 0L;
++        for (int index = start + 1; index < end; index++) {
++            varyingBits |= firstKey ^ keys[order[index]];
++        }
+         final int bucketBase = offsetBase;
+         for (int shift = 0; shift < Long.SIZE; shift += Byte.SIZE) {
++            // A uniform digit cannot change stable order. Integer coordinates often share most low mantissa bytes,
++            // and ordinary distances share the high byte, so avoid the histogram and scatter for those passes.
++            if ((varyingBits >>> shift & 0xFFL) == 0L) {
++                continue;
++            }
+             Arrays.fill(offsets, bucketBase, bucketBase + RADIX_BUCKETS, 0);
+             for (int index = start; index < end; index++) {
+                 offsets[bucketBase + bucket(keys[order[index]], shift)]++;
+@@ -466,6 +483,10 @@ public final class StableDistanceSorter {
+             order = scratch;
+             scratch = swap;
+         }
++        // Skipped digits may leave an odd number of scatters. Callers always merge from the original order buffer.
++        if (order != resultOrder) {
++            System.arraycopy(order, start, resultOrder, start, end - start);
++        }
+     }
+ 
+     private static void mergeByKey(
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 8950bdabec..924ffb89f2 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -222,23 +222,43 @@ public final class LeavesXComputeExecutor {
+      * all live-world access on the calling thread.</p>
+      */
+     public static boolean shouldAttempt(final Workload workload, final int size, final int minimumSize) {
++        return shouldAttempt(workload, size, minimumSize, minimumItemsPerWorker);
++    }
++
++    /**
++     * Checks the same workload-specific granularity as submission before the caller captures a coordinate snapshot.
++     * This is only a hint: another invocation can reserve the available workers before the snapshot is submitted.
++     */
++    public static boolean shouldAttempt(
++        final Workload workload,
++        final int size,
++        final int minimumSize,
++        final int minimumItemsPerTask
++    ) {
+         Objects.requireNonNull(workload, "workload");
+         if (size <= 0) {
+             return false;
+         }
+         final ComputeThreadPoolExecutor current = executor;
+-        if (current == null || workerCount <= 1) {
++        if (current == null || current.isShutdown() || workerCount <= 1) {
+             return rejectBeforeSubmission(workload, size, FallbackReason.POOL_UNAVAILABLE);
+         }
+-        if (size >= minimumSize) {
+-            return true;
++        final boolean adaptivelyAdmitted = size < minimumSize
++            && canAdaptivelyAdmit(current, workload, size, minimumSize);
++        if (size < minimumSize && !adaptivelyAdmitted) {
++            return rejectBeforeSubmission(workload, size, FallbackReason.BELOW_THRESHOLD);
+         }
+-        final boolean adaptivelyAdmitted = supportsAdaptiveScheduling(workload)
+-            && minimumSize >= 256
+-            && isIdleForAdaptiveDispatch(current)
+-            && size >= Math.max(MIN_ADAPTIVE_ITEMS_PER_TASK, (minimumSize + 1) / 2);
+-        return adaptivelyAdmitted
+-            || rejectBeforeSubmission(workload, size, FallbackReason.BELOW_THRESHOLD);
++        if (adaptivePartitionCountFor(
++            current, workload, size, computeLaneCount(), minimumItemsPerTask, adaptivelyAdmitted || minimumSize >= 256
++        ) <= 1) {
++            return rejectBeforeSubmission(workload, size, FallbackReason.INSUFFICIENT_PARTITIONS);
++        }
++        if (!isComputeWorkerThread() && current.availableWorkerSlotCount() == 0) {
++            // A later submission still tolerates contention, but an already occupied pool cannot justify copying
++            // live coordinates now just to execute the same complete operation on the caller.
++            return rejectBeforeSubmission(workload, size, FallbackReason.POOL_BUSY_CALLER_ONLY);
++        }
++        return true;
+     }
+ 
+     /** Records batches rejected by the cheap pre-snapshot gate so diagnostics do not misleadingly report zero work. */
+@@ -250,15 +270,46 @@ public final class LeavesXComputeExecutor {
+         final WorkloadCounters counters = WORKLOAD_COUNTERS[workload.ordinal()];
+         invocationCount.incrementAndGet();
+         counters.recordInvocation(size);
+-        if (reason == FallbackReason.POOL_UNAVAILABLE) {
+-            unavailableParallelismFallbackCount.incrementAndGet();
+-            counters.unavailableParallelismFallbacks.incrementAndGet();
+-        } else {
+-            belowFeatureThresholdFallbackCount.incrementAndGet();
+-            counters.belowFeatureThresholdFallbacks.incrementAndGet();
++        recordAdmissionRejection(workload, counters, reason, size);
++        return false;
++    }
++
++    /** Records skipped admission once, without misclassifying it as a failed partial computation. */
++    private static void recordAdmissionRejection(
++        final Workload workload,
++        final WorkloadCounters counters,
++        final FallbackReason reason,
++        final int size
++    ) {
++        switch (reason) {
++            case BELOW_THRESHOLD -> {
++                belowFeatureThresholdFallbackCount.incrementAndGet();
++                counters.belowFeatureThresholdFallbacks.incrementAndGet();
++            }
++            case INSUFFICIENT_PARTITIONS -> {
++                insufficientPartitionFallbackCount.incrementAndGet();
++                counters.insufficientPartitionFallbacks.incrementAndGet();
++            }
++            case POOL_UNAVAILABLE, POOL_BUSY_CALLER_ONLY -> {
++                unavailableParallelismFallbackCount.incrementAndGet();
++                counters.unavailableParallelismFallbacks.incrementAndGet();
++            }
++            default -> throw new IllegalArgumentException("not an admission rejection: " + reason);
+         }
+         recordFallback(workload, reason, size);
+-        return false;
++    }
++
++    private static boolean canAdaptivelyAdmit(
++        final ComputeThreadPoolExecutor current,
++        final Workload workload,
++        final int size,
++        final int minimumSize
++    ) {
++        return supportsAdaptiveScheduling(workload)
++            && minimumSize >= 256
++            // Adding one before dividing would overflow at Integer.MAX_VALUE and admit tiny batches.
++            && size >= Math.max(MIN_ADAPTIVE_ITEMS_PER_TASK, divideCeil(minimumSize, 2))
++            && isIdleForAdaptiveDispatch(current);
+     }
+ 
+     /**
+@@ -324,21 +375,15 @@ public final class LeavesXComputeExecutor {
+         invocationCount.incrementAndGet();
+         workloadCounters.recordInvocation(size);
+         final ComputeThreadPoolExecutor current = executor;
+-        if (current == null || workerCount <= 1) {
+-            unavailableParallelismFallbackCount.incrementAndGet();
+-            workloadCounters.unavailableParallelismFallbacks.incrementAndGet();
+-            recordFallback(workload, FallbackReason.POOL_UNAVAILABLE, size);
++        if (current == null || current.isShutdown() || workerCount <= 1) {
++            recordAdmissionRejection(workload, workloadCounters, FallbackReason.POOL_UNAVAILABLE, size);
+             return 0;
+         }
+         final boolean belowConfiguredThreshold = size < minimumSize;
+         final boolean adaptivelyAdmitted = belowConfiguredThreshold
+-            && supportsAdaptiveScheduling(workload)
+-            && minimumSize >= 256
+-            && isIdleForAdaptiveDispatch(current)
+-            && size >= Math.max(MIN_ADAPTIVE_ITEMS_PER_TASK, (minimumSize + 1) / 2);
++            && canAdaptivelyAdmit(current, workload, size, minimumSize);
+         if (belowConfiguredThreshold && !adaptivelyAdmitted) {
+-            belowFeatureThresholdFallbackCount.incrementAndGet();
+-            workloadCounters.belowFeatureThresholdFallbacks.incrementAndGet();
++            recordAdmissionRejection(workload, workloadCounters, FallbackReason.BELOW_THRESHOLD, size);
+             return 0;
+         }
+         if (adaptivelyAdmitted) {
+@@ -358,8 +403,7 @@ public final class LeavesXComputeExecutor {
+             adaptivelyAdmitted || minimumSize >= 256
+         );
+         if (taskCount <= 1) {
+-            insufficientPartitionFallbackCount.incrementAndGet();
+-            workloadCounters.insufficientPartitionFallbacks.incrementAndGet();
++            recordAdmissionRejection(workload, workloadCounters, FallbackReason.INSUFFICIENT_PARTITIONS, size);
+             return 0;
+         }
+         if (taskCount > baselineTaskCount) {
+@@ -707,8 +751,13 @@ public final class LeavesXComputeExecutor {
+ 
+     /** Returns counter deltas for the requested recent window without resetting lifetime diagnostics. */
+     public static WindowMetrics recentMetrics(final int requestedSeconds) {
++        return recentMetrics(requestedSeconds, System.nanoTime());
++    }
++
++    /** Lets regression tests exercise a complete window without sleeping or altering the production clock. */
++    static WindowMetrics recentMetrics(final int requestedSeconds, final long capturedNanos) {
+         final int windowSeconds = Math.clamp(requestedSeconds, 10, 300);
+-        final CounterSample latest = captureCounterSample(System.nanoTime());
++        final CounterSample latest = captureCounterSample(capturedNanos);
+         final CounterSample baseline;
+         synchronized (WINDOW_SAMPLE_LOCK) {
+             CounterSample candidate = WINDOW_SAMPLES.peekFirst();
+@@ -729,6 +778,9 @@ public final class LeavesXComputeExecutor {
+                 workload,
+                 delta(latest.workloadInvocations()[index], baseline.workloadInvocations()[index]),
+                 delta(latest.workloadParallelInvocations()[index], baseline.workloadParallelInvocations()[index]),
++                delta(latest.workloadBelowThresholdFallbacks()[index], baseline.workloadBelowThresholdFallbacks()[index]),
++                delta(latest.workloadInsufficientPartitionFallbacks()[index], baseline.workloadInsufficientPartitionFallbacks()[index]),
++                delta(latest.workloadUnavailableParallelismFallbacks()[index], baseline.workloadUnavailableParallelismFallbacks()[index]),
+                 delta(latest.workloadMainThreadFallbacks()[index], baseline.workloadMainThreadFallbacks()[index]),
+                 delta(latest.workloadCallerOnlyInvocations()[index], baseline.workloadCallerOnlyInvocations()[index]),
+                 delta(latest.workloadFailedInvocations()[index], baseline.workloadFailedInvocations()[index]),
+@@ -764,6 +816,9 @@ public final class LeavesXComputeExecutor {
+         final int workloadCount = Workload.values().length;
+         final long[] workloadInvocations = new long[workloadCount];
+         final long[] workloadParallelInvocations = new long[workloadCount];
++        final long[] workloadBelowThresholdFallbacks = new long[workloadCount];
++        final long[] workloadInsufficientPartitionFallbacks = new long[workloadCount];
++        final long[] workloadUnavailableParallelismFallbacks = new long[workloadCount];
+         final long[] workloadMainThreadFallbacks = new long[workloadCount];
+         final long[] workloadCallerOnlyInvocations = new long[workloadCount];
+         final long[] workloadFailedInvocations = new long[workloadCount];
+@@ -775,6 +830,9 @@ public final class LeavesXComputeExecutor {
+             final WorkloadCounters counters = WORKLOAD_COUNTERS[index];
+             workloadInvocations[index] = counters.invocations.get();
+             workloadParallelInvocations[index] = counters.parallelInvocations.get();
++            workloadBelowThresholdFallbacks[index] = counters.belowFeatureThresholdFallbacks.get();
++            workloadInsufficientPartitionFallbacks[index] = counters.insufficientPartitionFallbacks.get();
++            workloadUnavailableParallelismFallbacks[index] = counters.unavailableParallelismFallbacks.get();
+             workloadMainThreadFallbacks[index] = counters.mainThreadFallbacks.get();
+             workloadCallerOnlyInvocations[index] = counters.callerOnlyInvocations.get();
+             workloadFailedInvocations[index] = counters.failedInvocations.get();
+@@ -800,6 +858,9 @@ public final class LeavesXComputeExecutor {
+             workerItemCount.get(),
+             workloadInvocations,
+             workloadParallelInvocations,
++            workloadBelowThresholdFallbacks,
++            workloadInsufficientPartitionFallbacks,
++            workloadUnavailableParallelismFallbacks,
+             workloadMainThreadFallbacks,
+             workloadCallerOnlyInvocations,
+             workloadFailedInvocations,
+@@ -999,6 +1060,9 @@ public final class LeavesXComputeExecutor {
+         Workload workload,
+         long invocations,
+         long parallelInvocations,
++        long belowThresholdFallbacks,
++        long insufficientPartitionFallbacks,
++        long unavailableParallelismFallbacks,
+         long mainThreadFallbacks,
+         long callerOnlyInvocations,
+         long failedInvocations,
+@@ -1050,6 +1114,9 @@ public final class LeavesXComputeExecutor {
+         long workerItems,
+         long[] workloadInvocations,
+         long[] workloadParallelInvocations,
++        long[] workloadBelowThresholdFallbacks,
++        long[] workloadInsufficientPartitionFallbacks,
++        long[] workloadUnavailableParallelismFallbacks,
+         long[] workloadMainThreadFallbacks,
+         long[] workloadCallerOnlyInvocations,
+         long[] workloadFailedInvocations,
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+index fb3660f73e..5ad156b16d 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -105,6 +105,42 @@ class StableDistanceSorterTest {
+         assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, 0.0, 0.0, 0.0, true, 1));
+     }
+ 
++    @Test
++    void preservesIdentityWhenEveryDistanceKeyIsEqual() {
++        LeavesXComputeExecutor.configure(4, 64);
++        for (final double coordinate : new double[] {0.0, 1.0, Double.POSITIVE_INFINITY, Double.NaN}) {
++            final double[] x = new double[257];
++            Arrays.fill(x, coordinate);
++            final double[] zeros = new double[x.length];
++            final int[] expected = referenceOrder(x, zeros, zeros, 0.0, 0.0, 0.0);
++            assertArrayEquals(expected, StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, false, 256));
++            assertArrayEquals(expected, StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, true, 256));
++        }
++    }
++
++    @Test
++    void preservesStableOrderWithDifferentNumbersOfVaryingRadixDigits() {
++        LeavesXComputeExecutor.configure(4, 64);
++        final Random random = new Random(0x5261646978446967L);
++        final double[] scales = {0.0, 1.0, 1.0E-150, 1.0E150, 1.0E155};
++        for (final int size : new int[] {2, 63, 128, 257, 513, 2_049}) {
++            final double[] x = new double[size];
++            final double[] y = new double[size];
++            final double[] z = new double[size];
++            for (int round = 0; round < 8; round++) {
++                for (int index = 0; index < size; index++) {
++                    final double scale = scales[round % scales.length];
++                    x[index] = (random.nextInt(33) - 16 + (round < 5 ? 0.0 : random.nextDouble())) * scale;
++                    y[index] = (random.nextInt(9) - 4) * scale;
++                    z[index] = (random.nextInt(33) - 16) * scale;
++                }
++                final int[] expected = referenceOrder(x, y, z, 0.0, 0.0, 0.0);
++                assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, 0.0, 0.0, 0.0, false, 256));
++                assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, 0.0, 0.0, 0.0, true, 256));
++            }
++        }
++    }
++
+     @Test
+     void rejectsMismatchedCoordinateArrays() {
+         assertThrows(
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+index e74cf21334..d26f181f0c 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -156,6 +156,226 @@ public class LeavesXComputeExecutorTest {
+         assertEquals(100L, activation.totalItems());
+     }
+ 
++    @Test
++    void largeAdaptiveThresholdDoesNotOverflowIntoSmallBatchAdmission() {
++        LeavesXComputeExecutor.configure(4, 64);
++
++        assertFalse(LeavesXComputeExecutor.shouldAttempt(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
++            64,
++            Integer.MAX_VALUE
++        ));
++        assertEquals(0, LeavesXComputeExecutor.invokeRangesWithCount(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
++            64,
++            Integer.MAX_VALUE,
++            (taskIndex, start, end) -> {
++                throw new AssertionError("a near-maximal threshold must not admit a tiny batch");
++            }
++        ));
++        assertEquals(2L, LeavesXComputeExecutor.metrics().belowFeatureThresholdFallbacks());
++    }
++
++    @Test
++    void largeAdaptiveThresholdRoundsItsHalfBoundaryUpward() {
++        LeavesXComputeExecutor.configure(4, 64);
++
++        assertFalse(LeavesXComputeExecutor.shouldAttempt(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
++            Integer.MAX_VALUE / 2,
++            Integer.MAX_VALUE
++        ));
++        assertTrue(LeavesXComputeExecutor.shouldAttempt(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
++            Integer.MAX_VALUE / 2 + 1,
++            Integer.MAX_VALUE
++        ));
++        assertEquals(1L, LeavesXComputeExecutor.metrics().invocations(), "an accepted hint is not a completed invocation");
++    }
++
++    @Test
++    void directThresholdRejectionReplacesAnOlderPreSnapshotReason() {
++        LeavesXComputeExecutor.configure(4, 64);
++        assertFalse(LeavesXComputeExecutor.shouldAttempt(
++            LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION,
++            100,
++            2_048
++        ));
++
++        assertFalse(LeavesXComputeExecutor.invokeRanges(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
++            127,
++            128,
++            (taskIndex, start, end) -> {
++                throw new AssertionError("rejected input must not invoke a callback");
++            }
++        ));
++
++        final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
++        assertEquals(LeavesXComputeExecutor.Workload.AI_TARGET_SELECT, metrics.lastFallbackWorkload());
++        assertEquals(LeavesXComputeExecutor.FallbackReason.BELOW_THRESHOLD.displayName(), metrics.lastFallbackReason());
++        assertEquals(2L, metrics.invocations());
++        assertEquals(0L, metrics.fullRecomputationRequests(), "a skipped batch is not a failed computation");
++    }
++
++    @Test
++    void directPartitionRejectionRecordsTheCurrentReason() {
++        LeavesXComputeExecutor.configure(4, 64);
++
++        assertFalse(LeavesXComputeExecutor.invokeRanges(
++            LeavesXComputeExecutor.Workload.UNSPECIFIED,
++            100,
++            1,
++            (taskIndex, start, end) -> {
++                throw new AssertionError("one useful range must remain synchronous");
++            }
++        ));
++
++        final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
++        assertEquals(LeavesXComputeExecutor.Workload.UNSPECIFIED, metrics.lastFallbackWorkload());
++        assertEquals(LeavesXComputeExecutor.FallbackReason.INSUFFICIENT_PARTITIONS.displayName(), metrics.lastFallbackReason());
++        assertEquals(1L, metrics.insufficientPartitionFallbacks());
++        assertEquals(0L, metrics.fullRecomputationRequests());
++    }
++
++    @Test
++    void preSnapshotGateRejectsBatchesThatCannotFillTwoUsefulRanges() {
++        LeavesXComputeExecutor.configure(4, 4_096);
++
++        assertFalse(LeavesXComputeExecutor.shouldAttempt(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++            512,
++            256
++        ));
++
++        final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
++        assertEquals(1L, metrics.insufficientPartitionFallbacks());
++        assertEquals(0L, metrics.belowFeatureThresholdFallbacks());
++        assertEquals(1L, metrics.invocations(), "pre-snapshot rejection must be counted once");
++        assertEquals(LeavesXComputeExecutor.FallbackReason.INSUFFICIENT_PARTITIONS.displayName(), metrics.lastFallbackReason());
++    }
++
++    @Test
++    void preSnapshotGateHonorsTheCallersWorkloadSpecificGranularity() {
++        LeavesXComputeExecutor.configure(4, 64);
++
++        assertFalse(LeavesXComputeExecutor.shouldAttempt(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++            512,
++            256,
++            4_096
++        ));
++        assertEquals(0, LeavesXComputeExecutor.invokeRangesWithCount(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++            512,
++            256,
++            4_096,
++            (taskIndex, start, end) -> {
++                throw new AssertionError("a batch rejected by its granularity must not execute");
++            }
++        ));
++        assertEquals(2L, LeavesXComputeExecutor.metrics().insufficientPartitionFallbacks());
++    }
++
++    @Test
++    void acceptedPreSnapshotHintDoesNotDoubleCountAnInvocation() {
++        LeavesXComputeExecutor.configure(4, 64);
++        final AtomicIntegerArray counts = new AtomicIntegerArray(192);
++
++        assertTrue(LeavesXComputeExecutor.shouldAttempt(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
++            counts.length(),
++            256,
++            128
++        ));
++        assertTrue(LeavesXComputeExecutor.invokeRangesWithCount(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
++            counts.length(),
++            256,
++            128,
++            (taskIndex, start, end) -> {
++                for (int index = start; index < end; index++) {
++                    counts.incrementAndGet(index);
++                }
++            }
++        ) > 1);
++
++        for (int index = 0; index < counts.length(); index++) {
++            assertEquals(1, counts.get(index));
++        }
++        assertEquals(1L, LeavesXComputeExecutor.metrics().invocations());
++        assertEquals(0L, LeavesXComputeExecutor.metrics().synchronousFallbacks());
++    }
++
++    @Test
++    void recentWindowAttributesAdmissionRejectionsWithoutResettingLifetimeCounters() {
++        LeavesXComputeExecutor.configure(4, 64);
++        assertFalse(LeavesXComputeExecutor.shouldAttempt(LeavesXComputeExecutor.Workload.AI_TARGET_SORT, 82, 256));
++        final long windowStart = System.nanoTime();
++        LeavesXComputeExecutor.sampleMetrics(windowStart);
++
++        assertFalse(LeavesXComputeExecutor.shouldAttempt(LeavesXComputeExecutor.Workload.AI_TARGET_SORT, 82, 256));
++        assertFalse(LeavesXComputeExecutor.shouldAttempt(LeavesXComputeExecutor.Workload.AI_TARGET_SELECT, 512, 256, 4_096));
++        LeavesXComputeExecutor.shutdown();
++        assertFalse(LeavesXComputeExecutor.shouldAttempt(LeavesXComputeExecutor.Workload.MOB_SPAWN_COUNTING, 2_048, 2_048));
++
++        final long windowEnd = windowStart + TimeUnit.SECONDS.toNanos(60L);
++        final LeavesXComputeExecutor.WindowMetrics window = LeavesXComputeExecutor.recentMetrics(60, windowEnd);
++        assertEquals(3L, window.invocations());
++        assertEquals(1L, window.belowThresholdFallbacks());
++        assertEquals(1L, window.insufficientPartitionFallbacks());
++        assertEquals(1L, window.unavailableParallelismFallbacks());
++        assertEquals(3, window.workloads().size());
++        for (final LeavesXComputeExecutor.WorkloadWindowMetrics workload : window.workloads()) {
++            assertEquals(1L, workload.invocations());
++            assertEquals(workload.workload() == LeavesXComputeExecutor.Workload.AI_TARGET_SORT ? 1L : 0L,
++                workload.belowThresholdFallbacks());
++            assertEquals(workload.workload() == LeavesXComputeExecutor.Workload.AI_TARGET_SELECT ? 1L : 0L,
++                workload.insufficientPartitionFallbacks());
++            assertEquals(workload.workload() == LeavesXComputeExecutor.Workload.MOB_SPAWN_COUNTING ? 1L : 0L,
++                workload.unavailableParallelismFallbacks());
++        }
++        assertEquals(4L, LeavesXComputeExecutor.metrics().invocations());
++        assertEquals(2L, LeavesXComputeExecutor.metrics().belowFeatureThresholdFallbacks());
++        assertEquals(0L, window.mainThreadFallbacks());
++        assertEquals(window, LeavesXComputeExecutor.recentMetrics(60, windowEnd), "querying must not clear the window");
++    }
++
++    @Test
++    void preSnapshotGateSkipsAnOccupiedPoolWithoutQueueing() throws Exception {
++        LeavesXComputeExecutor.configure(2, 64);
++        final ThreadPoolExecutor executor = executor();
++        final CountDownLatch workersStarted = new CountDownLatch(2);
++        final CountDownLatch release = new CountDownLatch(1);
++        final Runnable blocker = () -> {
++            workersStarted.countDown();
++            try {
++                release.await();
++            } catch (final InterruptedException interruption) {
++                Thread.currentThread().interrupt();
++            }
++        };
++        try {
++            executor.execute(blocker);
++            executor.execute(blocker);
++            assertTrue(workersStarted.await(2L, TimeUnit.SECONDS));
++
++            assertFalse(LeavesXComputeExecutor.shouldAttempt(
++                LeavesXComputeExecutor.Workload.AI_TARGET_SORT,
++                1_024,
++                256
++            ));
++
++            final LeavesXComputeExecutor.Metrics metrics = LeavesXComputeExecutor.metrics();
++            assertEquals(0, metrics.queuedTasks());
++            assertEquals(0L, metrics.rejectedTasks());
++            assertEquals(1L, metrics.unavailableParallelismFallbacks());
++            assertEquals(LeavesXComputeExecutor.FallbackReason.POOL_BUSY_CALLER_ONLY.displayName(), metrics.lastFallbackReason());
++        } finally {
++            release.countDown();
++        }
++    }
++
+     @Test
+     void reportsWhenNoParallelLaneIsAvailable() {
+         LeavesXComputeExecutor.configure(1);

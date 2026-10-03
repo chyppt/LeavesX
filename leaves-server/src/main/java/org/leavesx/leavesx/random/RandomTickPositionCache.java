@@ -2,7 +2,7 @@ package org.leavesx.leavesx.random;
 
 import net.minecraft.core.BlockPos;
 
-/** Tick-thread-only, bounded reuse of immutable positions. Random tick callbacks may retain these objects. */
+/** 仅 Tick 线程使用的有界不可变坐标复用；随机 Tick 回调可能保存这些对象。 */
 public final class RandomTickPositionCache {
     private final BlockPos[] positions = new BlockPos[1024];
 
