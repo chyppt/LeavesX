@@ -1,0 +1,410 @@
+From: chyppt <pptwxo@163.com>
+Subject: [PATCH] Persist release runtime source changes
+
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+index 4bfa9b5..cdb1784 100644
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -655,6 +655,25 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         this.server.getCommandMap().registerServerAliases(); // Paper - relocate initial CommandMap#registerServerAliases() call
+         ((org.bukkit.craftbukkit.help.SimpleHelpMap) this.server.getHelpMap()).initializeCommands();
+         this.server.getPluginManager().callEvent(new org.bukkit.event.server.ServerLoadEvent(org.bukkit.event.server.ServerLoadEvent.LoadType.STARTUP));
++        // LeavesX start - regionized ticking: worlds-mode executors after worlds and plugins are up
++        final org.leavesx.leavesx.config.LeavesXConfig.RegionTickingSettings leavesXRegionSettings =
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.settings();
++        if (leavesXRegionSettings.mode() == org.leavesx.leavesx.config.LeavesXConfig.RegionTickingSettings.Mode.REGIONS) {
++            // R3 gate not satisfied yet: intra-world region threading requires full regionized
++            // ownership; degrade to worlds until the region model lands. Recorded for /leavesx regions.
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.recordModeDegrade(
++                "regions mode is not available in this build; running worlds instead");
++            LOGGER.info("LeavesX regionized ticking: regions mode degrades to worlds in this build");
++        }
++        if (org.leavesx.leavesx.runtime.LeavesXRegionTicking.effectiveMode()
++            == org.leavesx.leavesx.config.LeavesXConfig.RegionTickingSettings.Mode.WORLDS) {
++            final java.util.List<ServerLevel> leavesXLevels = new java.util.ArrayList<>();
++            for (final ServerLevel leavesXLevel : this.getAllLevels()) {
++                leavesXLevels.add(leavesXLevel);
++            }
++            org.leavesx.leavesx.runtime.LeavesXWorldTicker.refreshWorlds(java.util.Collections.unmodifiableList(leavesXLevels));
++        }
++        // LeavesX end - regionized ticking
+         this.connection.acceptConnections();
+     }
+     // Paper end - rework world loading process
+@@ -1070,6 +1089,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         this.saveAllChunks(false, true, false, true); // Paper - rewrite chunk system
+ 
+         this.isSaving = false;
++        org.leavesx.leavesx.runtime.LeavesXWorldTicker.shutdownExecutors(); // LeavesX - regionized ticking
+         org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.shutdown();
+         this.savedDataStorage.close();
+         this.resources.close();
+@@ -1268,6 +1288,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+ 
+     protected void runServer() {
+         try {
++            org.leavesx.leavesx.runtime.LeavesXThreadDomain.installServerThread(); // LeavesX - regionized ticking
+             if (!this.initServer()) {
+                 throw new IllegalStateException("Failed to initialize server");
+             }
+@@ -1845,7 +1866,58 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         );
+ 
+         this.isIteratingOverLevels = true; // Paper - Throw exception on world create while being ticked
++        // LeavesX start - regionized ticking pipeline
++        // Track pipeline phases when configured. Vanilla dimensions and pinned worlds use the
++        // original serial loop below: cross-world transfers and portal tickets must retain
++        // their in-tick ordering. Event gating alone cannot provide cross-world isolation.
++        final boolean leavesXRegionized = org.leavesx.leavesx.runtime.LeavesXRegionTicking.enabled();
++        if (leavesXRegionized) {
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.beginParallelSimulation();
++        }
++        // LeavesX end - regionized ticking pipeline
+         leavesXPhaseStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
++        // LeavesX start - regionized ticking: worlds-mode dispatch
++        final boolean leavesXParallelWorlds = leavesXRegionized
++            && org.leavesx.leavesx.runtime.LeavesXRegionTicking.effectiveMode() == org.leavesx.leavesx.config.LeavesXConfig.RegionTickingSettings.Mode.WORLDS
++            && org.leavesx.leavesx.runtime.LeavesXWorldTicker.isReady()
++            && !org.leavesx.leavesx.runtime.LeavesXWorldTicker.usesSerialCompatibility();
++        if (leavesXParallelWorlds) {
++            final ProfilerFiller leavesXProfiler = profiler;
++            org.leavesx.leavesx.runtime.LeavesXWorldTicker.tickAllParallel(haveTime, (level, time) -> {
++                level.hasPhysicsEvent = org.bukkit.event.block.BlockPhysicsEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - BlockPhysicsEvent
++                level.hasEntityMoveEvent = io.papermc.paper.event.entity.EntityMoveEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - Add EntityMoveEvent
++                level.updateLagCompensationTick(); // Paper - lag compensation
++                net.minecraft.world.level.block.entity.HopperBlockEntity.skipHopperEvents = level.paperConfig().hopper.disableMoveEvent || org.bukkit.event.inventory.InventoryMoveItemEvent.getHandlerList().getRegisteredListeners().length == 0; // Paper - Perf: Optimize Hoppers
++                leavesXProfiler.push(() -> level + " " + level.dimension().identifier());
++                leavesXProfiler.push("tick");
++                final long leavesXWorldStarted = System.nanoTime();
++                try {
++                    level.tick(time);
++                // Leaves start - update suppression crash fix
++                } catch (org.leavesmc.leaves.util.UpdateSuppressionException exception) {
++                    exception.provideLevel(level);
++                    exception.consume();
++                } catch (Throwable t) {
++                    if (t.getCause() instanceof org.leavesmc.leaves.util.UpdateSuppressionException exception) {
++                        exception.provideLevel(level);
++                        exception.consume();
++                    }
++                    // Leaves end - update suppression crash fix
++                    CrashReport report = CrashReport.forThrowable(t, "Exception ticking world");
++                    level.fillReportDetails(report);
++                    throw new ReportedException(report);
++                } finally {
++                    org.leavesx.leavesx.diagnostics.LeavesXWorldTickMetrics.record(level, leavesXWorldStarted);
++                }
++                leavesXProfiler.pop();
++                leavesXProfiler.pop();
++                level.explosionDensityCache.clear(); // Paper - Optimize explosions
++            });
++            // Barrier window: world workers finished or are finishing; drain deferred events so
++            // blocked world threads make progress and plugin code runs here on the server thread.
++            org.leavesx.leavesx.runtime.LeavesXEventGate.pump();
++        } else
++        // LeavesX end - regionized ticking: worlds-mode dispatch
+         for (ServerLevel level : this.getAllLevels()) {
+             level.hasPhysicsEvent = org.bukkit.event.block.BlockPhysicsEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - BlockPhysicsEvent
+             level.hasEntityMoveEvent = io.papermc.paper.event.entity.EntityMoveEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - Add EntityMoveEvent
+@@ -1878,11 +1950,27 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+             profiler.pop();
+             level.explosionDensityCache.clear(); // Paper - Optimize explosions
+         }
++        // LeavesX start - regionized ticking: final barrier drain
++        if (leavesXRegionized) {
++            org.leavesx.leavesx.runtime.LeavesXEventGate.pump();
++        }
++        // LeavesX end - regionized ticking: final barrier drain
+         this.isIteratingOverLevels = false; // Paper - Throw exception on world create while being ticked
+         org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.endPhase(
+             org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.WORLDS,
+             leavesXPhaseStarted
+         );
++        if (leavesXRegionized) {
++            // LeavesX start - regionized ticking pipeline
++            // Barrier then serial commit: all simulation is complete, the world is static, and
++            // plugin-visible side effects (deferred events, scheduler tasks) run on this thread.
++            // R0 has no parallel regions yet, so the barrier is an idle marker and no intents
++            // are queued; the replay loop arrives with the R1 patch.
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.beginBarrier();
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.beginSerialCommit();
++            org.leavesx.leavesx.runtime.LeavesXThreadDomain.assertSerialCommitPhase("serial-commit-phase-entry");
++            // LeavesX end - regionized ticking pipeline
++        }
+ 
+         profiler.popPush("connection");
+         leavesXPhaseStarted = org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.beginPhase();
+@@ -1931,6 +2019,14 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+             org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics.TickPhase.CHUNK_SEND,
+             leavesXPhaseStarted
+         );
++        if (leavesXRegionized) {
++            // LeavesX start - regionized ticking pipeline
++            // Post-processing (tracking deltas, chunk packing, network encoding) completes the
++            // four-phase pipeline; the phase resets until the next tick begins.
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.beginParallelPost();
++            org.leavesx.leavesx.runtime.LeavesXRegionTicking.endTick();
++            // LeavesX end - regionized ticking pipeline
++        }
+ 
+         profiler.pop();
+         this.serverActivityMonitor.tick();
+@@ -2952,7 +3048,10 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         }
+     }
+ 
+-    public final java.util.concurrent.ExecutorService chatExecutor = java.util.concurrent.Executors.newCachedThreadPool(
++    public final java.util.concurrent.ExecutorService chatExecutor = org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().virtualChat()
++        ? java.util.concurrent.Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("LeavesX Async Chat - ", 0)
++            .uncaughtExceptionHandler(new net.minecraft.DefaultUncaughtExceptionHandlerWithName(net.minecraft.server.MinecraftServer.LOGGER)).factory())
++        : java.util.concurrent.Executors.newCachedThreadPool(
+         new com.google.common.util.concurrent.ThreadFactoryBuilder().setDaemon(true).setNameFormat("Async Chat Thread - #%d").setUncaughtExceptionHandler(new net.minecraft.DefaultUncaughtExceptionHandlerWithName(net.minecraft.server.MinecraftServer.LOGGER)).build()); // Paper
+     public final ChatDecorator improvedChatDecorator = new io.papermc.paper.adventure.ImprovedChatDecorator(this); // Paper - adventure
+ 
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index d5cc200..2adc178 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1169,7 +1169,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             // 先检查计算池，避免繁忙时为整批实体复制快照后再串行重算。
+             && org.leavesx.leavesx.runtime.LeavesXComputeExecutor.shouldAttempt(
+                 org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
+-                trackerEntities.size(), 256, 64
++                trackerEntities.size(), 256
+             )
+             && this.leavesX$parallelTrackerTick(trackerEntities)) {
+             return;
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index 11c05a9..53aa599 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -1007,12 +1007,14 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     }
+ 
+     // Paper start - optimise random ticking
+-    private final ca.spottedleaf.moonrise.common.util.SimpleThreadUnsafeRandom simpleRandom = new ca.spottedleaf.moonrise.common.util.SimpleThreadUnsafeRandom(net.minecraft.world.level.levelgen.RandomSupport.generateUniqueSeed());
++    private final net.minecraft.world.level.levelgen.BitRandomSource simpleRandom = org.leavesx.leavesx.random.LeavesXRandomSources.randomTicks(net.minecraft.world.level.levelgen.RandomSupport.generateUniqueSeed());
++    private final org.leavesx.leavesx.random.RandomTickPositionCache leavesX$randomTickPositions = new org.leavesx.leavesx.random.RandomTickPositionCache();
+ 
+     private void optimiseRandomTick(final LevelChunk chunk, final int tickSpeed) {
+         final LevelChunkSection[] sections = chunk.getSections();
+         final int minSection = this.getMinSectionY();
+-        final ca.spottedleaf.moonrise.common.util.SimpleThreadUnsafeRandom simpleRandom = this.simpleRandom;
++        final net.minecraft.world.level.levelgen.BitRandomSource simpleRandom = this.simpleRandom;
++        final boolean optimize = org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().optimizeRandomTick();
+         final boolean doubleTickFluids = !ca.spottedleaf.moonrise.common.PlatformHooks.get().configFixMC224294();
+ 
+         final int offsetX = chunk.locX << 4;
+@@ -1041,7 +1043,10 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+                 final BlockState state = states.get(location);
+ 
+                 // do not use a mutable pos, as some random tick implementations store the input without calling immutable()!
+-                final BlockPos pos = new BlockPos((location & 15) | offsetX, ((location >>> (4 + 4)) & 15) | offsetY, ((location >>> 4) & 15) | offsetZ);
++                final int x = (location & 15) | offsetX;
++                final int y = ((location >>> 8) & 15) | offsetY;
++                final int z = ((location >>> 4) & 15) | offsetZ;
++                final BlockPos pos = optimize ? this.leavesX$randomTickPositions.get(x, y, z) : new BlockPos(x, y, z);
+ 
+                 state.randomTick((ServerLevel)(Object)this, pos, simpleRandom);
+                 if (doubleTickFluids) {
+@@ -1058,7 +1063,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     // Paper end - optimise random ticking
+ 
+     public void tickChunk(final LevelChunk chunk, final int tickSpeed) {
+-        final ca.spottedleaf.moonrise.common.util.SimpleThreadUnsafeRandom simpleRandom = this.simpleRandom; // Paper - optimise random ticking
++        final net.minecraft.world.level.levelgen.BitRandomSource simpleRandom = this.simpleRandom; // Paper - optimise random ticking
+         int minX = chunk.locX << 4;
+         int minZ = chunk.locZ << 4;
+         ProfilerFiller profiler = Profiler.get();
+diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
+index 35f60d8..c114867 100644
+--- a/net/minecraft/world/entity/Entity.java
++++ b/net/minecraft/world/entity/Entity.java
+@@ -1684,7 +1684,7 @@ public abstract class Entity
+             ca.spottedleaf.moonrise.patches.collisions.CollisionUtil.COLLISION_FLAG_CHECK_BORDER, null
+         );
+         potentialCollisionsBB.addAll(entityAABBs);
+-        final Vec3 collided = ca.spottedleaf.moonrise.patches.collisions.CollisionUtil.performCollisions(movement, currentBox, potentialCollisionsVoxel, potentialCollisionsBB);
++        final Vec3 collided = org.leavesx.leavesx.performance.ParallelMobCollision.collide(this, movement, currentBox, potentialCollisionsVoxel, potentialCollisionsBB);
+ 
+         final boolean collidedX = collided.x != movement.x;
+         final boolean collidedY = collided.y != movement.y;
+@@ -1713,7 +1713,7 @@ public abstract class Entity
+         );
+ 
+         for (final float step : calculateStepHeights(collidedYBox, stepVoxels, stepAABBs, (float)stepHeight, (float)collided.y)) {
+-            final Vec3 stepResult = ca.spottedleaf.moonrise.patches.collisions.CollisionUtil.performCollisions(new Vec3(movement.x, (double)step, movement.z), collidedYBox, stepVoxels, stepAABBs);
++            final Vec3 stepResult = org.leavesx.leavesx.performance.ParallelMobCollision.collide(this, new Vec3(movement.x, (double)step, movement.z), collidedYBox, stepVoxels, stepAABBs);
+             if (stepResult.horizontalDistanceSqr() > collided.horizontalDistanceSqr()) {
+                 return stepResult.add(0.0, collidedYBox.minY - currentBox.minY, 0.0);
+             }
+diff --git a/net/minecraft/world/entity/item/ItemEntity.java b/net/minecraft/world/entity/item/ItemEntity.java
+index 534cb02..6244be5 100644
+--- a/net/minecraft/world/entity/item/ItemEntity.java
++++ b/net/minecraft/world/entity/item/ItemEntity.java
+@@ -265,8 +265,17 @@ public class ItemEntity extends Entity implements TraceableEntity, ChangePublish
+     private void mergeWithNeighbours() {
+         if (this.isMergable()) {
+             double radius = this.level().spigotConfig.itemMerge; // Spigot
+-            for (ItemEntity entity : this.level()
+-                .getEntitiesOfClass(ItemEntity.class, this.getBoundingBox().inflate(radius, this.level().paperConfig().entities.behavior.onlyMergeItemsHorizontally ? 0 : radius - 0.5D, radius), other -> other != this && other.isMergable())) { // Spigot // Paper - configuration to only merge items horizontally
++            final Level.LeavesXEntityQueryBuffer leavesX$mergeBuffer
++                = org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()
++                    ? Level.leavesX$acquireEntityQueryBuffer() : null;
++            try {
++            for (ItemEntity entity : leavesX$mergeBuffer != null
++                    ? leavesX$mergeBuffer.queryOfClass(this.level(), ItemEntity.class, this,
++                        this.getBoundingBox().inflate(radius, this.level().paperConfig().entities.behavior.onlyMergeItemsHorizontally ? 0 : radius - 0.5D, radius),
++                        ItemEntity::isMergable)
++                    : this.level().getEntitiesOfClass(ItemEntity.class,
++                        this.getBoundingBox().inflate(radius, this.level().paperConfig().entities.behavior.onlyMergeItemsHorizontally ? 0 : radius - 0.5D, radius),
++                        other -> other != this && other.isMergable())) { // Spigot // Paper - configuration to only merge items horizontally
+                 if (entity.isMergable()) {
+                     // Paper start - Fix items merging through walls
+                     if (this.level().paperConfig().fixes.fixItemsMergingThroughWalls) {
+@@ -292,6 +301,9 @@ public class ItemEntity extends Entity implements TraceableEntity, ChangePublish
+                     // LeavesX end - avoid scanning the remaining neighbours once this stack is full
+                 }
+             }
++            } finally {
++                if (leavesX$mergeBuffer != null) leavesX$mergeBuffer.close();
++            }
+         }
+     }
+ 
+diff --git a/net/minecraft/world/inventory/AbstractContainerMenu.java b/net/minecraft/world/inventory/AbstractContainerMenu.java
+index 6c1b79d..57fd59f 100644
+--- a/net/minecraft/world/inventory/AbstractContainerMenu.java
++++ b/net/minecraft/world/inventory/AbstractContainerMenu.java
+@@ -38,6 +38,8 @@ import org.slf4j.Logger;
+ 
+ public abstract class AbstractContainerMenu {
+     private static final Logger LOGGER = LogUtils.getLogger();
++    private final LeavesXItemStackCopySupplier leavesX$slotCopySupplier = new LeavesXItemStackCopySupplier();
++    private boolean leavesX$broadcastingSlots;
+     public static final int SLOT_CLICKED_OUTSIDE = -999;
+     public static final int QUICKCRAFT_TYPE_CHARITABLE = 0;
+     public static final int QUICKCRAFT_TYPE_GREEDY = 1;
+@@ -257,11 +259,27 @@ public abstract class AbstractContainerMenu {
+     }
+ 
+     public void broadcastChanges() {
+-        for (int i = 0; i < this.slots.size(); i++) {
+-            ItemStack current = this.slots.get(i).getItem();
+-            Supplier<ItemStack> currentCopy = Suppliers.memoize(current::copy);
+-            this.triggerSlotListeners(i, current, currentCopy);
+-            this.synchronizeSlotToRemote(i, current, currentCopy);
++        final boolean reuse = !this.leavesX$broadcastingSlots
++            && org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().containerCopyReuse();
++        if (reuse) this.leavesX$broadcastingSlots = true;
++        try {
++            for (int i = 0; i < this.slots.size(); i++) {
++                ItemStack current = this.slots.get(i).getItem();
++                final Supplier<ItemStack> currentCopy;
++                if (reuse) {
++                    this.leavesX$slotCopySupplier.reset(current);
++                    currentCopy = this.leavesX$slotCopySupplier;
++                } else {
++                    currentCopy = Suppliers.memoize(current::copy);
++                }
++                this.triggerSlotListeners(i, current, currentCopy);
++                this.synchronizeSlotToRemote(i, current, currentCopy);
++            }
++        } finally {
++            if (reuse) {
++                this.leavesX$slotCopySupplier.reset(ItemStack.EMPTY);
++                this.leavesX$broadcastingSlots = false;
++            }
+         }
+ 
+         this.synchronizeCarriedToRemote();
+@@ -277,6 +295,22 @@ public abstract class AbstractContainerMenu {
+         }
+     }
+ 
++    private static final class LeavesXItemStackCopySupplier implements Supplier<ItemStack> {
++        private ItemStack source = ItemStack.EMPTY;
++        private ItemStack copy;
++
++        void reset(final ItemStack source) {
++            this.source = source;
++            this.copy = null;
++        }
++
++        @Override
++        public ItemStack get() {
++            if (this.copy == null) this.copy = this.source.copy();
++            return this.copy;
++        }
++    }
++
+     public void broadcastFullState() {
+         for (int i = 0; i < this.slots.size(); i++) {
+             ItemStack current = this.slots.get(i).getItem();
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index 2858ab7..7fa52dd 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -128,7 +128,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+     protected final net.minecraft.world.level.redstone.NeighborUpdater neighborUpdater; // Leaves - instantBlockUpdaterReintroduced
+     private final List<TickingBlockEntity> pendingBlockEntityTickers = Lists.newArrayList();
+     private boolean tickingBlockEntities;
+-    protected final Thread thread;
++    public final Thread thread;
+     private final boolean isDebug;
+     private int skyDarken;
+     protected int randValue = RandomSource.createThreadLocalInstance().nextInt();
+@@ -137,11 +137,11 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+     public float rainLevel;
+     protected float oThunderLevel;
+     public float thunderLevel;
+-    protected final RandomSource random = new ca.spottedleaf.moonrise.common.util.ThreadUnsafeRandom(net.minecraft.world.level.levelgen.RandomSupport.generateUniqueSeed()); // Paper - replace random
++    protected final RandomSource random = org.leavesx.leavesx.random.LeavesXRandomSources.worldEvents(net.minecraft.world.level.levelgen.RandomSupport.generateUniqueSeed()); // LeavesX - optional runtime RNG
+     @Deprecated
+     private final RandomSource soundSeedGenerator = RandomSource.createThreadSafe();
+     private final Holder<DimensionType> dimensionTypeRegistration;
+-    protected final WritableLevelData levelData;
++    public final WritableLevelData levelData;
+     private final boolean isClientSide;
+     private final BiomeManager biomeManager;
+     private final ResourceKey<Level> dimension;
+diff --git a/net/minecraft/world/level/NaturalSpawner.java b/net/minecraft/world/level/NaturalSpawner.java
+index 1559dd1..ea2f8b1 100644
+--- a/net/minecraft/world/level/NaturalSpawner.java
++++ b/net/minecraft/world/level/NaturalSpawner.java
+@@ -520,7 +520,8 @@ public final class NaturalSpawner {
+         final RandomSource random,
+         final BlockPos pos
+     ) {
+-        Holder<Biome> biome = level.getBiome(pos);
++        Holder<Biome> biome = org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().cacheBiomeSpawning()
++            ? level.getBiomeManager().leavesX$getBiomeCached(pos) : level.getBiome(pos);
+         return mobCategory == MobCategory.WATER_AMBIENT && biome.is(BiomeTags.REDUCED_WATER_AMBIENT_SPAWNS) && random.nextFloat() < 0.98F
+             ? Optional.empty()
+             : mobsAt(level, structureManager, generator, mobCategory, pos, biome).getRandom(random);
+@@ -547,7 +548,9 @@ public final class NaturalSpawner {
+     ) {
+         return isInNetherFortressBounds(pos, level, mobCategory, structureManager)
+             ? NetherFortressStructure.FORTRESS_ENEMIES
+-            : generator.getMobsAt(biome != null ? biome : level.getBiome(pos), structureManager, mobCategory, pos);
++            : generator.getMobsAt(biome != null ? biome
++                : (org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().cacheBiomeSpawning()
++                    ? level.getBiomeManager().leavesX$getBiomeCached(pos) : level.getBiome(pos)), structureManager, mobCategory, pos);
+     }
+ 
+     public static boolean isInNetherFortressBounds(
+diff --git a/net/minecraft/world/level/block/PoweredRailBlock.java b/net/minecraft/world/level/block/PoweredRailBlock.java
+index 03c878a..964bb42 100644
+--- a/net/minecraft/world/level/block/PoweredRailBlock.java
++++ b/net/minecraft/world/level/block/PoweredRailBlock.java
+@@ -28,6 +28,10 @@ public class PoweredRailBlock extends BaseRailBlock {
+     }
+ 
+     protected boolean findPoweredRailSignal(final Level level, final BlockPos pos, final BlockState state, final boolean forward, final int searchDepth) {
++        if (this.getClass() == PoweredRailBlock.class
++            && org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().optimizedPoweredRails()) {
++            return org.leavesx.leavesx.blocks.PoweredRailSignal.find(this, level, pos, state, forward, searchDepth);
++        }
+         if (searchDepth >= 8) {
+             return false;
+         }
