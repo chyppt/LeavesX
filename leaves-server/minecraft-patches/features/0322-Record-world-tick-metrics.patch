@@ -1,0 +1,31 @@
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -1854,6 +1854,7 @@
+             profiler.push("tick");
+ 
++            final long leavesXWorldStarted = System.nanoTime();
+             try {
+                 level.tick(haveTime);
+             // Leaves start - update suppression crash fix
+             } catch (org.leavesmc.leaves.util.UpdateSuppressionException exception) {
+@@ -1868,6 +1869,8 @@
+                 level.fillReportDetails(report);
+                 throw new ReportedException(report);
++            } finally {
++                org.leavesx.leavesx.diagnostics.LeavesXWorldTickMetrics.record(level, leavesXWorldStarted);
+             }
+ 
+             profiler.pop();
+             profiler.pop();
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -2746,6 +2746,7 @@
+ 
+     @Override
+     public void close() throws IOException {
++        org.leavesx.leavesx.diagnostics.LeavesXWorldTickMetrics.remove(this);
+         super.close();
+         //this.entityManager.close(); // Paper - rewrite chunk system
+     }

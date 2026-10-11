@@ -1,0 +1,27 @@
+diff --git a/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java b/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java
+index d8ff537827..e4999740b1 100644
+--- a/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java
++++ b/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java
+@@ -33,9 +33,10 @@ class SpectatorChunkLoadingPolicyTest {
+     }
+ 
+     @Test
+-    void optionalNoChunkLoadingPolicySuppressesTheReadOnlyObserverOnlyWhenEnabled() throws ReflectiveOperationException {
++    void noSimulationPolicyMustNotHideAlreadyLoadedChunks() throws ReflectiveOperationException {
+         assertTrue(shouldObserveLoadedChunks(true, false, false, false));
+-        assertFalse(shouldObserveLoadedChunks(true, false, false, true));
++        assertTrue(shouldObserveLoadedChunks(true, false, false, true));
++        assertFalse(shouldObserveLoadedChunks(true, false, true, true));
+         assertTrue(canPlayerLoadChunks(true, true, false));
+         assertFalse(shouldObserveLoadedChunks(true, true, false, true));
+         assertTrue(canPlayerLoadChunks(false, false, false));
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -629,5 +629,5 @@
+         );
+         comments.put(
+             "features.spectator-no-chunk-loading",
+-            "开启后，旁观者且 spectators_generate_chunks=false 时不加载或观察区块，按无玩家处理。默认：false。"
++            "旁观者且 spectators_generate_chunks=false 时不提供玩家模拟加载，但仍可查看其他来源已加载的区块；不会加载已卸载的地形。默认：false。"
+         );

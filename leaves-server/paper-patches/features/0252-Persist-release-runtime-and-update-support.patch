@@ -1,0 +1,558 @@
+From: chyppt <pptwxo@163.com>
+Subject: [PATCH] Persist release runtime source changes
+
+diff --git a/src/main/java/io/papermc/paper/command/PaperCommands.java b/src/main/java/io/papermc/paper/command/PaperCommands.java
+index 5ea7ca6aa..6e288d0f8 100644
+--- a/src/main/java/io/papermc/paper/command/PaperCommands.java
++++ b/src/main/java/io/papermc/paper/command/PaperCommands.java
+@@ -23,6 +23,7 @@ public final class PaperCommands {
+ 
+     public static void registerCommands(final MinecraftServer server) {
+         COMMANDS.put("paper", new PaperCommand("paper"));
++        COMMANDS.put("tpsbar", new org.leavesx.leavesx.command.TpsBarCommand());
+         if (org.leavesx.leavesx.config.LeavesXRuntime.diagnosticsCommandEnabled()) {
+             COMMANDS.put("leavesx", new org.leavesx.leavesx.command.LeavesXCommand("leavesx"));
+         }
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index bef5b6e94..8f9c10e3d 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -61,6 +61,7 @@ import org.leavesx.leavesx.config.LeavesXConfig;
+ import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.leavesx.leavesx.diagnostics.LeavesXChunkDiagnostics;
+ import org.leavesx.leavesx.diagnostics.LeavesXGcDiagnostics;
++import org.leavesx.leavesx.diagnostics.LeavesXWorldTickMetrics;
+ import org.leavesx.leavesx.diagnostics.LeavesXPluginTaskDiagnostics;
+ import org.leavesx.leavesx.diagnostics.LeavesXSystemDiagnostics;
+ import org.leavesx.leavesx.diagnostics.LeavesXTickDiagnostics;
+@@ -74,7 +75,7 @@ public final class LeavesXCommand extends Command {
+     private static final List<String> SUBCOMMANDS = List.of(
+         "ai", "health", "report", "status", "all", "gui", "worlds", "entities", "hotspots", "blockentities", "blockhotspots",
+         "villagers", "activity", "tickets", "plugins", "memory", "network", "threads", "parallel", "system", "stalls",
+-        "regions", "safety", "config", "reload", "help"
++        "regions", "safety", "config", "reload", "update", "help"
+     );
+ 
+     public LeavesXCommand(final String name) {
+@@ -126,6 +127,14 @@ public final class LeavesXCommand extends Command {
+                 else sender.sendMessage(Component.text("用法：/leavesx config [check]", NamedTextColor.YELLOW));
+             }
+             case "reload" -> reloadConfiguration(sender);
++            case "update" -> {
++                if (args.length > 2 || (args.length == 2 && !args[1].equalsIgnoreCase("check") && !args[1].equalsIgnoreCase("download"))) {
++                    sender.sendMessage(Component.text("用法：/leavesx update [check|download]", NamedTextColor.YELLOW));
++                } else {
++                    boolean accepted = org.leavesx.leavesx.update.LeavesXUpdateService.request(args.length == 2 && args[1].equalsIgnoreCase("download"));
++                    sender.sendMessage(Component.text(accepted ? "更新任务已提交，结果请查看控制台。" : "已有更新任务正在执行。", NamedTextColor.YELLOW));
++                }
++            }
+             case "help" -> sendHelp(sender);
+             default -> {
+                 sender.sendMessage(Component.text("未知子命令：" + subcommand, NamedTextColor.RED));
+@@ -220,6 +229,7 @@ public final class LeavesXCommand extends Command {
+         ));
+         sender.sendMessage(line("实体", Integer.toString(entities), entityColor(entities)));
+         sender.sendMessage(line("内存", formatBytes(usedHeap) + " / " + formatBytes(runtime.maxMemory()), NamedTextColor.AQUA));
++        sendWorldTickSummary(sender);
+         sender.sendMessage(line(
+             "近 " + windowSeconds + " 秒区块",
+             "+" + completedLoads + " 加载 / -" + completedUnloads + " 卸载 / 票据 +" + ticketAdds + " -" + ticketRemoves,
+@@ -236,6 +246,20 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(Component.text("排查：/leavesx all | villagers | activity | tickets | plugins | stalls | memory", NamedTextColor.GRAY));
+     }
+ 
++    private static void sendWorldTickSummary(final CommandSender sender) {
++        if (!LeavesXWorldTickMetrics.displayWorldMetrics()) return;
++        sender.sendMessage(Component.text("世界 TPS / MSPT（最近 100 次世界 Tick；总体见上方）", NamedTextColor.GOLD));
++        for (final World world : Bukkit.getWorlds()) {
++            final LeavesXWorldTickMetrics.Snapshot snapshot = LeavesXWorldTickMetrics.snapshot(((CraftWorld) world).getHandle());
++            if (snapshot.available()) {
++                sender.sendMessage(Component.text("  " + world.getKey() + "：TPS "
++                    + oneDecimal(snapshot.tps()) + " / MSPT " + oneDecimal(snapshot.mspt()) + " ms", NamedTextColor.GRAY));
++            } else {
++                sender.sendMessage(Component.text("  " + world.getKey() + "：正在收集样本", NamedTextColor.GRAY));
++            }
++        }
++    }
++
+     private static void sendWorlds(final CommandSender sender) {
+         final List<World> worlds = Bukkit.getWorlds();
+         sendWorlds(sender, worlds, collectEntities(worlds));
+@@ -249,6 +273,7 @@ public final class LeavesXCommand extends Command {
+         sendHeader(sender, "世界负载");
+         for (final World world : worlds) {
+             final ServerLevel level = ((CraftWorld)world).getHandle();
++            final LeavesXWorldTickMetrics.Snapshot tickSnapshot = LeavesXWorldTickMetrics.snapshot(level);
+             final int tickingEntities = entitySnapshot.tickingByWorld().getOrDefault(world.getKey().toString(), 0);
+             final long pendingUnloads = level.moonrise$getChunkTaskScheduler()
+                 .chunkHolderManager.leavesX$getPendingUnloadCount();
+@@ -260,6 +285,9 @@ public final class LeavesXCommand extends Command {
+                 .append(Component.text(" / 实体 " + level.getEntityCount() + "(" + tickingEntities + " 活跃)", NamedTextColor.AQUA))
+                 .append(Component.text(" / 方块实体 " + world.getTileEntityCount() + "(" + world.getTickableTileEntityCount() + " 更新)", NamedTextColor.GRAY))
+                 .build());
++            if (LeavesXWorldTickMetrics.displayWorldMetrics()) {
++                sender.sendMessage(Component.text("   " + worldTickText(tickSnapshot), NamedTextColor.AQUA));
++            }
+             final LeavesXChunkDiagnostics.Activity activity = chunkMetrics(level)
+                 .activity(LeavesXRuntime.diagnosticsRollingWindowSeconds());
+             sender.sendMessage(Component.text(
+@@ -572,6 +600,12 @@ public final class LeavesXCommand extends Command {
+         return new BlockEntitySnapshot(counts, hotspots, total, ticking);
+     }
+ 
++    private static String worldTickText(final LeavesXWorldTickMetrics.Snapshot snapshot) {
++        return snapshot.available()
++            ? "TPS " + oneDecimal(snapshot.tps()) + " / MSPT " + oneDecimal(snapshot.mspt()) + " ms"
++            : "TPS / MSPT 采样中";
++    }
++
+     /**
+      * Collects one bounded, read-only snapshot for every GUI tooltip.
+      *
+@@ -591,6 +625,9 @@ public final class LeavesXCommand extends Command {
+             final ServerLevel level = ((CraftWorld)world).getHandle();
+             worldLines.add(shortWorld(world.getKey().toString()) + "：区块 "
+                 + level.getChunkSource().getFullChunksCount() + " / 实体 " + level.getEntityCount());
++            if (LeavesXWorldTickMetrics.displayWorldMetrics()) {
++                worldLines.add(worldTickText(LeavesXWorldTickMetrics.snapshot(level)));
++            }
+         }
+         lore.put("worlds", List.copyOf(worldLines));
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index f5c4105a2..e989a44cd 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -287,6 +287,7 @@ public record LeavesXConfig(
+ 
+     /** Grouped switches for integrations that do not need individual numeric tuning. */
+     public record ExtensionSettings(
++        boolean tripwireHookDuplication,
+         boolean lithiumEnabled, boolean containerCopyReuse, boolean secureSeed,
+         boolean virtualChat, boolean isolateChunkPacking, boolean fasterRandom,
+         boolean cacheBiome, boolean cacheBiomeSpawning, boolean cacheBiomeAdvancements,
+@@ -295,11 +296,12 @@ public record LeavesXConfig(
+         boolean parallelMobCollisions, boolean asyncWaterPathfinding,
+         boolean poiAsyncSerialization, boolean poiCompetitorScanNoLoad,
+         boolean sensorListReuse, boolean recipeIndex,
+-        boolean jeiRecipeSync, boolean jeiRecipeTransfer, boolean networkBufferOptimizations
++        boolean jeiRecipeSync, boolean jeiRecipeTransfer, boolean networkBufferOptimizations, boolean tpsBar,
++        boolean updateCheck, boolean updateDownload
+     ) {
+         public static ExtensionSettings defaults() {
+-            return new ExtensionSettings(true, true, false, false, true, false, true, true, true, true, false, true, false,
+-                true, true, false, false, false, false, true, true, false, false, true);
++            return new ExtensionSettings(false, true, true, false, false, true, false, true, true, true, true, false, true, false,
++                true, true, false, false, false, false, true, true, false, false, true, true, true, false);
+         }
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index a8c73723d..8d0669c9f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -55,6 +55,7 @@ public final class LeavesXConfigBootstrap {
+         }
+         configuredPath = path;
+         startupConfiguration = config;
++        org.leavesx.leavesx.update.LeavesXUpdateService.configure(config.extensions());
+         if (config.extensions().poiAsyncSerialization() || config.extensions().poiCompetitorScanNoLoad()) {
+             LOGGER.warn("LeavesX POI async serialization and non-loading villager job-site scans are disabled in this build to preserve POI data and vanilla villager behavior; the existing settings are retained for migration.");
+         }
+@@ -95,6 +96,7 @@ public final class LeavesXConfigBootstrap {
+             );
+         }
+         LeavesXRuntime.publish(next);
++        org.leavesx.leavesx.update.LeavesXUpdateService.configure(next.extensions());
+         org.leavesmc.leaves.command.bot.PlayerCommand.syncRegistration();
+         final net.minecraft.server.MinecraftServer server = net.minecraft.server.MinecraftServer.getServer();
+         if (server != null && server.getBotList() != null) {
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index c2eaf08d2..43ac4f29b 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -493,6 +493,7 @@ public final class LeavesXConfigLoader {
+                     )
+                 ),
+                 new LeavesXConfig.ExtensionSettings(
++                    readBoolean(node.node("features", "tripwire-hook-duplication"), "features.tripwire-hook-duplication", false),
+                     readBoolean(node.node("performance", "lithium", "enabled"), "performance.lithium.enabled", true),
+                     readBoolean(node.node("performance", "blocks", "container-copy-reuse"), "performance.blocks.container-copy-reuse", true),
+                     readBoolean(node.node("features", "secure-seed"), "features.secure-seed", false),
+@@ -516,7 +517,10 @@ public final class LeavesXConfigLoader {
+                     readBoolean(node.node("performance", "crafting", "recipe-index"), "performance.crafting.recipe-index", true),
+                     readBoolean(node.node("features", "just-enough-items", "recipe-sync"), "features.just-enough-items.recipe-sync", false),
+                     readBoolean(node.node("features", "just-enough-items", "recipe-transfer"), "features.just-enough-items.recipe-transfer", false),
+-                    readBoolean(node.node("performance", "network", "buffer-optimizations"), "performance.network.buffer-optimizations", true)
++                    readBoolean(node.node("performance", "network", "buffer-optimizations"), "performance.network.buffer-optimizations", true),
++                    readBoolean(node.node("features", "tpsbar", "enabled"), "features.tpsbar.enabled", true),
++                    readBoolean(node.node("updates", "check"), "updates.check", true),
++                    readBoolean(node.node("updates", "auto-download"), "updates.auto-download", false)
+                 ),
+                 new LeavesXConfig.RegionTickingSettings(
+                     readMode(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 2611ffdaa..ee9adfa08 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -111,6 +111,7 @@ public final class LeavesXConfigWriter {
+     ) {
+         boolean changed = false;
+         changed |= writeValue(node.node("features", "just-enough-items", "recipe-sync"), "features.just-enough-items.recipe-sync", config.extensions().jeiRecipeSync(), missingOnly);
++        changed |= writeValue(node.node("features", "tripwire-hook-duplication"), "features.tripwire-hook-duplication", config.extensions().tripwireHookDuplication(), missingOnly);
+         changed |= writeValue(node.node("features", "just-enough-items", "recipe-transfer"), "features.just-enough-items.recipe-transfer", config.extensions().jeiRecipeTransfer(), missingOnly);
+         changed |= writeValue(node.node("performance", "faster-random-generator", "enabled"), "performance.faster-random-generator.enabled", config.extensions().fasterRandom(), missingOnly);
+         changed |= writeValue(node.node("async", "ai-candidates"), "async.ai-candidates", config.extensions().asyncAiCandidates(), missingOnly);
+@@ -206,6 +207,9 @@ public final class LeavesXConfigWriter {
+         changed |= writeValue(node.node("performance", "ai", "sensor-list-reuse"), "performance.ai.sensor-list-reuse", config.extensions().sensorListReuse(), missingOnly);
+         changed |= writeValue(node.node("performance", "crafting", "recipe-index"), "performance.crafting.recipe-index", config.extensions().recipeIndex(), missingOnly);
+         changed |= writeValue(node.node("performance", "network", "buffer-optimizations"), "performance.network.buffer-optimizations", config.extensions().networkBufferOptimizations(), missingOnly);
++        changed |= writeValue(node.node("features", "tpsbar", "enabled"), "features.tpsbar.enabled", config.extensions().tpsBar(), missingOnly);
++        changed |= writeValue(node.node("updates", "check"), "updates.check", config.extensions().updateCheck(), missingOnly);
++        changed |= writeValue(node.node("updates", "auto-download"), "updates.auto-download", config.extensions().updateDownload(), missingOnly);
+         changed |= writeValue(node.node("async", "pathfinding", "threads"), "async.pathfinding.threads", async.pathfindingThreads(), missingOnly);
+         changed |= writeValue(node.node("async", "pathfinding", "queue-size"), "async.pathfinding.queue-size", async.pathfindingQueueSize(), missingOnly);
+         changed |= writeValue(node.node("async", "pathfinding", "keepalive-seconds"), "async.pathfinding.keepalive-seconds", async.pathfindingKeepaliveSeconds(), missingOnly);
+@@ -561,6 +565,7 @@ public final class LeavesXConfigWriter {
+         comments.put("console-messages.show-offline-mode-warning", "是否显示离线模式安全警告。默认：false。");
+         comments.put("console-messages.show-collision-conversion-warning", "是否显示碰撞模式自动转换提示。默认：false。");
+         comments.put("features.named-cce-shulker-boxes", "铁砧命名为“更新抑制器”的潜影盒可触发 CCE 更新抑制。默认：false。");
++        comments.put("features.tripwire-hook-duplication", "恢复旧版绊线钩复制，允许更新中已拆除的钩子被重新放回；供刷绊线钩机使用，可重载。默认：false。");
+         comments.put("features.quick-open-shulker-boxes", "主手或副手拿潜影盒右键空气时直接打开。默认：false。");
+         comments.put("fakeplayer.clean-invalid-resident-bots", "只清理压缩 NBT 已确认损坏的假人登记；缺世界、世界未加载或缺文件都会保留。默认：true。");
+         comments.put("fakeplayer.display-prefix", "假人头顶和 TAB 显示前缀；默认加入退出提示不带前缀。支持 MiniMessage 和 &/§ 颜色代码。默认：[假人]。");
+@@ -593,6 +598,9 @@ public final class LeavesXConfigWriter {
+         comments.put("async.entity-tracker.queue-size", "实体追踪计算最多排队任务数；队列满时回到主线程。默认：1024。");
+         comments.put("performance.crafting.recipe-index", "合成台查询按材料数量索引直达候选配方，跳过不可能匹配的配方；结果顺序与原版一致。默认：true。");
+         comments.put("performance.network.buffer-optimizations", "减少字符串编码和 Java 压缩的临时缓冲区；不改协议，可重载，关闭后使用原路径。默认：true。");
++        comments.put("features.tpsbar.enabled", "启用 /tpsbar 性能条，显示 TPS、MSPT 和内存；关闭后自动隐藏，可重载。默认：true。");
++        comments.put("updates.check", "启动后及每小时检查 LeavesX 正式版更新，仅匹配当前 MC 版本。默认：true。");
++        comments.put("updates.auto-download", "自动下载并校验更新，重启后使用；不会自动重启服务器。默认：false。");
+         comments.put("performance.ai.sensor-list-reuse", "物品传感器复用扫描列表；生物扫描结果会存入 Brain，不复用，避免旧记忆被清空。默认：true。");
+         comments.put("performance.chunk.poi-async-serialization", "暂不可用：异步编码失败时可能丢失床和工作站数据；当前仍在 Tick 线程编码、异步写盘。默认：false。");
+         comments.put("performance.ai.poi-competitor-scan-no-load", "暂不可用：村民竞争扫描保留原版 POI 加载行为，避免漏判工作站。默认：false。");
+@@ -621,7 +629,7 @@ public final class LeavesXConfigWriter {
+         );
+         comments.put(
+             "features.spectator-no-chunk-loading",
+-            "开启后，旁观者且 spectators_generate_chunks=false 时不加载或观察区块，按无玩家处理。默认：false。"
++            "旁观者不参与区块模拟，但仍可查看已加载区块。默认：false。"
+         );
+         comments.put("fakeplayer.startup-restore.enabled", "启动时分批恢复常驻假人，降低重启瞬间的区块和实体尖峰。默认：false。");
+         comments.put("fakeplayer.startup-restore.per-tick", "启动分批恢复时每 Tick 最多恢复的假人数。默认：1。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 1f4a8a5ac..9341a196b 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -515,6 +515,15 @@ public final class LeavesXRuntime {
+         return configuration.extensions().networkBufferOptimizations();
+     }
+ 
++    /** 仅恢复绊线钩更新中的旧版回填行为，不修改全局红石或刷线开关。 */
++    public static boolean tripwireHookDuplication() {
++        return configuration.extensions().tripwireHookDuplication();
++    }
++
++    public static boolean tpsBarEnabled() {
++        return configuration.extensions().tpsBar();
++    }
++
+     /**
+      * Returns whether immutable lookup keys may retain precomputed hashes.
+      *
+diff --git a/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java b/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java
+index fc95c0080..2cce8c44f 100644
+--- a/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java
++++ b/src/main/java/org/leavesx/leavesx/diagnostics/LeavesXTickDiagnostics.java
+@@ -28,7 +28,7 @@ public final class LeavesXTickDiagnostics {
+     private static final long SAMPLE_PERIOD_MILLIS = 25L;
+     private static final long REPEAT_SAMPLE_NANOS = TimeUnit.MILLISECONDS.toNanos(100L);
+     private static final int MAX_RECORDS = 120;
+-    private static final int STACK_DEPTH = 16;
++    private static final int STACK_DEPTH = 64;
+     private static final int WORLD_SAMPLE_INTERVAL_TICKS = 20;
+     private static final ThreadMXBean THREADS = ManagementFactory.getThreadMXBean();
+     private static final Object RECORD_LOCK = new Object();
+@@ -60,6 +60,7 @@ public final class LeavesXTickDiagnostics {
+ 
+     /** Marks the start of server-thread work for one tick. */
+     public static void beginTick(final long tick, final long startedNanos) {
++        if (tick % 20L == 0L) org.leavesx.leavesx.command.TpsBarCommand.update();
+         if (!org.leavesx.leavesx.config.LeavesXRuntime.diagnosticsCommandEnabled()) {
+             activeTickStartedNanos = 0L;
+             return;
+@@ -222,6 +223,11 @@ public final class LeavesXTickDiagnostics {
+         activeSample = new StackSample(tick, elapsedNanos, info.getThreadState(), List.copyOf(frames));
+         lastSampledTick = tick;
+         lastSampleElapsedNanos = elapsedNanos;
++        try {
++            StallLog.record(tick, elapsedNanos, info);
++        } catch (final RuntimeException failure) {
++            org.slf4j.LoggerFactory.getLogger(LeavesXTickDiagnostics.class).error("卡顿诊断采样失败", failure);
++        }
+     }
+ 
+     private static Workload collectWorkload(final MinecraftServer server) {
+diff --git a/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateService.java b/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateService.java
+new file mode 100644
+index 000000000..b1ac51c6c
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateService.java
+@@ -0,0 +1,207 @@
++package org.leavesx.leavesx.update;
++
++import com.google.gson.JsonParser;
++import io.papermc.paper.ServerBuildInfo;
++import java.io.IOException;
++import java.net.URI;
++import java.net.http.HttpClient;
++import java.net.http.HttpRequest;
++import java.net.http.HttpResponse;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.nio.file.StandardCopyOption;
++import java.security.MessageDigest;
++import java.time.Duration;
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.HexFormat;
++import java.util.List;
++import java.util.concurrent.Executors;
++import java.util.concurrent.ScheduledFuture;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicBoolean;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
++/** 独立更新器：网络和校验不占用 Tick 线程，校验成功才交给启动器。 */
++public final class LeavesXUpdateService {
++    private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXUpdateService.class);
++    private static final HttpClient CLIENT = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8))
++        .followRedirects(HttpClient.Redirect.NORMAL).build();
++    private static final java.util.concurrent.ScheduledExecutorService EXECUTOR =
++        Executors.newSingleThreadScheduledExecutor(task -> {
++            Thread thread = new Thread(task, "LeavesX-Update");
++            thread.setDaemon(true);
++            return thread;
++        });
++    private static final AtomicBoolean BUSY = new AtomicBoolean();
++    private static ScheduledFuture<?> scheduled;
++    private static volatile boolean automaticDownload;
++    private static final long MAX_SIZE = 512L * 1024 * 1024;
++
++    private LeavesXUpdateService() {}
++
++    public static synchronized void configure(LeavesXConfig.ExtensionSettings settings) {
++        automaticDownload = settings.updateDownload();
++        if (scheduled != null) scheduled.cancel(false);
++        scheduled = settings.updateCheck() ? EXECUTOR.scheduleWithFixedDelay(
++            () -> run(automaticDownload), 30, 3600, TimeUnit.SECONDS) : null;
++    }
++
++    public static boolean request(boolean download) {
++        if (!BUSY.compareAndSet(false, true)) return false;
++        EXECUTOR.execute(() -> execute(download));
++        return true;
++    }
++
++    private static void run(boolean download) {
++        if (BUSY.compareAndSet(false, true)) execute(download);
++    }
++
++    private static void execute(boolean download) {
++        try {
++            check(download);
++        } catch (Exception error) {
++            LOGGER.warn("LeavesX 更新失败：{}", error.toString());
++        } finally {
++            BUSY.set(false);
++        }
++    }
++
++    private static HttpRequest request(URI uri) {
++        if (!"https".equals(uri.getScheme())) throw new IllegalArgumentException("更新地址必须使用 HTTPS");
++        return HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(60))
++            .header("User-Agent", "LeavesX-Updater").GET().build();
++    }
++
++    private static void check(boolean download) throws Exception {
++        var response = CLIENT.send(request(URI.create("https://api.github.com/repos/chyppt/LeavesX/releases/latest")),
++            HttpResponse.BodyHandlers.ofString());
++        if (response.statusCode() != 200) throw new IOException("GitHub HTTP " + response.statusCode());
++        var release = JsonParser.parseString(response.body()).getAsJsonObject();
++        String tag = release.get("tag_name").getAsString();
++        String current = System.getProperty("leavesx.version", "");
++        // 读取构建清单，不用 MC 的构建编号冒充 LeavesX 版本。
++        Path runningJar = Path.of(LeavesXUpdateService.class.getProtectionDomain().getCodeSource().getLocation().toURI());
++        if (Files.isRegularFile(runningJar)) {
++            try (var jar = new java.util.jar.JarFile(runningJar.toFile())) {
++                if (jar.getManifest() != null) current = jar.getManifest().getMainAttributes().getValue("LeavesX-Version");
++            }
++        }
++        String version = tag.replaceFirst("(?i)^(leavesx[-_]?|v)", "");
++        if (current == null || !newer(version, current)) {
++            LOGGER.info("当前没有适用的 LeavesX 正式版更新。");
++            return;
++        }
++        String mc = ServerBuildInfo.buildInfo().minecraftVersionId();
++        for (var element : release.getAsJsonArray("assets")) {
++            var asset = element.getAsJsonObject();
++            String name = asset.get("name").getAsString();
++            if (!name.equalsIgnoreCase("LeavesX-" + version + "-" + mc + ".jar")) continue;
++            LOGGER.info("发现 LeavesX {} 更新（Minecraft {}）。", version, mc);
++            if (!download) return;
++            String digest = asset.has("digest") && !asset.get("digest").isJsonNull() ? asset.get("digest").getAsString() : "";
++            if (!digest.matches("sha256:[0-9a-fA-F]{64}")) throw new IOException("发布文件没有 SHA-256 摘要，已停止自动下载");
++            long size = asset.get("size").getAsLong();
++            if (size <= 0 || size > MAX_SIZE) throw new IOException("发布文件大小不合法");
++            URI url = URI.create(asset.get("browser_download_url").getAsString());
++            if (!"github.com".equals(url.getHost()) || !url.getPath().startsWith("/chyppt/LeavesX/releases/download/")) {
++                throw new IOException("发布文件不属于 LeavesX 仓库");
++            }
++            download(url, name, size, digest.substring(7));
++            return;
++        }
++        LOGGER.info("最新发布中没有 Minecraft {} 的 LeavesX 构建。", mc);
++    }
++
++    static boolean newer(String candidate, String current) {
++        if (!candidate.matches("[0-9]+\\.[0-9]+\\.[0-9]+") || !current.matches("[0-9]+\\.[0-9]+\\.[0-9]+")) return false;
++        String[] next = candidate.split("\\."), old = current.split("\\.");
++        for (int i = 0; i < 3; i++) {
++            int compared = new java.math.BigInteger(next[i]).compareTo(new java.math.BigInteger(old[i]));
++            if (compared != 0) return compared > 0;
++        }
++        return false;
++    }
++
++    private record Endpoint(URI uri, long latency) {}
++
++    private static void download(URI official, String name, long size, String hash) throws Exception {
++        List<Endpoint> endpoints = new ArrayList<>();
++        // 首选站可用时优先；其余镜像按探测延迟排序，官方始终作为最终回退。
++        for (String mirror : List.of("https://gh-proxy.com/", "https://ghfast.top/")) {
++            URI uri = URI.create(mirror + official);
++            long start = System.nanoTime();
++            try {
++                var probe = CLIENT.send(HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(5))
++                    .method("HEAD", HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.discarding());
++                if (probe.statusCode() == 200) endpoints.add(new Endpoint(uri,
++                    mirror.contains("gh-proxy.com") ? -1 : System.nanoTime() - start));
++            } catch (IOException ignored) {
++                // 镜像不可用不会阻止官方回退。
++            }
++        }
++        endpoints.sort(Comparator.comparingLong(Endpoint::latency));
++        endpoints.add(new Endpoint(official, Long.MAX_VALUE));
++        Path directory = Path.of("auto_update", "leavesx");
++        Files.createDirectories(directory);
++        IOException failure = null;
++        for (Endpoint endpoint : endpoints) {
++            Path temporary = Files.createTempFile(directory, "download-", ".part");
++            try {
++                var connection = (java.net.HttpURLConnection) endpoint.uri().toURL().openConnection();
++                connection.setConnectTimeout(8000);
++                connection.setReadTimeout(15000);
++                connection.setRequestProperty("User-Agent", "LeavesX-Updater");
++                long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(5);
++                try (var input = connection.getInputStream(); var output = Files.newOutputStream(temporary)) {
++                    if (connection.getResponseCode() != 200) throw new IOException("下载 HTTP " + connection.getResponseCode());
++                    MessageDigest digest = MessageDigest.getInstance("SHA-256");
++                    byte[] buffer = new byte[65536];
++                    long count = 0;
++                    for (int read; (read = input.read(buffer)) != -1;) {
++                        if (System.nanoTime() > deadline) throw new IOException("下载超时");
++                        count += read;
++                        if (count > size) throw new IOException("下载文件超出声明大小");
++                        digest.update(buffer, 0, read);
++                        output.write(buffer, 0, read);
++                    }
++                    if (count != size || !HexFormat.of().formatHex(digest.digest()).equalsIgnoreCase(hash)) {
++                        throw new IOException("文件大小或 SHA-256 校验失败");
++                    }
++                } finally {
++                    connection.disconnect();
++                }
++                try (var jar = new java.util.jar.JarFile(temporary.toFile())) {
++                    if (jar.getManifest() == null || jar.getEntry("META-INF/leavesclip-version") == null) {
++                        throw new IOException("发布文件不是 Leavesclip 核心 JAR");
++                    }
++                    // 启动器拒绝不一致的版本；发布指针前校验，避免下一次启动直接退出。
++                    try (var expected = LeavesXUpdateService.class.getResourceAsStream("/META-INF/leavesclip-version");
++                         var actual = jar.getInputStream(jar.getEntry("META-INF/leavesclip-version"))) {
++                        if (expected == null || !java.util.Arrays.equals(expected.readAllBytes(), actual.readAllBytes())) {
++                            throw new IOException("更新需要更换启动器，请手动下载新核心");
++                        }
++                    }
++                }
++                Path target = directory.resolve(name).toAbsolutePath();
++                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
++                Path marker = Files.createTempFile(Path.of("auto_update"), "core-", ".path");
++                try {
++                    Files.writeString(marker, target.toString());
++                    Files.move(marker, Path.of("auto_update", "core.path"), StandardCopyOption.REPLACE_EXISTING);
++                } finally {
++                    Files.deleteIfExists(marker);
++                }
++                LOGGER.info("LeavesX {} 已下载并校验，重启后生效。", name);
++                return;
++            } catch (IOException error) {
++                failure = error;
++            } finally {
++                Files.deleteIfExists(temporary);
++            }
++        }
++        throw failure == null ? new IOException("没有可用下载地址") : failure;
++    }
++}
+diff --git a/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java b/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java
+index d8ff53782..e4999740b 100644
+--- a/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java
++++ b/src/test/java/org/leavesx/leavesx/chunk/SpectatorChunkLoadingPolicyTest.java
+@@ -33,9 +33,10 @@ class SpectatorChunkLoadingPolicyTest {
+     }
+ 
+     @Test
+-    void optionalNoChunkLoadingPolicySuppressesTheReadOnlyObserverOnlyWhenEnabled() throws ReflectiveOperationException {
++    void noSimulationPolicyMustNotHideAlreadyLoadedChunks() throws ReflectiveOperationException {
+         assertTrue(shouldObserveLoadedChunks(true, false, false, false));
+-        assertFalse(shouldObserveLoadedChunks(true, false, false, true));
++        assertTrue(shouldObserveLoadedChunks(true, false, false, true));
++        assertFalse(shouldObserveLoadedChunks(true, false, true, true));
+         assertTrue(canPlayerLoadChunks(true, true, false));
+         assertFalse(shouldObserveLoadedChunks(true, true, false, true));
+         assertTrue(canPlayerLoadChunks(false, false, false));
+diff --git a/src/test/java/org/leavesx/leavesx/update/LeavesXUpdateServiceTest.java b/src/test/java/org/leavesx/leavesx/update/LeavesXUpdateServiceTest.java
+new file mode 100644
+index 000000000..0e2b21c8a
+--- /dev/null
++++ b/src/test/java/org/leavesx/leavesx/update/LeavesXUpdateServiceTest.java
+@@ -0,0 +1,27 @@
++package org.leavesx.leavesx.update;
++
++import org.junit.jupiter.api.Test;
++import static org.junit.jupiter.api.Assertions.*;
++
++class LeavesXUpdateServiceTest {
++    @Test
++    void onlyNewerStableVersionsAreAccepted() {
++        assertTrue(LeavesXUpdateService.newer("1.2.10", "1.2.9"));
++        assertTrue(LeavesXUpdateService.newer("2.0.0", "1.9.9"));
++        assertFalse(LeavesXUpdateService.newer("1.2.1", "1.2.1"));
++        assertFalse(LeavesXUpdateService.newer("1.1.9", "1.2.1"));
++        assertFalse(LeavesXUpdateService.newer("1.3.0-beta1", "1.2.1"));
++        assertFalse(LeavesXUpdateService.newer("1.3.0", "local"));
++    }
++
++    @Test
++    void updateSettingsAreDocumentedAndIndependent() throws Exception {
++        var defaults = org.leavesx.leavesx.config.LeavesXConfig.safeDefaults();
++        assertTrue(defaults.extensions().updateCheck());
++        assertFalse(defaults.extensions().updateDownload());
++        String yaml = org.leavesx.leavesx.config.LeavesXConfigWriter.render(defaults, "");
++        assertTrue(yaml.contains("updates:"));
++        assertTrue(yaml.contains("auto-download: false"));
++        assertFalse(yaml.contains("download-source"));
++    }
++}

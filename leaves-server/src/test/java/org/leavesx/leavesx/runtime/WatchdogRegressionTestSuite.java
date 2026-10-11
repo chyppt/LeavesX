@@ -5,12 +5,16 @@ import org.junit.platform.suite.api.SelectPackages;
 import org.junit.platform.suite.api.IncludeClassNamePatterns;
 import org.junit.platform.suite.api.Suite;
 
-/** Focused checks for tracker lifetime, compute completion and GC diagnostic accuracy. */
+/** 专项检查追踪器生命周期、计算完成和 GC 诊断准确性。 */
 @Suite
 @SelectPackages("org.leavesx.leavesx")
 @IncludeClassNamePatterns({
     ".*EntityTrackerLifetimeTest",
     ".*LeavesXGcDiagnosticsTest",
+    ".*StallLogTest",
+    ".*LeavesXTickDiagnosticsTest",
+    ".*LeavesXSystemDiagnosticsTest",
+    ".*OwnerThreadWaitsTest",
     ".*LeavesXComputeExecutorTest",
     ".*ComputeCompletionSafetyTest",
     ".*WorldTickSafetyRegressionTest",

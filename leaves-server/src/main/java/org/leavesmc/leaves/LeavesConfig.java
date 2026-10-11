@@ -43,7 +43,6 @@ import org.leavesmc.leaves.protocol.syncmatica.SyncmaticaProtocol;
 import org.leavesmc.leaves.region.IRegionFileFactory;
 import org.leavesmc.leaves.region.RegionFileFormat;
 import org.leavesmc.leaves.region.linear.LinearVersion;
-import org.leavesmc.leaves.util.LeavesUpdateHelper;
 import org.leavesmc.leaves.util.MathUtils;
 import org.leavesmc.leaves.util.McTechnicalModeHelper;
 import org.leavesmc.leaves.util.ServerI18nUtil;
@@ -121,6 +120,8 @@ public final class LeavesConfig {
 
     public static void save() {
         try {
+            // 清理已停用的 Leaves 更新器配置，不迁移其自动下载授权。
+            config.set("settings.misc.auto-update", null);
             config.save(LeavesConfig.configFile);
             // LeavesX - document the final YAML text so defaults keep Leaves' normal field order.
             org.leavesx.leavesx.config.migration.LeavesConfigDocumenter.document(configFile.toPath());
@@ -1123,44 +1124,6 @@ public final class LeavesConfig {
             }
         }
 
-        public AutoUpdateConfig autoUpdate = new AutoUpdateConfig();
-
-        @GlobalConfigCategory("auto-update")
-        public static class AutoUpdateConfig {
-            @GlobalConfig(value = "enable", lock = true, validator = AutoUpdateValidator.class)
-            public boolean enable = false;
-
-            private static class AutoUpdateValidator extends BooleanConfigValidator {
-                @Override
-                public void runAfterLoader(Boolean value, boolean reload) {
-                    if (!reload) {
-                        LeavesUpdateHelper.init();
-                        if (value) {
-                            LeavesLogger.LOGGER.warn("Auto-Update is not completely safe. Enabling it may cause data security problems!");
-                        }
-                    }
-                }
-            }
-
-            @GlobalConfig(value = "download-source", lock = true, validator = DownloadSourceValidator.class)
-            public String source = "application";
-
-            public static class DownloadSourceValidator extends StringConfigValidator {
-                private static final List<String> suggestSourceList = List.of("application", "cloud");
-
-                @Override
-                public List<String> valueSuggest() {
-                    return suggestSourceList;
-                }
-            }
-
-            @GlobalConfig("allow-experimental")
-            public Boolean allowExperimental = false;
-
-            @GlobalConfig(value = "time", lock = true)
-            public List<String> updateTime = List.of("14:00", "2:00");
-        }
-
         public ExtraYggdrasilConfig yggdrasil = new ExtraYggdrasilConfig();
 
         @GlobalConfigCategory("extra-yggdrasil-service")
@@ -1227,7 +1190,7 @@ public final class LeavesConfig {
         }
 
         @GlobalConfig(value = "server-mod-name")
-        public String serverModName = "Leaves";
+        public String serverModName = "LeavesX";
 
         @GlobalConfig("bstats-privacy-mode")
         public boolean bstatsPrivacyMode = false;

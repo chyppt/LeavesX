@@ -1,0 +1,66 @@
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+index 7f6ba2b7..162e9be5 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/player/RegionizedPlayerChunkLoader.java
+@@ -219,14 +219,14 @@ public final class RegionizedPlayerChunkLoader {
+         return shouldObserveLoadedChunks(spectator, spectatorsGenerateChunks, explicitlySuppressChunkLoading, false);
+     }
+ 
+-    /** Suppresses the read-only observer loader when the operator explicitly requests no spectator chunk loading. */
++    /** 禁止模拟加载不等于禁止显示；只读观察不持有加载或模拟票据。 */
+     static boolean shouldObserveLoadedChunks(
+         final boolean spectator,
+         final boolean spectatorsGenerateChunks,
+         final boolean explicitlySuppressChunkLoading,
+         final boolean spectatorNoChunkLoading
+     ) {
+-        return spectator && !spectatorsGenerateChunks && !explicitlySuppressChunkLoading && !spectatorNoChunkLoading;
++        return spectator && !spectatorsGenerateChunks && !explicitlySuppressChunkLoading;
+     }
+ 
+     private static boolean shouldObserveLoadedChunks(final ServerLevel world, final ServerPlayer player) {
+diff --git a/net/minecraft/server/network/ServerCommonPacketListenerImpl.java b/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
+index 1b05bf67..f24a1417 100644
+--- a/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
+@@ -386,25 +386,15 @@ public abstract class ServerCommonPacketListenerImpl implements ServerCommonPack
+     }
+ 
+     public void send(final Packet<?> packet) {
+-        // Leaves start - rebuild ClientboundPlayerChatPacket
+-        Packet<?> sendPacket = packet;
+-        if (org.leavesmc.leaves.LeavesConfig.mics.noChatSign) {
+-            if (this instanceof ServerGamePacketListenerImpl && sendPacket instanceof net.minecraft.network.protocol.game.ClientboundPlayerChatPacket chat) {
+-                sendPacket = new net.minecraft.network.protocol.game.ClientboundSystemChatPacket(chat.chatType().decorate(chat.unsignedContent() != null ? chat.unsignedContent() : net.minecraft.network.chat.Component.literal(chat.body().content())), false);
+-            }
+-        }
+-        // Leaves end - rebuild ClientboundPlayerChatPacket
+-        this.send(sendPacket, null);
++        this.send(packet, null);
+     }
+ 
+-    public void send(final Packet<?> packet, @Nullable ChannelFutureListener listener) {
+-        // Leaves start - no ClientboundPlayerChatHeaderPacket and rebuild ClientboundPlayerChatPacket
+-        if (org.leavesmc.leaves.LeavesConfig.mics.noChatSign) {
+-            if (packet instanceof net.minecraft.network.protocol.game.ClientboundPlayerChatPacket && listener != null) {
+-                listener = null;
+-            }
++    public void send(Packet<?> packet, @Nullable ChannelFutureListener listener) {
++        // 两个入口统一转换，避免带回调的发送绕过无签名处理；保留发送完成回调。
++        if (org.leavesmc.leaves.LeavesConfig.mics.noChatSign && this instanceof ServerGamePacketListenerImpl
++            && packet instanceof net.minecraft.network.protocol.game.ClientboundPlayerChatPacket chat) {
++            packet = new net.minecraft.network.protocol.game.ClientboundSystemChatPacket(chat.chatType().decorate(chat.unsignedContent() != null ? chat.unsignedContent() : net.minecraft.network.chat.Component.literal(chat.body().content())), false);
+         }
+-        // Leaves end - no ClientboundPlayerChatHeaderPacket and rebuild ClientboundPlayerChatPacket
+         // CraftBukkit start
+         if (packet == null) {
+             return;
+@@ -423,7 +413,7 @@ public abstract class ServerCommonPacketListenerImpl implements ServerCommonPack
+         } catch (Throwable t) {
+             CrashReport report = CrashReport.forThrowable(t, "Sending packet");
+             CrashReportCategory category = report.addCategory("Packet being sent");
+-            category.setDetail("Packet class", () -> packet.getClass().getCanonicalName());
++            category.setDetail("Packet class", packet.getClass().getCanonicalName());
+             throw new ReportedException(report);
+         }
+     }
