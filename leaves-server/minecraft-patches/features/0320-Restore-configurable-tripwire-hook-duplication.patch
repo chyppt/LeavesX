@@ -1,0 +1,21 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Subject: [PATCH] Restore configurable tripwire hook duplication
+
+diff --git a/net/minecraft/world/level/block/TripWireHookBlock.java b/net/minecraft/world/level/block/TripWireHookBlock.java
+--- a/net/minecraft/world/level/block/TripWireHookBlock.java
++++ b/net/minecraft/world/level/block/TripWireHookBlock.java
+@@ -115,2 +115,4 @@
+         if (facingOptional.isPresent()) {
++            // 一次更新固定使用同一配置，避免插件重载时两处校验走不同分支。
++            final boolean restoreHookDuplication = org.leavesx.leavesx.config.LeavesXRuntime.tripwireHookDuplication();
+             Direction direction = facingOptional.get();
+@@ -173,2 +175,2 @@
+-                if (!level.getBlockState(pos).is(Blocks.TRIPWIRE_HOOK)) {
++                if (!restoreHookDuplication && !level.getBlockState(pos).is(Blocks.TRIPWIRE_HOOK)) {
+                     onRemoved(newState, level, pos);
+@@ -190,3 +192,3 @@
+             if (!isBeingDestroyed) {
+-                if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.skipTripwireHookPlacementValidation || level.getBlockState(pos).is(Blocks.TRIPWIRE_HOOK)) // Paper - Validate tripwire hook placement before update
++                if (restoreHookDuplication || io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.skipTripwireHookPlacementValidation || level.getBlockState(pos).is(Blocks.TRIPWIRE_HOOK)) // Paper - Validate tripwire hook placement before update
+                 level.setBlock(pos, newState.setValue(FACING, direction), Block.UPDATE_ALL);

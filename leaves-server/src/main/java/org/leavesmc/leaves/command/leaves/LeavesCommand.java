@@ -8,7 +8,6 @@ import org.leavesmc.leaves.command.leaves.subcommands.ConfigCommand;
 import org.leavesmc.leaves.command.leaves.subcommands.CounterCommand;
 import org.leavesmc.leaves.command.leaves.subcommands.ReloadCommand;
 import org.leavesmc.leaves.command.leaves.subcommands.ReportCommand;
-import org.leavesmc.leaves.command.leaves.subcommands.UpdateCommand;
 
 public class LeavesCommand extends RootNode {
 
@@ -22,8 +21,7 @@ public class LeavesCommand extends RootNode {
             ConfigCommand::new,
             CounterCommand::new,
             ReloadCommand::new,
-            ReportCommand::new,
-            UpdateCommand::new
+            ReportCommand::new
         );
     }
 

@@ -1,0 +1,48 @@
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -1916,6 +1916,7 @@
+                 net.minecraft.world.level.block.entity.HopperBlockEntity.skipHopperEvents = level.paperConfig().hopper.disableMoveEvent || org.bukkit.event.inventory.InventoryMoveItemEvent.getHandlerList().getRegisteredListeners().length == 0; // Paper - Perf: Optimize Hoppers
+                 leavesXProfiler.push(() -> level + " " + level.dimension().identifier());
+                 leavesXProfiler.push("tick");
++                final long leavesXWorldStarted = System.nanoTime();
+                 try {
+                     level.tick(time);
+                 // Leaves start - update suppression crash fix
+@@ -1931,6 +1932,8 @@
+                     CrashReport report = CrashReport.forThrowable(t, "Exception ticking world");
+                     level.fillReportDetails(report);
+                     throw new ReportedException(report);
++                } finally {
++                    org.leavesx.leavesx.diagnostics.LeavesXWorldTickMetrics.record(level, leavesXWorldStarted);
+                 }
+                 leavesXProfiler.pop();
+                 leavesXProfiler.pop();
+@@ -1949,6 +1952,7 @@
+             profiler.push(() -> level + " " + level.dimension().identifier());
+             profiler.push("tick");
+ 
++            final long leavesXWorldStarted = System.nanoTime();
+             try {
+                 level.tick(haveTime);
+             // Leaves start - update suppression crash fix
+@@ -1964,6 +1968,8 @@
+                 CrashReport report = CrashReport.forThrowable(t, "Exception ticking world");
+                 level.fillReportDetails(report);
+                 throw new ReportedException(report);
++            } finally {
++                org.leavesx.leavesx.diagnostics.LeavesXWorldTickMetrics.record(level, leavesXWorldStarted);
+             }
+ 
+             profiler.pop();
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -2747,6 +2747,7 @@
+ 
+     @Override
+     public void close() throws IOException {
++        org.leavesx.leavesx.diagnostics.LeavesXWorldTickMetrics.remove(this);
+         super.close();
+         //this.entityManager.close(); // Paper - rewrite chunk system
+     }

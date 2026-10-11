@@ -11,6 +11,10 @@ import org.junit.platform.suite.api.Suite;
 @IncludeClassNamePatterns({
     ".*EntityTrackerLifetimeTest",
     ".*LeavesXGcDiagnosticsTest",
+    ".*StallLogTest",
+    ".*LeavesXTickDiagnosticsTest",
+    ".*LeavesXSystemDiagnosticsTest",
+    ".*OwnerThreadWaitsTest",
     ".*LeavesXComputeExecutorTest",
     ".*ComputeCompletionSafetyTest",
     ".*WorldTickSafetyRegressionTest",
