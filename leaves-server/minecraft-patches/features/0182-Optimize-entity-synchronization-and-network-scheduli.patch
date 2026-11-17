@@ -38,8 +38,8 @@ index 7de18731..d121789a 100644
          } else {
 -            this.channel.eventLoop().execute(() -> this.doSendPacket(packet, listener, flush));
 +            final io.netty.channel.SingleThreadEventLoop lazyEventLoop = this.lazyWriteEventLoop;
-+            if (!flush && org.leavesx.leavesx.config.LeavesXRuntime.networkFlushConsolidation() && lazyEventLoop != null) {
-+                // The regular flush task wakes this loop later in the same tick, preserving FIFO packet order.
++            if (!flush && org.leavesx.leavesx.config.LeavesXRuntime.networkFlushConsolidation() && lazyEventLoop != null && lazyEventLoop == eventLoop) {
++                // 仅在当前调度器未被插件包装时使用缓存，避免绕过插件调度导致跨维度发包乱序。
 +                lazyEventLoop.lazyExecute(() -> this.doSendPacket(packet, listener, false));
 +            } else {
 +                eventLoop.execute(() -> this.doSendPacket(packet, listener, flush));
