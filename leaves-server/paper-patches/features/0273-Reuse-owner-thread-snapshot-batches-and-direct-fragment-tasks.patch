@@ -1,0 +1,303 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Mon, 16 Nov 2026 16:00:00 +0800
+Subject: [PATCH] Reuse owner-thread snapshot batches and direct fragment tasks
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java
+@@ -3,9 +3,11 @@
+ import java.util.ArrayList;
+ import java.util.List;
+ import java.util.Objects;
++import java.lang.invoke.MethodHandles;
++import java.lang.invoke.VarHandle;
+ import java.util.concurrent.CountDownLatch;
+-import java.util.concurrent.atomic.AtomicBoolean;
+ import java.util.concurrent.atomic.AtomicInteger;
++import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.leavesx.leavesx.diagnostics.OwnerThreadWaits;
+ 
+ /**
+@@ -14,6 +16,7 @@
+  */
+ public final class LeavesXSnapshotBatch implements AutoCloseable {
+     private static final int MAX_PENDING_TASKS = 64;
++    private static final ThreadLocal<LeavesXSnapshotBatch[]> REUSABLE = new ThreadLocal<>();
+     private final Thread owner = Thread.currentThread();
+     private final LeavesXComputeExecutor.Workload workload;
+     private final List<Task> pending = new ArrayList<>();
+@@ -28,9 +31,48 @@
+     private boolean successful = true;
+     private Throwable failure;
+     private boolean finished;
++    private boolean inUse = true;
++    private boolean cached;
+ 
+     public LeavesXSnapshotBatch(final LeavesXComputeExecutor.Workload workload) {
+         this.workload = Objects.requireNonNull(workload, "workload");
++    }
++
++    /** 只复用本线程已经 close 的同类容器；嵌套查询保留自己的屏障和异常。 */
++    public static LeavesXSnapshotBatch acquire(final LeavesXComputeExecutor.Workload workload) {
++        Objects.requireNonNull(workload, "workload");
++        if (!LeavesXRuntime.asyncSettings().kernels().snapshotBatchReuse()) {
++            return new LeavesXSnapshotBatch(workload);
++        }
++        LeavesXSnapshotBatch[] cached = REUSABLE.get();
++        if (cached == null) {
++            cached = new LeavesXSnapshotBatch[LeavesXComputeExecutor.Workload.values().length];
++            REUSABLE.set(cached);
++        }
++        final int slot = workload.ordinal();
++        LeavesXSnapshotBatch batch = cached[slot];
++        if (batch == null) {
++            batch = new LeavesXSnapshotBatch(workload);
++            batch.cached = true;
++            cached[slot] = batch;
++        } else if (batch.inUse) {
++            return new LeavesXSnapshotBatch(workload);
++        } else {
++            // close 的完整屏障之后，任务不再写入这些状态；不能在 finish 之前清零。
++            batch.items = 0;
++            batch.callerItems = 0L;
++            batch.workerItems = 0L;
++            batch.callerTasks = 0L;
++            batch.workerTasks = 0L;
++            batch.callerNanos = 0L;
++            batch.activeWorkers.set(0);
++            batch.maximumWorkers.set(0);
++            batch.successful = true;
++            batch.failure = null;
++            batch.finished = false;
++            batch.inUse = true;
++        }
++        return batch;
+     }
+ 
+     /** 控制每批任务数，避免密集场景把数值计算拆成数百次跨线程唤醒。 */
+@@ -68,7 +110,7 @@
+             final Task task = new Task(size, computation, this.activeWorkers, this.maximumWorkers);
+             this.pending.add(task);
+             try {
+-                if (!LeavesXComputeExecutor.tryExecuteSnapshot(this.workload, task::runOnWorker, task::cancel)) {
++                if (!LeavesXComputeExecutor.tryExecuteSnapshot(this.workload, task, task::cancel)) {
+                     task.run(false);
+                 }
+             } catch (final Throwable submissionFailure) {
+@@ -111,6 +153,18 @@
+     public void close() {
+         // 即使后续采集抛异常，也必须先停止全部写入，再让调用者清理或复用缓冲区。
+         this.finish();
++        this.failure = null;
++        this.inUse = false;
++        if (this.cached && !LeavesXRuntime.asyncSettings().kernels().snapshotBatchReuse()) {
++            final LeavesXSnapshotBatch[] cached = REUSABLE.get();
++            if (cached != null && cached[this.workload.ordinal()] == this) {
++                cached[this.workload.ordinal()] = null;
++                boolean empty = true;
++                for (final LeavesXSnapshotBatch batch : cached) empty &= batch == null;
++                if (empty) REUSABLE.remove();
++            }
++            this.cached = false;
++        }
+     }
+ 
+     /** 只回收已结束的任务句柄，不等待慢片段；输出缓冲仍保留到 flush 或 finish 的完整屏障之后。 */
+@@ -165,12 +219,20 @@
+         if (Thread.currentThread() != this.owner) throw new IllegalStateException("Snapshot batch used by a different owner");
+     }
+ 
+-    private static final class Task {
++    private static final class Task implements LeavesXComputeExecutor.SnapshotTask {
++        private static final VarHandle CLAIMED;
++        static {
++            try {
++                CLAIMED = MethodHandles.lookup().findVarHandle(Task.class, "claimed", boolean.class);
++            } catch (final ReflectiveOperationException failure) {
++                throw new ExceptionInInitializerError(failure);
++            }
++        }
+         private final int size;
+         private Runnable computation;
+         private final AtomicInteger active;
+         private final AtomicInteger maximum;
+-        private final AtomicBoolean claimed = new AtomicBoolean();
++        private volatile boolean claimed;
+         private final CountDownLatch completed = new CountDownLatch(1);
+         private Throwable failure;
+         private boolean worker;
+@@ -183,12 +245,13 @@
+             this.maximum = maximum;
+         }
+ 
+-        private void runOnWorker() {
++        @Override
++        public void run() {
+             this.run(true);
+         }
+ 
+         private void run(final boolean worker) {
+-            if (!this.claimed.compareAndSet(false, true)) return;
++            if (!CLAIMED.compareAndSet(this, false, true)) return;
+             this.executed = true;
+             this.worker = worker;
+             if (worker) this.maximum.accumulateAndGet(this.active.incrementAndGet(), Math::max);
+@@ -203,8 +266,9 @@
+             }
+         }
+ 
+-        private void cancel(final Throwable failure) {
+-            if (this.claimed.compareAndSet(false, true)) {
++        @Override
++        public void cancel(final Throwable failure) {
++            if (CLAIMED.compareAndSet(this, false, true)) {
+                 this.failure = failure;
+                 this.computation = null;
+                 this.completed.countDown();
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -248,7 +248,8 @@
+             return false;
+         }
+         try {
+-            current.executeReserved(new SnapshotRunnable(task, cancelled));
++            // 内部批次任务已经包含一次领取与取消状态；无需再套一层相同屏障。
++            current.executeReserved(task instanceof SnapshotTask ? task : new SnapshotRunnable(task, cancelled));
+             return true;
+         } catch (final RejectedExecutionException rejection) {
+             return false;
+@@ -1180,6 +1181,8 @@
+                     small.cancel();
+                 } else if (pending instanceof SnapshotRunnable snapshot) {
+                     snapshot.cancel();
++                } else if (pending instanceof SnapshotTask snapshot) {
++                    snapshot.cancel(new CancellationException("LeavesX snapshot task cancelled before execution"));
+                 }
+             }
+         }
+@@ -2120,6 +2123,11 @@
+         }
+     }
+ 
++    /** 内部任务自行保证领取、取消和完成发布只发生一次。 */
++    interface SnapshotTask extends Runnable {
++        void cancel(Throwable failure);
++    }
++
+     /** 排队取消与开始执行只允许一方胜出，防止许可泄漏或重复完成回调。 */
+     private static final class SnapshotRunnable implements Runnable {
+         private final Runnable task;
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -349,8 +349,18 @@
+         boolean trackerEmptyRangeFastPath,
+         boolean trackerPlayerLists,
+         boolean spatialActivationGroups,
++        boolean snapshotBatchReuse,
+         int cacheMaxCandidates
+     ) {
++        public ComputeKernelSettings(
++            final boolean distanceHistograms, final boolean nearestReduction, final boolean trackerRowKernel,
++            final boolean trackerEmptyRangeFastPath, final boolean trackerPlayerLists,
++            final boolean spatialActivationGroups, final int cacheMaxCandidates
++        ) {
++            this(distanceHistograms, nearestReduction, trackerRowKernel, trackerEmptyRangeFastPath,
++                trackerPlayerLists, spatialActivationGroups, true, cacheMaxCandidates);
++        }
++
+         public ComputeKernelSettings(
+             final boolean distanceHistograms,
+             final boolean nearestReduction,
+@@ -368,7 +378,7 @@
+         }
+ 
+         public static ComputeKernelSettings defaults() {
+-            return new ComputeKernelSettings(true, true, true, true, true, true, 32_768);
++            return new ComputeKernelSettings(true, true, true, true, true, true, true, 32_768);
+         }
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -536,6 +536,7 @@
+                         readBoolean(node.node("async", "compute", "kernels", "tracker-empty-range-fastpath"), "async.compute.kernels.tracker-empty-range-fastpath", true),
+                         readBoolean(node.node("async", "compute", "kernels", "tracker-player-lists"), "async.compute.kernels.tracker-player-lists", true),
+                         readBoolean(node.node("async", "compute", "kernels", "spatial-activation-groups"), "async.compute.kernels.spatial-activation-groups", true),
++                        readBoolean(node.node("async", "compute", "kernels", "snapshot-batch-reuse"), "async.compute.kernels.snapshot-batch-reuse", true),
+                         readInt(node.node("async", "compute", "cache-max-candidates"), "async.compute.cache-max-candidates", 32_768)
+                     )
+                 ),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -204,6 +204,7 @@
+         changed |= writeValue(node.node("async", "compute", "kernels", "tracker-empty-range-fastpath"), "async.compute.kernels.tracker-empty-range-fastpath", kernels.trackerEmptyRangeFastPath(), missingOnly);
+         changed |= writeValue(node.node("async", "compute", "kernels", "tracker-player-lists"), "async.compute.kernels.tracker-player-lists", kernels.trackerPlayerLists(), missingOnly);
+         changed |= writeValue(node.node("async", "compute", "kernels", "spatial-activation-groups"), "async.compute.kernels.spatial-activation-groups", kernels.spatialActivationGroups(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "kernels", "snapshot-batch-reuse"), "async.compute.kernels.snapshot-batch-reuse", kernels.snapshotBatchReuse(), missingOnly);
+         changed |= writeValue(node.node("async", "compute", "cache-max-candidates"), "async.compute.cache-max-candidates", kernels.cacheMaxCandidates(), missingOnly);
+         changed |= writeValue(node.node("async", "compute", "kernels", "activation-bounds-prefilter"), "async.compute.kernels.activation-bounds-prefilter", async.activationBoundsPrefilter(), missingOnly);
+         changed |= writeValue(node.node("async", "compute", "animals", "breeding"), "async.compute.animals.breeding", async.animalBreeding(), missingOnly);
+@@ -591,6 +592,7 @@
+         comments.put("async.compute.kernels.tracker-empty-range-fastpath", "附近玩家列表为空时跳过无效坐标采集和比较，仍核对区块及玩家列表状态；不改变可见性结果，可重载。默认：true。");
+         comments.put("async.compute.kernels.tracker-player-lists", "同批实体共享只读的附近玩家索引，提交时仍核验实时玩家和区块状态；不跨 Tick 缓存，可重载。默认：true。");
+         comments.put("async.compute.kernels.spatial-activation-groups", "按冻结位置组织玩家激活范围，减少分散玩家之间的无效比较；激活范围和更新频率不变，可重载。默认：true。");
++        comments.put("async.compute.kernels.snapshot-batch-reuse", "每线程复用已完成的快照调度容器，减少 AI、激活与追踪派发分配；重入隔离，失败仍完整回退，可重载。默认：true。");
+         comments.put("async.compute.cache-max-candidates", "距离排序、最近目标与激活计算每线程的日常候选缓存上限；持续高负载时复用更大缓存，后续小任务到来时回收，0 为不保留；不限制实体数，可重载。默认：32768。");
+         comments.put("async.compute.animals.breeding", "并行计算鸡牛羊猪繁殖配对距离；搜索范围、繁殖时机和事件不变。默认：true。");
+         comments.put("async.compute.animals.follow-parent", "并行计算鸡牛羊猪幼体跟随距离；跟随条件、更新频率和寻路不变。默认：true。");
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -236,7 +236,7 @@
+             if (size > MIN_PIPELINE_ITEMS && LeavesXRuntime.asyncSettings().aiSnapshotPipeline()) {
+                 final int width = Math.max(divideCeil(size, 64), LeavesXSnapshotBatch.partitionSize(size, MIN_PIPELINE_ITEMS));
+                 int partitions = 0;
+-                try (var batch = new LeavesXSnapshotBatch(LeavesXComputeExecutor.Workload.AI_TARGET_SELECT)) {
++                try (var batch = LeavesXSnapshotBatch.acquire(LeavesXComputeExecutor.Workload.AI_TARGET_SELECT)) {
+                     for (int from = 0; from < size; from += width) {
+                         final int start = from;
+                         final int end = (int)Math.min(size, (long)start + width);
+@@ -426,7 +426,7 @@
+         // 以已经分配的直方图槽数为上限，热重载改变线程数也不会让片段越界。
+         final int rangeSize = Math.max(divideCeil(size, workspace.laneOffsets.length / HISTOGRAM_STRIDE),
+             LeavesXSnapshotBatch.partitionSize(size, MIN_PIPELINE_ITEMS));
+-        try (final LeavesXSnapshotBatch batch = new LeavesXSnapshotBatch(LeavesXComputeExecutor.Workload.AI_TARGET_SORT)) {
++        try (final LeavesXSnapshotBatch batch = LeavesXSnapshotBatch.acquire(LeavesXComputeExecutor.Workload.AI_TARGET_SORT)) {
+             for (int start = 0, partition = 0; start < size; start += rangeSize, partition++) {
+                 final int from = start;
+                 final int to = (int)Math.min(size, (long)start + rangeSize);
+@@ -463,7 +463,7 @@
+         final int rangeSize = Math.max(divideCeil(size, workspace.nearestByPartition.length),
+             LeavesXSnapshotBatch.partitionSize(size, MIN_PIPELINE_ITEMS));
+         int partitions = 0;
+-        try (final LeavesXSnapshotBatch batch = new LeavesXSnapshotBatch(LeavesXComputeExecutor.Workload.AI_TARGET_SELECT)) {
++        try (final LeavesXSnapshotBatch batch = LeavesXSnapshotBatch.acquire(LeavesXComputeExecutor.Workload.AI_TARGET_SELECT)) {
+             for (int start = 0; start < size; start += rangeSize) {
+                 final int from = start;
+                 final int to = (int)Math.min(size, (long)start + rangeSize);
+diff --git a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+--- a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
++++ b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+@@ -400,7 +400,7 @@
+         try {
+             snapshotActivationBounds(workspace.activationBounds);
+             try (final LeavesXSnapshotBatch pipeline = LeavesXRuntime.asyncSettings().activationSnapshotPipeline()
+-                ? new LeavesXSnapshotBatch(LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION) : null) {
++                ? LeavesXSnapshotBatch.acquire(LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION) : null) {
+                 snapshotEntityBounds(entities, workspace, tickMarkers, currentTick, size, pipeline);
+                 if (pipeline != null) {
+                     if (!pipeline.finish()) {
+@@ -631,7 +631,7 @@
+         int published = 0;
+         final int entitiesPerBatch = LeavesXSnapshotBatch.partitionSize(workspace.activationTypes.length, PIPELINE_ENTITIES);
+         try (final LeavesXSnapshotBatch pipeline = pipelined
+-            ? new LeavesXSnapshotBatch(LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION) : null) {
++            ? LeavesXSnapshotBatch.acquire(LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION) : null) {
+             for (final Entity entity : source) {
+                 if (pipeline != null && count == workspace.activationTypes.length) {
+                     // 世界实体数是估计值；扩容复制输出前必须等待旧数组上的全部写入结束。

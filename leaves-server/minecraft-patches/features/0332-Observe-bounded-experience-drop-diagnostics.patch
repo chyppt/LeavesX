@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 14 Nov 2026 16:00:00 +0800
+Subject: [PATCH] Observe bounded experience drop diagnostics
+
+diff --git a/net/minecraft/world/entity/ExperienceOrb.java b/net/minecraft/world/entity/ExperienceOrb.java
+index 14ee8cc6..5cb0a393 100644
+--- a/net/minecraft/world/entity/ExperienceOrb.java
++++ b/net/minecraft/world/entity/ExperienceOrb.java
+@@ -273,11 +273,16 @@ public class ExperienceOrb extends Entity {
+     }
+     public static void awardWithDirection(final ServerLevel level, final Vec3 pos, final Vec3 roughDirection, int amount, org.bukkit.entity.ExperienceOrb.@Nullable SpawnReason reason, final @Nullable Entity triggerId, final @Nullable Entity sourceId) {
+     // Paper end - add reason to orbs
++        final var leavesXExperienceTrace = org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.capture(level, pos);
+         while (amount > 0) {
+             int newCount = getExperienceValue(amount);
+             amount -= newCount;
+             if (!tryMergeToExisting(level, pos, newCount)) {
+-                level.addFreshEntity(new ExperienceOrb(level, pos, roughDirection, newCount, reason, triggerId, sourceId)); // Paper - add reason to orbs
++                final ExperienceOrb orb = new ExperienceOrb(level, pos, roughDirection, newCount, reason, triggerId, sourceId);
++                final boolean added = level.addFreshEntity(orb); // Paper - add reason to orbs
++                org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.awarded(leavesXExperienceTrace, sourceId, newCount, orb, added);
++            } else {
++                org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.awarded(leavesXExperienceTrace, sourceId, newCount, null, true);
+             }
+         }
+     }
+@@ -390,15 +395,23 @@ public class ExperienceOrb extends Entity {
+     @Override
+     public void playerTouch(final Player player) {
+         if (player instanceof ServerPlayer serverPlayer) {
+-            if (player.takeXpDelay == 0 && new com.destroystokyo.paper.event.player.PlayerPickupExperienceEvent(serverPlayer.getBukkitEntity(), (org.bukkit.entity.ExperienceOrb) this.getBukkitEntity()).callEvent()) { // Paper - PlayerPickupExperienceEvent
++            if (player.takeXpDelay == 0) {
++                if (!new com.destroystokyo.paper.event.player.PlayerPickupExperienceEvent(serverPlayer.getBukkitEntity(), (org.bukkit.entity.ExperienceOrb) this.getBukkitEntity()).callEvent()) {
++                    org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.pickupCancelled(this);
++                    return;
++                }
+                 if (org.leavesmc.leaves.LeavesConfig.modify.fastAbsorbPredicate.test(serverPlayer)) {
+                     player.takeXpDelay = org.bukkit.craftbukkit.event.CraftEventFactory.callPlayerXpCooldownEvent(player, 0, org.bukkit.event.player.PlayerExpCooldownChangeEvent.ChangeReason.PICKUP_ORB).getNewCooldown(); // CraftBukkit - entity.takeXpDelay = 2;
+                     while (this.count > 0) {
+                         player.take(this, 1);
+-                        int i = this.repairPlayerItems(serverPlayer, this.getValue());
++                        final int beforeMending = this.getValue();
++                        int i = this.repairPlayerItems(serverPlayer, beforeMending);
++                        int granted = 0;
+                         if (i > 0) {
+-                            player.giveExperiencePoints(org.bukkit.craftbukkit.event.CraftEventFactory.callPlayerExpChangeEvent(player, this, i).getAmount()); // CraftBukkit - this.value -> event.getAmount() // Paper - supply experience orb object
++                            granted = org.bukkit.craftbukkit.event.CraftEventFactory.callPlayerExpChangeEvent(player, this, i).getAmount();
++                            player.giveExperiencePoints(granted);
+                         }
++                        org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.pickedUp(this, player, beforeMending, i, granted);
+                         this.count--;
+                     }
+                     this.discard(org.bukkit.event.entity.EntityRemoveEvent.Cause.PICKUP); // CraftBukkit - add Bukkit remove cause
+@@ -407,10 +420,14 @@ public class ExperienceOrb extends Entity {
+ 
+                 player.takeXpDelay = org.bukkit.craftbukkit.event.CraftEventFactory.callPlayerXpCooldownEvent(player, 2, org.bukkit.event.player.PlayerExpCooldownChangeEvent.ChangeReason.PICKUP_ORB).getNewCooldown(); // CraftBukkit - entity.takeXpDelay = 2;
+                 player.take(this, 1);
+-                int remaining = this.repairPlayerItems(serverPlayer, this.getValue());
++                final int beforeMending = this.getValue();
++                int remaining = this.repairPlayerItems(serverPlayer, beforeMending);
++                int granted = 0;
+                 if (remaining > 0) {
+-                    player.giveExperiencePoints(org.bukkit.craftbukkit.event.CraftEventFactory.callPlayerExpChangeEvent(player, this, remaining).getAmount()); // CraftBukkit - remaining -> event.getAmount() // Paper - supply experience orb
++                    granted = org.bukkit.craftbukkit.event.CraftEventFactory.callPlayerExpChangeEvent(player, this, remaining).getAmount();
++                    player.giveExperiencePoints(granted);
+                 }
++                org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.pickedUp(this, player, beforeMending, remaining, granted);
+ 
+                 this.count--;
+                 if (this.count == 0) {
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index c44038b4..a595e400 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -1910,6 +1910,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+                         sourceEntity.killedEntity((ServerLevel)this.level(), this, source);
+                     }
+                     this.gameEvent(GameEvent.ENTITY_DIE);
++                    org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.beforeDrop(this);
+                     if (!this.wasExperienceConsumed()) this.dropExperience((ServerLevel) this.level(), source.getEntity()); // Leaves - exp fix
+                 } else {
+                     this.dead = false;

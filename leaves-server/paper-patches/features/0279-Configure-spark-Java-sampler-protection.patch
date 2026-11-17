@@ -1,0 +1,37 @@
+Subject: [PATCH] Configure spark Java sampler protection
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -303 +303 @@
+-        boolean reuseBlockDestructionPackets, boolean virtualDownloadPool
++        boolean reuseBlockDestructionPackets, boolean virtualDownloadPool, boolean sparkJavaSampler
+@@ -308 +308 @@
+-                true, false);
++                true, false, true);
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -573 +573,2 @@
+-                    readBoolean(node.node("async", "virtual-threads", "download-pool"), "async.virtual-threads.download-pool", false)
++                    readBoolean(node.node("async", "virtual-threads", "download-pool"), "async.virtual-threads.download-pool", false),
++                    readBoolean(node.node("diagnostics", "spark", "java-sampler"), "diagnostics.spark.java-sampler", true)
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -116 +116,2 @@
+         changed |= writeValue(node.node("async", "virtual-threads", "download-pool"), "async.virtual-threads.download-pool", config.extensions().virtualDownloadPool(), missingOnly);
++        changed |= writeValue(node.node("diagnostics", "spark", "java-sampler"), "diagnostics.spark.java-sampler", config.extensions().sparkJavaSampler(), missingOnly);
+@@ -683 +684,2 @@
+         comments.put("diagnostics.slow-plugin-task-ms", "记录超过多少毫秒的同步插件任务。默认：2。");
++        comments.put("diagnostics.spark.java-sampler", "内置 spark 使用 Java 采样，规避原生采样器崩溃；禁止需要原生库的 --alloc 分配采样。重启生效。默认：true。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -151,3 +151,6 @@
+         if (previous.extensions().virtualDownloadPool() != next.extensions().virtualDownloadPool()) {
+             changed.add("async.virtual-threads.download-pool");
+         }
++        if (previous.extensions().sparkJavaSampler() != next.extensions().sparkJavaSampler()) {
++            changed.add("diagnostics.spark.java-sampler");
++        }

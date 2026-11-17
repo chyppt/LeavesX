@@ -1,0 +1,143 @@
+package org.leavesx.leavesx.performance;
+
+import ca.spottedleaf.moonrise.common.util.CoordinateUtils;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+
+/**
+ * Tracks sections visited by one deterministic POI breadth-first search.
+ *
+ * <p>Bounded searches use one bit per possible section when the search box is reasonably sized. Unbounded or
+ * unusually large searches retain the existing hash-set representation so memory use stays bounded and the
+ * compatibility fallback remains available.</p>
+ */
+public final class PreviousPoiVisitedSectionSet {
+
+    private static final long MAXIMUM_BITSET_SECTIONS = 1L << 20;
+
+    private final int minimumX;
+    private final int minimumY;
+    private final int minimumZ;
+    private final int sizeX;
+    private final int sizeY;
+    private final long[] visitedBits;
+    private final LongOpenHashSet fallback;
+
+    private PreviousPoiVisitedSectionSet(
+        final int minimumX,
+        final int minimumY,
+        final int minimumZ,
+        final int sizeX,
+        final int sizeY,
+        final long sectionCount
+    ) {
+        this.minimumX = minimumX;
+        this.minimumY = minimumY;
+        this.minimumZ = minimumZ;
+        this.sizeX = sizeX;
+        this.sizeY = sizeY;
+        this.visitedBits = new long[(int)((sectionCount + Long.SIZE - 1L) >>> 6)];
+        this.fallback = null;
+    }
+
+    private PreviousPoiVisitedSectionSet(final int expectedSections) {
+        this.minimumX = 0;
+        this.minimumY = 0;
+        this.minimumZ = 0;
+        this.sizeX = 0;
+        this.sizeY = 0;
+        this.visitedBits = null;
+        this.fallback = expectedSections > 0 ? new LongOpenHashSet(expectedSections) : new LongOpenHashSet();
+    }
+
+    /**
+     * Creates the smallest safe representation for an inclusive section box.
+     *
+     * @param boundedTraversal whether callers reject out-of-bounds neighbours before marking them
+     * @param preferBitSet whether the compact representation is enabled
+     * @return a tracker preserving the original packed-coordinate fallback
+     */
+    public static PreviousPoiVisitedSectionSet create(
+        final int lowerX,
+        final int lowerY,
+        final int lowerZ,
+        final int upperX,
+        final int upperY,
+        final int upperZ,
+        final boolean boundedTraversal,
+        final boolean preferBitSet
+    ) {
+        if (boundedTraversal && preferBitSet) {
+            final long sizeX = inclusiveLength(lowerX, upperX);
+            final long sizeY = inclusiveLength(lowerY, upperY);
+            final long sizeZ = inclusiveLength(lowerZ, upperZ);
+            final long sectionCount = boundedVolume(sizeX, sizeY, sizeZ);
+            if (sectionCount > 0L) {
+                return new PreviousPoiVisitedSectionSet(
+                    lowerX,
+                    lowerY,
+                    lowerZ,
+                    (int)sizeX,
+                    (int)sizeY,
+                    sectionCount
+                );
+            }
+        }
+
+        final int expectedSections = boundedTraversal
+            ? PoiSearchCapacity.forBounds(lowerX, lowerY, lowerZ, upperX, upperY, upperZ)
+            : 0;
+        return new PreviousPoiVisitedSectionSet(expectedSections);
+    }
+
+    /**
+     * Marks one section and reports whether it had not been visited before.
+     *
+     * <p>Bit-set callers must only pass coordinates inside the bounds supplied to {@link #create}; POI traversal
+     * checks those bounds before every neighbour insertion.</p>
+     *
+     * @return {@code true} only for the first mark of a section
+     */
+    public boolean mark(final int x, final int y, final int z) {
+        if (this.visitedBits == null) {
+            return this.fallback.add(CoordinateUtils.getChunkSectionKey(x, y, z));
+        }
+
+        final long[] bits = this.visitedBits;
+        final int localX = x - this.minimumX;
+        final int localY = y - this.minimumY;
+        final int localZ = z - this.minimumZ;
+        final int index = ((localZ * this.sizeX + localX) * this.sizeY) + localY;
+        final int wordIndex = index >>> 6;
+        final long mask = 1L << (index & 63);
+        final long previous = bits[wordIndex];
+        if ((previous & mask) != 0L) {
+            return false;
+        }
+        bits[wordIndex] = previous | mask;
+        return true;
+    }
+
+    boolean usesBitSet() {
+        return this.visitedBits != null;
+    }
+
+    int allocatedWordCount() {
+        return this.visitedBits == null ? 0 : this.visitedBits.length;
+    }
+
+    private static long inclusiveLength(final int lower, final int upper) {
+        return upper < lower ? 0L : (long)upper - (long)lower + 1L;
+    }
+
+    private static long boundedVolume(final long sizeX, final long sizeY, final long sizeZ) {
+        if (sizeX == 0L || sizeY == 0L || sizeZ == 0L
+            || sizeX > Integer.MAX_VALUE || sizeY > Integer.MAX_VALUE || sizeZ > Integer.MAX_VALUE) {
+            return 0L;
+        }
+        if (sizeX > MAXIMUM_BITSET_SECTIONS / sizeY) {
+            return 0L;
+        }
+        final long area = sizeX * sizeY;
+        return area > MAXIMUM_BITSET_SECTIONS / sizeZ ? 0L : area * sizeZ;
+    }
+}

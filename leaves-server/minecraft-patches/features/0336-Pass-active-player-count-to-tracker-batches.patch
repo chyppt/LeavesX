@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 3 Oct 2026 01:00:00 +0800
+Subject: [PATCH] Pass active player count to tracker batches
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1221,7 +1221,8 @@
+                 ? new org.leavesx.leavesx.runtime.LeavesXSnapshotBatch(
+                     org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING) : null) {
+                 if (pipeline != null) {
+-                    rangeBatch.prepare(entityCount, this.leavesX$trackerPlayerFrame.positionData, this.leavesX$trackerPlayerFrame.viewDistanceBlocks);
++                    rangeBatch.prepare(entityCount, this.leavesX$trackerPlayerFrame.positionData, this.leavesX$trackerPlayerFrame.viewDistanceBlocks,
++                        this.leavesX$trackerPlayerFrame.size);
+                 }
+                 int publishedRows = 0;
+                 final int rowsPerBatch = org.leavesx.leavesx.runtime.LeavesXSnapshotBatch.partitionSize(
+@@ -1243,7 +1244,8 @@
+                             || completedRows == entityCount) {
+                             // 每次发布固定的玩家数组与行边界；后续扩容仅替换所有者持有的数组引用。
+                             rangeBatch.submitRows(pipeline, publishedRows, completedRows,
+-                                this.leavesX$trackerPlayerFrame.positionData, this.leavesX$trackerPlayerFrame.viewDistanceBlocks);
++                                this.leavesX$trackerPlayerFrame.positionData, this.leavesX$trackerPlayerFrame.viewDistanceBlocks,
++                                this.leavesX$trackerPlayerFrame.size);
+                             publishedRows = completedRows;
+                         }
+                     }
+@@ -1253,7 +1255,8 @@
+                     completedPartitions = pipeline.finish() ? 1 : 0;
+                 } else if (org.leavesx.leavesx.config.LeavesXRuntime.asyncSettings().trackerComparisonSharding()) {
+                     // 捕获过程中可能扩容共享帧；所有行准备完成后才发布最终数值数组。
+-                    rangeBatch.prepare(entityCount, this.leavesX$trackerPlayerFrame.positionData, this.leavesX$trackerPlayerFrame.viewDistanceBlocks);
++                    rangeBatch.prepare(entityCount, this.leavesX$trackerPlayerFrame.positionData, this.leavesX$trackerPlayerFrame.viewDistanceBlocks,
++                        this.leavesX$trackerPlayerFrame.size);
+                     try {
+                         for (int index = 0; index < entityCount; index++) {
+                             if (snapshots[index] == null) {

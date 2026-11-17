@@ -1,0 +1,267 @@
+From 33d2b8fb10deb498f2cb272ec19fea2e683c562f Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sun, 18 Oct 2026 08:58:33 +0800
+Subject: [PATCH] Configure per-workload failure protection and report
+ cooldowns
+
+---
+ .../leavesx/command/LeavesXCommand.java       |  4 +-
+ .../leavesx/leavesx/config/LeavesXConfig.java | 40 ++++++++++++++--
+ .../config/LeavesXConfigBootstrap.java        |  2 +
+ .../leavesx/config/LeavesXConfigLoader.java   |  7 ++-
+ .../leavesx/config/LeavesXConfigWriter.java   |  7 +++
+ .../runtime/LeavesXComputeExecutor.java       | 48 ++++++++++++++-----
+ 6 files changed, 92 insertions(+), 16 deletions(-)
+
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 6bd1e16baf..62b523905c 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1131,7 +1131,9 @@ public final class LeavesXCommand extends Command {
+                 "低于阈值 " + workload.belowFeatureThresholdFallbacks()
+                     + " / 分片不足 " + workload.insufficientPartitionFallbacks()
+                     + " / 线程池不可用 " + workload.unavailableParallelismFallbacks()
+-                    + " / 背压接管 " + workload.backpressureCallerRuns(),
++                    + " / 背压接管 " + workload.backpressureCallerRuns()
++                    + (workload.circuitRemainingMillis() > 0L
++                        ? " / 异常保护暂停剩余 " + workload.circuitRemainingMillis() + " ms" : ""),
+                 NamedTextColor.DARK_GRAY
+             ));
+             sender.sendMessage(line(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 7b5444869a..21a7e7a1e2 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -91,7 +91,7 @@ public record LeavesXConfig(
+     RegionTickingSettings regionTickingSettings
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 89;
++    public static final int CURRENT_CONFIG_VERSION = 90;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -309,7 +309,23 @@ public record LeavesXConfig(
+         }
+     }
+ 
+-    /** 线程池设置在启动时应用；动物数值快照开关允许热重载。 */
++    /** 分类暂停仅影响并行准入；单次异常仍请求完整同步重算。 */
++    public record ComputeFailureSettings(boolean enabled, int failureThreshold, int cooldownSeconds) {
++        public ComputeFailureSettings {
++            if (failureThreshold < 1 || failureThreshold > 100) {
++                throw new IllegalArgumentException("parallelism.failure-protection.failure-threshold must be between 1 and 100");
++            }
++            if (cooldownSeconds < 1 || cooldownSeconds > 3_600) {
++                throw new IllegalArgumentException("parallelism.failure-protection.cooldown-seconds must be between 1 and 3600");
++            }
++        }
++
++        public static ComputeFailureSettings defaults() {
++            return new ComputeFailureSettings(true, 3, 30);
++        }
++    }
++
++    /** 线程池设置在启动时应用；动物数值快照与故障保护开关允许热重载。 */
+     public record AsyncSettings(
+         boolean chunkSendEnabled,
+         int chunkSendQueueSize,
+@@ -328,10 +344,12 @@ public record LeavesXConfig(
+         boolean lowLoadWorkers,
+         boolean animalBreeding,
+         boolean animalFollowParent,
+-        boolean activationBoundsPrefilter
++        boolean activationBoundsPrefilter,
++        ComputeFailureSettings failureProtection
+     ) {
+ 
+         public AsyncSettings {
++            java.util.Objects.requireNonNull(failureProtection, "failureProtection");
+             validateThreadCount(pathfindingThreads, "async.pathfinding.threads");
+             validateThreadCount(entityTrackerThreads, "async.entity-tracker.threads");
+             validateQueueSize(chunkSendQueueSize, "async.chunk-send.queue-size");
+@@ -345,6 +363,22 @@ public record LeavesXConfig(
+             }
+         }
+ 
++        /** 保留既有构造；故障保护默认启用，可即时重载。 */
++        public AsyncSettings(
++            final boolean chunkSendEnabled, final int chunkSendQueueSize, final boolean mobSpawningEnabled,
++            final boolean pathfindingEnabled, final int pathfindingThreads, final int pathfindingQueueSize,
++            final int pathfindingKeepaliveSeconds, final boolean playerDataSaveEnabled, final int playerDataSaveQueueSize,
++            final boolean entityTrackerEnabled, final int entityTrackerThreads, final int entityTrackerQueueSize,
++            final boolean sharedComputeWorkers, final boolean trackerComparisonSharding, final boolean lowLoadWorkers,
++            final boolean animalBreeding, final boolean animalFollowParent, final boolean activationBoundsPrefilter
++        ) {
++            this(chunkSendEnabled, chunkSendQueueSize, mobSpawningEnabled, pathfindingEnabled, pathfindingThreads,
++                pathfindingQueueSize, pathfindingKeepaliveSeconds, playerDataSaveEnabled, playerDataSaveQueueSize,
++                entityTrackerEnabled, entityTrackerThreads, entityTrackerQueueSize, sharedComputeWorkers,
++                trackerComparisonSharding, lowLoadWorkers, animalBreeding, animalFollowParent, activationBoundsPrefilter,
++                ComputeFailureSettings.defaults());
++        }
++
+         /** 保留既有构造；数值内核只改变计算方式，可即时重载。 */
+         public AsyncSettings(
+             final boolean chunkSendEnabled, final int chunkSendQueueSize, final boolean mobSpawningEnabled,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 43b4504877..0aded368bf 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -46,6 +46,7 @@ public final class LeavesXConfigBootstrap {
+             config.prestartWorkers(),
+             config.asyncSettings().lowLoadWorkers()
+         );
++        org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configureFailureProtection(config.asyncSettings().failureProtection());
+         org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.configure(config.asyncSettings(), config.extensions().isolateChunkPacking());
+         org.leavesx.leavesx.runtime.LeavesXRegionTicking.configure(config.regionTickingSettings());
+         org.leavesx.leavesx.runtime.LeavesXWorldTicker.configure(config.regionTickingSettings().threads());
+@@ -98,6 +99,7 @@ public final class LeavesXConfigBootstrap {
+                 org.leavesx.leavesx.runtime.LeavesXComputeExecutor.lowLoadWorkersEnabled()
+             );
+         }
++        org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configureFailureProtection(next.asyncSettings().failureProtection());
+         LeavesXRuntime.publish(next);
+         org.leavesx.leavesx.update.LeavesXUpdateService.configure(next.extensions());
+         org.leavesmc.leaves.command.bot.PlayerCommand.syncRegistration();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 439831cfca..711fa7fef1 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -513,7 +513,12 @@ public final class LeavesXConfigLoader {
+                     ),
+                     readBoolean(node.node("async", "animals", "breeding"), "async.animals.breeding", true),
+                     readBoolean(node.node("async", "animals", "follow-parent"), "async.animals.follow-parent", true),
+-                    readBoolean(node.node("performance", "compute", "activation-bounds-prefilter"), "performance.compute.activation-bounds-prefilter", true)
++                    readBoolean(node.node("performance", "compute", "activation-bounds-prefilter"), "performance.compute.activation-bounds-prefilter", true),
++                    new LeavesXConfig.ComputeFailureSettings(
++                        readBoolean(node.node("parallelism", "failure-protection", "enabled"), "parallelism.failure-protection.enabled", true),
++                        readInt(node.node("parallelism", "failure-protection", "failure-threshold"), "parallelism.failure-protection.failure-threshold", 3),
++                        readInt(node.node("parallelism", "failure-protection", "cooldown-seconds"), "parallelism.failure-protection.cooldown-seconds", 30)
++                    )
+                 ),
+                 new LeavesXConfig.ExtensionSettings(
+                     readBoolean(node.node("features", "tripwire-hook-duplication"), "features.tripwire-hook-duplication", false),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 25859740c2..e0609338fa 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -203,6 +203,10 @@ public final class LeavesXConfigWriter {
+         changed |= writeValue(node.node("async", "animals", "breeding"), "async.animals.breeding", async.animalBreeding(), missingOnly);
+         changed |= writeValue(node.node("async", "animals", "follow-parent"), "async.animals.follow-parent", async.animalFollowParent(), missingOnly);
+         changed |= writeValue(node.node("async", "low-load-workers"), "async.low-load-workers", async.lowLoadWorkers(), missingOnly);
++        final LeavesXConfig.ComputeFailureSettings protection = async.failureProtection();
++        changed |= writeValue(node.node("parallelism", "failure-protection", "enabled"), "parallelism.failure-protection.enabled", protection.enabled(), missingOnly);
++        changed |= writeValue(node.node("parallelism", "failure-protection", "failure-threshold"), "parallelism.failure-protection.failure-threshold", protection.failureThreshold(), missingOnly);
++        changed |= writeValue(node.node("parallelism", "failure-protection", "cooldown-seconds"), "parallelism.failure-protection.cooldown-seconds", protection.cooldownSeconds(), missingOnly);
+         changed |= writeValue(node.node("async", "shared-compute-workers"), "async.shared-compute-workers", async.sharedComputeWorkers(), missingOnly);
+         changed |= writeValue(node.node("async", "entity-tracker", "comparison-sharding"), "async.entity-tracker.comparison-sharding", async.trackerComparisonSharding(), missingOnly);
+         changed |= writeValue(node.node("async", "chunk-send", "enabled"), "async.chunk-send.enabled", async.chunkSendEnabled(), missingOnly);
+@@ -689,6 +693,9 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.chunks.unloading.minimum-per-tick", "加速卸载时的起始处理量。默认：100。");
+         comments.put("performance.chunks.unloading.maximum-per-tick", "加速卸载时的最大处理量。默认：500。");
+         comments.put("parallelism.workers", "LeavesX 纯计算线程数，0 为自动。默认：0。");
++        comments.put("parallelism.failure-protection.enabled", "连续计算异常时暂时关闭对应类别的并行，其他类别不受影响；关闭此项仍保留单次失败后的完整同步重算，可重载。默认：true。");
++        comments.put("parallelism.failure-protection.failure-threshold", "同类计算连续失败多少次后暂停并行，成功一次清零；范围 1～100，可重载。默认：3。");
++        comments.put("parallelism.failure-protection.cooldown-seconds", "暂停同类并行的秒数，到期自动允许重试；范围 1～3600，可重载。默认：30。");
+         comments.put("parallelism.minimum-items-per-worker", "每个计算分片至少处理的项目数。默认：64。");
+         comments.put("parallelism.prestart-workers", "启动时预热计算线程，减少重启后第一次并行任务的延迟。默认：true。");
+         comments.put("parallelism.mob-spawning.enabled", "允许刷怪统计使用多线程，只分离计数计算。默认：true。");
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 458079ef51..b042de62f7 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -88,12 +88,19 @@ public final class LeavesXComputeExecutor {
+     /** Marks code running on a LeavesX worker so nested pure computations can help inline instead of deadlocking. */
+     private static final ThreadLocal<Boolean> COMPUTE_WORKER_CONTEXT = new ThreadLocal<>();
+     private static final WorkloadCounters[] WORKLOAD_COUNTERS = createWorkloadCounters();
+-    private static final int CIRCUIT_FAILURE_LIMIT = 3;
+-    private static final long CIRCUIT_COOLDOWN_NANOS = 30_000_000_000L;
++    private static volatile org.leavesx.leavesx.config.LeavesXConfig.ComputeFailureSettings failureProtection =
++        org.leavesx.leavesx.config.LeavesXConfig.ComputeFailureSettings.defaults();
+ 
+     private LeavesXComputeExecutor() {
+     }
+ 
++    /** 原子发布保护策略；普通重载不清除已有暂停，也不重建线程池。 */
++    public static void configureFailureProtection(
++        final org.leavesx.leavesx.config.LeavesXConfig.ComputeFailureSettings settings
++    ) {
++        failureProtection = Objects.requireNonNull(settings, "settings");
++    }
++
+     /** Creates the bounded worker pool during bootstrap. A configured value of zero selects a conservative default. */
+     public static synchronized void configure(final int configuredWorkers) {
+         configure(configuredWorkers, 64, true);
+@@ -126,6 +133,7 @@ public final class LeavesXComputeExecutor {
+         final boolean configuredLowLoadWorkers
+     ) {
+         shutdown();
++        failureProtection = org.leavesx.leavesx.config.LeavesXConfig.ComputeFailureSettings.defaults();
+         final int availableProcessors = Runtime.getRuntime().availableProcessors();
+         final int automaticWorkers = automaticWorkerCount(availableProcessors);
+         workerCount = normalizeWorkerCount(configuredWorkers, automaticWorkers);
+@@ -1199,7 +1207,8 @@ public final class LeavesXComputeExecutor {
+         long workerItems,
+         int maximumConcurrentWorkers,
+         long workerBatches,
+-        long callerNanos
++        long callerNanos,
++        long circuitRemainingMillis
+     ) {
+         /** 每次调用在调用线程上的平均耗时，单位毫秒。 */
+         public double averageCallerMillis() {
+@@ -1335,21 +1344,37 @@ public final class LeavesXComputeExecutor {
+ 
+         /** 连续异常会暂时关闭本类并行；调用方仍走自己的完整同步路径。 */
+         private boolean circuitOpen(final long now) {
+-            final long until = this.circuitOpenUntil.get();
+-            if (until == 0L) return false;
+-            if (now - until < 0L) return true;
+-            this.circuitOpenUntil.compareAndSet(until, 0L);
+-            return false;
++            if (!failureProtection.enabled()) return false;
++            while (true) {
++                final long until = this.circuitOpenUntil.get();
++                if (until == 0L) return false;
++                if (now - until < 0L) return true;
++                // 到期检查可能与另一次失败同时发生；CAS 失败后重读，不能绕过新开的暂停窗口。
++                if (this.circuitOpenUntil.compareAndSet(until, 0L)) return false;
++            }
+         }
+ 
+         private void recordFailure(final long now) {
+             this.failedInvocations.incrementAndGet();
+-            if (this.consecutiveFailures.incrementAndGet() >= CIRCUIT_FAILURE_LIMIT) {
++            final var settings = failureProtection;
++            if (!settings.enabled()) {
+                 this.consecutiveFailures.set(0);
+-                this.circuitOpenUntil.set(now + CIRCUIT_COOLDOWN_NANOS);
++                return;
++            }
++            if (this.consecutiveFailures.incrementAndGet() >= settings.failureThreshold()) {
++                this.consecutiveFailures.set(0);
++                this.circuitOpenUntil.set(now + TimeUnit.SECONDS.toNanos(settings.cooldownSeconds()));
+             }
+         }
+ 
++        private long circuitRemainingMillis(final long now) {
++            if (!failureProtection.enabled()) return 0L;
++            final long until = this.circuitOpenUntil.get();
++            if (until == 0L || now - until >= 0L) return 0L;
++            // 不足一毫秒也显示为暂停中；诊断只读，不改变准入状态。
++            return 1L + (until - now - 1L) / 1_000_000L;
++        }
++
+         private void recordSuccess() {
+             this.parallelInvocations.incrementAndGet();
+             this.consecutiveFailures.set(0);
+@@ -1415,7 +1440,8 @@ public final class LeavesXComputeExecutor {
+                 this.workerItems.get(),
+                 (int)Math.min(Integer.MAX_VALUE, this.maximumConcurrentWorkers.get()),
+                 this.workerBatches.get(),
+-                this.callerNanos.get()
++                this.callerNanos.get(),
++                this.circuitRemainingMillis(System.nanoTime())
+             );
+         }
+ 

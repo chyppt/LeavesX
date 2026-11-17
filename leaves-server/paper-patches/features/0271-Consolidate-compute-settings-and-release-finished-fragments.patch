@@ -1,0 +1,1077 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 3 Oct 2026 01:00:00 +0800
+Subject: [PATCH] Consolidate compute settings and release finished fragments
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -91,7 +91,7 @@
+     RegionTickingSettings regionTickingSettings
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 93;
++    public static final int CURRENT_CONFIG_VERSION = 94;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -123,31 +123,31 @@
+             throw new IllegalArgumentException("performance.ai.dense-monsters.goal-interval-ticks must be between 2 and 20");
+         }
+         if (computeWorkers < 0 || computeWorkers > 16) {
+-            throw new IllegalArgumentException("parallelism.workers must be between 0 and 16");
++            throw new IllegalArgumentException("async.compute.workers must be between 0 and 16");
+         }
+         if (minimumItemsPerWorker < 16 || minimumItemsPerWorker > 4_096) {
+-            throw new IllegalArgumentException("parallelism.minimum-items-per-worker must be between 16 and 4096");
++            throw new IllegalArgumentException("async.compute.minimum-items-per-worker must be between 16 and 4096");
+         }
+         if (mobSpawnCountingMinimumEntities < 128) {
+-            throw new IllegalArgumentException("parallelism.mob-spawning.minimum-entities must be at least 128");
++            throw new IllegalArgumentException("async.compute.mob-spawning.minimum-entities must be at least 128");
+         }
+         if (aiTargetSearchMinimumCandidates < 64) {
+-            throw new IllegalArgumentException("parallelism.ai-target-search.minimum-candidates must be at least 64");
++            throw new IllegalArgumentException("async.compute.ai-target-search.minimum-candidates must be at least 64");
+         }
+         if (aiTargetSearchMinimumItemsPerWorker < 64 || aiTargetSearchMinimumItemsPerWorker > 32_768) {
+             throw new IllegalArgumentException(
+-                "parallelism.ai-target-search.minimum-items-per-worker must be between 64 and 32768"
++                "async.compute.ai-target-search.minimum-items-per-worker must be between 64 and 32768"
+             );
+         }
+         if (entityActivationMinimumEntities < 2_048) {
+             throw new IllegalArgumentException(
+-                "parallelism.entity-activation.minimum-entities must be at least 2048"
++                "async.compute.entity-activation.minimum-entities must be at least 2048"
+             );
+         }
+         if (entityActivationMinimumItemsPerWorker < 256
+             || entityActivationMinimumItemsPerWorker > 65_536) {
+             throw new IllegalArgumentException(
+-                "parallelism.entity-activation.minimum-items-per-worker must be between 256 and 65536"
++                "async.compute.entity-activation.minimum-items-per-worker must be between 256 and 65536"
+             );
+         }
+         if (chunkUnloadBacklogThreshold < 100) {
+@@ -313,10 +313,10 @@
+     public record ComputeFailureSettings(boolean enabled, int failureThreshold, int cooldownSeconds) {
+         public ComputeFailureSettings {
+             if (failureThreshold < 1 || failureThreshold > 100) {
+-                throw new IllegalArgumentException("parallelism.failure-protection.failure-threshold must be between 1 and 100");
++                throw new IllegalArgumentException("async.compute.failure-protection.failure-threshold must be between 1 and 100");
+             }
+             if (cooldownSeconds < 1 || cooldownSeconds > 3_600) {
+-                throw new IllegalArgumentException("parallelism.failure-protection.cooldown-seconds must be between 1 and 3600");
++                throw new IllegalArgumentException("async.compute.failure-protection.cooldown-seconds must be between 1 and 3600");
+             }
+         }
+ 
+@@ -329,10 +329,10 @@
+     public record ComputeSchedulingSettings(int realtimeReservedWorkers, int lowPriorityQueueLimit) {
+         public ComputeSchedulingSettings {
+             if (realtimeReservedWorkers < -1 || realtimeReservedWorkers > 15) {
+-                throw new IllegalArgumentException("parallelism.scheduling.realtime-reserved-workers must be between -1 and 15");
++                throw new IllegalArgumentException("async.compute.scheduling.realtime-reserved-workers must be between -1 and 15");
+             }
+             if (lowPriorityQueueLimit < 0 || lowPriorityQueueLimit > 4_096) {
+-                throw new IllegalArgumentException("parallelism.scheduling.low-priority-queue-limit must be between 0 and 4096");
++                throw new IllegalArgumentException("async.compute.scheduling.low-priority-queue-limit must be between 0 and 4096");
+             }
+         }
+ 
+@@ -351,7 +351,7 @@
+     ) {
+         public ComputeKernelSettings {
+             if (cacheMaxCandidates < 0 || cacheMaxCandidates > 1_048_576) {
+-                throw new IllegalArgumentException("performance.memory.compute-cache-max-candidates must be between 0 and 1048576");
++                throw new IllegalArgumentException("async.compute.cache-max-candidates must be between 0 and 1048576");
+             }
+         }
+ 
+@@ -648,37 +648,37 @@
+ 
+         public RegionTickingSettings {
+             if (mergeRadiusChunks < 0 || mergeRadiusChunks > 64) {
+-                throw new IllegalArgumentException("regionized-ticking.merge-radius-chunks must be between 0 and 64");
++                throw new IllegalArgumentException("async.world-ticking.merge-radius-chunks must be between 0 and 64");
+             }
+             if (strictSerialWorlds == null || strictSerialWorlds.size() > 32) {
+                 throw new IllegalArgumentException(
+-                    "regionized-ticking.strict-serial-worlds must contain at most 32 entries"
++                    "async.world-ticking.strict-serial-worlds must contain at most 32 entries"
+                 );
+             }
+             if (strictSerialWorlds != null) {
+                 for (final String world : strictSerialWorlds) {
+                     if (world == null || world.length() > 256) {
+                         throw new IllegalArgumentException(
+-                            "regionized-ticking.strict-serial-worlds entries must not exceed 256 characters"
++                            "async.world-ticking.strict-serial-worlds entries must not exceed 256 characters"
+                         );
+                     }
+                 }
+             }
+             if (intentQueueSize < 1_024 || intentQueueSize > 1_048_576) {
+-                throw new IllegalArgumentException("regionized-ticking.intent-queue-size must be between 1024 and 1048576");
++                throw new IllegalArgumentException("async.world-ticking.intent-queue-size must be between 1024 and 1048576");
+             }
+             if (autoDegradeBarrierPercent < 0 || autoDegradeBarrierPercent > 100) {
+                 throw new IllegalArgumentException(
+-                    "regionized-ticking.auto-degrade-barrier-percent must be between 0 and 100"
++                    "async.world-ticking.auto-degrade-barrier-percent must be between 0 and 100"
+                 );
+             }
+             if (autoDegradeReplayThreshold < 0 || autoDegradeReplayThreshold > 65_536) {
+                 throw new IllegalArgumentException(
+-                    "regionized-ticking.auto-degrade-replay-threshold must be between 0 and 65536"
++                    "async.world-ticking.auto-degrade-replay-threshold must be between 0 and 65536"
+                 );
+             }
+             if (threads < 0 || threads > 16) {
+-                throw new IllegalArgumentException("regionized-ticking.threads must be between 0 and 16");
++                throw new IllegalArgumentException("async.world-ticking.threads must be between 0 and 16");
+             }
+             strictSerialWorlds = strictSerialWorlds == null ? List.of() : List.copyOf(strictSerialWorlds);
+         }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -106,9 +106,9 @@
+                 throw new IllegalArgumentException("config-version must be at least 1");
+             }
+ 
+-            final ConfigurationNode computeWorkersNode = node.node("parallelism", "workers").virtual()
+-                ? node.node("parallelism", "mob-spawning", "workers")
+-                : node.node("parallelism", "workers");
++            final ConfigurationNode computeWorkersNode = node.node("async", "compute", "workers").virtual()
++                ? node.node("async", "compute", "mob-spawning", "workers")
++                : node.node("async", "compute", "workers");
+             final FineGrainedOptimizationMasks optimizationMasks = readFineGrainedOptimizationMasks(node);
+ 
+             return new LeavesXConfig(
+@@ -206,63 +206,63 @@
+                     4
+                 ),
+                 readBoolean(
+-                    node.node("parallelism", "chunk-generation", "noise-sampling"),
+-                    "parallelism.chunk-generation.noise-sampling",
+-                    true
+-                ),
+-                readBoolean(
+-                    node.node("parallelism", "ai-target-search", "enabled"),
+-                    "parallelism.ai-target-search.enabled",
+-                    true
+-                ),
+-                readInt(
+-                    node.node("parallelism", "ai-target-search", "minimum-candidates"),
+-                    "parallelism.ai-target-search.minimum-candidates",
++                    node.node("async", "compute", "chunk-generation", "noise-sampling"),
++                    "async.compute.chunk-generation.noise-sampling",
++                    true
++                ),
++                readBoolean(
++                    node.node("async", "compute", "ai-target-search", "enabled"),
++                    "async.compute.ai-target-search.enabled",
++                    true
++                ),
++                readInt(
++                    node.node("async", "compute", "ai-target-search", "minimum-candidates"),
++                    "async.compute.ai-target-search.minimum-candidates",
+                     AI_PARALLEL_DEFAULT
+                 ),
+                 readInt(
+-                    node.node("parallelism", "ai-target-search", "minimum-items-per-worker"),
+-                    "parallelism.ai-target-search.minimum-items-per-worker",
++                    node.node("async", "compute", "ai-target-search", "minimum-items-per-worker"),
++                    "async.compute.ai-target-search.minimum-items-per-worker",
+                     AI_PARALLEL_ITEMS_DEFAULT
+                 ),
+                 readBoolean(
+-                    node.node("parallelism", "entity-activation", "enabled"),
+-                    "parallelism.entity-activation.enabled",
+-                    true
+-                ),
+-                readInt(
+-                    node.node("parallelism", "entity-activation", "minimum-entities"),
+-                    "parallelism.entity-activation.minimum-entities",
++                    node.node("async", "compute", "entity-activation", "enabled"),
++                    "async.compute.entity-activation.enabled",
++                    true
++                ),
++                readInt(
++                    node.node("async", "compute", "entity-activation", "minimum-entities"),
++                    "async.compute.entity-activation.minimum-entities",
+                     ENTITY_ACTIVATION_DEFAULT
+                 ),
+                 readInt(
+-                    node.node("parallelism", "entity-activation", "minimum-items-per-worker"),
+-                    "parallelism.entity-activation.minimum-items-per-worker",
++                    node.node("async", "compute", "entity-activation", "minimum-items-per-worker"),
++                    "async.compute.entity-activation.minimum-items-per-worker",
+                     ENTITY_ACTIVATION_ITEMS_DEFAULT
+                 ),
+                 readBoolean(
+-                    node.node("parallelism", "mob-spawning", "enabled"),
+-                    "parallelism.mob-spawning.enabled",
++                    node.node("async", "compute", "mob-spawning", "enabled"),
++                    "async.compute.mob-spawning.enabled",
+                     true
+                 ),
+                 readInt(
+                     computeWorkersNode,
+-                    "parallelism.workers",
++                    "async.compute.workers",
+                     0
+                 ),
+                 readInt(
+-                    node.node("parallelism", "minimum-items-per-worker"),
+-                    "parallelism.minimum-items-per-worker",
++                    node.node("async", "compute", "minimum-items-per-worker"),
++                    "async.compute.minimum-items-per-worker",
+                     64
+                 ),
+                 readBoolean(
+-                    node.node("parallelism", "prestart-workers"),
+-                    "parallelism.prestart-workers",
+-                    true
+-                ),
+-                readInt(
+-                    node.node("parallelism", "mob-spawning", "minimum-entities"),
+-                    "parallelism.mob-spawning.minimum-entities",
++                    node.node("async", "compute", "prestart-workers"),
++                    "async.compute.prestart-workers",
++                    true
++                ),
++                readInt(
++                    node.node("async", "compute", "mob-spawning", "minimum-entities"),
++                    "async.compute.mob-spawning.minimum-entities",
+                     MOB_SPAWN_DEFAULT
+                 ),
+                 readBoolean(
+@@ -497,8 +497,8 @@
+                         1_024
+                     ),
+                     readBoolean(
+-                        node.node("async", "shared-compute-workers"),
+-                        "async.shared-compute-workers",
++                        node.node("async", "compute", "shared-workers"),
++                        "async.compute.shared-workers",
+                         true
+                     ),
+                     readBoolean(
+@@ -507,34 +507,34 @@
+                         true
+                     ),
+                     readBoolean(
+-                        node.node("async", "low-load-workers"),
+-                        "async.low-load-workers",
++                        node.node("async", "compute", "low-load-workers"),
++                        "async.compute.low-load-workers",
+                         true
+                     ),
+-                    readBoolean(node.node("async", "animals", "breeding"), "async.animals.breeding", true),
+-                    readBoolean(node.node("async", "animals", "follow-parent"), "async.animals.follow-parent", true),
+-                    readBoolean(node.node("performance", "compute", "activation-bounds-prefilter"), "performance.compute.activation-bounds-prefilter", true),
++                    readBoolean(node.node("async", "compute", "animals", "breeding"), "async.compute.animals.breeding", true),
++                    readBoolean(node.node("async", "compute", "animals", "follow-parent"), "async.compute.animals.follow-parent", true),
++                    readBoolean(node.node("async", "compute", "kernels", "activation-bounds-prefilter"), "async.compute.kernels.activation-bounds-prefilter", true),
+                     new LeavesXConfig.ComputeFailureSettings(
+-                        readBoolean(node.node("parallelism", "failure-protection", "enabled"), "parallelism.failure-protection.enabled", true),
+-                        readInt(node.node("parallelism", "failure-protection", "failure-threshold"), "parallelism.failure-protection.failure-threshold", 3),
+-                        readInt(node.node("parallelism", "failure-protection", "cooldown-seconds"), "parallelism.failure-protection.cooldown-seconds", 30)
++                        readBoolean(node.node("async", "compute", "failure-protection", "enabled"), "async.compute.failure-protection.enabled", true),
++                        readInt(node.node("async", "compute", "failure-protection", "failure-threshold"), "async.compute.failure-protection.failure-threshold", 3),
++                        readInt(node.node("async", "compute", "failure-protection", "cooldown-seconds"), "async.compute.failure-protection.cooldown-seconds", 30)
+                     ),
+                     new LeavesXConfig.ComputeSchedulingSettings(
+-                        readInt(node.node("parallelism", "scheduling", "realtime-reserved-workers"), "parallelism.scheduling.realtime-reserved-workers", -1),
+-                        readInt(node.node("parallelism", "scheduling", "low-priority-queue-limit"), "parallelism.scheduling.low-priority-queue-limit", 0)
++                        readInt(node.node("async", "compute", "scheduling", "realtime-reserved-workers"), "async.compute.scheduling.realtime-reserved-workers", -1),
++                        readInt(node.node("async", "compute", "scheduling", "low-priority-queue-limit"), "async.compute.scheduling.low-priority-queue-limit", 0)
+                     ),
+                     readBoolean(node.node("async", "entity-tracker", "event-listeners"), "async.entity-tracker.event-listeners", true),
+                     readBoolean(node.node("async", "entity-tracker", "snapshot-pipeline"), "async.entity-tracker.snapshot-pipeline", true),
+-                    readBoolean(node.node("parallelism", "entity-activation", "snapshot-pipeline"), "parallelism.entity-activation.snapshot-pipeline", true),
+-                    readBoolean(node.node("parallelism", "ai-target-search", "snapshot-pipeline"), "parallelism.ai-target-search.snapshot-pipeline", true),
+-                    readBoolean(node.node("parallelism", "ai-target-search", "parallel-merge"), "parallelism.ai-target-search.parallel-merge", true),
+-                    readBoolean(node.node("parallelism", "mob-spawning", "combined-counting"), "parallelism.mob-spawning.combined-counting", true),
++                    readBoolean(node.node("async", "compute", "entity-activation", "snapshot-pipeline"), "async.compute.entity-activation.snapshot-pipeline", true),
++                    readBoolean(node.node("async", "compute", "ai-target-search", "snapshot-pipeline"), "async.compute.ai-target-search.snapshot-pipeline", true),
++                    readBoolean(node.node("async", "compute", "ai-target-search", "parallel-merge"), "async.compute.ai-target-search.parallel-merge", true),
++                    readBoolean(node.node("async", "compute", "mob-spawning", "combined-counting"), "async.compute.mob-spawning.combined-counting", true),
+                     new LeavesXConfig.ComputeKernelSettings(
+-                        readBoolean(node.node("performance", "compute", "ai-distance-histograms"), "performance.compute.ai-distance-histograms", true),
+-                        readBoolean(node.node("performance", "compute", "ai-nearest-reduction"), "performance.compute.ai-nearest-reduction", true),
+-                        readBoolean(node.node("performance", "compute", "tracker-row-kernel"), "performance.compute.tracker-row-kernel", true),
+-                        readBoolean(node.node("performance", "compute", "spatial-activation-groups"), "performance.compute.spatial-activation-groups", true),
+-                        readInt(node.node("performance", "memory", "compute-cache-max-candidates"), "performance.memory.compute-cache-max-candidates", 32_768)
++                        readBoolean(node.node("async", "compute", "kernels", "ai-distance-histograms"), "async.compute.kernels.ai-distance-histograms", true),
++                        readBoolean(node.node("async", "compute", "kernels", "ai-nearest-reduction"), "async.compute.kernels.ai-nearest-reduction", true),
++                        readBoolean(node.node("async", "compute", "kernels", "tracker-row-kernel"), "async.compute.kernels.tracker-row-kernel", true),
++                        readBoolean(node.node("async", "compute", "kernels", "spatial-activation-groups"), "async.compute.kernels.spatial-activation-groups", true),
++                        readInt(node.node("async", "compute", "cache-max-candidates"), "async.compute.cache-max-candidates", 32_768)
+                     )
+                 ),
+                 new LeavesXConfig.ExtensionSettings(
+@@ -542,21 +542,21 @@
+                     readBoolean(node.node("performance", "lithium", "enabled"), "performance.lithium.enabled", true),
+                     readBoolean(node.node("performance", "blocks", "container-copy-reuse"), "performance.blocks.container-copy-reuse", true),
+                     readBoolean(node.node("features", "secure-seed"), "features.secure-seed", false),
+-                    readBoolean(node.node("performance", "use-virtual-thread", "async-chat-executor"), "performance.use-virtual-thread.async-chat-executor", false),
+-                    readBoolean(node.node("async", "isolate-chunk-packing"), "async.isolate-chunk-packing", true),
+-                    readBoolean(node.node("performance", "faster-random-generator", "enabled"), "performance.faster-random-generator.enabled", false),
+-                    readBoolean(node.node("performance", "cache-biome", "enabled"), "performance.cache-biome.enabled", true),
+-                    readBoolean(node.node("performance", "cache-biome", "mob-spawning"), "performance.cache-biome.mob-spawning", true),
+-                    readBoolean(node.node("performance", "cache-biome", "advancements"), "performance.cache-biome.advancements", true),
+-                    readBoolean(node.node("performance", "optimize-player-movement"), "performance.optimize-player-movement", true),
+-                    readBoolean(node.node("performance", "optimized-powered-rails"), "performance.optimized-powered-rails", false),
+-                    readBoolean(node.node("performance", "optimize-random-tick"), "performance.optimize-random-tick", true),
+-                    readBoolean(node.node("performance", "use-virtual-thread", "bukkit-async-scheduler"), "performance.use-virtual-thread.bukkit-async-scheduler", false),
+-                    readBoolean(node.node("async", "ai-candidates"), "async.ai-candidates", true),
++                    readBoolean(node.node("async", "virtual-threads", "async-chat-executor"), "async.virtual-threads.async-chat-executor", false),
++                    readBoolean(node.node("async", "chunk-send", "isolate-packing"), "async.chunk-send.isolate-packing", true),
++                    readBoolean(node.node("performance", "random-generator", "enabled"), "performance.random-generator.enabled", false),
++                    readBoolean(node.node("performance", "memory", "biome-cache", "enabled"), "performance.memory.biome-cache.enabled", true),
++                    readBoolean(node.node("performance", "memory", "biome-cache", "mob-spawning"), "performance.memory.biome-cache.mob-spawning", true),
++                    readBoolean(node.node("performance", "memory", "biome-cache", "advancements"), "performance.memory.biome-cache.advancements", true),
++                    readBoolean(node.node("performance", "entities", "player-movement"), "performance.entities.player-movement", true),
++                    readBoolean(node.node("performance", "blocks", "powered-rails"), "performance.blocks.powered-rails", false),
++                    readBoolean(node.node("performance", "blocks", "random-tick"), "performance.blocks.random-tick", true),
++                    readBoolean(node.node("async", "virtual-threads", "bukkit-async-scheduler"), "async.virtual-threads.bukkit-async-scheduler", false),
++                    readBoolean(node.node("async", "compute", "ai-candidates"), "async.compute.ai-candidates", true),
+                     readBoolean(node.node("async", "playerdata-save", "compression"), "async.playerdata-save.compression", true),
+-                    readBoolean(node.node("parallelism", "mob-collision-math"), "parallelism.mob-collision-math", false),
++                    readBoolean(node.node("async", "compute", "mob-collision-math"), "async.compute.mob-collision-math", false),
+                     readBoolean(node.node("async", "pathfinding", "water-snapshot"), "async.pathfinding.water-snapshot", false),
+-                    readBoolean(node.node("performance", "chunk", "poi-async-serialization"), "performance.chunk.poi-async-serialization", false),
++                    readBoolean(node.node("performance", "chunks", "poi-async-serialization"), "performance.chunks.poi-async-serialization", false),
+                     readBoolean(node.node("performance", "ai", "poi-competitor-scan-no-load"), "performance.ai.poi-competitor-scan-no-load", false),
+                     readBoolean(node.node("performance", "ai", "sensor-list-reuse"), "performance.ai.sensor-list-reuse", true),
+                     readBoolean(node.node("performance", "crafting", "recipe-index"), "performance.crafting.recipe-index", true),
+@@ -566,42 +566,42 @@
+                     readBoolean(node.node("features", "tpsbar", "enabled"), "features.tpsbar.enabled", true),
+                     readBoolean(node.node("updates", "check"), "updates.check", true),
+                     readBoolean(node.node("updates", "auto-download"), "updates.auto-download", false),
+-                    readBoolean(node.node("performance", "reduce-packets", "reuse-block-destruction"), "performance.reduce-packets.reuse-block-destruction", true),
+-                    readBoolean(node.node("performance", "use-virtual-thread", "download-pool"), "performance.use-virtual-thread.download-pool", false)
++                    readBoolean(node.node("performance", "network", "reduce-packets", "reuse-block-destruction"), "performance.network.reduce-packets.reuse-block-destruction", true),
++                    readBoolean(node.node("async", "virtual-threads", "download-pool"), "async.virtual-threads.download-pool", false)
+                 ),
+                 new LeavesXConfig.RegionTickingSettings(
+                     readMode(
+-                        node.node("regionized-ticking", "mode"),
+-                        "regionized-ticking.mode"
+-                    ),
+-                    readInt(
+-                        node.node("regionized-ticking", "merge-radius-chunks"),
+-                        "regionized-ticking.merge-radius-chunks",
++                        node.node("async", "world-ticking", "mode"),
++                        "async.world-ticking.mode"
++                    ),
++                    readInt(
++                        node.node("async", "world-ticking", "merge-radius-chunks"),
++                        "async.world-ticking.merge-radius-chunks",
+                         8
+                     ),
+                     readStringList(
+-                        node.node("regionized-ticking", "strict-serial-worlds"),
+-                        "regionized-ticking.strict-serial-worlds",
++                        node.node("async", "world-ticking", "strict-serial-worlds"),
++                        "async.world-ticking.strict-serial-worlds",
+                         java.util.List.of()
+                     ),
+                     readInt(
+-                        node.node("regionized-ticking", "intent-queue-size"),
+-                        "regionized-ticking.intent-queue-size",
++                        node.node("async", "world-ticking", "intent-queue-size"),
++                        "async.world-ticking.intent-queue-size",
+                         65_536
+                     ),
+                     readInt(
+-                        node.node("regionized-ticking", "auto-degrade-barrier-percent"),
+-                        "regionized-ticking.auto-degrade-barrier-percent",
++                        node.node("async", "world-ticking", "auto-degrade-barrier-percent"),
++                        "async.world-ticking.auto-degrade-barrier-percent",
+                         25
+                     ),
+                     readInt(
+-                        node.node("regionized-ticking", "auto-degrade-replay-threshold"),
+-                        "regionized-ticking.auto-degrade-replay-threshold",
++                        node.node("async", "world-ticking", "auto-degrade-replay-threshold"),
++                        "async.world-ticking.auto-degrade-replay-threshold",
+                         64
+                     ),
+                     readInt(
+-                        node.node("regionized-ticking", "threads"),
+-                        "regionized-ticking.threads",
++                        node.node("async", "world-ticking", "threads"),
++                        "async.world-ticking.threads",
+                         0
+                     )
+                 )
+@@ -735,7 +735,7 @@
+             return false;
+         }
+         final CommentedConfigurationNode threshold = node.node(
+-            "parallelism", "ai-target-search", "minimum-candidates"
++            "async", "compute", "ai-target-search", "minimum-candidates"
+         );
+         final Object raw = threshold.rawScalar();
+         if (!(raw instanceof Byte || raw instanceof Short || raw instanceof Integer || raw instanceof Long)
+@@ -758,17 +758,17 @@
+         // Version 63 was the beta161 default set. Older versions used a different set, so migrate each known
+         // generated value while leaving operator-selected thresholds untouched.
+         if (sourceVersion == 63) {
+-            changed |= migrateDefault(node.node("parallelism", "ai-target-search", "minimum-candidates"), 512, AI_PARALLEL_DEFAULT);
+-            changed |= migrateDefault(node.node("parallelism", "ai-target-search", "minimum-items-per-worker"), 256, AI_PARALLEL_ITEMS_DEFAULT);
+-            changed |= migrateDefault(node.node("parallelism", "entity-activation", "minimum-entities"), 8_192, ENTITY_ACTIVATION_DEFAULT);
+-            changed |= migrateDefault(node.node("parallelism", "entity-activation", "minimum-items-per-worker"), 1_024, ENTITY_ACTIVATION_ITEMS_DEFAULT);
+-            changed |= migrateDefault(node.node("parallelism", "mob-spawning", "minimum-entities"), 65_536, MOB_SPAWN_DEFAULT);
++            changed |= migrateDefault(node.node("async", "compute", "ai-target-search", "minimum-candidates"), 512, AI_PARALLEL_DEFAULT);
++            changed |= migrateDefault(node.node("async", "compute", "ai-target-search", "minimum-items-per-worker"), 256, AI_PARALLEL_ITEMS_DEFAULT);
++            changed |= migrateDefault(node.node("async", "compute", "entity-activation", "minimum-entities"), 8_192, ENTITY_ACTIVATION_DEFAULT);
++            changed |= migrateDefault(node.node("async", "compute", "entity-activation", "minimum-items-per-worker"), 1_024, ENTITY_ACTIVATION_ITEMS_DEFAULT);
++            changed |= migrateDefault(node.node("async", "compute", "mob-spawning", "minimum-entities"), 65_536, MOB_SPAWN_DEFAULT);
+         } else {
+-            changed |= migrateDefault(node.node("parallelism", "ai-target-search", "minimum-candidates"), 2_048, AI_PARALLEL_DEFAULT);
+-            changed |= migrateDefault(node.node("parallelism", "ai-target-search", "minimum-items-per-worker"), 1_024, AI_PARALLEL_ITEMS_DEFAULT);
+-            changed |= migrateDefault(node.node("parallelism", "entity-activation", "minimum-entities"), 65_536, ENTITY_ACTIVATION_DEFAULT);
+-            changed |= migrateDefault(node.node("parallelism", "entity-activation", "minimum-items-per-worker"), 8_192, ENTITY_ACTIVATION_ITEMS_DEFAULT);
+-            changed |= migrateDefault(node.node("parallelism", "mob-spawning", "minimum-entities"), 524_288, MOB_SPAWN_DEFAULT);
++            changed |= migrateDefault(node.node("async", "compute", "ai-target-search", "minimum-candidates"), 2_048, AI_PARALLEL_DEFAULT);
++            changed |= migrateDefault(node.node("async", "compute", "ai-target-search", "minimum-items-per-worker"), 1_024, AI_PARALLEL_ITEMS_DEFAULT);
++            changed |= migrateDefault(node.node("async", "compute", "entity-activation", "minimum-entities"), 65_536, ENTITY_ACTIVATION_DEFAULT);
++            changed |= migrateDefault(node.node("async", "compute", "entity-activation", "minimum-items-per-worker"), 8_192, ENTITY_ACTIVATION_ITEMS_DEFAULT);
++            changed |= migrateDefault(node.node("async", "compute", "mob-spawning", "minimum-entities"), 524_288, MOB_SPAWN_DEFAULT);
+         }
+         return changed;
+     }
+@@ -888,9 +888,9 @@
+         if (!canonical.virtual()) {
+             return readString(canonical, "messages." + key, "");
+         }
+-        final ConfigurationNode legacyParallelism = root.node("parallelism", key);
++        final ConfigurationNode legacyParallelism = root.node("async", "compute", key);
+         if (!legacyParallelism.virtual()) {
+-            return readString(legacyParallelism, "parallelism." + key, "");
++            return readString(legacyParallelism, "async.compute." + key, "");
+         }
+         return readString(root.node(key), key, "");
+     }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -93,8 +93,6 @@
+         return switch (key) {
+             case "performance" -> 0;
+             case "async" -> 1;
+-            case "parallelism" -> 2;
+-            case "regionized-ticking" -> 3;
+             case "diagnostics" -> 4;
+             case "features" -> 5;
+             case "fakeplayer" -> 6;
+@@ -113,24 +111,24 @@
+         changed |= writeValue(node.node("features", "just-enough-items", "recipe-sync"), "features.just-enough-items.recipe-sync", config.extensions().jeiRecipeSync(), missingOnly);
+         changed |= writeValue(node.node("features", "tripwire-hook-duplication"), "features.tripwire-hook-duplication", config.extensions().tripwireHookDuplication(), missingOnly);
+         changed |= writeValue(node.node("features", "just-enough-items", "recipe-transfer"), "features.just-enough-items.recipe-transfer", config.extensions().jeiRecipeTransfer(), missingOnly);
+-        changed |= writeValue(node.node("performance", "faster-random-generator", "enabled"), "performance.faster-random-generator.enabled", config.extensions().fasterRandom(), missingOnly);
+-        changed |= writeValue(node.node("performance", "reduce-packets", "reuse-block-destruction"), "performance.reduce-packets.reuse-block-destruction", config.extensions().reuseBlockDestructionPackets(), missingOnly);
+-        changed |= writeValue(node.node("performance", "use-virtual-thread", "download-pool"), "performance.use-virtual-thread.download-pool", config.extensions().virtualDownloadPool(), missingOnly);
+-        changed |= writeValue(node.node("async", "ai-candidates"), "async.ai-candidates", config.extensions().asyncAiCandidates(), missingOnly);
++        changed |= writeValue(node.node("performance", "random-generator", "enabled"), "performance.random-generator.enabled", config.extensions().fasterRandom(), missingOnly);
++        changed |= writeValue(node.node("performance", "network", "reduce-packets", "reuse-block-destruction"), "performance.network.reduce-packets.reuse-block-destruction", config.extensions().reuseBlockDestructionPackets(), missingOnly);
++        changed |= writeValue(node.node("async", "virtual-threads", "download-pool"), "async.virtual-threads.download-pool", config.extensions().virtualDownloadPool(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "ai-candidates"), "async.compute.ai-candidates", config.extensions().asyncAiCandidates(), missingOnly);
+         changed |= writeValue(node.node("async", "playerdata-save", "compression"), "async.playerdata-save.compression", config.extensions().asyncPlayerCompression(), missingOnly);
+-        changed |= writeValue(node.node("parallelism", "mob-collision-math"), "parallelism.mob-collision-math", config.extensions().parallelMobCollisions(), missingOnly);
+-        changed |= writeValue(node.node("performance", "cache-biome", "enabled"), "performance.cache-biome.enabled", config.extensions().cacheBiome(), missingOnly);
+-        changed |= writeValue(node.node("performance", "cache-biome", "mob-spawning"), "performance.cache-biome.mob-spawning", config.extensions().cacheBiomeSpawning(), missingOnly);
+-        changed |= writeValue(node.node("performance", "cache-biome", "advancements"), "performance.cache-biome.advancements", config.extensions().cacheBiomeAdvancements(), missingOnly);
+-        changed |= writeValue(node.node("performance", "optimize-player-movement"), "performance.optimize-player-movement", config.extensions().optimizePlayerMovement(), missingOnly);
+-        changed |= writeValue(node.node("performance", "optimized-powered-rails"), "performance.optimized-powered-rails", config.extensions().optimizedPoweredRails(), missingOnly);
+-        changed |= writeValue(node.node("performance", "optimize-random-tick"), "performance.optimize-random-tick", config.extensions().optimizeRandomTick(), missingOnly);
+-        changed |= writeValue(node.node("performance", "use-virtual-thread", "bukkit-async-scheduler"), "performance.use-virtual-thread.bukkit-async-scheduler", config.extensions().virtualBukkitScheduler(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "mob-collision-math"), "async.compute.mob-collision-math", config.extensions().parallelMobCollisions(), missingOnly);
++        changed |= writeValue(node.node("performance", "memory", "biome-cache", "enabled"), "performance.memory.biome-cache.enabled", config.extensions().cacheBiome(), missingOnly);
++        changed |= writeValue(node.node("performance", "memory", "biome-cache", "mob-spawning"), "performance.memory.biome-cache.mob-spawning", config.extensions().cacheBiomeSpawning(), missingOnly);
++        changed |= writeValue(node.node("performance", "memory", "biome-cache", "advancements"), "performance.memory.biome-cache.advancements", config.extensions().cacheBiomeAdvancements(), missingOnly);
++        changed |= writeValue(node.node("performance", "entities", "player-movement"), "performance.entities.player-movement", config.extensions().optimizePlayerMovement(), missingOnly);
++        changed |= writeValue(node.node("performance", "blocks", "powered-rails"), "performance.blocks.powered-rails", config.extensions().optimizedPoweredRails(), missingOnly);
++        changed |= writeValue(node.node("performance", "blocks", "random-tick"), "performance.blocks.random-tick", config.extensions().optimizeRandomTick(), missingOnly);
++        changed |= writeValue(node.node("async", "virtual-threads", "bukkit-async-scheduler"), "async.virtual-threads.bukkit-async-scheduler", config.extensions().virtualBukkitScheduler(), missingOnly);
+         changed |= writeValue(node.node("performance", "lithium", "enabled"), "performance.lithium.enabled", config.extensions().lithiumEnabled(), missingOnly);
+         changed |= writeValue(node.node("performance", "blocks", "container-copy-reuse"), "performance.blocks.container-copy-reuse", config.extensions().containerCopyReuse(), missingOnly);
+         changed |= writeValue(node.node("features", "secure-seed"), "features.secure-seed", config.extensions().secureSeed(), missingOnly);
+-        changed |= writeValue(node.node("performance", "use-virtual-thread", "async-chat-executor"), "performance.use-virtual-thread.async-chat-executor", config.extensions().virtualChat(), missingOnly);
+-        changed |= writeValue(node.node("async", "isolate-chunk-packing"), "async.isolate-chunk-packing", config.extensions().isolateChunkPacking(), missingOnly);
++        changed |= writeValue(node.node("async", "virtual-threads", "async-chat-executor"), "async.virtual-threads.async-chat-executor", config.extensions().virtualChat(), missingOnly);
++        changed |= writeValue(node.node("async", "chunk-send", "isolate-packing"), "async.chunk-send.isolate-packing", config.extensions().isolateChunkPacking(), missingOnly);
+         changed |= writeValue(node.node("config-version"), "config-version", config.configVersion(), missingOnly);
+         changed |= writeValue(
+             node.node("console-messages", "show-root-admin-warning"),
+@@ -200,36 +198,36 @@
+         changed |= writeValue(node.node("messages", "core-prefix"), "messages.core-prefix", config.coreMessagePrefix(), missingOnly);
+         final LeavesXConfig.AsyncSettings async = config.asyncSettings();
+         final LeavesXConfig.ComputeKernelSettings kernels = async.kernels();
+-        changed |= writeValue(node.node("performance", "compute", "ai-distance-histograms"), "performance.compute.ai-distance-histograms", kernels.distanceHistograms(), missingOnly);
+-        changed |= writeValue(node.node("performance", "compute", "ai-nearest-reduction"), "performance.compute.ai-nearest-reduction", kernels.nearestReduction(), missingOnly);
+-        changed |= writeValue(node.node("performance", "compute", "tracker-row-kernel"), "performance.compute.tracker-row-kernel", kernels.trackerRowKernel(), missingOnly);
+-        changed |= writeValue(node.node("performance", "compute", "spatial-activation-groups"), "performance.compute.spatial-activation-groups", kernels.spatialActivationGroups(), missingOnly);
+-        changed |= writeValue(node.node("performance", "memory", "compute-cache-max-candidates"), "performance.memory.compute-cache-max-candidates", kernels.cacheMaxCandidates(), missingOnly);
+-        changed |= writeValue(node.node("performance", "compute", "activation-bounds-prefilter"), "performance.compute.activation-bounds-prefilter", async.activationBoundsPrefilter(), missingOnly);
+-        changed |= writeValue(node.node("async", "animals", "breeding"), "async.animals.breeding", async.animalBreeding(), missingOnly);
+-        changed |= writeValue(node.node("async", "animals", "follow-parent"), "async.animals.follow-parent", async.animalFollowParent(), missingOnly);
+-        changed |= writeValue(node.node("async", "low-load-workers"), "async.low-load-workers", async.lowLoadWorkers(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "kernels", "ai-distance-histograms"), "async.compute.kernels.ai-distance-histograms", kernels.distanceHistograms(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "kernels", "ai-nearest-reduction"), "async.compute.kernels.ai-nearest-reduction", kernels.nearestReduction(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "kernels", "tracker-row-kernel"), "async.compute.kernels.tracker-row-kernel", kernels.trackerRowKernel(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "kernels", "spatial-activation-groups"), "async.compute.kernels.spatial-activation-groups", kernels.spatialActivationGroups(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "cache-max-candidates"), "async.compute.cache-max-candidates", kernels.cacheMaxCandidates(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "kernels", "activation-bounds-prefilter"), "async.compute.kernels.activation-bounds-prefilter", async.activationBoundsPrefilter(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "animals", "breeding"), "async.compute.animals.breeding", async.animalBreeding(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "animals", "follow-parent"), "async.compute.animals.follow-parent", async.animalFollowParent(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "low-load-workers"), "async.compute.low-load-workers", async.lowLoadWorkers(), missingOnly);
+         final LeavesXConfig.ComputeFailureSettings protection = async.failureProtection();
+-        changed |= writeValue(node.node("parallelism", "failure-protection", "enabled"), "parallelism.failure-protection.enabled", protection.enabled(), missingOnly);
+-        changed |= writeValue(node.node("parallelism", "failure-protection", "failure-threshold"), "parallelism.failure-protection.failure-threshold", protection.failureThreshold(), missingOnly);
+-        changed |= writeValue(node.node("parallelism", "failure-protection", "cooldown-seconds"), "parallelism.failure-protection.cooldown-seconds", protection.cooldownSeconds(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "failure-protection", "enabled"), "async.compute.failure-protection.enabled", protection.enabled(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "failure-protection", "failure-threshold"), "async.compute.failure-protection.failure-threshold", protection.failureThreshold(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "failure-protection", "cooldown-seconds"), "async.compute.failure-protection.cooldown-seconds", protection.cooldownSeconds(), missingOnly);
+         final LeavesXConfig.ComputeSchedulingSettings scheduling = async.scheduling();
+-        changed |= writeValue(node.node("parallelism", "scheduling", "realtime-reserved-workers"), "parallelism.scheduling.realtime-reserved-workers", scheduling.realtimeReservedWorkers(), missingOnly);
+-        changed |= writeValue(node.node("parallelism", "scheduling", "low-priority-queue-limit"), "parallelism.scheduling.low-priority-queue-limit", scheduling.lowPriorityQueueLimit(), missingOnly);
+-        changed |= writeValue(node.node("async", "shared-compute-workers"), "async.shared-compute-workers", async.sharedComputeWorkers(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "scheduling", "realtime-reserved-workers"), "async.compute.scheduling.realtime-reserved-workers", scheduling.realtimeReservedWorkers(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "scheduling", "low-priority-queue-limit"), "async.compute.scheduling.low-priority-queue-limit", scheduling.lowPriorityQueueLimit(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "shared-workers"), "async.compute.shared-workers", async.sharedComputeWorkers(), missingOnly);
+         changed |= writeValue(node.node("async", "entity-tracker", "comparison-sharding"), "async.entity-tracker.comparison-sharding", async.trackerComparisonSharding(), missingOnly);
+         changed |= writeValue(node.node("async", "entity-tracker", "snapshot-pipeline"), "async.entity-tracker.snapshot-pipeline", async.trackerSnapshotPipeline(), missingOnly);
+-        changed |= writeValue(node.node("parallelism", "entity-activation", "snapshot-pipeline"), "parallelism.entity-activation.snapshot-pipeline", async.activationSnapshotPipeline(), missingOnly);
+-        changed |= writeValue(node.node("parallelism", "ai-target-search", "snapshot-pipeline"), "parallelism.ai-target-search.snapshot-pipeline", async.aiSnapshotPipeline(), missingOnly);
+-        changed |= writeValue(node.node("parallelism", "ai-target-search", "parallel-merge"), "parallelism.ai-target-search.parallel-merge", async.aiParallelMerge(), missingOnly);
+-        changed |= writeValue(node.node("parallelism", "mob-spawning", "combined-counting"), "parallelism.mob-spawning.combined-counting", async.combinedSpawnCounting(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "entity-activation", "snapshot-pipeline"), "async.compute.entity-activation.snapshot-pipeline", async.activationSnapshotPipeline(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "ai-target-search", "snapshot-pipeline"), "async.compute.ai-target-search.snapshot-pipeline", async.aiSnapshotPipeline(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "ai-target-search", "parallel-merge"), "async.compute.ai-target-search.parallel-merge", async.aiParallelMerge(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "mob-spawning", "combined-counting"), "async.compute.mob-spawning.combined-counting", async.combinedSpawnCounting(), missingOnly);
+         changed |= writeValue(node.node("async", "entity-tracker", "event-listeners"), "async.entity-tracker.event-listeners", async.trackerEventListeners(), missingOnly);
+         changed |= writeValue(node.node("async", "chunk-send", "enabled"), "async.chunk-send.enabled", async.chunkSendEnabled(), missingOnly);
+         changed |= writeValue(node.node("async", "chunk-send", "queue-size"), "async.chunk-send.queue-size", async.chunkSendQueueSize(), missingOnly);
+         changed |= writeValue(node.node("async", "mob-spawning"), "async.mob-spawning", async.mobSpawningEnabled(), missingOnly);
+         changed |= writeValue(node.node("async", "pathfinding", "enabled"), "async.pathfinding.enabled", async.pathfindingEnabled(), missingOnly);
+         changed |= writeValue(node.node("async", "pathfinding", "water-snapshot"), "async.pathfinding.water-snapshot", config.extensions().asyncWaterPathfinding(), missingOnly);
+-        changed |= writeValue(node.node("performance", "chunk", "poi-async-serialization"), "performance.chunk.poi-async-serialization", config.extensions().poiAsyncSerialization(), missingOnly);
++        changed |= writeValue(node.node("performance", "chunks", "poi-async-serialization"), "performance.chunks.poi-async-serialization", config.extensions().poiAsyncSerialization(), missingOnly);
+         changed |= writeValue(node.node("performance", "ai", "poi-competitor-scan-no-load"), "performance.ai.poi-competitor-scan-no-load", config.extensions().poiCompetitorScanNoLoad(), missingOnly);
+         changed |= writeValue(node.node("performance", "ai", "sensor-list-reuse"), "performance.ai.sensor-list-reuse", config.extensions().sensorListReuse(), missingOnly);
+         changed |= writeValue(node.node("performance", "crafting", "recipe-index"), "performance.crafting.recipe-index", config.extensions().recipeIndex(), missingOnly);
+@@ -246,13 +244,13 @@
+         changed |= writeValue(node.node("async", "entity-tracker", "threads"), "async.entity-tracker.threads", async.entityTrackerThreads(), missingOnly);
+         changed |= writeValue(node.node("async", "entity-tracker", "queue-size"), "async.entity-tracker.queue-size", async.entityTrackerQueueSize(), missingOnly);
+         final LeavesXConfig.RegionTickingSettings regionized = config.regionTickingSettings();
+-        changed |= writeValue(node.node("regionized-ticking", "mode"), "regionized-ticking.mode", regionized.mode().name().toLowerCase(java.util.Locale.ROOT), missingOnly);
+-        changed |= writeValue(node.node("regionized-ticking", "merge-radius-chunks"), "regionized-ticking.merge-radius-chunks", regionized.mergeRadiusChunks(), missingOnly);
+-        changed |= writeValue(node.node("regionized-ticking", "strict-serial-worlds"), "regionized-ticking.strict-serial-worlds", regionized.strictSerialWorlds(), missingOnly);
+-        changed |= writeValue(node.node("regionized-ticking", "intent-queue-size"), "regionized-ticking.intent-queue-size", regionized.intentQueueSize(), missingOnly);
+-        changed |= writeValue(node.node("regionized-ticking", "auto-degrade-barrier-percent"), "regionized-ticking.auto-degrade-barrier-percent", regionized.autoDegradeBarrierPercent(), missingOnly);
+-        changed |= writeValue(node.node("regionized-ticking", "auto-degrade-replay-threshold"), "regionized-ticking.auto-degrade-replay-threshold", regionized.autoDegradeReplayThreshold(), missingOnly);
+-        changed |= writeValue(node.node("regionized-ticking", "threads"), "regionized-ticking.threads", regionized.threads(), missingOnly);
++        changed |= writeValue(node.node("async", "world-ticking", "mode"), "async.world-ticking.mode", regionized.mode().name().toLowerCase(java.util.Locale.ROOT), missingOnly);
++        changed |= writeValue(node.node("async", "world-ticking", "merge-radius-chunks"), "async.world-ticking.merge-radius-chunks", regionized.mergeRadiusChunks(), missingOnly);
++        changed |= writeValue(node.node("async", "world-ticking", "strict-serial-worlds"), "async.world-ticking.strict-serial-worlds", regionized.strictSerialWorlds(), missingOnly);
++        changed |= writeValue(node.node("async", "world-ticking", "intent-queue-size"), "async.world-ticking.intent-queue-size", regionized.intentQueueSize(), missingOnly);
++        changed |= writeValue(node.node("async", "world-ticking", "auto-degrade-barrier-percent"), "async.world-ticking.auto-degrade-barrier-percent", regionized.autoDegradeBarrierPercent(), missingOnly);
++        changed |= writeValue(node.node("async", "world-ticking", "auto-degrade-replay-threshold"), "async.world-ticking.auto-degrade-replay-threshold", regionized.autoDegradeReplayThreshold(), missingOnly);
++        changed |= writeValue(node.node("async", "world-ticking", "threads"), "async.world-ticking.threads", regionized.threads(), missingOnly);
+         changed |= writeValue(
+             node.node("diagnostics", "command-enabled"),
+             "diagnostics.command-enabled",
+@@ -440,44 +438,44 @@
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("parallelism", "chunk-generation", "noise-sampling"),
+-            "parallelism.chunk-generation.noise-sampling",
++            node.node("async", "compute", "chunk-generation", "noise-sampling"),
++            "async.compute.chunk-generation.noise-sampling",
+             config.parallelNoiseSampling(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("parallelism", "ai-target-search", "enabled"),
+-            "parallelism.ai-target-search.enabled",
++            node.node("async", "compute", "ai-target-search", "enabled"),
++            "async.compute.ai-target-search.enabled",
+             config.parallelAiTargetSearch(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("parallelism", "ai-target-search", "minimum-candidates"),
+-            "parallelism.ai-target-search.minimum-candidates",
++            node.node("async", "compute", "ai-target-search", "minimum-candidates"),
++            "async.compute.ai-target-search.minimum-candidates",
+             config.aiTargetSearchMinimumCandidates(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("parallelism", "ai-target-search", "minimum-items-per-worker"),
+-            "parallelism.ai-target-search.minimum-items-per-worker",
++            node.node("async", "compute", "ai-target-search", "minimum-items-per-worker"),
++            "async.compute.ai-target-search.minimum-items-per-worker",
+             config.aiTargetSearchMinimumItemsPerWorker(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("parallelism", "entity-activation", "enabled"),
+-            "parallelism.entity-activation.enabled",
++            node.node("async", "compute", "entity-activation", "enabled"),
++            "async.compute.entity-activation.enabled",
+             config.parallelEntityActivation(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("parallelism", "entity-activation", "minimum-entities"),
+-            "parallelism.entity-activation.minimum-entities",
++            node.node("async", "compute", "entity-activation", "minimum-entities"),
++            "async.compute.entity-activation.minimum-entities",
+             config.entityActivationMinimumEntities(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("parallelism", "entity-activation", "minimum-items-per-worker"),
+-            "parallelism.entity-activation.minimum-items-per-worker",
++            node.node("async", "compute", "entity-activation", "minimum-items-per-worker"),
++            "async.compute.entity-activation.minimum-items-per-worker",
+             config.entityActivationMinimumItemsPerWorker(),
+             missingOnly
+         );
+@@ -506,27 +504,27 @@
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("parallelism", "mob-spawning", "enabled"),
+-            "parallelism.mob-spawning.enabled",
++            node.node("async", "compute", "mob-spawning", "enabled"),
++            "async.compute.mob-spawning.enabled",
+             config.parallelMobSpawnCounting(),
+             missingOnly
+         );
+-        changed |= writeValue(node.node("parallelism", "workers"), "parallelism.workers", config.computeWorkers(), missingOnly);
+-        changed |= writeValue(
+-            node.node("parallelism", "minimum-items-per-worker"),
+-            "parallelism.minimum-items-per-worker",
++        changed |= writeValue(node.node("async", "compute", "workers"), "async.compute.workers", config.computeWorkers(), missingOnly);
++        changed |= writeValue(
++            node.node("async", "compute", "minimum-items-per-worker"),
++            "async.compute.minimum-items-per-worker",
+             config.minimumItemsPerWorker(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("parallelism", "prestart-workers"),
+-            "parallelism.prestart-workers",
++            node.node("async", "compute", "prestart-workers"),
++            "async.compute.prestart-workers",
+             config.prestartWorkers(),
+             missingOnly
+         );
+         changed |= writeValue(
+-            node.node("parallelism", "mob-spawning", "minimum-entities"),
+-            "parallelism.mob-spawning.minimum-entities",
++            node.node("async", "compute", "mob-spawning", "minimum-entities"),
++            "async.compute.mob-spawning.minimum-entities",
+             config.mobSpawnCountingMinimumEntities(),
+             missingOnly
+         );
+@@ -583,36 +581,36 @@
+         final Map<String, String> comments = new LinkedHashMap<>();
+         comments.put("performance", "性能优化：细项可独立关闭；带总开关的优化还受总开关控制。兼容保护项和实验性选项请阅读各自说明。");
+         comments.put("async", "异步任务：区块打包、刷怪统计、追踪计算和玩家存档。");
+-        comments.put("async.animals", "动物目标计算只并行距离数据；资格判断、行为节奏和寻路仍按原版执行。");
+-        comments.put("performance.compute.activation-bounds-prefilter", "先排除肯定不在任何玩家激活范围内的实体，实际激活范围不变。默认：true。");
+-        comments.put("performance.compute.ai-distance-histograms", "大型 AI 距离排序一次统计各字节，减少重复扫描；排序和平局顺序不变，可重载。默认：true。");
+-        comments.put("performance.compute.ai-nearest-reduction", "最近目标查询只保存分片赢家，减少排序数组和逐项结果写入；目标规则不变，可重载。默认：true。");
+-        comments.put("performance.compute.tracker-row-kernel", "同批玩家视距一致时复用追踪距离计算；视距混合时用原公式，发包及可见性规则不变，可重载。默认：true。");
+-        comments.put("performance.compute.spatial-activation-groups", "按冻结位置组织玩家激活范围，减少分散玩家之间的无效比较；激活范围和更新频率不变，可重载。默认：true。");
+-        comments.put("performance.memory.compute-cache-max-candidates", "距离排序、最近目标与激活计算每线程的日常候选缓存上限；持续高负载时复用更大缓存，后续小任务到来时回收，0 为不保留；不限制实体数，可重载。默认：32768。");
+-        comments.put("async.animals.breeding", "并行计算鸡牛羊猪繁殖配对距离；搜索范围、繁殖时机和事件不变。默认：true。");
+-        comments.put("async.animals.follow-parent", "并行计算鸡牛羊猪幼体跟随距离；跟随条件、更新频率和寻路不变。默认：true。");
+-        comments.put("parallelism", "计算线程：控制线程数量和任务达到多大规模时并行。");
+-        comments.put("performance.faster-random-generator.enabled", "更换运行时随机算法，天气、作物等随机结果会改变，依赖 RNG 序列的装置可能受影响；不改地形和史莱姆区块，需重启。默认：false。");
+-        comments.put("performance.reduce-packets.reuse-block-destruction", "复用同一次方块破坏动画的数据包，减少对象分配；不减少发送次数，不跳过插件事件。默认：true。");
+-        comments.put("performance.use-virtual-thread.download-pool", "下载和档案查询使用虚拟线程，最多同时执行四个任务；不改变世界和插件同步线程，需重启。默认：false。");
+-        comments.put("async.ai-candidates", "后台准备山羊和青蛙的长跳候选位置；保持候选顺序、随机抽取及跳跃时机，共用计算池。默认：true。");
++        comments.put("async.compute.animals", "动物目标计算只并行距离数据；资格判断、行为节奏和寻路仍按原版执行。");
++        comments.put("async.compute.kernels.activation-bounds-prefilter", "先排除肯定不在任何玩家激活范围内的实体，实际激活范围不变。默认：true。");
++        comments.put("async.compute.kernels.ai-distance-histograms", "大型 AI 距离排序一次统计各字节，减少重复扫描；排序和平局顺序不变，可重载。默认：true。");
++        comments.put("async.compute.kernels.ai-nearest-reduction", "最近目标查询只保存分片赢家，减少排序数组和逐项结果写入；目标规则不变，可重载。默认：true。");
++        comments.put("async.compute.kernels.tracker-row-kernel", "同批玩家视距一致时复用追踪距离计算；视距混合时用原公式，发包及可见性规则不变，可重载。默认：true。");
++        comments.put("async.compute.kernels.spatial-activation-groups", "按冻结位置组织玩家激活范围，减少分散玩家之间的无效比较；激活范围和更新频率不变，可重载。默认：true。");
++        comments.put("async.compute.cache-max-candidates", "距离排序、最近目标与激活计算每线程的日常候选缓存上限；持续高负载时复用更大缓存，后续小任务到来时回收，0 为不保留；不限制实体数，可重载。默认：32768。");
++        comments.put("async.compute.animals.breeding", "并行计算鸡牛羊猪繁殖配对距离；搜索范围、繁殖时机和事件不变。默认：true。");
++        comments.put("async.compute.animals.follow-parent", "并行计算鸡牛羊猪幼体跟随距离；跟随条件、更新频率和寻路不变。默认：true。");
++        comments.put("async.compute", "共享计算线程、任务分片与异常回退；细项可分别关闭。");
++        comments.put("performance.random-generator.enabled", "更换运行时随机算法，天气、作物等随机结果会改变，依赖 RNG 序列的装置可能受影响；不改地形和史莱姆区块，需重启。默认：false。");
++        comments.put("performance.network.reduce-packets.reuse-block-destruction", "复用同一次方块破坏动画的数据包，减少对象分配；不减少发送次数，不跳过插件事件。默认：true。");
++        comments.put("async.virtual-threads.download-pool", "下载和档案查询使用虚拟线程，最多同时执行四个任务；不改变世界和插件同步线程，需重启。默认：false。");
++        comments.put("async.compute.ai-candidates", "后台准备山羊和青蛙的长跳候选位置；保持候选顺序、随机抽取及跳跃时机，共用计算池。默认：true。");
+         comments.put("async.playerdata-save.compression", "后台压缩玩家存档，减少自动保存卡顿；需要启用异步玩家保存，同一玩家仍按顺序保存。默认：true。");
+-        comments.put("parallelism.mob-collision-math", "实验性：并行普通生物的简单碰撞盒计算，小任务受 async.low-load-workers 控制；不处理村民、TNT和复杂形状。默认：false。");
+-        comments.put("performance.cache-biome.enabled", "用少量缓存内存减少群系计算；保持精确群系边界，插件修改群系后立即生效。默认：true。");
+-        comments.put("performance.cache-biome.mob-spawning", "刷怪检查使用群系计算缓存。默认：true。");
+-        comments.put("performance.cache-biome.advancements", "进度条件检查使用群系计算缓存。默认：true。");
+-        comments.put("performance.optimize-player-movement", "玩家未跨区块且视距未变时跳过重复的范围更新，保留碰撞和潜行检查。默认：true。");
+-        comments.put("performance.optimized-powered-rails", "仅减少动力和激活铁轨查电开销，不批量改写轨道，保留传播范围、更新顺序和红石事件。默认：false。");
+-        comments.put("performance.optimize-random-tick", "用少量坐标缓存减少随机刻开销；不降频，不改生长概率、执行顺序和随机数序列。默认：true。");
+-        comments.put("performance.use-virtual-thread.bukkit-async-scheduler", "异步插件任务使用虚拟线程；依赖固定线程的插件可能不兼容，同步任务不变，需重启。默认：false。");
++        comments.put("async.compute.mob-collision-math", "实验性：并行普通生物的简单碰撞盒计算，小任务受 async.compute.low-load-workers 控制；不处理村民、TNT和复杂形状。默认：false。");
++        comments.put("performance.memory.biome-cache.enabled", "用少量缓存内存减少群系计算；保持精确群系边界，插件修改群系后立即生效。默认：true。");
++        comments.put("performance.memory.biome-cache.mob-spawning", "刷怪检查使用群系计算缓存。默认：true。");
++        comments.put("performance.memory.biome-cache.advancements", "进度条件检查使用群系计算缓存。默认：true。");
++        comments.put("performance.entities.player-movement", "玩家未跨区块且视距未变时跳过重复的范围更新，保留碰撞和潜行检查。默认：true。");
++        comments.put("performance.blocks.powered-rails", "仅减少动力和激活铁轨查电开销，不批量改写轨道，保留传播范围、更新顺序和红石事件。默认：false。");
++        comments.put("performance.blocks.random-tick", "用少量坐标缓存减少随机刻开销；不降频，不改生长概率、执行顺序和随机数序列。默认：true。");
++        comments.put("async.virtual-threads.bukkit-async-scheduler", "异步插件任务使用虚拟线程；依赖固定线程的插件可能不兼容，同步任务不变，需重启。默认：false。");
+         comments.put("performance.lithium.enabled", "启用 Lithium 的空闲实体和漏斗槽位优化；关闭后走原检查逻辑。默认：true。");
+         comments.put("performance.blocks.container-copy-reuse", "复用容器同步的临时副本，减少背包和箱子操作时的内存分配。默认：true。");
+         comments.put("features.secure-seed", "新世界使用独立安全种子保护结构和资源分布；不改已有世界，需重启。默认：false。");
+         comments.put("features.just-enough-items.recipe-sync", "同步服务端配方到 Just Enough Items（JEI）；需对应版本的 Fabric 或 NeoForge 客户端，修改后重新进服。默认：false。");
+         comments.put("features.just-enough-items.recipe-transfer", "允许 Just Enough Items（JEI）填充已解锁的工作台、背包合成及熔炉配方；遵守插件配方书事件，不提供作弊取物，修改后重新进服。默认：false。");
+-        comments.put("performance.use-virtual-thread.async-chat-executor", "异步聊天使用虚拟线程；依赖固定聊天线程的插件可能不兼容，聊天事件流程不变，需重启。默认：false。");
+-        comments.put("async.isolate-chunk-packing", "区块打包使用独立队列，避免进服或传送时堵住寻路计算；线程总预算不增加，需重启。默认：true。");
++        comments.put("async.virtual-threads.async-chat-executor", "异步聊天使用虚拟线程；依赖固定聊天线程的插件可能不兼容，聊天事件流程不变，需重启。默认：false。");
++        comments.put("async.chunk-send.isolate-packing", "区块打包使用独立队列，避免进服或传送时堵住寻路计算；线程总预算不增加，需重启。默认：true。");
+         comments.put("config-version", "配置版本，请勿修改。默认：" + LeavesXConfig.CURRENT_CONFIG_VERSION + "。");
+         comments.put("console-messages.show-root-admin-warning", "是否显示使用 root 或管理员启动的警告。默认：false。");
+         comments.put("console-messages.show-offline-mode-warning", "是否显示离线模式安全警告。默认：false。");
+@@ -644,14 +642,14 @@
+         comments.put("async.pathfinding.threads", "寻路为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");
+         comments.put("async.pathfinding.queue-size", "寻路线程队列容量；水中快照另有内存上限，队列或快照名额用完时主线程完整计算。默认：1024。");
+         comments.put("async.pathfinding.keepalive-seconds", "通用计算线程空闲保留时间，单位为秒。默认：60。");
+-        comments.put("async.shared-compute-workers", "寻路快照和 AI 候选可借用空闲计算线程；繁忙时使用原异步池或主线程完整回退，修改需重启。默认：true。");
+-        comments.put("async.low-load-workers", "已有并行计算在单实体或小任务时也尝试工作线程；会增加调度与等待开销，关闭后恢复按工作量派发，修改需重启。默认：true。");
++        comments.put("async.compute.shared-workers", "寻路快照和 AI 候选可借用空闲计算线程；繁忙时使用原异步池或主线程完整回退，修改需重启。默认：true。");
++        comments.put("async.compute.low-load-workers", "已有并行计算在单实体或小任务时也尝试工作线程；会增加调度与等待开销，关闭后恢复按工作量派发，修改需重启。默认：true。");
+         comments.put("async.entity-tracker.comparison-sharding", "按实体与玩家的比较次数分配追踪计算；关闭后使用原来的实体分片，修改需重启。默认：true。");
+         comments.put("async.entity-tracker.snapshot-pipeline", "分批准备并提前计算追踪范围，整批校验后才发包；需开启 comparison-sharding，可热重载。默认：true。");
+-        comments.put("parallelism.entity-activation.snapshot-pipeline", "分批准备并提前计算实体激活范围，不改变激活规则和更新频率；可热重载。默认：true。");
+-        comments.put("parallelism.ai-target-search.snapshot-pipeline", "采集 AI 候选位置时提前计算已完成的片段，保留目标筛选顺序；可热重载。默认：true。");
+-        comments.put("parallelism.ai-target-search.parallel-merge", "并行合并大型 AI 距离排序结果，保留相同距离的原顺序；可热重载。默认：true。");
+-        comments.put("parallelism.mob-spawning.combined-counting", "同批计算区块和玩家生物生成计数，减少两次调度等待，不改变生成上限；可热重载。默认：true。");
++        comments.put("async.compute.entity-activation.snapshot-pipeline", "分批准备并提前计算实体激活范围，不改变激活规则和更新频率；可热重载。默认：true。");
++        comments.put("async.compute.ai-target-search.snapshot-pipeline", "采集 AI 候选位置时提前计算已完成的片段，保留目标筛选顺序；可热重载。默认：true。");
++        comments.put("async.compute.ai-target-search.parallel-merge", "并行合并大型 AI 距离排序结果，保留相同距离的原顺序；可热重载。默认：true。");
++        comments.put("async.compute.mob-spawning.combined-counting", "同批计算区块和玩家生物生成计数，减少两次调度等待，不改变生成上限；可热重载。默认：true。");
+         comments.put("async.entity-tracker.event-listeners", "插件监听实体追踪或玩家速度事件时仍并行计算距离；事件、发包和追踪变更按原实体顺序在主线程执行，输入被事件改动时只重算当前实体。关闭后有监听器就使用 Paper 原循环，可重载。默认：true。");
+         comments.put("async.playerdata-save.enabled", "是否异步保存玩家数据；采集玩家状态仍在主线程，同一玩家按顺序保存。默认：true。");
+         comments.put("async.playerdata-save.queue-size", "玩家数据写入最多排队任务数；队列满时等待空位，不会让新存档越过旧存档。默认：1024。");
+@@ -664,15 +662,15 @@
+         comments.put("updates.check", "启动时检查一次当前 MC 版本的正式版更新；OP 进服读取缓存，有更新才提示，重载不重复请求。默认：true。");
+         comments.put("updates.auto-download", "自动下载并校验更新，重启后使用；不会自动重启服务器。默认：false。");
+         comments.put("performance.ai.sensor-list-reuse", "物品传感器复用扫描列表；生物扫描结果会存入 Brain，不复用，避免旧记忆被清空。默认：true。");
+-        comments.put("performance.chunk.poi-async-serialization", "暂不可用：异步编码失败时可能丢失床和工作站数据；当前仍在 Tick 线程编码、异步写盘。默认：false。");
++        comments.put("performance.chunks.poi-async-serialization", "暂不可用：异步编码失败时可能丢失床和工作站数据；当前仍在 Tick 线程编码、异步写盘。默认：false。");
+         comments.put("performance.ai.poi-competitor-scan-no-load", "暂不可用：村民竞争扫描保留原版 POI 加载行为，避免漏判工作站。默认：false。");
+-        comments.put("regionized-ticking.mode", "世界并行模式，修改需重启；包含原版维度时自动整组串行，保留传送门和刷沙时序，不关闭独立异步计算。worlds/regions 仍为实验性。默认：off。");
+-        comments.put("regionized-ticking.merge-radius-chunks", "空间间隔小于该区块数的加载分量合并为同一区域，仅 regions 模式使用。默认：8。");
+-        comments.put("regionized-ticking.strict-serial-worlds", "需串行保护的世界名，不区分大小写；任一匹配时所有世界按原顺序更新，避免跨世界传送竞争，修改需重启。默认：[]。");
+-        comments.put("regionized-ticking.intent-queue-size", "跨区域意图队列上限；溢出时该区域本 Tick 串行重放。默认：65536。");
+-        comments.put("regionized-ticking.auto-degrade-barrier-percent", "屏障等待占 Tick 预算比例持续超过该值时超时区域自动降级，0 关闭。默认：25。");
+-        comments.put("regionized-ticking.auto-degrade-replay-threshold", "单 Tick 内串行重放累计超过该次数自动降档（regions→worlds→off），0 关闭。默认：64。");
+-        comments.put("regionized-ticking.threads", "并行世界/区域线程上限，0 为自动（CPU-1，不超过世界数）。默认：0。");
++        comments.put("async.world-ticking.mode", "世界并行模式，修改需重启；包含原版维度时自动整组串行，保留传送门和刷沙时序，不关闭独立异步计算。worlds/regions 仍为实验性。默认：off。");
++        comments.put("async.world-ticking.merge-radius-chunks", "空间间隔小于该区块数的加载分量合并为同一区域，仅 regions 模式使用。默认：8。");
++        comments.put("async.world-ticking.strict-serial-worlds", "需串行保护的世界名，不区分大小写；任一匹配时所有世界按原顺序更新，避免跨世界传送竞争，修改需重启。默认：[]。");
++        comments.put("async.world-ticking.intent-queue-size", "跨区域意图队列上限；溢出时该区域本 Tick 串行重放。默认：65536。");
++        comments.put("async.world-ticking.auto-degrade-barrier-percent", "屏障等待占 Tick 预算比例持续超过该值时超时区域自动降级，0 关闭。默认：25。");
++        comments.put("async.world-ticking.auto-degrade-replay-threshold", "单 Tick 内串行重放累计超过该次数自动降档（regions→worlds→off），0 关闭。默认：64。");
++        comments.put("async.world-ticking.threads", "并行世界/区域线程上限，0 为自动（CPU-1，不超过世界数）。默认：0。");
+         comments.put("diagnostics.command-enabled", "是否启用 /leavesx 性能诊断命令。默认：true。");
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+@@ -718,23 +716,23 @@
+         comments.put("performance.chunks.unloading.backlog-threshold", "达到此积压数量后提高卸载速度。默认：1000。");
+         comments.put("performance.chunks.unloading.minimum-per-tick", "加速卸载时的起始处理量。默认：100。");
+         comments.put("performance.chunks.unloading.maximum-per-tick", "加速卸载时的最大处理量。默认：500。");
+-        comments.put("parallelism.workers", "LeavesX 纯计算线程数，0 为自动。默认：0。");
+-        comments.put("parallelism.failure-protection.enabled", "连续计算异常时暂时关闭对应类别的并行，其他类别不受影响；关闭此项仍保留单次失败后的完整同步重算，可重载。默认：true。");
+-        comments.put("parallelism.failure-protection.failure-threshold", "同类计算连续失败多少次后暂停并行，成功一次清零；范围 1～100，可重载。默认：3。");
+-        comments.put("parallelism.failure-protection.cooldown-seconds", "暂停同类并行的秒数，到期自动允许重试；范围 1～3600，可重载。默认：30。");
+-        comments.put("parallelism.scheduling.realtime-reserved-workers", "给实体、AI、追踪等实时计算保留的空闲线程数；区块噪声等低优先级计算不能占用这部分，繁忙时在原线程完整计算。-1 为自动（4 线程以上保留 1 个），0 为不保留，可重载。默认：-1。");
+-        comments.put("parallelism.scheduling.low-priority-queue-limit", "低优先级计算可接受的最大排队任务数；超过后不再派发，避免预生成拖慢实时计算。0 为自动（线程数×2，至少 2），可重载。默认：0。");
+-        comments.put("parallelism.minimum-items-per-worker", "每个计算分片至少处理的项目数。默认：64。");
+-        comments.put("parallelism.prestart-workers", "启动时预热计算线程，减少重启后第一次并行任务的延迟。默认：true。");
+-        comments.put("parallelism.mob-spawning.enabled", "允许刷怪统计使用多线程，只分离计数计算。默认：true。");
+-        comments.put("parallelism.mob-spawning.minimum-entities", "关闭 async.low-load-workers 时的刷怪计数并行阈值；开启后单项也可派发。默认：2048。");
+-        comments.put("parallelism.chunk-generation.noise-sampling", "并行计算原版密度单元的纯噪声；偏移图与插值缓存留在生成线程。小批次或计算池繁忙时同步执行。默认：true。");
+-        comments.put("parallelism.ai-target-search.enabled", "允许 AI 目标距离计算使用多线程；实体状态和目标事件仍在原线程处理。默认：true。");
+-        comments.put("parallelism.ai-target-search.minimum-candidates", "关闭 async.low-load-workers 时的 AI 计算并行阈值；开启后单候选也可派发。默认：256。");
+-        comments.put("parallelism.ai-target-search.minimum-items-per-worker", "每个 AI 计算分片至少处理的候选数。默认：128。");
+-        comments.put("parallelism.entity-activation.enabled", "允许实体激活范围的数值判断使用多线程。默认：true。");
+-        comments.put("parallelism.entity-activation.minimum-entities", "关闭 async.low-load-workers 时的激活计算并行阈值；开启后附近单实体也可派发。默认：2048。");
+-        comments.put("parallelism.entity-activation.minimum-items-per-worker", "每个激活计算分片至少处理的实体数。默认：512。");
++        comments.put("async.compute.workers", "LeavesX 纯计算线程数，0 为自动。默认：0。");
++        comments.put("async.compute.failure-protection.enabled", "连续计算异常时暂时关闭对应类别的并行，其他类别不受影响；关闭此项仍保留单次失败后的完整同步重算，可重载。默认：true。");
++        comments.put("async.compute.failure-protection.failure-threshold", "同类计算连续失败多少次后暂停并行，成功一次清零；范围 1～100，可重载。默认：3。");
++        comments.put("async.compute.failure-protection.cooldown-seconds", "暂停同类并行的秒数，到期自动允许重试；范围 1～3600，可重载。默认：30。");
++        comments.put("async.compute.scheduling.realtime-reserved-workers", "给实体、AI、追踪等实时计算保留的空闲线程数；区块噪声等低优先级计算不能占用这部分，繁忙时在原线程完整计算。-1 为自动（4 线程以上保留 1 个），0 为不保留，可重载。默认：-1。");
++        comments.put("async.compute.scheduling.low-priority-queue-limit", "低优先级计算可接受的最大排队任务数；超过后不再派发，避免预生成拖慢实时计算。0 为自动（线程数×2，至少 2），可重载。默认：0。");
++        comments.put("async.compute.minimum-items-per-worker", "每个计算分片至少处理的项目数。默认：64。");
++        comments.put("async.compute.prestart-workers", "启动时预热计算线程，减少重启后第一次并行任务的延迟。默认：true。");
++        comments.put("async.compute.mob-spawning.enabled", "允许刷怪统计使用多线程，只分离计数计算。默认：true。");
++        comments.put("async.compute.mob-spawning.minimum-entities", "关闭 async.compute.low-load-workers 时的刷怪计数并行阈值；开启后单项也可派发。默认：2048。");
++        comments.put("async.compute.chunk-generation.noise-sampling", "并行计算原版密度单元的纯噪声；偏移图与插值缓存留在生成线程。小批次或计算池繁忙时同步执行。默认：true。");
++        comments.put("async.compute.ai-target-search.enabled", "允许 AI 目标距离计算使用多线程；实体状态和目标事件仍在原线程处理。默认：true。");
++        comments.put("async.compute.ai-target-search.minimum-candidates", "关闭 async.compute.low-load-workers 时的 AI 计算并行阈值；开启后单候选也可派发。默认：256。");
++        comments.put("async.compute.ai-target-search.minimum-items-per-worker", "每个 AI 计算分片至少处理的候选数。默认：128。");
++        comments.put("async.compute.entity-activation.enabled", "允许实体激活范围的数值判断使用多线程。默认：true。");
++        comments.put("async.compute.entity-activation.minimum-entities", "关闭 async.compute.low-load-workers 时的激活计算并行阈值；开启后附近单实体也可派发。默认：2048。");
++        comments.put("async.compute.entity-activation.minimum-items-per-worker", "每个激活计算分片至少处理的实体数。默认：512。");
+         for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
+             comments.put(optimization.path(), optimization.comment());
+         }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -146,22 +146,22 @@
+             changed.add("features.secure-seed（仅新建世界）");
+         }
+         if (previous.extensions().virtualChat() != next.extensions().virtualChat()) {
+-            changed.add("performance.use-virtual-thread.async-chat-executor");
++            changed.add("async.virtual-threads.async-chat-executor");
+         }
+         if (previous.extensions().virtualBukkitScheduler() != next.extensions().virtualBukkitScheduler()) {
+-            changed.add("performance.use-virtual-thread.bukkit-async-scheduler");
++            changed.add("async.virtual-threads.bukkit-async-scheduler");
+         }
+         if (previous.extensions().virtualDownloadPool() != next.extensions().virtualDownloadPool()) {
+-            changed.add("performance.use-virtual-thread.download-pool");
++            changed.add("async.virtual-threads.download-pool");
+         }
+         if (previous.extensions().fasterRandom() != next.extensions().fasterRandom()) {
+-            changed.add("performance.faster-random-generator.enabled");
++            changed.add("performance.random-generator.enabled");
+         }
+         if (previous.extensions().isolateChunkPacking() != next.extensions().isolateChunkPacking()) {
+-            changed.add("async.isolate-chunk-packing");
++            changed.add("async.chunk-send.isolate-packing");
+         }
+         if (!previous.regionTickingSettings().equals(next.regionTickingSettings())) {
+-            changed.add("regionized-ticking");
++            changed.add("async.world-ticking");
+         }
+         return java.util.List.copyOf(changed);
+     }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -153,31 +153,31 @@
+         "减少生物查找附近玩家时的临时对象和重复读取，关闭后使用原版流程。默认：true。"
+     ),
+     CHUNK_UNLOAD_SERIALIZATION(
+-        "performance.chunk.unload-serialization",
++        "performance.chunks.unload-serialization",
+         "减少区块卸载保存时的临时对象，关闭后使用原版流程。默认：true。"
+     ),
+     CHUNK_NBT_LIST_CAPACITY(
+-        "performance.chunk.nbt-list-capacity",
++        "performance.chunks.nbt-list-capacity",
+         "按区块数据量预留 NBT 列表容量，关闭后使用原版流程。默认：true。"
+     ),
+     TICKET_QUEUE_ALLOCATION(
+-        "performance.chunk.ticket-queue-allocation",
++        "performance.chunks.ticket-queue-allocation",
+         "无竞争票据更新时不创建临时列表，关闭后使用原版流程。默认：true。"
+     ),
+     TICKET_REMOVAL_PROBE(
+-        "performance.chunk.ticket-removal-probe",
++        "performance.chunks.ticket-removal-probe",
+         "移除区块票据时不创建临时票据对象，关闭后使用原版流程。默认：true。"
+     ),
+     TICKET_UPDATE_BUFFER_REUSE(
+-        "performance.chunk.ticket-update-buffer-reuse",
++        "performance.chunks.ticket-update-buffer-reuse",
+         "区块票据传播时复用临时列表，关闭后每次新建。默认：true。"
+     ),
+     EXPIRING_TICKET_BUFFERS(
+-        "performance.chunk.expiring-ticket-buffers",
++        "performance.chunks.expiring-ticket-buffers",
+         "没有到期票据时不创建处理缓冲，关闭后使用原版流程。默认：true。"
+     ),
+     CHUNK_LOAD_COMPOUND_LISTS(
+-        "performance.chunk.load-compound-lists",
++        "performance.chunks.load-compound-lists",
+         "直接读取区块实体和方块实体列表，关闭后使用原版流程。默认：true。"
+     ),
+     ENTITY_LOAD_OPTIONAL_CHAINS(
+@@ -237,7 +237,7 @@
+         "直接判断实体所在区块的可见状态，关闭后使用 Paper 映射。默认：true。"
+     ),
+     CACHED_CHUNK_POS_KEY(
+-        "performance.chunk.cached-chunk-pos-key",
++        "performance.chunks.cached-chunk-pos-key",
+         "复用区块坐标已缓存的键值，关闭后重新计算。默认：true。"
+     ),
+     BUKKIT_ENTITY_TYPE_CACHE(
+@@ -465,19 +465,19 @@
+         "合并同一光照层和区块节的重复通知，关闭后只批处理不去重。默认：true。"
+     ),
+     CHUNK_UNLOAD_STAGE_BUFFER_REUSE(
+-        "performance.chunk.unload-stage-buffer-reuse",
++        "performance.chunks.unload-stage-buffer-reuse",
+         "复用区块卸载三阶段列表，关闭后每轮重新创建。默认：true。"
+     ),
+     CHUNK_AUTOSAVE_BUFFER_REUSE(
+-        "performance.chunk.autosave-buffer-reuse",
++        "performance.chunks.autosave-buffer-reuse",
+         "复用区块自动保存重排列表，关闭后每轮重新创建。默认：true。"
+     ),
+     CHUNK_STATUS_UPDATE_BUFFER_REUSE(
+-        "performance.chunk.status-update-buffer-reuse",
++        "performance.chunks.status-update-buffer-reuse",
+         "复用区块状态变更列表，关闭后每轮重新创建。默认：true。"
+     ),
+     CHUNK_UNLOAD_SECTION_SNAPSHOT_CACHE(
+-        "performance.chunk.unload-section-snapshot-cache",
++        "performance.chunks.unload-section-snapshot-cache",
+         "缓存未变化的区块卸载节顺序，关闭后每轮重新扫描和排序。默认：true。"
+     ),
+     HOPPER_SLOT_STATE_CACHE(
+@@ -517,7 +517,7 @@
+         "实体未滑翔且没有滑翔计时时跳过装备扫描。默认：true。"
+     ),
+     NEAREST_QUERY_DISTANCE_SNAPSHOT(
+-        "parallelism.ai-target-search.nearest-query",
++        "async.compute.ai-target-search.nearest-query",
+         "普通目标查询的距离计算使用数值快照；选择器和视线仍在原线程，村民保留原路径。默认：true。"
+     );
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java
+@@ -47,7 +47,10 @@
+         Objects.requireNonNull(computation, "computation");
+         final long started = System.nanoTime();
+         try {
+-            if (this.pending.size() == MAX_PENDING_TASKS) this.drain();
++            if (this.pending.size() == MAX_PENDING_TASKS) {
++                this.reapCompleted();
++                if (this.pending.size() == MAX_PENDING_TASKS) this.drain();
++            }
+             this.items = Math.addExact(this.items, size);
+             final Task task = new Task(size, computation, this.activeWorkers, this.maximumWorkers);
+             this.pending.add(task);
+@@ -97,6 +100,35 @@
+         this.finish();
+     }
+ 
++    /** 只回收已结束的任务句柄，不等待慢片段；输出缓冲仍保留到 flush 或 finish 的完整屏障之后。 */
++    private void reapCompleted() {
++        int retained = 0;
++        final int count = this.pending.size();
++        for (int index = 0; index < count; index++) {
++            final Task task = this.pending.get(index);
++            if (task.completed.getCount() == 0L) {
++                this.recordCompleted(task);
++            } else {
++                this.pending.set(retained++, task);
++            }
++        }
++        this.pending.subList(retained, count).clear();
++    }
++
++    /** 结果与异常在完成闩锁之后读取；每个任务只在这里累计一次。 */
++    private void recordCompleted(final Task task) {
++        this.successful &= task.failure == null;
++        if (this.failure == null) this.failure = task.failure;
++        if (!task.executed) return;
++        if (task.worker) {
++            this.workerItems += task.size;
++            this.workerTasks++;
++        } else {
++            this.callerItems += task.size;
++            this.callerTasks++;
++        }
++    }
++
+     private void drain() {
+         if (!this.pending.isEmpty() && Thread.currentThread().isInterrupted()) this.successful = false;
+         boolean interrupted = false;
+@@ -110,16 +142,7 @@
+                     if (this.failure == null) this.failure = interruption;
+                 }
+             }
+-            this.successful &= task.failure == null;
+-            if (this.failure == null) this.failure = task.failure;
+-            if (!task.executed) continue;
+-            if (task.worker) {
+-                this.workerItems += task.size;
+-                this.workerTasks++;
+-            } else {
+-                this.callerItems += task.size;
+-                this.callerTasks++;
+-            }
++            this.recordCompleted(task);
+         }
+         this.pending.clear();
+         if (interrupted) Thread.currentThread().interrupt();
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -295,10 +295,10 @@
+         assertTrue(config.optimizationEnabled(LeavesXOptimization.CHUNK_STATUS_UPDATE_BUFFER_REUSE));
+         assertFalse(node.node("performance", "network", "light-update-notification-batching").getBoolean());
+         assertFalse(node.node("performance", "network", "light-update-notification-deduplication").getBoolean());
+-        assertFalse(node.node("performance", "chunk", "unload-stage-buffer-reuse").getBoolean());
+-        assertFalse(node.node("performance", "chunk", "unload-section-snapshot-cache").getBoolean());
+-        assertTrue(node.node("performance", "chunk", "autosave-buffer-reuse").getBoolean());
+-        assertTrue(node.node("performance", "chunk", "status-update-buffer-reuse").getBoolean());
++        assertFalse(node.node("performance", "chunks", "unload-stage-buffer-reuse").getBoolean());
++        assertFalse(node.node("performance", "chunks", "unload-section-snapshot-cache").getBoolean());
++        assertTrue(node.node("performance", "chunks", "autosave-buffer-reuse").getBoolean());
++        assertTrue(node.node("performance", "chunks", "status-update-buffer-reuse").getBoolean());
+         assertTrue(node.node("custom-extension", "retained").getBoolean());
+         assertTrue(upgraded.startsWith("# 用户配置。"));
+ 
+@@ -1002,9 +1002,9 @@
+ 
+         assertEquals(LeavesXConfig.CURRENT_CONFIG_VERSION, upgraded.node("config-version").getInt());
+         assertEquals(5, config.computeWorkers());
+-        assertEquals(5, upgraded.node("parallelism", "workers").getInt());
+-        assertEquals(5, upgraded.node("parallelism", "mob-spawning", "workers").getInt());
+-        assertTrue(upgraded.node("parallelism", "prestart-workers").getBoolean());
++        assertEquals(5, upgraded.node("async", "compute", "workers").getInt());
++        assertEquals(5, upgraded.node("async", "compute", "mob-spawning", "workers").getInt());
++        assertTrue(upgraded.node("async", "compute", "prestart-workers").getBoolean());
+         final String text = Files.readString(path);
+         assertTrue(text.startsWith("# 旧版配置注释。"), "用户文件头必须保留");
+         assertFalse(text.contains("旧版网络优化长注释"));
+@@ -1025,7 +1025,7 @@
+             io.papermc.paper.configuration.ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
+ 
+         assertEquals(256, migrated.aiTargetSearchMinimumCandidates());
+-        assertEquals(256, migratedNode.node("parallelism", "ai-target-search", "minimum-candidates").getInt());
++        assertEquals(256, migratedNode.node("async", "compute", "ai-target-search", "minimum-candidates").getInt());
+         assertEquals(LeavesXConfig.CURRENT_CONFIG_VERSION, migratedNode.node("config-version").getInt());
+ 
+         write("""
+@@ -1100,13 +1100,13 @@
+         assertTrue(migrated.parallelEntityActivation());
+         assertEquals(2_048, migrated.entityActivationMinimumEntities());
+         assertEquals(512, migrated.entityActivationMinimumItemsPerWorker());
+-        assertTrue(migratedNode.node("parallelism", "entity-activation", "enabled").getBoolean());
+-        assertEquals(2_048, migratedNode.node("parallelism", "entity-activation", "minimum-entities").getInt());
++        assertTrue(migratedNode.node("async", "compute", "entity-activation", "enabled").getBoolean());
++        assertEquals(2_048, migratedNode.node("async", "compute", "entity-activation", "minimum-entities").getInt());
+         assertEquals(
+             512,
+-            migratedNode.node("parallelism", "entity-activation", "minimum-items-per-worker").getInt()
++            migratedNode.node("async", "compute", "entity-activation", "minimum-items-per-worker").getInt()
+         );
+-        assertEquals(4_096, migratedNode.node("parallelism", "ai-target-search", "minimum-candidates").getInt());
++        assertEquals(4_096, migratedNode.node("async", "compute", "ai-target-search", "minimum-candidates").getInt());
+         assertTrue(Files.readString(path).startsWith("# 用户配置。"));
+     }
+ 

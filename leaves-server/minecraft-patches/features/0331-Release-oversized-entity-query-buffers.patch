@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 14 Nov 2026 12:00:00 +0800
+Subject: [PATCH] Release oversized entity query buffers
+
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -2440,2 +2440,3 @@
+         private static final int INITIAL_CAPACITY = 256;
++        private static final int MAX_CACHED_RESULTS = 16_384;
+         private final List<Entity> results = new java.util.ArrayList<>(INITIAL_CAPACITY);
+@@ -2515,8 +2516,11 @@
+         @Override
+         public void close() {
++            final boolean oversized = this.results.size() > MAX_CACHED_RESULTS;
+             this.results.clear();
+             if (this.pooled) {
+                 this.inUse = false;
++                // 峰值查询不把大数组长期留在线程上；嵌套查询不干预外层缓冲。
++                if (oversized) LEAVESX_ENTITY_QUERY_BUFFER.remove();
+             }
+         }
+     }

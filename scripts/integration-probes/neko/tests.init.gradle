@@ -1,0 +1,19 @@
+import org.gradle.api.tasks.testing.Test
+
+// 仅供显式调用的离线探针测试；本地 Neko JAR 不进入服务端构建或发布产物。
+gradle.projectsEvaluated {
+    def server = gradle.rootProject.project(':leaves-server')
+    def probe = new File(gradle.rootProject.projectDir, 'scripts/integration-probes/neko')
+    def neko = new File(gradle.rootProject.findProperty('nekoProbeJar') ?:
+        'D:/Users/Administrator/Desktop/NekoAntiCheat/[FN]NekoAntiCheat-2.9.8-Loader (1).jar')
+    if (!neko.isFile()) throw new GradleException('请通过 -PnekoProbeJar 指定本地 Neko 加载器 JAR。')
+    server.dependencies.add('testImplementation', server.files(neko))
+    server.sourceSets.test.java.srcDir(new File(probe, 'src'))
+    server.sourceSets.test.java.srcDir(new File(probe, 'test'))
+    server.tasks.named('test', Test) {
+        setIncludes(['**/NekoProbeTestSuite.class'])
+        def scratch = new File(gradle.rootProject.buildDir, 'neko-movement-probe/test-tmp')
+        scratch.mkdirs()
+        systemProperty('java.io.tmpdir', scratch.absolutePath)
+    }
+}

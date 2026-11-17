@@ -155,7 +155,7 @@
 +// Keep the distributable filename independent from the upstream Leaves task defaults.
 +tasks.named<io.papermc.paperweight.tasks.CreateLeavesclipJar>("createLeavesclipJar") {
 +    val minecraftVersion = rootProject.providers.gradleProperty("mcVersion")
-+    outputZip.set(layout.buildDirectory.file(minecraftVersion.map { "libs/leavesx-$it.jar" }))
++    outputZip.set(layout.buildDirectory.file(minecraftVersion.zip(rootProject.providers.gradleProperty("leavesXVersion")) { mc, release -> "libs/LeavesX-$release-$mc.jar" }))
 +}
 +
  // Compile tests with -parameters for better junit parameterized test names

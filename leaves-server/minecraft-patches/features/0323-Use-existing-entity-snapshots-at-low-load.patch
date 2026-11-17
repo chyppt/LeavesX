@@ -1,0 +1,371 @@
+From ac055c53a6d770dac3881ec460f099b44238723d Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 12 Oct 2026 02:15:16 +0800
+Subject: [PATCH] Use existing entity snapshots at low load
+
+---
+ net/minecraft/server/level/ChunkMap.java      | 144 ++++++++++++++++--
+ .../server/level/ServerChunkCache.java        |   3 +-
+ .../server/level/ServerEntityGetter.java      |   8 +
+ .../ai/behavior/LongJumpToRandomPos.java      |  10 +-
+ .../entity/ai/sensing/NearestItemSensor.java  |   3 +-
+ .../ai/sensing/NearestLivingEntitySensor.java |   3 +-
+ .../world/entity/ai/sensing/PlayerSensor.java |   3 +-
+ .../entity/ai/sensing/TemptingSensor.java     |   3 +-
+ .../world/level/MobSpawnCountAccumulator.java |   7 +-
+ 9 files changed, 159 insertions(+), 25 deletions(-)
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index ba247fe2..e70dfff3 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -142,6 +142,8 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+     public final Int2ObjectMap<ChunkMap.TrackedEntity> entityMap = new Int2ObjectOpenHashMap<>();
+     private LeavesXTrackerSnapshot[] leavesX$trackerSnapshots = new LeavesXTrackerSnapshot[0];
+     private final LeavesXTrackerPlayerFrame leavesX$trackerPlayerFrame = new LeavesXTrackerPlayerFrame();
++    private final org.leavesx.leavesx.performance.EntityTrackingRangeBatch leavesX$trackerRangeBatch =
++        new org.leavesx.leavesx.performance.EntityTrackingRangeBatch();
+     private final Long2ByteMap chunkTypeCache = new Long2ByteOpenHashMap();
+     // Paper - rewrite chunk system
+     public int serverViewDistance;
+@@ -1141,11 +1143,17 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         final ca.spottedleaf.moonrise.common.list.ReferenceList<net.minecraft.world.entity.Entity> trackerEntities = entityLookup.trackerEntities;
+         if (org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.enabled(
+             org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.ENTITY_TRACKER
+-        ) && trackerEntities.size() >= 256 && !this.level.players().isEmpty()
++        ) && trackerEntities.size() > 0 && !this.level.players().isEmpty()
++            // 插件回调可以在遍历中修改追踪列表；保留 Paper 原循环及事件顺序。
++            && io.papermc.paper.event.player.PlayerTrackEntityEvent.getHandlerList().getRegisteredListeners().length == 0
++            && io.papermc.paper.event.player.PlayerUntrackEntityEvent.getHandlerList().getRegisteredListeners().length == 0
++            && org.bukkit.event.player.PlayerVelocityEvent.getHandlerList().getRegisteredListeners().length == 0
+             // 先检查计算池，避免繁忙时为整批实体复制快照后再串行重算。
+             && org.leavesx.leavesx.runtime.LeavesXComputeExecutor.shouldAttempt(
+                 org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
+-                trackerEntities.size(), 256, 64
++                org.leavesx.leavesx.config.LeavesXRuntime.asyncSettings().trackerComparisonSharding()
++                    ? this.leavesX$estimatedTrackerComparisons(trackerEntities) : trackerEntities.size(),
++                256, 64
+             )
+             && this.leavesX$parallelTrackerTick(trackerEntities)) {
+             return;
+@@ -1165,6 +1173,24 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         }
+     }
+ 
++    /** 只读取附近玩家索引的大小，作为快照准入估算；不复制实体、玩家或区块引用。 */
++    private int leavesX$estimatedTrackerComparisons(
++        final ca.spottedleaf.moonrise.common.list.ReferenceList<Entity> trackerEntities
++    ) {
++        final Entity[] entities = trackerEntities.getRawDataUnchecked();
++        long comparisons = 0L;
++        for (int index = 0, len = trackerEntities.size(); index < len; index++) {
++            final Entity entity = entities[index];
++            final ChunkMap.TrackedEntity tracker =
++                ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
++            if (tracker != null) {
++                comparisons += tracker.leavesX$nearbyPlayerCount();
++                if (comparisons >= Integer.MAX_VALUE) return Integer.MAX_VALUE;
++            }
++        }
++        return (int)comparisons;
++    }
++
+     /**
+      * 并行计算数值范围检查，再按原实体顺序提交追踪变化。
+      * 工作线程只读取快照数值；世界、实体、玩家、连接、插件及可变追踪状态仅由 Tick 线程准备和提交。
+@@ -1183,6 +1209,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+                 );
+             }
+             final LeavesXTrackerSnapshot[] snapshots = this.leavesX$trackerSnapshots;
++            final org.leavesx.leavesx.performance.EntityTrackingRangeBatch rangeBatch = this.leavesX$trackerRangeBatch;
+             for (int index = 0; index < entityCount; index++) {
+                 final Entity entity = entities[index];
+                 final ChunkMap.TrackedEntity tracker =
+@@ -1193,19 +1220,40 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+                         ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkData().nearbyPlayers
+                     );
+             }
+-
+-            final int completedPartitions = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRangesWithCount(
+-                org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
+-                entityCount,
+-                256,
+-                64,
+-                (taskIndex, start, end) -> {
+-                    for (int index = start; index < end; index++) {
+-                        final LeavesXTrackerSnapshot snapshot = snapshots[index];
+-                        if (snapshot != null) snapshot.computeRanges();
++            final int completedPartitions;
++            if (org.leavesx.leavesx.config.LeavesXRuntime.asyncSettings().trackerComparisonSharding()) {
++                // 捕获过程中可能扩容共享帧；所有行准备完成后才发布最终数值数组。
++                rangeBatch.prepare(entityCount, this.leavesX$trackerPlayerFrame.positionData, this.leavesX$trackerPlayerFrame.viewDistanceBlocks);
++                try {
++                    for (int index = 0; index < entityCount; index++) {
++                        if (snapshots[index] == null) {
++                            rangeBatch.setEmptyRow(index);
++                        } else {
++                            snapshots[index].leavesX$prepareRangeBatch(rangeBatch, index);
++                        }
+                     }
++                } catch (final ArithmeticException overflow) {
++                    // 尚未派发或提交，比较总数溢出时安全地交给完整原循环。
++                    return false;
+                 }
+-            );
++                completedPartitions = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRangesWithCount(
++                    org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
++                    rangeBatch.comparisonCount(), 256, 64,
++                    (taskIndex, start, end) -> rangeBatch.compute(start, end)
++                );
++            } else {
++                // 独立开关关闭时保留原来的实体分片，不创建比较前缀或展平批次。
++                completedPartitions = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRangesWithCount(
++                    org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
++                    entityCount, 256,
++                    (taskIndex, start, end) -> {
++                        for (int index = start; index < end; index++) {
++                            final LeavesXTrackerSnapshot snapshot = snapshots[index];
++                            if (snapshot != null) snapshot.computeRanges();
++                        }
++                    }
++                );
++            }
+             if (completedPartitions == 0) {
+                 // 等全部工作线程结束后完整重算本 Tick 的有效前缀，不处理未使用的数组容量。
+                 for (int index = 0; index < entityCount; index++) {
+@@ -1242,6 +1290,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             }
+             java.util.Arrays.fill(this.leavesX$trackerSnapshots, null);
+             this.leavesX$trackerPlayerFrame.clear();
++            this.leavesX$trackerRangeBatch.clear();
+         }
+     }
+     // Paper end - optimise entity tracker
+@@ -1644,6 +1693,13 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         }
+ 
+         private void leavesX$applyTrackerSnapshot(final LeavesXTrackerSnapshot snapshot) {
++            final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.TrackedChunk currentChunk =
++                ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)this.entity).moonrise$getChunkData().nearbyPlayers;
++            if (!this.leavesX$matchesSnapshot(snapshot, currentChunk)) {
++                // 只在尚未提交本实体前回退，不能重放前面实体的事件或发包。
++                this.moonrise$tick(currentChunk);
++                return;
++            }
+             if (snapshot.playerCount == 0) {
+                 this.moonrise$clearPlayers();
+                 return;
+@@ -1669,6 +1725,51 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             }
+         }
+ 
++        private int leavesX$nearbyPlayerCount() {
++            final ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity chunkEntity =
++                (ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)this.entity;
++            final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.TrackedChunk chunk =
++                chunkEntity.moonrise$getChunkData().nearbyPlayers;
++            if (chunk == null) return 0;
++            final ca.spottedleaf.moonrise.common.list.ReferenceList<ServerPlayer> players =
++                chunk.getPlayers(ca.spottedleaf.moonrise.common.misc.NearbyPlayers.NearbyMapType.VIEW_DISTANCE);
++            return players == null ? 0 : players.size();
++        }
++
++        /** 在原线程核验前面实体的提交是否改变本行输入；工作线程从不访问这些引用。 */
++        private boolean leavesX$matchesSnapshot(
++            final LeavesXTrackerSnapshot snapshot,
++            final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.@Nullable TrackedChunk currentChunk
++        ) {
++            if (currentChunk != snapshot.chunk || this.entity.getX() != snapshot.entityX
++                || this.entity.getY() != snapshot.entityY || this.entity.getZ() != snapshot.entityZ) {
++                return false;
++            }
++            if (currentChunk == null) return snapshot.playerCount == 0;
++            final var players = currentChunk.getPlayers(ca.spottedleaf.moonrise.common.misc.NearbyPlayers.NearbyMapType.VIEW_DISTANCE);
++            if (currentChunk.getUpdateCount() != snapshot.chunkUpdate) return false;
++            if (players == null) return snapshot.playerCount == 0;
++            if (players.size() != snapshot.playerCount) return false;
++            if (snapshot.playerCount == 0) return true;
++            if (this.getEffectiveRange() != snapshot.effectiveRange) return false;
++            final double rangeY = ChunkMap.this.level.paperConfig().entities.trackingRangeY.enabled
++                ? ChunkMap.this.level.paperConfig().entities.trackingRangeY.get(this.entity, -1) : -1.0;
++            if (rangeY != snapshot.rangeY) return false;
++            final ServerPlayer[] raw = players.getRawDataUnchecked();
++            for (int index = 0; index < snapshot.playerCount; index++) {
++                final int playerIndex = snapshot.playerIndices[index];
++                final ServerPlayer player = snapshot.playerFrame.players[playerIndex];
++                final int offset = playerIndex * LeavesXTrackerPlayerFrame.COMPONENTS;
++                if (raw[index] != player || player.getX() != snapshot.playerFrame.positionData[offset]
++                    || player.getY() != snapshot.playerFrame.positionData[offset + 1]
++                    || player.getZ() != snapshot.playerFrame.positionData[offset + 2]
++                    || ChunkMap.this.getPlayerViewDistance(player) * 16.0D != snapshot.playerFrame.viewDistanceBlocks[playerIndex]) {
++                    return false;
++                }
++            }
++            return true;
++        }
++
+         private int scaledRange(final int range) {
+             return ChunkMap.this.level.getServer().getScaledTrackingDistance(range);
+         }
+@@ -1800,6 +1901,23 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             return false;
+         }
+ 
++        private void leavesX$prepareRangeBatch(
++            final org.leavesx.leavesx.performance.EntityTrackingRangeBatch batch,
++            final int row
++        ) {
++            batch.setRow(
++                row,
++                this.entityX,
++                this.entityY,
++                this.entityZ,
++                this.effectiveRange,
++                this.rangeY,
++                this.playerIndices,
++                this.playerCount,
++                this.inRange
++            );
++        }
++
+         private ServerPlayer player(final int index) {
+             return this.playerFrame.players[this.playerIndices[index]];
+         }
+diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
+index 11a4f6a0..b21d899f 100644
+--- a/net/minecraft/server/level/ServerChunkCache.java
++++ b/net/minecraft/server/level/ServerChunkCache.java
+@@ -689,7 +689,8 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+     ) {
+         final int entityCount = this.level.getEntityCount();
+         if (!org.leavesx.leavesx.config.LeavesXRuntime.naturalSpawnStateOptimization()
+-            || entityCount < MINIMUM_BATCHED_MOB_SPAWN_ENTITIES) {
++            || (entityCount < MINIMUM_BATCHED_MOB_SPAWN_ENTITIES
++                && !org.leavesx.leavesx.runtime.LeavesXComputeExecutor.lowLoadWorkersEnabled())) {
+             return NaturalSpawner.createState(
+                 chunkCount,
+                 this.level.getAllEntities(),
+diff --git a/net/minecraft/server/level/ServerEntityGetter.java b/net/minecraft/server/level/ServerEntityGetter.java
+index 3a742c3a..72754d2a 100644
+--- a/net/minecraft/server/level/ServerEntityGetter.java
++++ b/net/minecraft/server/level/ServerEntityGetter.java
+@@ -73,6 +73,14 @@ public interface ServerEntityGetter extends EntityGetter {
+         final double y,
+         final double z
+     ) {
++        // 村民与自定义距离实现保留原路径；资格判断仍在原线程逐个执行。
++        if (source != null && !(source instanceof net.minecraft.world.entity.npc.villager.Villager)
++            && org.leavesx.leavesx.config.LeavesXRuntime.nearestQueryDistanceSnapshot()
++            && (org.leavesx.leavesx.runtime.LeavesXComputeExecutor.lowLoadWorkersEnabled()
++                || entities.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT)) {
++            return org.leavesx.leavesx.performance.TargetDistanceSnapshot.findNearest(
++                entities, this.getLevel(), targetConditions, source, x, y, z);
++        }
+         double best = -1.0;
+         T result = null;
+ 
+diff --git a/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java b/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
+index 1666ddd2..be0f6098 100644
+--- a/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
++++ b/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
+@@ -137,11 +137,12 @@ public class LongJumpToRandomPos<E extends Mob> extends Behavior<E> {
+             // immediately from start(), so they retain the synchronous contract.
+             if ((this.getClass() == LongJumpToRandomPos.class || this.getClass() == LongJumpToPreferredBlock.class)
+                 && org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().asyncAiCandidates()
+-                && (2L * this.maxLongJumpHeight + 1) * (2L * this.maxLongJumpWidth + 1) * (2L * this.maxLongJumpWidth + 1) >= MIN_ASYNC_JUMP_CANDIDATES) {
++                && (org.leavesx.leavesx.runtime.LeavesXComputeExecutor.lowLoadWorkersEnabled()
++                    || (2L * this.maxLongJumpHeight + 1) * (2L * this.maxLongJumpWidth + 1) * (2L * this.maxLongJumpWidth + 1) >= MIN_ASYNC_JUMP_CANDIDATES)) {
+                 final BlockPos origin = mobPos.immutable();
+                 final int height = this.maxLongJumpHeight;
+                 final int width = this.maxLongJumpWidth;
+-                this.leavesX$pendingCandidates = org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.trySubmitValue(
++                this.leavesX$pendingCandidates = org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.trySubmitPureValue(
+                     org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.AI_CANDIDATES,
+                     () -> buildJumpCandidatesDirect(origin, height, width));
+                 if (this.leavesX$pendingCandidates != null) {
+@@ -197,8 +198,9 @@ public class LongJumpToRandomPos<E extends Mob> extends Behavior<E> {
+         if (pending == null) return;
+         try {
+             // Resolve at the original first-use boundary: no skipped AI ticks and no delayed RNG calls.
+-            this.jumpCandidates = pending.join();
+-        } catch (final java.util.concurrent.CompletionException failure) {
++            this.jumpCandidates = org.leavesx.leavesx.diagnostics.OwnerThreadWaits.join(
++                org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.AI_CANDIDATES, pending);
++        } catch (final java.util.concurrent.CompletionException | java.util.concurrent.CancellationException failure) {
+             com.mojang.logging.LogUtils.getLogger().warn("Failed to prepare long-jump candidates; rebuilding on the server thread", failure);
+             this.jumpCandidates = buildJumpCandidatesDirect(this.leavesX$candidateOrigin, this.maxLongJumpHeight, this.maxLongJumpWidth);
+         } finally {
+diff --git a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
+index c6d6f1f2..b6b56acf 100644
+--- a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
+@@ -65,7 +65,8 @@ public class NearestItemSensor extends Sensor<Mob> {
+         }
+         // LeavesX start - use the same stable, allocation-reusing distance order as living-entity sensors
+         if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortPureComputation()
+-            && items.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
++            && (org.leavesx.leavesx.runtime.LeavesXComputeExecutor.lowLoadWorkersEnabled()
++                || items.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT)) {
+             org.leavesx.leavesx.performance.StableDistanceSorter.sortEntitiesByDistance(
+                 items,
+                 body,
+diff --git a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
+index 0eff648f..729b7f0e 100644
+--- a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
++++ b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
+@@ -40,7 +40,8 @@ public class NearestLivingEntitySensor<T extends LivingEntity> extends Sensor<T>
+         }
+         // LeavesX start - snapshot distance keys on the tick thread, then stably reorder without per-sensor arrays
+         if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortPureComputation()
+-            && livingEntities.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
++            && (org.leavesx.leavesx.runtime.LeavesXComputeExecutor.lowLoadWorkersEnabled()
++                || livingEntities.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT)) {
+             org.leavesx.leavesx.performance.StableDistanceSorter.sortEntitiesByDistance(
+                 livingEntities,
+                 body,
+diff --git a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
+index d1d42cde..e463de64 100644
+--- a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
+@@ -94,7 +94,8 @@ public class PlayerSensor extends Sensor<LivingEntity> {
+      */
+     private static void sortNearbyPlayers(final List<Player> players, final LivingEntity body) {
+         if (org.leavesx.leavesx.config.LeavesXRuntime.nearestEntityDistanceSortPureComputation()
+-            && players.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT) {
++            && (org.leavesx.leavesx.runtime.LeavesXComputeExecutor.lowLoadWorkersEnabled()
++                || players.size() >= org.leavesx.leavesx.performance.StableDistanceSorter.MINIMUM_OPTIMIZED_ENTITY_COUNT)) {
+             org.leavesx.leavesx.performance.StableDistanceSorter.sortEntitiesByDistance(
+                 players,
+                 body,
+diff --git a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
+index 7a1ec3c1..f37c3994 100644
+--- a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
++++ b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
+@@ -79,7 +79,8 @@ public class TemptingSensor extends Sensor<PathfinderMob> {
+         final List<? extends Player> players
+     ) {
+         if (org.leavesx.leavesx.config.LeavesXRuntime.parallelAiPureComputation()
+-            && players.size() >= org.leavesx.leavesx.config.LeavesXRuntime.aiTargetSearchMinimumCandidates()) {
++            && (org.leavesx.leavesx.runtime.LeavesXComputeExecutor.lowLoadWorkersEnabled()
++                || players.size() >= org.leavesx.leavesx.config.LeavesXRuntime.aiTargetSearchMinimumCandidates())) {
+             // All predicates remain on the tick thread. Only the final coordinate-distance reduction is delegated,
+             // and the returned index keeps the original player order for equal distances.
+             final List<Player> eligiblePlayers = new ArrayList<>(players.size());
+diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+index 1b2c71b7..70cdfd8d 100644
+--- a/net/minecraft/world/level/MobSpawnCountAccumulator.java
++++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+@@ -29,9 +29,10 @@ final class MobSpawnCountAccumulator {
+         if (inputs.size() == 0) {
+             return new Long2ObjectOpenHashMap<>(0);
+         }
+-        // Direct callers may request parallel counting below the profitable threshold. Keep that case on the
+-        // allocation-free synchronous path instead of entering the shared executor only to fall back immediately.
+-        if (!parallel || inputs.size() < minimumParallelSize) {
++        // 低负载派发打开时，即使只有一个候选也沿用同一份不可变快照计算；线程池繁忙时由执行器完整回退。
++        // 关闭低负载派发后保留原来的阈值，避免旧配置意外增加调度开销。
++        if (!parallel || (inputs.size() < minimumParallelSize
++            && !org.leavesx.leavesx.runtime.LeavesXComputeExecutor.lowLoadWorkersEnabled())) {
+             return countRange(inputs, 0, inputs.size());
+         }
+ 

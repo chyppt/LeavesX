@@ -51,7 +51,7 @@ public final class WaterPathfinding {
             if (snapshot == null) { UNAVAILABLE.increment(); SNAPSHOTS.release(); return null; }
             final List<BlockPos> orderedTargets = targets.stream().map(BlockPos::immutable).toList();
             // 供应器只捕获快照和不可变标量输入；不同生物可以并发运行。
-            calculation = LeavesXAsyncRuntime.trySubmitValue(LeavesXAsyncRuntime.Workload.PATHFINDING,
+            calculation = LeavesXAsyncRuntime.trySubmitPureValue(LeavesXAsyncRuntime.Workload.PATHFINDING,
                 () -> {
                     // 跳过过期的排队搜索，但让已准入任务正常完成：完成回调必须恰好释放一次快照许可。
                     if (cancelled.getAsBoolean()) { CANCELLED.increment(); return null; }

@@ -1,0 +1,414 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Tue, 13 Oct 2026 16:30:00 +0800
+Subject: [PATCH] Stabilize world event lifecycle and configure bounded virtual downloads
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 667a6deb8f..88f9f1c91c 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -90,7 +90,7 @@ public record LeavesXConfig(
+     RegionTickingSettings regionTickingSettings
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 86;
++    public static final int CURRENT_CONFIG_VERSION = 87;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -297,11 +297,13 @@ public record LeavesXConfig(
+         boolean poiAsyncSerialization, boolean poiCompetitorScanNoLoad,
+         boolean sensorListReuse, boolean recipeIndex,
+         boolean jeiRecipeSync, boolean jeiRecipeTransfer, boolean networkBufferOptimizations, boolean tpsBar,
+-        boolean updateCheck, boolean updateDownload
++        boolean updateCheck, boolean updateDownload,
++        boolean reuseBlockDestructionPackets, boolean virtualDownloadPool
+     ) {
+         public static ExtensionSettings defaults() {
+             return new ExtensionSettings(false, true, true, false, false, true, false, true, true, true, true, false, true, false,
+-                true, true, false, false, false, false, true, true, false, false, true, true, true, false);
++                true, true, false, false, false, false, true, true, false, false, true, true, true, false,
++                true, false);
+         }
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 301a512d30..43b4504877 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -39,6 +39,7 @@ public final class LeavesXConfigBootstrap {
+         final LeavesXConfig config = LeavesXConfigLoader.load(path);
+         org.leavesx.leavesx.worldgen.SecureFeatureSeed.configureNewWorlds(config.extensions().secureSeed());
+         org.leavesx.leavesx.random.LeavesXRandomSources.configure(config.extensions().fasterRandom());
++        org.leavesx.leavesx.runtime.LeavesXDownloadExecutor.configure(config.extensions().virtualDownloadPool());
+         org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(
+             config.computeWorkers(),
+             config.minimumItemsPerWorker(),
+@@ -146,6 +147,9 @@ public final class LeavesXConfigBootstrap {
+         if (previous.extensions().virtualBukkitScheduler() != next.extensions().virtualBukkitScheduler()) {
+             changed.add("performance.use-virtual-thread.bukkit-async-scheduler");
+         }
++        if (previous.extensions().virtualDownloadPool() != next.extensions().virtualDownloadPool()) {
++            changed.add("performance.use-virtual-thread.download-pool");
++        }
+         if (previous.extensions().fasterRandom() != next.extensions().fasterRandom()) {
+             changed.add("performance.faster-random-generator.enabled");
+         }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index a55205d708..663c9f35d6 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -538,7 +538,9 @@ public final class LeavesXConfigLoader {
+                     readBoolean(node.node("performance", "network", "buffer-optimizations"), "performance.network.buffer-optimizations", true),
+                     readBoolean(node.node("features", "tpsbar", "enabled"), "features.tpsbar.enabled", true),
+                     readBoolean(node.node("updates", "check"), "updates.check", true),
+-                    readBoolean(node.node("updates", "auto-download"), "updates.auto-download", false)
++                    readBoolean(node.node("updates", "auto-download"), "updates.auto-download", false),
++                    readBoolean(node.node("performance", "reduce-packets", "reuse-block-destruction"), "performance.reduce-packets.reuse-block-destruction", true),
++                    readBoolean(node.node("performance", "use-virtual-thread", "download-pool"), "performance.use-virtual-thread.download-pool", false)
+                 ),
+                 new LeavesXConfig.RegionTickingSettings(
+                     readMode(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index c8d65da789..24c3ac1962 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -114,6 +114,8 @@ public final class LeavesXConfigWriter {
+         changed |= writeValue(node.node("features", "tripwire-hook-duplication"), "features.tripwire-hook-duplication", config.extensions().tripwireHookDuplication(), missingOnly);
+         changed |= writeValue(node.node("features", "just-enough-items", "recipe-transfer"), "features.just-enough-items.recipe-transfer", config.extensions().jeiRecipeTransfer(), missingOnly);
+         changed |= writeValue(node.node("performance", "faster-random-generator", "enabled"), "performance.faster-random-generator.enabled", config.extensions().fasterRandom(), missingOnly);
++        changed |= writeValue(node.node("performance", "reduce-packets", "reuse-block-destruction"), "performance.reduce-packets.reuse-block-destruction", config.extensions().reuseBlockDestructionPackets(), missingOnly);
++        changed |= writeValue(node.node("performance", "use-virtual-thread", "download-pool"), "performance.use-virtual-thread.download-pool", config.extensions().virtualDownloadPool(), missingOnly);
+         changed |= writeValue(node.node("async", "ai-candidates"), "async.ai-candidates", config.extensions().asyncAiCandidates(), missingOnly);
+         changed |= writeValue(node.node("async", "playerdata-save", "compression"), "async.playerdata-save.compression", config.extensions().asyncPlayerCompression(), missingOnly);
+         changed |= writeValue(node.node("parallelism", "mob-collision-math"), "parallelism.mob-collision-math", config.extensions().parallelMobCollisions(), missingOnly);
+@@ -553,6 +555,8 @@ public final class LeavesXConfigWriter {
+         comments.put("async.animals.follow-parent", "并行计算鸡牛羊猪幼体跟随距离；跟随条件、更新频率和寻路不变。默认：true。");
+         comments.put("parallelism", "计算线程：控制线程数量和任务达到多大规模时并行。");
+         comments.put("performance.faster-random-generator.enabled", "更换运行时随机算法，天气、作物等随机结果会改变，依赖 RNG 序列的装置可能受影响；不改地形和史莱姆区块，需重启。默认：false。");
++        comments.put("performance.reduce-packets.reuse-block-destruction", "复用同一次方块破坏动画的数据包，减少对象分配；不减少发送次数，不跳过插件事件。默认：true。");
++        comments.put("performance.use-virtual-thread.download-pool", "下载和档案查询使用虚拟线程，最多同时执行四个任务；不改变世界和插件同步线程，需重启。默认：false。");
+         comments.put("async.ai-candidates", "后台准备山羊和青蛙的长跳候选位置；保持候选顺序、随机抽取及跳跃时机，共用计算池。默认：true。");
+         comments.put("async.playerdata-save.compression", "后台压缩玩家存档，减少自动保存卡顿；需要启用异步玩家保存，同一玩家仍按顺序保存。默认：true。");
+         comments.put("parallelism.mob-collision-math", "实验性：并行普通生物的简单碰撞盒计算，小任务受 async.low-load-workers 控制；不处理村民、TNT和复杂形状。默认：false。");
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXEventGate.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXEventGate.java
+index 2e36a765ce..7618254a49 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXEventGate.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXEventGate.java
+@@ -10,25 +10,18 @@ import java.util.concurrent.locks.ReentrantLock;
+ import org.bukkit.event.Event;
+ 
+ /**
+- * Hands synchronous Bukkit events fired from LeavesX world worker threads over to the server
+- * thread, preserving invariant A: plugin code runs only on the server thread.
++ * 将世界工作线程发起的同步 Bukkit 事件交回服务端线程，并等待回调结束。
++ * 同一工作线程的事件顺序不变；关闭或中断只取消尚未派发的事件。
+  *
+- * <p>A world worker thread that fires a synchronous event enqueues it and blocks until the server
+- * thread pumps the queue during its barrier wait; the worker then continues with the event result.
+- * The server thread pumps whenever it waits for world ticks, so gated events are dispatched inside
+- * the same tick. When regionized ticking is off (or the calling thread is the server thread) the
+- * gate is transparent: {@link #deferFromWorldThread(Event)} returns {@code false} and the caller
+- * proceeds with the vanilla dispatch path.</p>
+- *
+- * <p>Nothing in this class references Folia API. Events keep their original ordering per world
+- * worker; cross-worker interleaving follows arrival order, which matches the parallel simulation
+- * semantics documented in the LeavesX regionized-ticking design.</p>
++ * <p>服务端线程在世界 Tick 屏障中派发事件。此闸门只保证回调线程正确，
++ * 不提供世界隔离，也不能让插件跨世界访问自动变得安全。</p>
+  */
+ public final class LeavesXEventGate {
+ 
+     private static final class Pending {
+         final Event event;
+         boolean done;
++        boolean dispatching;
+         Throwable failure;
+ 
+         Pending(final Event event) {
+@@ -37,9 +30,9 @@ public final class LeavesXEventGate {
+     }
+ 
+     private static final Lock LOCK = new ReentrantLock();
+-    private static final Condition ENQUEUED = LOCK.newCondition();
+     private static final Condition PUMPED = LOCK.newCondition();
+     private static final ArrayDeque<Pending> QUEUE = new ArrayDeque<>();
++    private static Pending[] activeBatch;
+     private static final AtomicLong DEFERRED = new AtomicLong();
+     private static final AtomicLong PUMPED_COUNT = new AtomicLong();
+     private static final AtomicLong TIMEOUTS = new AtomicLong();
+@@ -71,7 +64,7 @@ public final class LeavesXEventGate {
+ 
+     /** Clears the world worker marker before the thread picks up non-world work. */
+     public static void exitWorldThread() {
+-        WORLD_WORKER.set(Boolean.FALSE);
++        WORLD_WORKER.remove();
+     }
+ 
+     /** Returns whether the current thread is a LeavesX world worker thread. */
+@@ -80,42 +73,40 @@ public final class LeavesXEventGate {
+     }
+ 
+     /**
+-     * Returns {@code true} when the caller must consider the event handled: the current thread is
+-     * a world worker thread, the gate is enabled, the event is synchronous, and it has been
+-     * enqueued for the server thread. Returns {@code false} when the caller must continue with the
+-     * vanilla synchronous dispatch (server thread, gate disabled, or asynchronous event).
++     * 同步事件经服务端线程处理后返回 true；非世界工作线程或异步事件走原派发路径。
++     * 世界工作线程遇到关闭的闸门必须失败，不能直接运行同步插件回调。
+      */
+     public static boolean deferFromWorldThread(final Event event) {
+-        if (!enabled || event == null || event.isAsynchronous() || !WORLD_WORKER.get()) {
++        if (event == null || event.isAsynchronous() || !WORLD_WORKER.get()) {
+             return false;
+         }
+         final Pending pending = new Pending(event);
+         LOCK.lock();
+         try {
+-            if (closed) {
++            if (!enabled || closed) {
+                 // Server is shutting down; behave like the vanilla contract and fail loudly.
+                 throw new IllegalStateException(event.getEventName() + " may only be triggered synchronously.");
+             }
+             QUEUE.addLast(pending);
+             DEFERRED.incrementAndGet();
+-            ENQUEUED.signalAll();
+         } finally {
+             LOCK.unlock();
+         }
+         LOCK.lock();
++        InterruptedException interruption = null;
+         try {
+-            long waitNanos = 0L;
+             while (!pending.done) {
+                 try {
+-                    PUMPED.awaitNanos(50_000_000L); // 50 ms heartbeat keeps deadlocks recoverable
++                    PUMPED.await();
+                 } catch (final InterruptedException interrupted) {
+-                    Thread.currentThread().interrupt();
+-                    throw new IllegalStateException("Interrupted while waiting for event dispatch", interrupted);
+-                }
+-                waitNanos += 50_000_000L;
+-                if (!pending.done && waitNanos >= 10_000_000_000L && closed) {
+-                    TIMEOUTS.incrementAndGet();
+-                    throw new IllegalStateException(event.getEventName() + " was not dispatched before shutdown");
++                    interruption = interrupted;
++                    // 尚未执行的事件可以取消；已经进入插件回调的事件必须等它结束，
++                    // 否则世界会先离开 Tick，插件随后仍在修改该世界。
++                    if (!pending.dispatching && !pending.done) {
++                        QUEUE.remove(pending);
++                        pending.failure = new IllegalStateException("Interrupted while waiting for event dispatch", interrupted);
++                        pending.done = true;
++                    }
+                 }
+             }
+             if (pending.failure != null) {
+@@ -124,8 +115,14 @@ public final class LeavesXEventGate {
+                 }
+                 throw new IllegalStateException("Event dispatch failed", pending.failure);
+             }
++            if (interruption != null) {
++                throw new IllegalStateException("Interrupted while waiting for event dispatch", interruption);
++            }
+         } finally {
+             LOCK.unlock();
++            if (interruption != null) {
++                Thread.currentThread().interrupt();
++            }
+         }
+         return true;
+     }
+@@ -149,10 +146,21 @@ public final class LeavesXEventGate {
+                 }
+                 batch = QUEUE.toArray(new Pending[0]);
+                 QUEUE.clear();
++                activeBatch = batch;
+             } finally {
+                 LOCK.unlock();
+             }
+             for (final Pending pending : batch) {
++                LOCK.lock();
++                try {
++                    // close() 或等待线程中断可取消已移出队列但尚未派发的事件。
++                    if (pending.done) {
++                        continue;
++                    }
++                    pending.dispatching = true;
++                } finally {
++                    LOCK.unlock();
++                }
+                 try {
+                     dispatchOnServerThread(pending.event);
+                 } catch (final Throwable failure) {
+@@ -167,6 +175,7 @@ public final class LeavesXEventGate {
+                                 waiting.done = true;
+                             }
+                         }
++                        activeBatch = null;
+                         PUMPED.signalAll();
+                     } finally {
+                         LOCK.unlock();
+@@ -176,6 +185,7 @@ public final class LeavesXEventGate {
+                 LOCK.lock();
+                 try {
+                     pending.done = true;
++                    PUMPED.signalAll();
+                 } finally {
+                     LOCK.unlock();
+                 }
+@@ -184,7 +194,7 @@ public final class LeavesXEventGate {
+             }
+             LOCK.lock();
+             try {
+-                PUMPED.signalAll();
++                activeBatch = null;
+             } finally {
+                 LOCK.unlock();
+             }
+@@ -214,7 +224,16 @@ public final class LeavesXEventGate {
+                 pending.done = true;
+             }
+             QUEUE.clear();
+-            ENQUEUED.signalAll();
++            // 正在执行的插件回调不可提前宣布完成；其余批次成员立即失败并唤醒。
++            if (activeBatch != null) {
++                for (final Pending pending : activeBatch) {
++                    if (!pending.done && !pending.dispatching) {
++                        pending.failure = new IllegalStateException(
++                            pending.event.getEventName() + " was not dispatched before shutdown");
++                        pending.done = true;
++                    }
++                }
++            }
+             PUMPED.signalAll();
+         } finally {
+             LOCK.unlock();
+@@ -260,4 +279,4 @@ public final class LeavesXEventGate {
+             LOCK.unlock();
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index d46bd646cb..c1aa9cc77a 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -86,7 +86,9 @@ class LeavesXConfigLoaderTest {
+         assertTrue(generated.contains("mob-collision-math: false"));
+         assertFalse(generated.contains("threading:"));
+         assertFalse(generated.contains("folia"));
+-        assertTrue(generated.lines().count() < 300L, "Default configuration should stay operator-sized");
++        // 两个新增开关及其分组使默认布局从 298 行增至 304 行，仍限制无关配置膨胀。
++        assertTrue(generated.lines().count() <= 304L,
++            "默认配置应保持简洁；实际行数：" + generated.lines().count());
+     }
+ 
+     @Test
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXWorldTicker.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXWorldTicker.java
+index 35a57d4a7e..f16818dad5 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXWorldTicker.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXWorldTicker.java
+@@ -92,6 +92,7 @@ public final class LeavesXWorldTicker {
+         if (terminationFailed) {
+             throw new IllegalStateException("Previous LeavesX world tick executor is still running; refusing to start another");
+         }
++        final boolean previouslyDegraded = degradedToSerial;
+         shutdownExecutors();
+         // A plugin can transfer to an otherwise independent custom world. Pinning only the
+         // vanilla trio would still race that destination, so preserve the whole list's order.
+@@ -111,16 +112,17 @@ public final class LeavesXWorldTicker {
+             : Math.max(1, Math.min(next.size(), Runtime.getRuntime().availableProcessors() - 1));
+         concurrentWorlds = Math.max(1, permitsCount);
+         initialized = !next.isEmpty();
+-        degradedToSerial = false;
++        // 插件加载/卸载世界不能悄悄恢复发生过异常的并行 Tick；保留降级状态。
++        degradedToSerial = previouslyDegraded;
+         // shutdownExecutors closes the gate. Reopen only after its replacement state exists.
+-        if (initialized && !serialCompatibility) {
++        if (initialized && !serialCompatibility && !degradedToSerial) {
+             LeavesXEventGate.reopen();
+             LeavesXEventGate.setEnabled(true);
+             LOGGER.info("LeavesX experimental parallel worlds: {} world(s), {} concurrent tick(s)",
+                 next.size(), concurrentWorlds);
+         } else {
+             LeavesXEventGate.setEnabled(false);
+-            if (initialized) {
++            if (initialized && !degradedToSerial) {
+                 LOGGER.info("LeavesX worlds: serial compatibility enabled for all {} worlds; preserving portal and cross-dimension tick order. Independent async computations remain available.", next.size());
+             }
+         }
+@@ -153,6 +155,7 @@ public final class LeavesXWorldTicker {
+         }
+         worlds = List.of();
+         serialCompatibility = false;
++        degradedToSerial = false;
+         if (interrupted) {
+             Thread.currentThread().interrupt();
+         }
+@@ -235,8 +238,6 @@ public final class LeavesXWorldTicker {
+             LOGGER.error("LeavesX parallel world tick failed; degrading this ticker to serial until restart", failure.getCause());
+             degradedToSerial = true;
+             throw failure;
+-        } finally {
+-            LeavesXEventGate.exitWorldThread();
+         }
+     }
+ 
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXEventGateTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXEventGateTest.java
+index 6ea4042d80..ede4c5aceb 100644
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXEventGateTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXEventGateTest.java
+@@ -10,6 +10,7 @@ import java.util.concurrent.CountDownLatch;
+ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.atomic.AtomicBoolean;
+ import java.util.concurrent.atomic.AtomicInteger;
++import java.util.concurrent.atomic.AtomicReference;
+ import java.util.function.BooleanSupplier;
+ import org.bukkit.event.Event;
+ import org.bukkit.event.HandlerList;
+@@ -161,6 +162,37 @@ public class LeavesXEventGateTest {
+         LeavesXEventGate.reopen();
+     }
+ 
++    @Test
++    void interruptingQueuedEventCancelsItBeforeDispatch() throws Exception {
++        LeavesXEventGate.setEnabled(true);
++        final AtomicReference<Throwable> failure = new AtomicReference<>();
++        final Thread worker = new Thread(() -> {
++            LeavesXEventGate.enterWorldThread();
++            try {
++                LeavesXEventGate.deferFromWorldThread(new MarkerEvent());
++            } catch (final Throwable thrown) {
++                failure.set(thrown);
++            } finally {
++                LeavesXEventGate.exitWorldThread();
++            }
++        }, "gate-worker-interrupt");
++        worker.start();
++
++        final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
++        while (LeavesXEventGate.pendingCount() == 0 && System.nanoTime() < deadline) {
++            Thread.yield();
++        }
++        assertEquals(1, LeavesXEventGate.pendingCount(), "worker must enqueue before interruption");
++
++        worker.interrupt();
++        worker.join(5_000L);
++
++        assertFalse(worker.isAlive(), "interrupted worker must not remain blocked");
++        assertTrue(failure.get() instanceof IllegalStateException, "interruption must fail the synchronous event call");
++        assertEquals(0, LeavesXEventGate.pendingCount(), "abandoned event must be removed from the queue");
++        assertEquals(0, LeavesXEventGate.pump(), "cancelled event must never be dispatched later");
++    }
++
+     @Test
+     void asynchronousEventsAreNeverDeferred() {
+         LeavesXEventGate.setEnabled(true);
+@@ -195,4 +227,4 @@ public class LeavesXEventGateTest {
+         assertEquals(deferredBefore + 1, LeavesXEventGate.counters().deferred());
+         assertEquals(pumpedBefore + 1, LeavesXEventGate.counters().pumped());
+     }
+-}
+\ No newline at end of file
++}

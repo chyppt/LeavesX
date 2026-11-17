@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Tue, 13 Oct 2026 16:30:00 +0800
+Subject: [PATCH] Reuse immutable break progress packets and bound virtual downloads
+
+Block destruction packet reuse follows Gale/SportPaper via Leaf.
+Original authors: Martijn Muijsers <martijnmuijsers@live.nl>, VytskaLT <VytskaLT@protonmail.com>.
+License: GPL-3.0-only (https://www.gnu.org/licenses/gpl-3.0.html)
+References: https://github.com/Winds-Studio/Leaf, https://github.com/Electroid/SportPaper
+LeavesX preserves the plugin event before recipient selection, snapshots mutable positions,
+and keeps Paper's four concurrent downloads with explicit shutdown.
+
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index 6e52b835..d5568864 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -1791,6 +1791,9 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+                 .callEvent();
+         }
+         // Paper end - Add BlockBreakProgressUpdateEvent
++        // LeavesX：事件仍照常执行，只为真正收到动画的玩家延迟创建并复用包。
++        final boolean reuseDestructionPacket = org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().reuseBlockDestructionPackets();
++        ClientboundBlockDestructionPacket destructionPacket = null;
+         for (ServerPlayer player : this.server.getPlayerList().getPlayers()) {
+             if (player.level() == this && player.getId() != id) {
+                 double xd = blockPos.getX() - player.getX();
+@@ -1802,7 +1805,15 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+                         continue;
+                     }
+                     // CraftBukkit end
+-                    player.connection.send(new ClientboundBlockDestructionPacket(id, blockPos, progress));
++                    if (reuseDestructionPacket) {
++                        if (destructionPacket == null) {
++                            // 隔离调用方可能复用的可变坐标，异步编码不会看到后续坐标变化。
++                            destructionPacket = new ClientboundBlockDestructionPacket(id, blockPos.immutable(), progress);
++                        }
++                        player.connection.send(destructionPacket);
++                    } else {
++                        player.connection.send(new ClientboundBlockDestructionPacket(id, blockPos, progress));
++                    }
+                 }
+             }
+         }
+diff --git a/net/minecraft/util/Util.java b/net/minecraft/util/Util.java
+index c87ea3d2..11f63b74 100644
+--- a/net/minecraft/util/Util.java
++++ b/net/minecraft/util/Util.java
+@@ -115,6 +115,7 @@ public class Util {
+         }
+     }));
+     // Paper end - Limit download pool size
++    private static volatile @Nullable TracingExecutor virtualDownloadPool;
+     private static final DateTimeFormatter FILENAME_DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH.mm.ss", Locale.ROOT);
+     public static final int LINEAR_LOOKUP_THRESHOLD = 8;
+     private static final Set<String> ALLOWED_UNTRUSTED_LINK_PROTOCOLS = Set.of("http", "https");
+@@ -248,12 +249,29 @@ public class Util {
+     }
+ 
+     public static TracingExecutor nonCriticalIoPool() {
++        // LeavesX：配置在启动时固定，下载池延迟创建，仍保留四任务的并发上限。
++        if (org.leavesx.leavesx.runtime.LeavesXDownloadExecutor.isEnabled()) {
++            return virtualDownloadPool();
++        }
+         return DOWNLOAD_POOL;
+     }
+ 
++    private static synchronized TracingExecutor virtualDownloadPool() {
++        if (virtualDownloadPool == null) {
++            virtualDownloadPool = new TracingExecutor(
++                org.leavesx.leavesx.runtime.LeavesXDownloadExecutor.createVirtualPool());
++        }
++        return virtualDownloadPool;
++    }
++
+     public static void shutdownExecutors() {
+         BACKGROUND_EXECUTOR.shutdownAndAwait(3L, TimeUnit.SECONDS);
+         IO_POOL.shutdownAndAwait(3L, TimeUnit.SECONDS);
++        // 只关闭实际使用过的虚拟下载池，停服时不触发延迟初始化。
++        final TracingExecutor downloads = virtualDownloadPool;
++        if (downloads != null) {
++            downloads.shutdownAndAwait(3L, TimeUnit.SECONDS);
++        }
+     }
+ 
+     private static TracingExecutor makeIoExecutor(final String prefix, final boolean daemon) {

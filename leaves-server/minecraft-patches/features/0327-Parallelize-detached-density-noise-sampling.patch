@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Fri, 16 Oct 2026 12:00:00 +0800
+Subject: [PATCH] Parallelize detached density noise sampling
+
+diff --git a/net/minecraft/world/level/levelgen/DensityFunctions.java b/net/minecraft/world/level/levelgen/DensityFunctions.java
+--- a/net/minecraft/world/level/levelgen/DensityFunctions.java
++++ b/net/minecraft/world/level/levelgen/DensityFunctions.java
+@@ -909,6 +909,8 @@
+ 
+         @Override
+         public void fillArray(final double[] output, final DensityFunction.ContextProvider contextProvider) {
++            if (org.leavesx.leavesx.worldgen.ParallelNoiseSampler.tryFill(output, contextProvider,
++                this.noise, this.xzScale, this.yScale, null, null, null)) return;
+             contextProvider.fillAllDirectly(output, this);
+         }
+ 
+@@ -1124,6 +1126,8 @@
+ 
+         @Override
+         public void fillArray(final double[] output, final DensityFunction.ContextProvider contextProvider) {
++            if (org.leavesx.leavesx.worldgen.ParallelNoiseSampler.tryFill(output, contextProvider,
++                this.noise, this.xzScale, this.yScale, this.shiftX, this.shiftY, this.shiftZ)) return;
+             contextProvider.fillAllDirectly(output, this);
+         }
+ 

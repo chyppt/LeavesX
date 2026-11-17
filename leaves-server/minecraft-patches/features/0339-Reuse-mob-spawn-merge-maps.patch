@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sun, 16 Nov 2026 05:40:00 +0800
+Subject: [PATCH] Reuse mob spawn merge maps and iterators
+
+diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+--- a/net/minecraft/world/level/MobSpawnCountAccumulator.java
++++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+@@ -85,13 +85,14 @@ final class MobSpawnCountAccumulator {
+             return new Counts(countRange(local, 0, local.size()), countRange(players, 0, players.size()));
+         }
+ 
+-        @SuppressWarnings("unchecked") final Long2ObjectOpenHashMap<int[]>[] localParts = new Long2ObjectOpenHashMap[completed];
+-        @SuppressWarnings("unchecked") final Long2ObjectOpenHashMap<int[]>[] playerParts = new Long2ObjectOpenHashMap[completed];
+-        for (int partition = 0; partition < completed; partition++) {
+-            localParts[partition] = partials[partition].local();
+-            playerParts[partition] = partials[partition].players();
++        final Long2ObjectOpenHashMap<int[]> localCounts = partials[0].local();
++        final Long2ObjectOpenHashMap<int[]> playerCounts = partials[0].players();
++        for (int partition = 1; partition < completed; partition++) {
++            // 两套计数各自保留原分片顺序，不再为拆开结果创建中转数组。
++            mergeInto(localCounts, partials[partition].local());
++            mergeInto(playerCounts, partials[partition].players());
+         }
+-        return new Counts(merge(localParts, completed), merge(playerParts, completed));
++        return new Counts(localCounts, playerCounts);
+     }
+ 
+     private static Long2ObjectOpenHashMap<int[]> emptyCounts() {
+@@ -159,22 +160,29 @@ final class MobSpawnCountAccumulator {
+     ) {
+         final Long2ObjectOpenHashMap<int[]> merged = partialCounts[0];
+         for (int partition = 1; partition < completedPartitions; partition++) {
+-            for (final Long2ObjectMap.Entry<int[]> entry : partialCounts[partition].long2ObjectEntrySet()) {
+-                final long chunkKey = entry.getLongKey();
+-                final int[] additions = entry.getValue();
+-                int[] totals = merged.get(chunkKey);
+-                if (totals == null) {
+-                    merged.put(chunkKey, additions);
+-                    continue;
+-                }
+-                for (int category = 0; category < CATEGORY_COUNT; category++) {
+-                    totals[category] += additions[category];
+-                }
+-            }
++            mergeInto(merged, partialCounts[partition]);
+         }
+         return merged;
+     }
+ 
++    private static void mergeInto(final Long2ObjectOpenHashMap<int[]> merged, final Long2ObjectOpenHashMap<int[]> source) {
++        // 条目只在当前迭代中读取；复用条目对象，不随区块数产生临时 MapEntry。
++        final var entries = source.long2ObjectEntrySet().fastIterator();
++        while (entries.hasNext()) {
++            final Long2ObjectMap.Entry<int[]> entry = entries.next();
++            final long chunkKey = entry.getLongKey();
++            final int[] additions = entry.getValue();
++            final int[] totals = merged.get(chunkKey);
++            if (totals == null) {
++                merged.put(chunkKey, additions);
++                continue;
++            }
++            for (int category = 0; category < CATEGORY_COUNT; category++) {
++                totals[category] += additions[category];
++            }
++        }
++    }
++
+     /** Read-only array view whose live range is restricted to {@code size}. */
+     record Inputs(long[] chunkKeys, byte[] categoryOrdinals, int size) {
+         static final Inputs EMPTY = new Inputs(new long[0], new byte[0], 0);
+diff --git a/net/minecraft/world/level/MobSpawnCounting.java b/net/minecraft/world/level/MobSpawnCounting.java
+--- a/net/minecraft/world/level/MobSpawnCounting.java
++++ b/net/minecraft/world/level/MobSpawnCounting.java
+@@ -222,7 +222,9 @@ public final class MobSpawnCounting {
+         if (localMobCapCalculator == null) {
+             return;
+         }
+-        for (final Long2ObjectMap.Entry<int[]> entry : counts.long2ObjectEntrySet()) {
++        final var entries = counts.long2ObjectEntrySet().fastIterator();
++        while (entries.hasNext()) {
++            final Long2ObjectMap.Entry<int[]> entry = entries.next();
+             final int[] categoryCounts = entry.getValue();
+             for (final MobCategory category : NaturalSpawner.SPAWNING_CATEGORIES) {
+                 final int count = categoryCounts[category.ordinal()];
+@@ -240,7 +242,9 @@ public final class MobSpawnCounting {
+         if (playerMobCounter == null) {
+             return;
+         }
+-        for (final Long2ObjectMap.Entry<int[]> entry : counts.long2ObjectEntrySet()) {
++        final var entries = counts.long2ObjectEntrySet().fastIterator();
++        while (entries.hasNext()) {
++            final Long2ObjectMap.Entry<int[]> entry = entries.next();
+             final int[] categoryCounts = entry.getValue();
+             for (final MobCategory category : NaturalSpawner.SPAWNING_CATEGORIES) {
+                 final int count = categoryCounts[category.ordinal()];

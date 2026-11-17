@@ -1,0 +1,146 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 3 Oct 2026 01:00:00 +0800
+Subject: [PATCH] Add configurable farm animal target snapshots
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -90,7 +90,7 @@
+     RegionTickingSettings regionTickingSettings
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 84;
++    public static final int CURRENT_CONFIG_VERSION = 85;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -305,7 +305,7 @@
+         }
+     }
+ 
+-    /** Startup-only asynchronous execution settings. */
++    /** 线程池设置在启动时应用；动物数值快照开关允许热重载。 */
+     public record AsyncSettings(
+         boolean chunkSendEnabled,
+         int chunkSendQueueSize,
+@@ -321,7 +321,9 @@
+         int entityTrackerQueueSize,
+         boolean sharedComputeWorkers,
+         boolean trackerComparisonSharding,
+-        boolean lowLoadWorkers
++        boolean lowLoadWorkers,
++        boolean animalBreeding,
++        boolean animalFollowParent
+     ) {
+ 
+         public AsyncSettings {
+@@ -336,6 +338,32 @@
+                     "async.pathfinding.keepalive-seconds must be between 1 and 600"
+                 );
+             }
++        }
++
++        /** 保留旧构造；动物数值快照可热重载，线程池设置仍需重启。 */
++        public AsyncSettings(
++            final boolean chunkSendEnabled, final int chunkSendQueueSize, final boolean mobSpawningEnabled,
++            final boolean pathfindingEnabled, final int pathfindingThreads, final int pathfindingQueueSize,
++            final int pathfindingKeepaliveSeconds, final boolean playerDataSaveEnabled, final int playerDataSaveQueueSize,
++            final boolean entityTrackerEnabled, final int entityTrackerThreads, final int entityTrackerQueueSize,
++            final boolean sharedComputeWorkers, final boolean trackerComparisonSharding, final boolean lowLoadWorkers
++        ) {
++            this(chunkSendEnabled, chunkSendQueueSize, mobSpawningEnabled, pathfindingEnabled, pathfindingThreads,
++                pathfindingQueueSize, pathfindingKeepaliveSeconds, playerDataSaveEnabled, playerDataSaveQueueSize,
++                entityTrackerEnabled, entityTrackerThreads, entityTrackerQueueSize, sharedComputeWorkers,
++                trackerComparisonSharding, lowLoadWorkers, true, true);
++        }
++
++        /** 动物开关不创建线程；比较启动设置时排除这两个可即时生效的字段。 */
++        public boolean sameExecutionSettings(final AsyncSettings other) {
++            return chunkSendEnabled == other.chunkSendEnabled && chunkSendQueueSize == other.chunkSendQueueSize
++                && mobSpawningEnabled == other.mobSpawningEnabled && pathfindingEnabled == other.pathfindingEnabled
++                && pathfindingThreads == other.pathfindingThreads && pathfindingQueueSize == other.pathfindingQueueSize
++                && pathfindingKeepaliveSeconds == other.pathfindingKeepaliveSeconds
++                && playerDataSaveEnabled == other.playerDataSaveEnabled && playerDataSaveQueueSize == other.playerDataSaveQueueSize
++                && entityTrackerEnabled == other.entityTrackerEnabled && entityTrackerThreads == other.entityTrackerThreads
++                && entityTrackerQueueSize == other.entityTrackerQueueSize && sharedComputeWorkers == other.sharedComputeWorkers
++                && trackerComparisonSharding == other.trackerComparisonSharding && lowLoadWorkers == other.lowLoadWorkers;
+         }
+ 
+         /** 保留已有内部调用的构造方式；新配置默认允许纯快照借用空闲计算线程。 */
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -505,7 +505,9 @@
+                         node.node("async", "low-load-workers"),
+                         "async.low-load-workers",
+                         true
+-                    )
++                    ),
++                    readBoolean(node.node("async", "animals", "breeding"), "async.animals.breeding", true),
++                    readBoolean(node.node("async", "animals", "follow-parent"), "async.animals.follow-parent", true)
+                 ),
+                 new LeavesXConfig.ExtensionSettings(
+                     readBoolean(node.node("features", "tripwire-hook-duplication"), "features.tripwire-hook-duplication", false),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -197,6 +197,8 @@
+         changed |= writeValue(node.node("messages", "quit"), "messages.quit", config.quitMessage(), missingOnly);
+         changed |= writeValue(node.node("messages", "core-prefix"), "messages.core-prefix", config.coreMessagePrefix(), missingOnly);
+         final LeavesXConfig.AsyncSettings async = config.asyncSettings();
++        changed |= writeValue(node.node("async", "animals", "breeding"), "async.animals.breeding", async.animalBreeding(), missingOnly);
++        changed |= writeValue(node.node("async", "animals", "follow-parent"), "async.animals.follow-parent", async.animalFollowParent(), missingOnly);
+         changed |= writeValue(node.node("async", "low-load-workers"), "async.low-load-workers", async.lowLoadWorkers(), missingOnly);
+         changed |= writeValue(node.node("async", "shared-compute-workers"), "async.shared-compute-workers", async.sharedComputeWorkers(), missingOnly);
+         changed |= writeValue(node.node("async", "entity-tracker", "comparison-sharding"), "async.entity-tracker.comparison-sharding", async.trackerComparisonSharding(), missingOnly);
+@@ -544,6 +546,9 @@
+         final Map<String, String> comments = new LinkedHashMap<>();
+         comments.put("performance", "性能优化：按功能分组，关闭开关可使用原处理逻辑。");
+         comments.put("async", "异步任务：区块打包、刷怪统计、追踪计算和玩家存档。");
++        comments.put("async.animals", "动物目标计算只并行距离数据；资格判断、行为节奏和寻路仍按原版执行。");
++        comments.put("async.animals.breeding", "并行计算鸡牛羊猪繁殖配对距离；搜索范围、繁殖时机和事件不变。默认：true。");
++        comments.put("async.animals.follow-parent", "并行计算鸡牛羊猪幼体跟随距离；跟随条件、更新频率和寻路不变。默认：true。");
+         comments.put("parallelism", "计算线程：控制线程数量和任务达到多大规模时并行。");
+         comments.put("performance.faster-random-generator.enabled", "更换运行时随机算法，天气、作物等随机结果会改变，依赖 RNG 序列的装置可能受影响；不改地形和史莱姆区块，需重启。默认：false。");
+         comments.put("async.ai-candidates", "后台准备山羊和青蛙的长跳候选位置；保持候选顺序、随机抽取及跳跃时机，共用计算池。默认：true。");
+@@ -627,7 +632,7 @@
+         comments.put("performance.memory.resource-identifiers", "缓存资源名称和哈希值。默认：true。");
+         comments.put("performance.events.skip-empty-events", "没有监听器时跳过事件对象创建。默认：true。");
+         comments.put("performance.entities.state-checks", "减少实体装备等状态检查的临时对象。默认：true。");
+-        comments.put("performance.entities.queries", "只查一个实体时立即停止搜索并复用临时列表。默认：true。");
++        comments.put("performance.entities.queries", "复用实体查询临时列表；存在性查询找到目标即可返回，动物配对和幼体跟随仍查询全部候选。默认：true。");
+         comments.put("performance.ai.enabled", "减少 AI 和村民 POI 搜索的重复计算。默认：true。");
+         comments.put(
+             "performance.ai.villager-compatibility",
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -134,7 +134,7 @@
+         if (previous.showCollisionConversionWarning() != next.showCollisionConversionWarning()) {
+             changed.add("console-messages.show-collision-conversion-warning");
+         }
+-        if (!previous.asyncSettings().equals(next.asyncSettings())) {
++        if (!previous.asyncSettings().sameExecutionSettings(next.asyncSettings())) {
+             changed.add("async");
+         }
+         if (previous.extensions().secureSeed() != next.extensions().secureSeed()) {
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -1014,6 +1014,15 @@
+             && enabledForPureComputation(LeavesXOptimization.NEAREST_QUERY_DISTANCE_SNAPSHOT);
+     }
+ 
++    /** 仅允许动物目标的数值计算；不涉及村民 Brain、世界查询或 Bukkit 回调。 */
++    public static boolean animalBreedingSnapshot() {
++        return parallelAiTargetSearch && aiOptimizationsEnabled() && asyncSettings.animalBreeding();
++    }
++
++    public static boolean animalFollowParentSnapshot() {
++        return parallelAiTargetSearch && aiOptimizationsEnabled() && asyncSettings.animalFollowParent();
++    }
++
+     /** Returns whether stable distance ordering itself is safe to use for a primitive snapshot. */
+     public static boolean nearestEntityDistanceSortPureComputation() {
+         return aiOptimizations

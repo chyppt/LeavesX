@@ -43,6 +43,8 @@ import org.leavesmc.leaves.protocol.rei.display.SmeltingDisplay;
 import org.leavesmc.leaves.protocol.rei.display.SmokingDisplay;
 import org.leavesmc.leaves.protocol.rei.display.StoneCuttingDisplay;
 import org.leavesmc.leaves.protocol.rei.payload.DisplaySyncPayload;
+import org.leavesmc.leaves.recipeviewer.RecipeViewerBridgeService;
+import org.leavesmc.leaves.protocol.rei.provider.RecipeViewerReiSnapshot;
 import org.leavesmc.leaves.protocol.rei.transfer.InputSlotCrafter;
 import org.leavesmc.leaves.protocol.rei.transfer.NewInputSlotCrafter;
 import org.leavesmc.leaves.protocol.rei.transfer.slot.SlotAccessor;
@@ -104,6 +106,12 @@ public class REIServerProtocol implements LeavesProtocol {
         cachedPayloads = null;
     }
 
+    /** 配方桥接 provider 发布新代时使当前 REI SET 失效。 */
+    public static void onRecipeViewerProviderRefresh() {
+        minecraftRecipeVer++;
+        cachedPayloads = null;
+    }
+
     @Contract("_ -> new")
     public static Identifier id(String path) {
         return Identifier.tryBuild(PROTOCOL_ID, path);
@@ -132,6 +140,15 @@ public class REIServerProtocol implements LeavesProtocol {
 
     @ProtocolHandler.Ticker
     public static void tick() {
+        // Configuration-stage subscriptions survive in Paper's channel set, but cannot invoke GAME handlers.
+        // Also recover after enabling the protocol while players are already connected; never guess by brand.
+        for (ServerPlayer player : MinecraftServer.getServer().getPlayerList().getPlayers()) {
+            if (player.getBukkitEntity().getListeningPluginChannels().contains(SYNC_DISPLAYS_PACKET.toString())) {
+                subscribe(player);
+            } else {
+                enabledPlayers.remove(player);
+            }
+        }
         if (minecraftRecipeVer != nextReiRecipeVer) {
             nextReiRecipeVer = minecraftRecipeVer;
             // Snapshot recipes/displays on the server thread. Only encoding the detached display goes to the worker.
@@ -177,9 +194,19 @@ public class REIServerProtocol implements LeavesProtocol {
             }
         });
 
+        // One merged SET. Sort sources for deterministic ownership of duplicate provider ids.
+        List<Display> providerDisplays = new ArrayList<>();
+        RecipeViewerBridgeService.INSTANCE.snapshots().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey()).forEach(entry -> {
+            try {
+                providerDisplays.addAll(RecipeViewerReiSnapshot.parse(entry.getValue(), entry.getKey()));
+            } catch (RuntimeException failure) {
+                LeavesLogger.LOGGER.warn("Skipping invalid REI recipe provider {}", entry.getKey(), failure);
+            }
+        });
         DisplaySyncPayload displaySyncPayload = new DisplaySyncPayload(
             DisplaySyncPayload.SyncType.SET,
-            builder.build(),
+            RecipeViewerReiSnapshot.merge(builder.build(), providerDisplays),
             reiRecipeVer
         );
 
@@ -204,6 +231,10 @@ public class REIServerProtocol implements LeavesProtocol {
         Bukkit.getGlobalRegionScheduler().run(MinecraftInternalPlugin.INSTANCE, (task) -> {
             if (!LeavesConfig.protocol.reiServerProtocol || minecraftRecipeVer != version) return;
             cachedPayloads = completed;
+            if (!RecipeViewerBridgeService.INSTANCE.snapshots().isEmpty()) {
+                LeavesLogger.LOGGER.info("REI recipe generation ready: displays={}, packets={}, subscribedPlayers={}",
+                        displaySyncPayload.displays().size(), completed.size(), enabledPlayers.size());
+            }
             for (ServerPlayer player : enabledPlayers) {
                 for (CustomPacketPayload payload : completed) {
                     ProtocolUtils.sendPayloadPacket(player, payload);
@@ -216,15 +247,18 @@ public class REIServerProtocol implements LeavesProtocol {
     public static void onPlayerSubscribed(@NotNull ServerPlayer player, Identifier location) {
         String channel = location.getPath();
         if (channel.equals("sync_displays")) {
-            enabledPlayers.add(player);
-            if (cachedPayloads != null) {
-                cachedPayloads.forEach(payload -> ProtocolUtils.sendPayloadPacket(player, payload));
-            }
+            subscribe(player);
         } else if (channel.equals("ci_msg")) {
             // cheat rei-client into using "delete_item" packet
             if (!MinecraftServer.getServer().getProfilePermissions(player.nameAndId()).level().isEqualOrHigherThan(PermissionLevel.MODERATORS)) {
                 player.getBukkitEntity().sendOpLevel((byte) 1);
             }
+        }
+    }
+
+    private static void subscribe(ServerPlayer player) {
+        if (enabledPlayers.add(player) && cachedPayloads != null) {
+            cachedPayloads.forEach(payload -> ProtocolUtils.sendPayloadPacket(player, payload));
         }
     }
 
@@ -402,7 +436,7 @@ public class REIServerProtocol implements LeavesProtocol {
 
     @Override
     public int tickerInterval(String tickerID) {
-        return 200;
+        return 20;
     }
 
     private static List<List<ItemStack>> readInputs(RegistryAccess registryAccess, ListTag tag, int slotCount) {

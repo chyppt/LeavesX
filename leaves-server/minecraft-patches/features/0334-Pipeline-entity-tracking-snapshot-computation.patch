@@ -1,0 +1,148 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 14 Nov 2026 21:45:00 +0800
+Subject: [PATCH] Pipeline entity snapshots with complete fallback
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index e6ad21b..1b9c43e 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1215,65 +1215,91 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             }
+             final LeavesXTrackerSnapshot[] snapshots = this.leavesX$trackerSnapshots;
+             final org.leavesx.leavesx.performance.EntityTrackingRangeBatch rangeBatch = this.leavesX$trackerRangeBatch;
+-            for (int index = 0; index < entityCount; index++) {
+-                final Entity entity = entities[index];
+-                if (entity == null) {
+-                    // 插件在事件中移除实体时，ReferenceList 会清空尾部槽位；该槽位已无可追踪实体。
+-                    continue;
++            final boolean pipelined = org.leavesx.leavesx.config.LeavesXRuntime.asyncSettings().trackerComparisonSharding()
++                && org.leavesx.leavesx.config.LeavesXRuntime.asyncSettings().trackerSnapshotPipeline();
++            try (final org.leavesx.leavesx.runtime.LeavesXSnapshotBatch pipeline = pipelined
++                ? new org.leavesx.leavesx.runtime.LeavesXSnapshotBatch(
++                    org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING) : null) {
++                if (pipeline != null) {
++                    rangeBatch.prepare(entityCount, this.leavesX$trackerPlayerFrame.positionData, this.leavesX$trackerPlayerFrame.viewDistanceBlocks);
+                 }
+-                final ChunkMap.TrackedEntity tracker =
+-                    ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
+-                snapshots[index] = tracker == null
+-                    ? null
+-                    : tracker.leavesX$createTrackerSnapshot(
+-                        ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkData().nearbyPlayers
+-                    );
+-            }
+-            final int completedPartitions;
+-            if (org.leavesx.leavesx.config.LeavesXRuntime.asyncSettings().trackerComparisonSharding()) {
+-                // 捕获过程中可能扩容共享帧；所有行准备完成后才发布最终数值数组。
+-                rangeBatch.prepare(entityCount, this.leavesX$trackerPlayerFrame.positionData, this.leavesX$trackerPlayerFrame.viewDistanceBlocks);
+-                try {
+-                    for (int index = 0; index < entityCount; index++) {
+-                        if (snapshots[index] == null) {
+-                            rangeBatch.setEmptyRow(index);
+-                        } else {
+-                            snapshots[index].leavesX$prepareRangeBatch(rangeBatch, index);
++                int publishedRows = 0;
++                final int rowsPerBatch = org.leavesx.leavesx.runtime.LeavesXSnapshotBatch.partitionSize(
++                    entityCount, org.leavesx.leavesx.performance.EntityTrackingRangeBatch.PIPELINE_ROWS);
++                for (int index = 0; index < entityCount; index++) {
++                    final Entity entity = entities[index];
++                    final ChunkMap.TrackedEntity tracker = entity == null ? null :
++                        ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
++                    snapshots[index] = tracker == null
++                        ? null
++                        : tracker.leavesX$createTrackerSnapshot(
++                            ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkData().nearbyPlayers
++                        );
++                    if (pipeline != null) {
++                        if (snapshots[index] == null) rangeBatch.setEmptyRow(index);
++                        else snapshots[index].leavesX$prepareRangeBatch(rangeBatch, index);
++                        final int completedRows = index + 1;
++                        if (completedRows - publishedRows == rowsPerBatch
++                            || completedRows == entityCount) {
++                            // 每次发布固定的玩家数组与行边界；后续扩容仅替换所有者持有的数组引用。
++                            rangeBatch.submitRows(pipeline, publishedRows, completedRows,
++                                this.leavesX$trackerPlayerFrame.positionData, this.leavesX$trackerPlayerFrame.viewDistanceBlocks);
++                            publishedRows = completedRows;
+                         }
+                     }
+-                } catch (final ArithmeticException overflow) {
+-                    // 尚未派发或提交，比较总数溢出时安全地交给完整原循环。
+-                    return false;
+                 }
+-                completedPartitions = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRangesWithCount(
+-                    org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
+-                    rangeBatch.comparisonCount(), 256, 64,
+-                    (taskIndex, start, end) -> rangeBatch.compute(start, end)
+-                );
+-            } else {
+-                // 独立开关关闭时保留原来的实体分片，不创建比较前缀或展平批次。
+-                completedPartitions = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRangesWithCount(
+-                    org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
+-                    entityCount, 256,
+-                    (taskIndex, start, end) -> {
+-                        for (int index = start; index < end; index++) {
+-                            final LeavesXTrackerSnapshot snapshot = snapshots[index];
+-                            if (snapshot != null) snapshot.computeRanges();
++                final int completedPartitions;
++                if (pipeline != null) {
++                    completedPartitions = pipeline.finish() ? 1 : 0;
++                } else if (org.leavesx.leavesx.config.LeavesXRuntime.asyncSettings().trackerComparisonSharding()) {
++                    // 捕获过程中可能扩容共享帧；所有行准备完成后才发布最终数值数组。
++                    rangeBatch.prepare(entityCount, this.leavesX$trackerPlayerFrame.positionData, this.leavesX$trackerPlayerFrame.viewDistanceBlocks);
++                    try {
++                        for (int index = 0; index < entityCount; index++) {
++                            if (snapshots[index] == null) {
++                                rangeBatch.setEmptyRow(index);
++                            } else {
++                                snapshots[index].leavesX$prepareRangeBatch(rangeBatch, index);
++                            }
+                         }
++                    } catch (final ArithmeticException overflow) {
++                        // 尚未派发或提交，比较总数溢出时安全地交给完整原循环。
++                        return false;
++                    }
++                    completedPartitions = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRangesWithCount(
++                        org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
++                        rangeBatch.comparisonCount(), 256, 64,
++                        (taskIndex, start, end) -> rangeBatch.compute(start, end)
++                    );
++                } else {
++                    // 独立开关关闭时保留原来的实体分片，不创建比较前缀或展平批次。
++                    completedPartitions = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRangesWithCount(
++                        org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
++                        entityCount, 256,
++                        (taskIndex, start, end) -> {
++                            for (int index = start; index < end; index++) {
++                                final LeavesXTrackerSnapshot snapshot = snapshots[index];
++                                if (snapshot != null) snapshot.computeRanges();
++                            }
++                        }
++                    );
++                }
++                if (completedPartitions == 0) {
++                    // 等全部工作线程结束后完整重算本 Tick 的有效前缀，不处理未使用的数组容量。
++                    for (int index = 0; index < entityCount; index++) {
++                        final LeavesXTrackerSnapshot snapshot = snapshots[index];
++                        if (snapshot != null) snapshot.computeRanges();
+                     }
+-                );
+-            }
+-            if (completedPartitions == 0) {
+-                // 等全部工作线程结束后完整重算本 Tick 的有效前缀，不处理未使用的数组容量。
+-                for (int index = 0; index < entityCount; index++) {
+-                    final LeavesXTrackerSnapshot snapshot = snapshots[index];
+-                    if (snapshot != null) snapshot.computeRanges();
+                 }
++            } catch (final ArithmeticException overflow) {
++                // 比较总数溢出时，资源关闭先等待所有片段结束，再交给原追踪循环完整处理。
++                return false;
+             }
+ 
+             for (int index = 0; index < entityCount; index++) {
+                 // 与 Paper 原循环一样读取开始时的原始数组；插件事件交换列表元素后，本槽位按当前实体处理。
+                 final Entity entity = entities[index];
++                if (entity == null) continue;
+                 final ChunkMap.TrackedEntity tracker =
+                     ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
+                 if (tracker == null) {

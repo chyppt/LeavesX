@@ -1,0 +1,90 @@
+From 9daef0430d704bd32bbbced2d4989f886606f472 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sun, 18 Oct 2026 10:28:13 +0800
+Subject: [PATCH] Keep tracker computation parallel with event listeners
+
+---
+ net/minecraft/server/level/ChunkMap.java | 39 +++++++++++++++++-------
+ 1 file changed, 28 insertions(+), 11 deletions(-)
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index e70dfff3..8b6ce4e9 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1144,10 +1144,9 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         if (org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.enabled(
+             org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.ENTITY_TRACKER
+         ) && trackerEntities.size() > 0 && !this.level.players().isEmpty()
+-            // 插件回调可以在遍历中修改追踪列表；保留 Paper 原循环及事件顺序。
+-            && io.papermc.paper.event.player.PlayerTrackEntityEvent.getHandlerList().getRegisteredListeners().length == 0
+-            && io.papermc.paper.event.player.PlayerUntrackEntityEvent.getHandlerList().getRegisteredListeners().length == 0
+-            && org.bukkit.event.player.PlayerVelocityEvent.getHandlerList().getRegisteredListeners().length == 0
++            // 事件仍在提交阶段按原实体顺序触发；关闭兼容开关时，有监听器就完整使用 Paper 原循环。
++            && (org.leavesx.leavesx.config.LeavesXRuntime.asyncSettings().trackerEventListeners()
++                || !this.leavesX$hasTrackerEventListeners())
+             // 先检查计算池，避免繁忙时为整批实体复制快照后再串行重算。
+             && org.leavesx.leavesx.runtime.LeavesXComputeExecutor.shouldAttempt(
+                 org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
+@@ -1173,6 +1172,12 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         }
+     }
+ 
++    private boolean leavesX$hasTrackerEventListeners() {
++        return io.papermc.paper.event.player.PlayerTrackEntityEvent.getHandlerList().getRegisteredListeners().length != 0
++            || io.papermc.paper.event.player.PlayerUntrackEntityEvent.getHandlerList().getRegisteredListeners().length != 0
++            || org.bukkit.event.player.PlayerVelocityEvent.getHandlerList().getRegisteredListeners().length != 0;
++    }
++
+     /** 只读取附近玩家索引的大小，作为快照准入估算；不复制实体、玩家或区块引用。 */
+     private int leavesX$estimatedTrackerComparisons(
+         final ca.spottedleaf.moonrise.common.list.ReferenceList<Entity> trackerEntities
+@@ -1212,6 +1217,10 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             final org.leavesx.leavesx.performance.EntityTrackingRangeBatch rangeBatch = this.leavesX$trackerRangeBatch;
+             for (int index = 0; index < entityCount; index++) {
+                 final Entity entity = entities[index];
++                if (entity == null) {
++                    // 插件在事件中移除实体时，ReferenceList 会清空尾部槽位；该槽位已无可追踪实体。
++                    continue;
++                }
+                 final ChunkMap.TrackedEntity tracker =
+                     ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
+                 snapshots[index] = tracker == null
+@@ -1263,16 +1272,23 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             }
+ 
+             for (int index = 0; index < entityCount; index++) {
+-                final LeavesXTrackerSnapshot snapshot = snapshots[index];
+-                if (snapshot == null) {
++                // 与 Paper 原循环一样读取开始时的原始数组；插件事件交换列表元素后，本槽位按当前实体处理。
++                final Entity entity = entities[index];
++                final ChunkMap.TrackedEntity tracker =
++                    ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
++                if (tracker == null) {
+                     continue;
+                 }
+-                final ChunkMap.TrackedEntity tracker = snapshot.tracker;
+-                final Entity entity = snapshot.entity;
+-                if (((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity() != tracker) {
+-                    continue;
++                final LeavesXTrackerSnapshot snapshot = snapshots[index];
++                if (snapshot != null && snapshot.entity == entity && snapshot.tracker == tracker) {
++                    // 应用前仍会核对实体、玩家与区块；前面事件改动输入时只重算本实体。
++                    tracker.leavesX$applyTrackerSnapshot(snapshot);
++                } else {
++                    org.leavesx.leavesx.performance.EntityTrackingRangeBatch.recordSlotRecomputation();
++                    tracker.moonrise$tick(
++                        ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkData().nearbyPlayers
++                    );
+                 }
+-                tracker.leavesX$applyTrackerSnapshot(snapshot);
+                 if (tracker.moonrise$hasPlayers()
+                     || ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkStatus().isOrAfter(FullChunkStatus.ENTITY_TICKING)) {
+                     tracker.serverEntity.sendChanges();
+@@ -1697,6 +1713,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+                 ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)this.entity).moonrise$getChunkData().nearbyPlayers;
+             if (!this.leavesX$matchesSnapshot(snapshot, currentChunk)) {
+                 // 只在尚未提交本实体前回退，不能重放前面实体的事件或发包。
++                org.leavesx.leavesx.performance.EntityTrackingRangeBatch.recordSnapshotRecomputation();
+                 this.moonrise$tick(currentChunk);
+                 return;
+             }

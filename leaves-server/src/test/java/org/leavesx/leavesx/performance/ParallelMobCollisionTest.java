@@ -22,7 +22,7 @@ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
 import org.spongepowered.configurate.CommentedConfigurationNode;
 
 @Normal
-class ParallelMobCollisionTest {
+public class ParallelMobCollisionTest {
     private static final AABB BOX = new AABB(0, 0, 0, 1, 2, 1);
 
     @AfterEach void cleanup() {
@@ -81,6 +81,20 @@ class ParallelMobCollisionTest {
         }
     }
 
+    @Test void pooledSnapshotsDoNotReuseBoxesFromALargerPreviousQuery() {
+        final var config = CommentedConfigurationNode.root();
+        config.node("parallelism", "mob-collision-math").raw(true);
+        publish(config);
+        LeavesXComputeExecutor.configure(4, 64, true);
+        final Vec3 movement = new Vec3(3, 0, 0);
+        final List<AABB> blocking = java.util.Collections.nCopies(8_193, new AABB(1.5, 0, 0, 2, 2, 1));
+        sameBits(CollisionUtil.performAABBCollisions(movement, BOX, blocking),
+            ParallelMobCollision.collide(mock(Zombie.class), movement, BOX, List.of(), blocking));
+        final List<AABB> open = java.util.Collections.nCopies(8_192, new AABB(8, 0, 0, 9, 2, 1));
+        sameBits(CollisionUtil.performAABBCollisions(movement, BOX, open),
+            ParallelMobCollision.collide(mock(Zombie.class), movement, BOX, List.of(), open));
+    }
+
     @Test void enabledLargeMobQueryActuallyReachesWorkers() {
         final var config = CommentedConfigurationNode.root();
         config.node("parallelism", "mob-collision-math").raw(true);
@@ -91,6 +105,52 @@ class ParallelMobCollisionTest {
         sameBits(CollisionUtil.performAABBCollisions(movement, BOX, boxes),
             ParallelMobCollision.collide(mock(Zombie.class), movement, BOX, List.of(), boxes));
         assertTrue(LeavesXComputeExecutor.metrics().parallelInvocations() > 0);
+    }
+
+    @Test void oneObstacleReachesWorkersWithoutChangingContactOrSignedZero() {
+        final var config = CommentedConfigurationNode.root();
+        config.node("parallelism", "mob-collision-math").raw(true);
+        publish(config);
+        LeavesXComputeExecutor.configure(1, 64, true, true);
+        final Entity zombie = mock(Zombie.class);
+        for (final double edge : new double[] {-1E-7, -1E-9, -0.0, 0.0, 1E-9, 1E-7}) {
+            final List<AABB> boxes = List.of(new AABB(1 + edge, -2, -2, 2 + edge, 3, 3));
+            final Vec3 movement = new Vec3(3, -0.0, 0.0);
+            sameBits(CollisionUtil.performAABBCollisions(movement, BOX, boxes),
+                ParallelMobCollision.collide(zombie, movement, BOX, List.of(), boxes));
+        }
+        assertEquals(6L, LeavesXComputeExecutor.lowLoadDispatchCount());
+        assertEquals(0L, LeavesXComputeExecutor.metrics().callerItems());
+    }
+
+    @Test void lowLoadDispatchStillExcludesVillagersAndTnt() {
+        final var config = CommentedConfigurationNode.root();
+        config.node("parallelism", "mob-collision-math").raw(true);
+        publish(config);
+        LeavesXComputeExecutor.configure(1, 64, true, true);
+        final List<AABB> boxes = List.of(new AABB(2, 0, 0, 3, 2, 1));
+        final Vec3 movement = new Vec3(3, 0, 0);
+        for (final Entity entity : List.of(mock(Villager.class), mock(net.minecraft.world.entity.item.PrimedTnt.class))) {
+            sameBits(CollisionUtil.performAABBCollisions(movement, BOX, boxes),
+                ParallelMobCollision.collide(entity, movement, BOX, List.of(), boxes));
+        }
+        assertEquals(0L, LeavesXComputeExecutor.metrics().invocations());
+    }
+
+    @Test void threeAxesShareOneSmallWorkerTaskAndRetainSerialOrder() {
+        final var config = CommentedConfigurationNode.root();
+        config.node("parallelism", "mob-collision-math").raw(true);
+        publish(config);
+        LeavesXComputeExecutor.configure(1, 64, true, true);
+        final List<AABB> boxes = List.of(
+            new AABB(2, -2, -2, 3, 3, 3),
+            new AABB(-2, 3, -2, 3, 4, 3),
+            new AABB(-2, -2, -3, 3, 3, -2));
+        final Vec3 movement = new Vec3(3, 4, -4);
+        sameBits(CollisionUtil.performAABBCollisions(movement, BOX, boxes),
+            ParallelMobCollision.collide(mock(Zombie.class), movement, BOX, List.of(), boxes));
+        assertEquals(1L, LeavesXComputeExecutor.lowLoadDispatchCount(), "三个轴顺序计算，只派发一次");
+        assertEquals(0L, LeavesXComputeExecutor.metrics().callerItems());
     }
 
     private static void sameBits(final Vec3 expected, final Vec3 actual) {

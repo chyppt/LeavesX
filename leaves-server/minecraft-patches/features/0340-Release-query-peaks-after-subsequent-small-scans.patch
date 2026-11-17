@@ -1,0 +1,74 @@
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index e5eb58c6..0647ca9a 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -2442,11 +2442,18 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         private final List<Entity> results = new java.util.ArrayList<>(INITIAL_CAPACITY);
+         private final boolean pooled;
+         private boolean inUse;
++        private boolean oversized;
+ 
+         private LeavesXEntityQueryBuffer(final boolean pooled) {
+             this.pooled = pooled;
+         }
+ 
++        private void clearResults() {
++            // 同一次借用可执行多个查询，后续小结果不能掩盖已扩大的底层数组。
++            this.oversized |= this.results.size() > MAX_CACHED_RESULTS;
++            this.results.clear();
++        }
++
+         private boolean acquire() {
+             if (this.inUse) {
+                 return false;
+@@ -2462,7 +2469,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+             final AABB boundingBox,
+             final Predicate<? super Entity> predicate
+         ) {
+-            this.results.clear();
++            this.clearResults();
+             level.leavesX$getEntities(except, boundingBox, predicate, this.results);
+             return this.results;
+         }
+@@ -2475,7 +2482,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+             final Predicate<? super Entity> predicate,
+             final int maxCount
+         ) {
+-            this.results.clear();
++            this.clearResults();
+             if (maxCount > 0) {
+                 level.leavesX$getEntities(except, boundingBox, predicate, this.results, maxCount);
+             }
+@@ -2491,7 +2498,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+             final AABB boundingBox,
+             final Predicate<? super T> predicate
+         ) {
+-            this.results.clear();
++            this.clearResults();
+             level.leavesX$getEntitiesOfClass(entityClass, except, boundingBox, predicate, (List)this.results);
+             return (List<T>)(List<?>)this.results;
+         }
+@@ -2505,7 +2512,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+             final Predicate<? super T> predicate,
+             final int maxCount
+         ) {
+-            this.results.clear();
++            this.clearResults();
+             if (maxCount <= 0) {
+                 return 0;
+             }
+@@ -2515,12 +2522,11 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+ 
+         @Override
+         public void close() {
+-            final boolean oversized = this.results.size() > MAX_CACHED_RESULTS;
+-            this.results.clear();
++            this.clearResults();
+             if (this.pooled) {
+                 this.inUse = false;
+                 // 峰值查询不把大数组长期留在线程上；嵌套查询不干预外层缓冲。
+-                if (oversized) LEAVESX_ENTITY_QUERY_BUFFER.remove();
++                if (this.oversized) LEAVESX_ENTITY_QUERY_BUFFER.remove();
+             }
+         }
+     }

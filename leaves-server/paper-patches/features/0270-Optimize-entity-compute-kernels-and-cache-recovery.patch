@@ -1,0 +1,844 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 3 Oct 2026 01:00:00 +0800
+Subject: [PATCH] Optimize entity compute kernels and cache recovery
+
+diff --git a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+--- a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
++++ b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+@@ -96,6 +96,11 @@
+             final boolean useBoundsPrefilter = LeavesXRuntime.activationBoundsPrefilter() && playerCount >= 4;
+             if (useBoundsPrefilter) {
+                 if (playerCount >= PREFILTER_GROUP_SIZE * 2) {
++                    if (LeavesXRuntime.asyncSettings().kernels().spatialActivationGroups()) {
++                        workspace.ensureSpatialCapacity(playerCount);
++                        spatiallyOrderPlayerBounds(workspace.playerBounds, workspace.spatialBounds,
++                            workspace.playerOrder, workspace.playerOrderScratch, playerCount);
++                    }
+                     snapshotActivationGroups(workspace.playerBounds, workspace.activationGroups, playerCount);
+                 } else {
+                     snapshotActivationUnions(workspace.playerBounds, workspace.activationUnions, playerCount);
+@@ -315,6 +320,61 @@
+     }
+ 
+     /**
++     * 仅重排冻结的数值框，使四人并集靠近实际位置；玩家状态读取和激活结果提交顺序保持不变。
++     * 先稳定排序索引，再整块复制各类型框，不能只移动 maxBB 而错配其他类型范围。
++     */
++    static void spatiallyOrderPlayerBounds(final double[] bounds, final double[] scratch,
++                                           final int[] order, final int[] orderScratch, final int players) {
++        if (players < 16) return;
++        final int stride = PLAYER_BOXES * AABB_COMPONENTS;
++        boolean ordered = true;
++        double minX = Double.POSITIVE_INFINITY;
++        double maxX = Double.NEGATIVE_INFINITY;
++        double minZ = Double.POSITIVE_INFINITY;
++        double maxZ = Double.NEGATIVE_INFINITY;
++        for (int player = 0; player < players; player++) {
++            order[player] = player;
++            if (player > 0 && comparePlayerBounds(bounds, player - 1, player, stride) > 0) ordered = false;
++            minX = Math.min(minX, bounds[player * stride]);
++            maxX = Math.max(maxX, bounds[player * stride]);
++            minZ = Math.min(minZ, bounds[player * stride + 2]);
++            maxZ = Math.max(maxZ, bounds[player * stride + 2]);
++        }
++        if (ordered) return;
++        // 玩家都聚在一个激活框宽度以内时，重分组没有可观裁剪空间，保留原分组。
++        if (maxX - minX <= bounds[3] - bounds[0] && maxZ - minZ <= bounds[5] - bounds[2]) return;
++        int[] input = order;
++        int[] output = orderScratch;
++        for (int width = 1; width < players; width = width >= players - width ? players : width * 2) {
++            for (int start = 0; start < players;) {
++                final int middle = (int)Math.min(players, (long)start + width);
++                final int end = (int)Math.min(players, (long)middle + width);
++                int left = start;
++                int right = middle;
++                for (int destination = start; destination < end; destination++) {
++                    if (left < middle && (right == end
++                        || comparePlayerBounds(bounds, input[left], input[right], stride) <= 0)) {
++                        output[destination] = input[left++];
++                    } else output[destination] = input[right++];
++                }
++                start = end;
++            }
++            final int[] swap = input;
++            input = output;
++            output = swap;
++        }
++        for (int player = 0; player < players; player++) {
++            System.arraycopy(bounds, input[player] * stride, scratch, player * stride, stride);
++        }
++        System.arraycopy(scratch, 0, bounds, 0, players * stride);
++    }
++
++    private static int comparePlayerBounds(final double[] bounds, final int first, final int second, final int stride) {
++        final int byX = Double.compare(bounds[first * stride], bounds[second * stride]);
++        return byX != 0 ? byX : Double.compare(bounds[first * stride + 2], bounds[second * stride + 2]);
++    }
++
++    /**
+      * Activates one player's candidate list when the batch is large enough to amortize a primitive snapshot.
+      *
+      * @return {@code true} when this method handled the list; {@code false} requests Paper's direct loop
+@@ -656,7 +716,12 @@
+     }
+ 
+     private static Workspace acquireWorkspace(final int size) {
+-        final Workspace cached = WORKSPACE.get();
++        Workspace cached = WORKSPACE.get();
++        final int cacheLimit = LeavesXRuntime.asyncSettings().kernels().cacheMaxCandidates();
++        if (!cached.inUse && cached.activationTypes.length > cacheLimit && size <= cacheLimit) {
++            WORKSPACE.remove();
++            cached = WORKSPACE.get();
++        }
+         final Workspace workspace;
+         if (cached.inUse) {
+             // World ticks are normally non-reentrant. A private workspace still makes unexpected re-entry safe.
+@@ -672,6 +737,14 @@
+     private static void releaseWorkspace(final Workspace workspace) {
+         if (workspace.pooled) {
+             workspace.inUse = false;
++            // 只有全部数值任务结束后才释放峰值缓冲，或清除日常工作区中的实体引用。
++            if (LeavesXRuntime.asyncSettings().kernels().cacheMaxCandidates() == 0) {
++                WORKSPACE.remove();
++            } else {
++                // 采集可能中途抛异常，不能仅按上次成功长度清理而遗留本次较长前缀。
++                Arrays.fill(workspace.entities, null);
++                workspace.entityCount = 0;
++            }
+         }
+     }
+ 
+@@ -691,6 +764,9 @@
+         private double[] playerBounds = new double[0];
+         private final double[] activationUnions = new double[PLAYER_BOXES * AABB_COMPONENTS];
+         private double[] activationGroups = new double[0];
++        private double[] spatialBounds = new double[0];
++        private int[] playerOrder = new int[0];
++        private int[] playerOrderScratch = new int[0];
+         private int entityCount;
+         private boolean inUse;
+ 
+@@ -702,7 +778,9 @@
+             if (this.activationTypes.length >= size) {
+                 return;
+             }
+-            final int capacity = expandedCapacity(this.activationTypes.length, size);
++            final int cacheLimit = LeavesXRuntime.asyncSettings().kernels().cacheMaxCandidates();
++            final int grown = expandedCapacity(this.activationTypes.length, size);
++            final int capacity = size <= cacheLimit ? Math.min(grown, cacheLimit) : grown;
+             this.entityBounds = Arrays.copyOf(this.entityBounds, Math.multiplyExact(capacity, AABB_COMPONENTS));
+             this.activationTypes = Arrays.copyOf(this.activationTypes, capacity);
+             this.intersections = Arrays.copyOf(this.intersections, capacity);
+@@ -729,5 +807,14 @@
+                 );
+             }
+         }
++
++        private void ensureSpatialCapacity(final int players) {
++            if (this.playerOrder.length < players) {
++                final int capacity = expandedCapacity(this.playerOrder.length, players);
++                this.playerOrder = new int[capacity];
++                this.playerOrderScratch = new int[capacity];
++                this.spatialBounds = new double[Math.multiplyExact(capacity, PLAYER_BOXES * AABB_COMPONENTS)];
++            }
++        }
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -20,6 +20,9 @@
+     /** 低负载派发关闭时，小列表保留原版排序入口，避免建立工作区的固定开销。 */
+     public static final int MINIMUM_OPTIMIZED_ENTITY_COUNT = 64;
+     private static final int RADIX_BUCKETS = 256;
++    private static final int RADIX_DIGITS = Long.BYTES;
++    private static final int HISTOGRAM_STRIDE = RADIX_BUCKETS * RADIX_DIGITS;
++    private static final int MIN_MULTI_HISTOGRAM_ITEMS = 4_096;
+     /** 小分片使用稳定插入排序，省去最多八轮直方图清零与散射。 */
+     private static final int INSERTION_SORT_MAX_ITEMS = 32;
+     /** 小列表按区间对归并；大列表按输出位置切分，避免最后一对归并成为串行瓶颈。 */
+@@ -29,6 +32,7 @@
+     private static final int MIN_MERGE_ITEMS_PER_WORKER = 8192;
+     private static final int INITIAL_WORKSPACE_CAPACITY = 64;
+     private static final ThreadLocal<Workspace> WORKSPACE = ThreadLocal.withInitial(() -> new Workspace(true));
++    private static final ThreadLocal<SelectionWorkspace> SELECTION_WORKSPACE = ThreadLocal.withInitial(SelectionWorkspace::new);
+     private static final ClassValue<Boolean> VANILLA_DISTANCE = new ClassValue<>() {
+         @Override
+         protected Boolean computeValue(final Class<?> type) {
+@@ -133,6 +137,10 @@
+                 }
+             }
+             return nearest;
++        }
++
++        if (LeavesXRuntime.asyncSettings().kernels().nearestReduction()) {
++            return findNearestReduced(entities, origin, parallel, parallelThreshold);
+         }
+ 
+         final Workspace workspace = acquireWorkspace(size);
+@@ -185,6 +193,97 @@
+         }
+     }
+ 
++    /** 最近目标只归约分片赢家；不分配排序索引，也不为每个候选写回距离。 */
++    private static <T extends Entity> int findNearestReduced(
++        final List<T> entities, final Entity origin, final boolean parallel, final int threshold
++    ) {
++        final int size = entities.size();
++        final double originX = origin.getX();
++        final double originY = origin.getY();
++        final double originZ = origin.getZ();
++        final boolean eligible = parallel && LeavesXComputeExecutor.shouldAttempt(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SELECT, size, threshold,
++            LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker());
++        if (!eligible) {
++            final SelectionWorkspace cached = SELECTION_WORKSPACE.get();
++            final int cacheLimit = LeavesXRuntime.asyncSettings().kernels().cacheMaxCandidates();
++            if (!cached.inUse && cached.x.length > cacheLimit && (cacheLimit == 0 || size <= cacheLimit)) {
++                SELECTION_WORKSPACE.remove();
++            }
++            int nearest = -1;
++            double best = 0.0;
++            for (int index = 0; index < size; index++) {
++                final Entity entity = entities.get(index);
++                final double distance = squaredDistance(originX, originY, originZ, entity.getX(), entity.getY(), entity.getZ());
++                if (nearest < 0 || Double.compare(distance, best) < 0) {
++                    nearest = index;
++                    best = distance;
++                }
++            }
++            return nearest;
++        }
++
++        final SelectionWorkspace cached = SELECTION_WORKSPACE.get();
++        final int cacheLimit = LeavesXRuntime.asyncSettings().kernels().cacheMaxCandidates();
++        if (!cached.inUse && cached.x.length > cacheLimit && size <= cacheLimit) {
++            SELECTION_WORKSPACE.remove();
++        }
++        final SelectionWorkspace workspace = cached.inUse ? new SelectionWorkspace() : SELECTION_WORKSPACE.get();
++        workspace.inUse = true;
++        try {
++            workspace.ensureCapacity(size);
++            final int completed;
++            if (size > MIN_PIPELINE_ITEMS && LeavesXRuntime.asyncSettings().aiSnapshotPipeline()) {
++                final int width = Math.max(divideCeil(size, 64), LeavesXSnapshotBatch.partitionSize(size, MIN_PIPELINE_ITEMS));
++                int partitions = 0;
++                try (var batch = new LeavesXSnapshotBatch(LeavesXComputeExecutor.Workload.AI_TARGET_SELECT)) {
++                    for (int from = 0; from < size; from += width) {
++                        final int start = from;
++                        final int end = (int)Math.min(size, (long)start + width);
++                        final int partition = partitions++;
++                        captureSelectionCoordinates(entities, workspace, start, end);
++                        batch.submit(end - start, () -> workspace.reduce(partition, start, end, originX, originY, originZ));
++                    }
++                    completed = batch.finish() ? partitions : 0;
++                }
++            } else {
++                captureSelectionCoordinates(entities, workspace, 0, size);
++                completed = LeavesXComputeExecutor.invokeRangesWithCount(
++                    LeavesXComputeExecutor.Workload.AI_TARGET_SELECT, size, threshold,
++                    LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker(),
++                    (partition, start, end) -> workspace.reduce(partition, start, end, originX, originY, originZ));
++            }
++            if (completed == 0) workspace.reduce(0, 0, size, originX, originY, originZ);
++            int nearest = -1;
++            double best = 0.0;
++            for (int partition = 0; partition < Math.max(1, completed); partition++) {
++                final int candidate = workspace.winners[partition];
++                final double distance = workspace.distances[partition];
++                if (candidate >= 0 && (nearest < 0 || Double.compare(distance, best) < 0)) {
++                    nearest = candidate;
++                    best = distance;
++                }
++            }
++            return nearest;
++        } finally {
++            workspace.inUse = false;
++            if (workspace == SELECTION_WORKSPACE.get() && cacheLimit == 0) {
++                SELECTION_WORKSPACE.remove();
++            }
++        }
++    }
++
++    private static <T extends Entity> void captureSelectionCoordinates(
++        final List<T> entities, final SelectionWorkspace workspace, final int start, final int end
++    ) {
++        for (int index = start; index < end; index++) {
++            final Entity entity = entities.get(index);
++            workspace.x[index] = entity.getX();
++            workspace.y[index] = entity.getY();
++            workspace.z[index] = entity.getZ();
++        }
++    }
++
+     /**
+      * 为坐标快照生成稳定排序后的索引。
+      *
+@@ -249,7 +348,7 @@
+                     start,
+                     end,
+                     workspace.laneOffsets,
+-                    taskIndex * RADIX_BUCKETS
++                    taskIndex * HISTOGRAM_STRIDE
+                 )
+             )
+             : 0;
+@@ -303,7 +402,7 @@
+                         start,
+                         end,
+                         workspace.laneOffsets,
+-                        taskIndex * RADIX_BUCKETS
++                        taskIndex * HISTOGRAM_STRIDE
+                     );
+                 }
+             )
+@@ -325,13 +424,13 @@
+     ) {
+         workspace.ensureCoordinateCapacity(size);
+         // 以已经分配的直方图槽数为上限，热重载改变线程数也不会让片段越界。
+-        final int rangeSize = Math.max(divideCeil(size, workspace.laneOffsets.length / RADIX_BUCKETS),
++        final int rangeSize = Math.max(divideCeil(size, workspace.laneOffsets.length / HISTOGRAM_STRIDE),
+             LeavesXSnapshotBatch.partitionSize(size, MIN_PIPELINE_ITEMS));
+         try (final LeavesXSnapshotBatch batch = new LeavesXSnapshotBatch(LeavesXComputeExecutor.Workload.AI_TARGET_SORT)) {
+             for (int start = 0, partition = 0; start < size; start += rangeSize, partition++) {
+                 final int from = start;
+                 final int to = (int)Math.min(size, (long)start + rangeSize);
+-                final int offsetBase = partition * RADIX_BUCKETS;
++                final int offsetBase = partition * HISTOGRAM_STRIDE;
+                 for (int index = from; index < to; index++) {
+                     final Entity entity = entities.get(index);
+                     workspace.x[index] = entity.getX();
+@@ -637,15 +736,35 @@
+         if (alreadySorted) {
+             return;
+         }
+-        final int bucketBase = offsetBase;
++        // 各轮只重排索引，键集合不变。一次统计所有字节即可复用各轮直方图。
++        final boolean combinedHistograms = end - start >= MIN_MULTI_HISTOGRAM_ITEMS
++            && LeavesXRuntime.asyncSettings().kernels().distanceHistograms();
++        if (combinedHistograms) {
++            Arrays.fill(offsets, offsetBase, offsetBase + HISTOGRAM_STRIDE, 0);
++            for (int index = start; index < end; index++) {
++                final long key = keys[order[index]];
++                // 固定移位使 JIT 无需在每个键上再执行字节循环；常量字节仍不统计。
++                if ((varyingBits & 0xFFL) != 0L) offsets[offsetBase + bucket(key, 0)]++;
++                if ((varyingBits & 0xFF00L) != 0L) offsets[offsetBase + 256 + bucket(key, 8)]++;
++                if ((varyingBits & 0xFF0000L) != 0L) offsets[offsetBase + 512 + bucket(key, 16)]++;
++                if ((varyingBits & 0xFF000000L) != 0L) offsets[offsetBase + 768 + bucket(key, 24)]++;
++                if ((varyingBits & 0xFF00000000L) != 0L) offsets[offsetBase + 1024 + bucket(key, 32)]++;
++                if ((varyingBits & 0xFF0000000000L) != 0L) offsets[offsetBase + 1280 + bucket(key, 40)]++;
++                if ((varyingBits & 0xFF000000000000L) != 0L) offsets[offsetBase + 1536 + bucket(key, 48)]++;
++                if ((varyingBits & 0xFF00000000000000L) != 0L) offsets[offsetBase + 1792 + bucket(key, 56)]++;
++            }
++        }
+         for (int shift = 0; shift < Long.SIZE; shift += Byte.SIZE) {
+             // 完全相同的字节不影响稳定顺序，跳过对应直方图和散射遍历。
+             if ((varyingBits >>> shift & 0xFFL) == 0L) {
+                 continue;
+             }
+-            Arrays.fill(offsets, bucketBase, bucketBase + RADIX_BUCKETS, 0);
+-            for (int index = start; index < end; index++) {
+-                offsets[bucketBase + bucket(keys[order[index]], shift)]++;
++            final int bucketBase = offsetBase + (combinedHistograms ? (shift / Byte.SIZE) * RADIX_BUCKETS : 0);
++            if (!combinedHistograms) {
++                Arrays.fill(offsets, bucketBase, bucketBase + RADIX_BUCKETS, 0);
++                for (int index = start; index < end; index++) {
++                    offsets[bucketBase + bucket(keys[order[index]], shift)]++;
++                }
+             }
+ 
+             int next = start;
+@@ -797,7 +916,13 @@
+     }
+ 
+     private static Workspace acquireWorkspace(final int size) {
+-        final Workspace cached = WORKSPACE.get();
++        Workspace cached = WORKSPACE.get();
++        final int cacheLimit = LeavesXRuntime.asyncSettings().kernels().cacheMaxCandidates();
++        if (!cached.inUse && cached.capacity() > cacheLimit && size <= cacheLimit) {
++            // 高峰缓存先保留以服务同级负载；查询规模回落后再换成紧凑工作区。
++            WORKSPACE.remove();
++            cached = WORKSPACE.get();
++        }
+         final Workspace workspace;
+         if (cached.inUse) {
+             // 传感器重入时使用独立临时工作区，避免覆盖尚未完成的外层计算。
+@@ -814,6 +939,10 @@
+     private static void releaseWorkspace(final Workspace workspace) {
+         if (workspace.pooled) {
+             workspace.inUse = false;
++            // 禁用缓存时，只有全部任务结束后才释放工作区；不减少任何候选或实体。
++            if (LeavesXRuntime.asyncSettings().kernels().cacheMaxCandidates() == 0) {
++                WORKSPACE.remove();
++            }
+         }
+     }
+ 
+@@ -826,6 +955,7 @@
+     }
+ 
+     private static int expandedCapacity(final int current, final int required) {
++        final int cacheLimit = LeavesXRuntime.asyncSettings().kernels().cacheMaxCandidates();
+         int capacity = Math.max(INITIAL_WORKSPACE_CAPACITY, current);
+         while (capacity < required) {
+             final int expanded = capacity + (capacity >>> 1);
+@@ -834,13 +964,13 @@
+             }
+             capacity = expanded;
+         }
+-        return capacity;
++        return required <= cacheLimit ? Math.min(capacity, cacheLimit) : capacity;
+     }
+ 
+     private static final class Workspace {
+ 
+         private final boolean pooled;
+-        private final int[] offsets = new int[RADIX_BUCKETS];
++        private final int[] offsets = new int[HISTOGRAM_STRIDE];
+         private double[] x = new double[0];
+         private double[] y = new double[0];
+         private double[] z = new double[0];
+@@ -862,7 +992,7 @@
+                 this.order = Arrays.copyOf(this.order, capacity);
+                 this.scratch = Arrays.copyOf(this.scratch, capacity);
+             }
+-            final int requiredLaneOffsets = Math.max(1, lanes) * RADIX_BUCKETS;
++            final int requiredLaneOffsets = Math.max(1, lanes) * HISTOGRAM_STRIDE;
+             if (this.laneOffsets.length < requiredLaneOffsets) {
+                 this.laneOffsets = new int[requiredLaneOffsets];
+             }
+@@ -881,5 +1011,43 @@
+             this.y = Arrays.copyOf(this.y, capacity);
+             this.z = Arrays.copyOf(this.z, capacity);
+         }
++
++        private int capacity() {
++            return Math.max(this.order.length, this.x.length);
++        }
++    }
++
++    /** 一次调用独占；工作线程只写各自的赢家槽，重入查询另借临时工作区。 */
++    private static final class SelectionWorkspace {
++        private double[] x = new double[0];
++        private double[] y = new double[0];
++        private double[] z = new double[0];
++        private final int[] winners = new int[64];
++        private final double[] distances = new double[64];
++        private boolean inUse;
++
++        private void ensureCapacity(final int size) {
++            if (this.x.length < size) {
++                final int capacity = expandedCapacity(this.x.length, size);
++                this.x = new double[capacity];
++                this.y = new double[capacity];
++                this.z = new double[capacity];
++            }
++        }
++
++        private void reduce(final int partition, final int start, final int end,
++                            final double originX, final double originY, final double originZ) {
++            int nearest = -1;
++            double best = 0.0;
++            for (int index = start; index < end; index++) {
++                final double distance = squaredDistance(originX, originY, originZ, this.x[index], this.y[index], this.z[index]);
++                if (nearest < 0 || Double.compare(distance, best) < 0) {
++                    nearest = index;
++                    best = distance;
++                }
++            }
++            this.winners[partition] = nearest;
++            this.distances[partition] = best;
++        }
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -91,7 +91,7 @@
+     RegionTickingSettings regionTickingSettings
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 92;
++    public static final int CURRENT_CONFIG_VERSION = 93;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -338,6 +338,25 @@
+ 
+         public static ComputeSchedulingSettings defaults() {
+             return new ComputeSchedulingSettings(-1, 0);
++        }
++    }
++
++    /** 只调整冻结数值的计算方式，不更改实体行为、判断顺序或更新频率。 */
++    public record ComputeKernelSettings(
++        boolean distanceHistograms,
++        boolean nearestReduction,
++        boolean trackerRowKernel,
++        boolean spatialActivationGroups,
++        int cacheMaxCandidates
++    ) {
++        public ComputeKernelSettings {
++            if (cacheMaxCandidates < 0 || cacheMaxCandidates > 1_048_576) {
++                throw new IllegalArgumentException("performance.memory.compute-cache-max-candidates must be between 0 and 1048576");
++            }
++        }
++
++        public static ComputeKernelSettings defaults() {
++            return new ComputeKernelSettings(true, true, true, true, 32_768);
+         }
+     }
+ 
+@@ -368,12 +387,14 @@
+         boolean activationSnapshotPipeline,
+         boolean aiSnapshotPipeline,
+         boolean aiParallelMerge,
+-        boolean combinedSpawnCounting
++        boolean combinedSpawnCounting,
++        ComputeKernelSettings kernels
+     ) {
+ 
+         public AsyncSettings {
+             java.util.Objects.requireNonNull(failureProtection, "failureProtection");
+             java.util.Objects.requireNonNull(scheduling, "scheduling");
++            java.util.Objects.requireNonNull(kernels, "kernels");
+             validateThreadCount(pathfindingThreads, "async.pathfinding.threads");
+             validateThreadCount(entityTrackerThreads, "async.entity-tracker.threads");
+             validateQueueSize(chunkSendQueueSize, "async.chunk-send.queue-size");
+@@ -385,6 +406,26 @@
+                     "async.pathfinding.keepalive-seconds must be between 1 and 600"
+                 );
+             }
++        }
++
++        /** 保留已有构造；数值内核与缓存上限支持热重载。 */
++        public AsyncSettings(
++            final boolean chunkSendEnabled, final int chunkSendQueueSize, final boolean mobSpawningEnabled,
++            final boolean pathfindingEnabled, final int pathfindingThreads, final int pathfindingQueueSize,
++            final int pathfindingKeepaliveSeconds, final boolean playerDataSaveEnabled, final int playerDataSaveQueueSize,
++            final boolean entityTrackerEnabled, final int entityTrackerThreads, final int entityTrackerQueueSize,
++            final boolean sharedComputeWorkers, final boolean trackerComparisonSharding, final boolean lowLoadWorkers,
++            final boolean animalBreeding, final boolean animalFollowParent, final boolean activationBoundsPrefilter,
++            final ComputeFailureSettings failureProtection, final ComputeSchedulingSettings scheduling,
++            final boolean trackerEventListeners, final boolean trackerSnapshotPipeline, final boolean activationSnapshotPipeline,
++            final boolean aiSnapshotPipeline, final boolean aiParallelMerge, final boolean combinedSpawnCounting
++        ) {
++            this(chunkSendEnabled, chunkSendQueueSize, mobSpawningEnabled, pathfindingEnabled, pathfindingThreads,
++                pathfindingQueueSize, pathfindingKeepaliveSeconds, playerDataSaveEnabled, playerDataSaveQueueSize,
++                entityTrackerEnabled, entityTrackerThreads, entityTrackerQueueSize, sharedComputeWorkers,
++                trackerComparisonSharding, lowLoadWorkers, animalBreeding, animalFollowParent, activationBoundsPrefilter,
++                failureProtection, scheduling, trackerEventListeners, trackerSnapshotPipeline, activationSnapshotPipeline,
++                aiSnapshotPipeline, aiParallelMerge, combinedSpawnCounting, ComputeKernelSettings.defaults());
+         }
+ 
+         /** 保留已有构造；新增开关只改变不可变快照的调度方式。 */
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -528,7 +528,14 @@
+                     readBoolean(node.node("parallelism", "entity-activation", "snapshot-pipeline"), "parallelism.entity-activation.snapshot-pipeline", true),
+                     readBoolean(node.node("parallelism", "ai-target-search", "snapshot-pipeline"), "parallelism.ai-target-search.snapshot-pipeline", true),
+                     readBoolean(node.node("parallelism", "ai-target-search", "parallel-merge"), "parallelism.ai-target-search.parallel-merge", true),
+-                    readBoolean(node.node("parallelism", "mob-spawning", "combined-counting"), "parallelism.mob-spawning.combined-counting", true)
++                    readBoolean(node.node("parallelism", "mob-spawning", "combined-counting"), "parallelism.mob-spawning.combined-counting", true),
++                    new LeavesXConfig.ComputeKernelSettings(
++                        readBoolean(node.node("performance", "compute", "ai-distance-histograms"), "performance.compute.ai-distance-histograms", true),
++                        readBoolean(node.node("performance", "compute", "ai-nearest-reduction"), "performance.compute.ai-nearest-reduction", true),
++                        readBoolean(node.node("performance", "compute", "tracker-row-kernel"), "performance.compute.tracker-row-kernel", true),
++                        readBoolean(node.node("performance", "compute", "spatial-activation-groups"), "performance.compute.spatial-activation-groups", true),
++                        readInt(node.node("performance", "memory", "compute-cache-max-candidates"), "performance.memory.compute-cache-max-candidates", 32_768)
++                    )
+                 ),
+                 new LeavesXConfig.ExtensionSettings(
+                     readBoolean(node.node("features", "tripwire-hook-duplication"), "features.tripwire-hook-duplication", false),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -199,6 +199,12 @@
+         changed |= writeValue(node.node("messages", "quit"), "messages.quit", config.quitMessage(), missingOnly);
+         changed |= writeValue(node.node("messages", "core-prefix"), "messages.core-prefix", config.coreMessagePrefix(), missingOnly);
+         final LeavesXConfig.AsyncSettings async = config.asyncSettings();
++        final LeavesXConfig.ComputeKernelSettings kernels = async.kernels();
++        changed |= writeValue(node.node("performance", "compute", "ai-distance-histograms"), "performance.compute.ai-distance-histograms", kernels.distanceHistograms(), missingOnly);
++        changed |= writeValue(node.node("performance", "compute", "ai-nearest-reduction"), "performance.compute.ai-nearest-reduction", kernels.nearestReduction(), missingOnly);
++        changed |= writeValue(node.node("performance", "compute", "tracker-row-kernel"), "performance.compute.tracker-row-kernel", kernels.trackerRowKernel(), missingOnly);
++        changed |= writeValue(node.node("performance", "compute", "spatial-activation-groups"), "performance.compute.spatial-activation-groups", kernels.spatialActivationGroups(), missingOnly);
++        changed |= writeValue(node.node("performance", "memory", "compute-cache-max-candidates"), "performance.memory.compute-cache-max-candidates", kernels.cacheMaxCandidates(), missingOnly);
+         changed |= writeValue(node.node("performance", "compute", "activation-bounds-prefilter"), "performance.compute.activation-bounds-prefilter", async.activationBoundsPrefilter(), missingOnly);
+         changed |= writeValue(node.node("async", "animals", "breeding"), "async.animals.breeding", async.animalBreeding(), missingOnly);
+         changed |= writeValue(node.node("async", "animals", "follow-parent"), "async.animals.follow-parent", async.animalFollowParent(), missingOnly);
+@@ -579,6 +585,11 @@
+         comments.put("async", "异步任务：区块打包、刷怪统计、追踪计算和玩家存档。");
+         comments.put("async.animals", "动物目标计算只并行距离数据；资格判断、行为节奏和寻路仍按原版执行。");
+         comments.put("performance.compute.activation-bounds-prefilter", "先排除肯定不在任何玩家激活范围内的实体，实际激活范围不变。默认：true。");
++        comments.put("performance.compute.ai-distance-histograms", "大型 AI 距离排序一次统计各字节，减少重复扫描；排序和平局顺序不变，可重载。默认：true。");
++        comments.put("performance.compute.ai-nearest-reduction", "最近目标查询只保存分片赢家，减少排序数组和逐项结果写入；目标规则不变，可重载。默认：true。");
++        comments.put("performance.compute.tracker-row-kernel", "同批玩家视距一致时复用追踪距离计算；视距混合时用原公式，发包及可见性规则不变，可重载。默认：true。");
++        comments.put("performance.compute.spatial-activation-groups", "按冻结位置组织玩家激活范围，减少分散玩家之间的无效比较；激活范围和更新频率不变，可重载。默认：true。");
++        comments.put("performance.memory.compute-cache-max-candidates", "距离排序、最近目标与激活计算每线程的日常候选缓存上限；持续高负载时复用更大缓存，后续小任务到来时回收，0 为不保留；不限制实体数，可重载。默认：32768。");
+         comments.put("async.animals.breeding", "并行计算鸡牛羊猪繁殖配对距离；搜索范围、繁殖时机和事件不变。默认：true。");
+         comments.put("async.animals.follow-parent", "并行计算鸡牛羊猪幼体跟随距离；跟随条件、更新频率和寻路不变。默认：true。");
+         comments.put("parallelism", "计算线程：控制线程数量和任务达到多大规模时并行。");
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1298,6 +1298,13 @@
+                 + (lifetime.lastFallbackWorkload() == null ? "" : " / " + lifetime.lastFallbackWorkload().displayName()),
+             NamedTextColor.GRAY
+         ));
++        final LeavesXConfig.ComputeKernelSettings kernels = LeavesXRuntime.asyncSettings().kernels();
++        sender.sendMessage(line("数值内核",
++            "排序直方图 " + (kernels.distanceHistograms() ? "开启" : "关闭")
++                + " / 最近目标归约 " + (kernels.nearestReduction() ? "开启" : "关闭")
++                + " / 统一视距追踪 " + (kernels.trackerRowKernel() ? "开启" : "关闭")
++                + " / 激活空间分组 " + (kernels.spatialActivationGroups() ? "开启" : "关闭")
++                + " / 每线程候选缓存上限 " + kernels.cacheMaxCandidates(), NamedTextColor.GRAY));
+         sender.sendMessage(Component.text(
+             "说明：阈值回退表示任务太小；完整主线程回退才表示一次并行尝试没有使用工作线程或需要重算。",
+             NamedTextColor.DARK_GRAY
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -584,11 +584,241 @@
+         assertFalse(offThread.get());
+     }
+ 
++    @Test
++    void combinedHistogramsPreserveAllDoubleBitsAndStableTies() throws Exception {
++        final Random random = new Random(0x486973746F677261L);
++        for (final int size : new int[] {1_023, 1_024, 2_049, 16_385, 65_537}) {
++            final double[] x = new double[size];
++            final double[] y = new double[size];
++            final double[] z = new double[size];
++            for (int index = 0; index < size; index++) {
++                x[index] = index % 5 == 0 ? 1.0 : Math.scalb(random.nextDouble(-1, 1), random.nextInt(-500, 500));
++                y[index] = random.nextDouble(-100, 100);
++                z[index] = random.nextDouble(-100, 100);
++            }
++            x[0] = Double.NaN;
++            x[1] = Double.POSITIVE_INFINITY;
++            x[size - 1] = 0.0;
++            y[size - 1] = -0.0;
++            z[size - 1] = 0.0;
++            final int[] expected = referenceOrder(x, y, z, 0, 0, 0);
++            for (final boolean enabled : new boolean[] {false, true}) {
++                final var node = CommentedConfigurationNode.root();
++                node.node("performance", "compute", "ai-distance-histograms").set(enabled);
++                publish(node);
++                LeavesXComputeExecutor.configure(4, 64, true, true);
++                for (final boolean parallel : new boolean[] {false, true}) {
++                    assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, 0, 0, 0, parallel, 256));
++                }
++            }
++        }
++    }
++
++    @Test
++    void nearestReductionMatchesLegacyForNanTiesAndSmallAndLargeLists() throws Exception {
++        LeavesXComputeExecutor.configure(3, 64, true, true);
++        final Thread owner = Thread.currentThread();
++        final AtomicBoolean offThread = new AtomicBoolean();
++        final Entity origin = threadConfinedEntityAt(0, 0, 0, owner, offThread);
++        final Entity far = threadConfinedEntityAt(8, 0, 0, owner, offThread);
++        final Entity near = threadConfinedEntityAt(1, 0, 0, owner, offThread);
++        final Entity nan = threadConfinedEntityAt(Double.NaN, 0, 0, owner, offThread);
++        for (final int size : new int[] {1, 2, 31, 1_025, 4_097}) {
++            final List<Entity> input = new ArrayList<>(java.util.Collections.nCopies(size, far));
++            input.set(0, nan);
++            if (size > 1) input.set(size / 2, near);
++            for (final boolean parallel : new boolean[] {false, true}) {
++                for (final boolean pipeline : new boolean[] {false, true}) {
++                    int expected = -1;
++                    for (final boolean enabled : new boolean[] {false, true}) {
++                        final var node = CommentedConfigurationNode.root();
++                        node.node("performance", "compute", "ai-nearest-reduction").set(enabled);
++                        node.node("parallelism", "ai-target-search", "snapshot-pipeline").set(pipeline);
++                        publish(node);
++                        final int actual = StableDistanceSorter.findNearestIndex(input, origin, parallel, 256);
++                        if (!enabled) expected = actual;
++                        else assertEquals(expected, actual, "size=" + size + ", parallel=" + parallel);
++                    }
++                }
++            }
++        }
++        assertFalse(offThread.get());
++    }
++
++    @Test
++    void nearestReductionHandlesRealEntitiesNanStableTiesAndSnapshotReentry() throws Exception {
++        LeavesXComputeExecutor.configure(3, 64, true, true);
++        final Entity origin = markerAt(0, 0, 0);
++        final Entity far = markerAt(8, 0, 0);
++        final Entity tied = markerAt(1, 0, 0);
++        final Entity nan = markerAt(2, 0, 0);
++        final var position = Entity.class.getDeclaredField("position");
++        position.setAccessible(true);
++        position.set(nan, new Vec3(Double.NaN, 0, 0));
++        final List<Entity> input = new ArrayList<>(java.util.Collections.nCopies(4_097, far));
++        input.set(0, nan);
++        input.set(2_048, tied);
++        input.set(4_096, tied);
++        for (final boolean pipeline : new boolean[] {false, true}) {
++            int expected = -1;
++            for (final boolean enabled : new boolean[] {false, true}) {
++                final var node = CommentedConfigurationNode.root();
++                node.node("performance", "compute", "ai-nearest-reduction").set(enabled);
++                node.node("parallelism", "ai-target-search", "snapshot-pipeline").set(pipeline);
++                publish(node);
++                final int result = StableDistanceSorter.findNearestIndex(input, origin, true, 256);
++                if (enabled) assertEquals(expected, result, "pipeline=" + pipeline);
++                else expected = result;
++            }
++            assertEquals(2_048, expected);
++        }
++
++        final AtomicBoolean nested = new AtomicBoolean();
++        final java.util.concurrent.atomic.AtomicInteger reads = new java.util.concurrent.atomic.AtomicInteger();
++        final List<Entity> reentrant = new java.util.AbstractList<>() {
++            @Override public Entity get(final int index) {
++                if (reads.incrementAndGet() > input.size() && nested.compareAndSet(false, true)) {
++                    assertEquals(0, StableDistanceSorter.findNearestIndex(List.of(tied), origin, true, 256));
++                }
++                return input.get(index);
++            }
++            @Override public int size() { return input.size(); }
++        };
++        final var enabledNode = CommentedConfigurationNode.root();
++        enabledNode.node("performance", "compute", "ai-nearest-reduction").set(true);
++        enabledNode.node("parallelism", "ai-target-search", "snapshot-pipeline").set(true);
++        publish(enabledNode);
++        assertEquals(2_048, StableDistanceSorter.findNearestIndex(reentrant, origin, true, 256));
++        assertTrue(nested.get());
++    }
++
++    @Test
++    void nearestReductionCaptureFailureDoesNotPoisonNextQuery() throws Exception {
++        LeavesXComputeExecutor.configure(3, 64, true, true);
++        final Entity origin = markerAt(0, 0, 0);
++        final Entity far = markerAt(8, 0, 0);
++        final Entity near = markerAt(1, 0, 0);
++        final List<Entity> stable = new ArrayList<>(java.util.Collections.nCopies(4_097, far));
++        stable.set(4_096, near);
++        final AtomicBoolean fail = new AtomicBoolean(true);
++        final java.util.concurrent.atomic.AtomicInteger reads = new java.util.concurrent.atomic.AtomicInteger();
++        final List<Entity> failing = new java.util.AbstractList<>() {
++            @Override public Entity get(final int index) {
++                final int read = reads.incrementAndGet();
++                if (index == stable.size() - 1 && read > stable.size() && fail.getAndSet(false)) {
++                    throw new IllegalStateException("injected snapshot failure");
++                }
++                return stable.get(index);
++            }
++            @Override public int size() { return stable.size(); }
++        };
++        final var node = CommentedConfigurationNode.root();
++        node.node("performance", "compute", "ai-nearest-reduction").set(true);
++        publish(node);
++        assertThrows(IllegalStateException.class, () -> StableDistanceSorter.findNearestIndex(failing, origin, true, 256));
++        assertEquals(stable.size() - 1, StableDistanceSorter.findNearestIndex(stable, origin, true, 256));
++    }
++
++    @Test
++    void nearestReductionWaitsForFailedPartialResultsAndFullyRecomputes() {
++        LeavesXComputeExecutor.configure(3, 64, true, true);
++        final Entity origin = entityAt(0, 0, 0);
++        final Entity far = entityAt(8, 0, 0);
++        final Entity near = entityAt(1, 0, 0);
++        final List<Entity> input = new ArrayList<>(java.util.Collections.nCopies(129, far));
++        input.set(128, near);
++        try (var compute = org.mockito.Mockito.mockStatic(LeavesXComputeExecutor.class, invocation -> {
++            if (invocation.getMethod().getName().equals("invokeRangesWithCount") && invocation.getArguments().length == 5) {
++                final LeavesXComputeExecutor.RangeTask task = invocation.getArgument(4);
++                task.run(0, 0, 32);
++                return 0;
++            }
++            return invocation.callRealMethod();
++        })) {
++            assertEquals(128, StableDistanceSorter.findNearestIndex(input, origin, true, 256));
++        }
++        assertEquals(128, StableDistanceSorter.findNearestIndex(input, origin, true, 256));
++    }
++
++    @Test
++    void reducedNearestWorkspaceSurvivesReentryAndRecoversAfterCaptureFailure() throws Exception {
++        LeavesXComputeExecutor.configure(3, 64, true, true);
++        final Entity origin = entityAt(0, 0, 0);
++        final Entity far = entityAt(8, 0, 0);
++        final Entity near = entityAt(1, 0, 0);
++        final AtomicBoolean reenter = new AtomicBoolean(true);
++        when(near.getY()).thenAnswer(ignored -> {
++            if (reenter.getAndSet(false)) {
++                assertEquals(0, StableDistanceSorter.findNearestIndex(List.of(far), origin, true, 256));
++            }
++            return 0.0;
++        });
++        assertEquals(1, StableDistanceSorter.findNearestIndex(List.of(far, near), origin, true, 256));
++        final Entity broken = entityAt(2, 0, 0);
++        when(broken.getZ()).thenThrow(new IllegalStateException("capture failure"));
++        final List<Entity> large = new ArrayList<>(java.util.Collections.nCopies(4_097, far));
++        large.set(large.size() - 1, broken);
++        assertThrows(IllegalStateException.class, () -> StableDistanceSorter.findNearestIndex(large, origin, true, 256));
++        assertEquals(1, StableDistanceSorter.findNearestIndex(List.of(far, near), origin, true, 256));
++    }
++
++    @Test
++    void disabledCacheAndSelectionHighWaterRecoveryDoNotChangeNearest() throws Exception {
++        LeavesXComputeExecutor.configure(3, 64, true, true);
++        final Entity origin = entityAt(0, 0, 0);
++        final Entity far = entityAt(8, 0, 0);
++        final Entity near = entityAt(1, 0, 0);
++        final List<Entity> large = new ArrayList<>(java.util.Collections.nCopies(4_097, far));
++        large.set(4_096, near);
++        final var node = CommentedConfigurationNode.root();
++        node.node("performance", "memory", "compute-cache-max-candidates").set(1_024);
++        publish(node);
++        final var field = StableDistanceSorter.class.getDeclaredField("SELECTION_WORKSPACE");
++        field.setAccessible(true);
++        final ThreadLocal<?> workspaces = (ThreadLocal<?>)field.get(null);
++        assertEquals(4_096, StableDistanceSorter.findNearestIndex(large, origin, true, 256));
++        final Object peak = workspaces.get();
++        assertEquals(0, StableDistanceSorter.findNearestIndex(List.of(near), origin, false, 256));
++        org.junit.jupiter.api.Assertions.assertNotSame(peak, workspaces.get());
++        node.node("performance", "memory", "compute-cache-max-candidates").set(0);
++        publish(node);
++        final Object previous = workspaces.get();
++        assertEquals(0, StableDistanceSorter.findNearestIndex(List.of(near), origin, true, 256));
++        org.junit.jupiter.api.Assertions.assertNotSame(previous, workspaces.get());
++    }
++
++    @Test
++    void oversizedWorkspaceIsReplacedAfterDemandFallsWithoutLimitingResults() throws Exception {
++        final var node = CommentedConfigurationNode.root();
++        node.node("performance", "memory", "compute-cache-max-candidates").set(1_024);
++        publish(node);
++        final var field = StableDistanceSorter.class.getDeclaredField("WORKSPACE");
++        field.setAccessible(true);
++        final ThreadLocal<?> workspaces = (ThreadLocal<?>)field.get(null);
++        final double[] x = new double[4_097];
++        final double[] zeros = new double[x.length];
++        for (int index = 0; index < x.length; index++) x[index] = x.length - index;
++        assertArrayEquals(referenceOrder(x, zeros, zeros, 0, 0, 0),
++            StableDistanceSorter.sort(x, zeros, zeros, 0, 0, 0, false, 256));
++        final Object large = workspaces.get();
++        StableDistanceSorter.sort(new double[] {2, 1}, new double[2], new double[2], 0, 0, 0, false, 256);
++        org.junit.jupiter.api.Assertions.assertNotSame(large, workspaces.get());
++        final Object small = workspaces.get();
++        StableDistanceSorter.sort(new double[] {3, 1}, new double[2], new double[2], 0, 0, 0, false, 256);
++        assertSame(small, workspaces.get());
++    }
++
+     private static Entity entityAt(final double x, final double y, final double z) {
+         final Entity entity = mock(Entity.class);
+         when(entity.getX()).thenReturn(x);
+         when(entity.getY()).thenReturn(y);
+         when(entity.getZ()).thenReturn(z);
++        return entity;
++    }
++
++    private static Entity markerAt(final double x, final double y, final double z) {
++        final Entity entity = new net.minecraft.world.entity.Marker(EntityType.MARKER, null);
++        entity.setPos(x, y, z);
+         return entity;
+     }
+ 

@@ -62,6 +62,12 @@ public class LeavesProtocolManager {
 
     @SuppressWarnings("unchecked")
     public static void init() {
+        org.bukkit.Bukkit.getServicesManager().register(
+            org.leavesmc.leaves.api.recipeviewer.RecipeViewerBridge.class,
+            org.leavesmc.leaves.recipeviewer.RecipeViewerBridgeService.INSTANCE,
+            org.leavesmc.leaves.plugin.MinecraftInternalPlugin.INSTANCE,
+            org.bukkit.plugin.ServicePriority.Normal
+        );
         for (Class<?> clazz : getClasses("org.leavesmc.leaves.protocol")) {
             if (LeavesCustomPayload.class.isAssignableFrom(clazz) && !clazz.equals(LeavesCustomPayload.class)) {
                 for (Field field : clazz.getDeclaredFields()) {

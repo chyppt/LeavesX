@@ -17,6 +17,8 @@ import org.leavesmc.leaves.protocol.core.ProtocolHandler;
 import org.leavesmc.leaves.protocol.core.ProtocolUtils;
 import org.leavesx.leavesx.config.LeavesXRuntime;
 import org.leavesx.leavesx.protocol.JeiRecipeSync;
+import org.leavesmc.leaves.recipeviewer.RecipeViewerBridgeService;
+import net.minecraft.world.item.crafting.RecipeHolder;
 
 @LeavesProtocol.Register(namespace = "leavesx_recipe_sync")
 public final class JEIRecipeSyncProtocol implements LeavesProtocol {
@@ -45,10 +47,15 @@ public final class JEIRecipeSyncProtocol implements LeavesProtocol {
         invalidate();
     }
 
-    private static void invalidate() {
+    public static void invalidate() {
         PAYLOADS.clear();
         FAILED.clear();
         SENT.clear();
+    }
+
+    /** 配方桥接 provider 发布新代时清理玩家和协议缓存。 */
+    public static void onRecipeViewerProviderRefresh() {
+        invalidate();
     }
 
     @ProtocolHandler.PlayerLeave
@@ -72,8 +79,27 @@ public final class JEIRecipeSyncProtocol implements LeavesProtocol {
             DiscardedPayload payload = PAYLOADS.get(channel);
             if (payload == null) {
                 try {
-                    payload = JeiRecipeSync.encode(channel, server.getRecipeManager().getRecipes(), server.registryAccess());
+                    final java.util.LinkedHashMap<Object, RecipeHolder<?>> recipes = new java.util.LinkedHashMap<>();
+                    server.getRecipeManager().getRecipes().forEach(holder -> recipes.put(holder.id(), holder));
+                    RecipeViewerBridgeService.INSTANCE.snapshots().forEach((providerId, snapshot) -> {
+                        try {
+                            RecipeViewerJeiSnapshot.parse(snapshot, providerId, server.registryAccess())
+                                    .forEach(holder -> recipes.put(holder.id(), holder));
+                        } catch (RuntimeException failure) {
+                            LeavesLogger.LOGGER.warn("Skipping invalid JEI recipe provider {}", providerId, failure);
+                        }
+                    });
+                    try {
+                        payload = JeiRecipeSync.encode(channel, recipes.values(), server.registryAccess());
+                    } catch (RuntimeException providerFailure) {
+                        // A provider may exceed the loader's total packet budget. Preserve baseline synchronization.
+                        LeavesLogger.LOGGER.warn("JEI provider payload failed for {}; retrying the original server recipes", channel, providerFailure);
+                        payload = JeiRecipeSync.encode(channel, server.getRecipeManager().getRecipes(), server.registryAccess());
+                    }
                     PAYLOADS.put(channel, payload);
+                    if (!RecipeViewerBridgeService.INSTANCE.snapshots().isEmpty()) {
+                        LeavesLogger.LOGGER.info("JEI recipe generation ready: channel={}, bytes={}", channel, payload.data().length);
+                    }
                 } catch (RuntimeException failure) {
                     FAILED.add(channel);
                     LeavesLogger.LOGGER.warn("Unable to encode Just Enough Items recipes for {}; synchronization will retry after recipe reload", channel, failure);
@@ -83,6 +109,12 @@ public final class JEIRecipeSyncProtocol implements LeavesProtocol {
             ProtocolUtils.sendPayloadPacket(player, payload);
             if (channel.equals(JeiRecipeSync.NEOFORGE)) {
                 player.connection.send(new ClientboundUpdateTagsPacket(TagNetworkSerialization.serializeTagsToNetwork(server.registries())));
+            } else {
+                // Fabric JEI caches content on recipe_sync, but rebuilds its GUI on handleUpdateRecipes.
+                // Our negotiated-channel sync happens after login, so preserve this ordering on every generation.
+                var manager = server.getRecipeManager();
+                player.connection.send(new net.minecraft.network.protocol.game.ClientboundUpdateRecipesPacket(
+                        manager.getSynchronizedItemProperties(), manager.getSynchronizedStonecutterRecipes()));
             }
             SENT.put(player.getUUID(), channel);
         }

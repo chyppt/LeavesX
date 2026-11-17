@@ -226,7 +226,7 @@ index 2611ffdaa..ee9adfa08 100644
          comments.put("performance.crafting.recipe-index", "合成台查询按材料数量索引直达候选配方，跳过不可能匹配的配方；结果顺序与原版一致。默认：true。");
          comments.put("performance.network.buffer-optimizations", "减少字符串编码和 Java 压缩的临时缓冲区；不改协议，可重载，关闭后使用原路径。默认：true。");
 +        comments.put("features.tpsbar.enabled", "启用 /tpsbar 性能条，显示 TPS、MSPT 和内存；关闭后自动隐藏，可重载。默认：true。");
-+        comments.put("updates.check", "启动后及每小时检查 LeavesX 正式版更新，仅匹配当前 MC 版本。默认：true。");
++        comments.put("updates.check", "仅在服务器启动时检查一次 LeavesX 正式版更新，仅匹配当前 MC 版本。默认：true。");
 +        comments.put("updates.auto-download", "自动下载并校验更新，重启后使用；不会自动重启服务器。默认：false。");
          comments.put("performance.ai.sensor-list-reuse", "物品传感器复用扫描列表；生物扫描结果会存入 Brain，不复用，避免旧记忆被清空。默认：true。");
          comments.put("performance.chunk.poi-async-serialization", "暂不可用：异步编码失败时可能丢失床和工作站数据；当前仍在 Tick 线程编码、异步写盘。默认：false。");
@@ -298,7 +298,7 @@ new file mode 100644
 index 000000000..b1ac51c6c
 --- /dev/null
 +++ b/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateService.java
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,201 @@
 +package org.leavesx.leavesx.update;
 +
 +import com.google.gson.JsonParser;
@@ -318,7 +318,6 @@ index 000000000..b1ac51c6c
 +import java.util.HexFormat;
 +import java.util.List;
 +import java.util.concurrent.Executors;
-+import java.util.concurrent.ScheduledFuture;
 +import java.util.concurrent.TimeUnit;
 +import java.util.concurrent.atomic.AtomicBoolean;
 +import org.leavesx.leavesx.config.LeavesXConfig;
@@ -330,34 +329,29 @@ index 000000000..b1ac51c6c
 +    private static final Logger LOGGER = LoggerFactory.getLogger(LeavesXUpdateService.class);
 +    private static final HttpClient CLIENT = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8))
 +        .followRedirects(HttpClient.Redirect.NORMAL).build();
-+    private static final java.util.concurrent.ScheduledExecutorService EXECUTOR =
-+        Executors.newSingleThreadScheduledExecutor(task -> {
++    private static final java.util.concurrent.ExecutorService EXECUTOR =
++        Executors.newSingleThreadExecutor(task -> {
 +            Thread thread = new Thread(task, "LeavesX-Update");
 +            thread.setDaemon(true);
 +            return thread;
 +        });
 +    private static final AtomicBoolean BUSY = new AtomicBoolean();
-+    private static ScheduledFuture<?> scheduled;
-+    private static volatile boolean automaticDownload;
++    private static boolean configured;
 +    private static final long MAX_SIZE = 512L * 1024 * 1024;
 +
 +    private LeavesXUpdateService() {}
 +
 +    public static synchronized void configure(LeavesXConfig.ExtensionSettings settings) {
-+        automaticDownload = settings.updateDownload();
-+        if (scheduled != null) scheduled.cancel(false);
-+        scheduled = settings.updateCheck() ? EXECUTOR.scheduleWithFixedDelay(
-+            () -> run(automaticDownload), 30, 3600, TimeUnit.SECONDS) : null;
++        if (configured) return;
++        configured = true;
++        // 更新检查只在服务器启动时执行一次，避免运行期间周期性网络请求和日志噪声。
++        if (settings.updateCheck()) request(settings.updateDownload());
 +    }
 +
 +    public static boolean request(boolean download) {
 +        if (!BUSY.compareAndSet(false, true)) return false;
 +        EXECUTOR.execute(() -> execute(download));
 +        return true;
-+    }
-+
-+    private static void run(boolean download) {
-+        if (BUSY.compareAndSet(false, true)) execute(download);
 +    }
 +
 +    private static void execute(boolean download) {
