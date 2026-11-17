@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 17 Oct 2026 12:00:00 +0800
+Subject: [PATCH] Prioritize entity compute over low priority worldgen
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -432,6 +432,13 @@
+             recordAdmissionRejection(workload, workloadCounters, FallbackReason.POOL_UNAVAILABLE, size);
+             return 0;
+         }
++        // 区块特征属于可延后的低优先级计算；玩家实体计算积压时直接回退调用线程，
++        // 避免预生成或装饰任务占满共享池后把实体 Tick 的快照拖到下一帧。
++        if (workload.priority() == WorkloadPriority.LOW
++            && current.queuedTaskCount() > Math.max(2, workerCount * 2)) {
++            recordAdmissionRejection(workload, workloadCounters, FallbackReason.QUEUE_CONTENTION_CALLER_ONLY, size);
++            return 0;
++        }
+         if (allowSmall && workload == Workload.AI_TARGET_SORT && size <= MAX_SINGLE_WORKER_SORT_ITEMS) {
+             // 距离计算与稳定排序在同一任务内完成，调用线程只采用完整结果。
+             return invokeSmallOnWorker(current, workload, workloadCounters, task, size);
+@@ -723,7 +730,7 @@
+     private static boolean supportsAdaptiveScheduling(final Workload workload) {
+         return switch (workload) {
+             case AI_TARGET_SORT, AI_TARGET_SELECT, ENTITY_ACTIVATION, ENTITY_TRACKING, MOB_SPAWN_COUNTING -> true;
+-            case UNSPECIFIED, AI_TARGET_MERGE, MOB_COLLISION, WORLDGEN_NOISE -> false;
++            case UNSPECIFIED, AI_TARGET_MERGE, MOB_COLLISION, WORLDGEN_NOISE, WORLDGEN_FEATURE -> false;
+         };
+     }
+ 
+@@ -731,7 +738,7 @@
+         return switch (workload) {
+             case AI_TARGET_SORT, AI_TARGET_SELECT, ENTITY_ACTIVATION, ENTITY_TRACKING, MOB_SPAWN_COUNTING, MOB_COLLISION -> true;
+             // 归并和未分类任务保留原准入，不能给没有收益的末尾排序再加一次派发。
+-            case UNSPECIFIED, AI_TARGET_MERGE, WORLDGEN_NOISE -> false;
++            case UNSPECIFIED, AI_TARGET_MERGE, WORLDGEN_NOISE, WORLDGEN_FEATURE -> false;
+         };
+     }
+ 
+@@ -783,7 +790,7 @@
+     private static boolean supportsAdaptivePartitioning(final Workload workload) {
+         return switch (workload) {
+             case AI_TARGET_SORT, AI_TARGET_SELECT, ENTITY_ACTIVATION, ENTITY_TRACKING -> true;
+-            case UNSPECIFIED, AI_TARGET_MERGE, MOB_SPAWN_COUNTING, MOB_COLLISION, WORLDGEN_NOISE -> false;
++            case UNSPECIFIED, AI_TARGET_MERGE, MOB_SPAWN_COUNTING, MOB_COLLISION, WORLDGEN_NOISE, WORLDGEN_FEATURE -> false;
+         };
+     }
+ 
+@@ -1072,18 +1079,36 @@
+         ENTITY_ACTIVATION("实体激活范围"),
+         ENTITY_TRACKING("实体追踪计算"),
+         MOB_SPAWN_COUNTING("刷怪统计"),
+-        MOB_COLLISION("生物碰撞数值计算"),
+-        WORLDGEN_NOISE("区块噪声采样");
++        MOB_COLLISION("生物碰撞数值计算"),
++        WORLDGEN_NOISE("区块噪声采样", WorkloadPriority.NORMAL),
++        WORLDGEN_FEATURE("区块特征计算", WorkloadPriority.LOW);
+ 
+         private final String displayName;
++        private final WorkloadPriority priority;
+ 
+         Workload(final String displayName) {
++            this(displayName, WorkloadPriority.HIGH);
++        }
++
++        Workload(final String displayName, final WorkloadPriority priority) {
+             this.displayName = displayName;
++            this.priority = priority;
+         }
+ 
+         public String displayName() {
+             return this.displayName;
+         }
++
++        public WorkloadPriority priority() {
++            return this.priority;
++        }
++    }
++
++    /** 调度优先级只影响准入，不改变同一所有者任务的执行顺序。 */
++    public enum WorkloadPriority {
++        HIGH,
++        NORMAL,
++        LOW
+     }
+ 
+     /** Immutable diagnostic view of the shared pure-computation pool. */
+@@ -1194,6 +1220,7 @@
+         BELOW_THRESHOLD("任务规模低于并行阈值"),
+         INSUFFICIENT_PARTITIONS("可用分区不足"),
+         POOL_BUSY_CALLER_ONLY("线程池繁忙，完整任务由主线程执行"),
++        QUEUE_CONTENTION_CALLER_ONLY("低优先级任务让路给实时实体计算"),
+         SUBMISSION_REJECTED("工作任务提交被拒绝"),
+         SUBMISSION_FAILED("工作任务提交异常"),
+         COMPUTATION_FAILED("工作线程计算异常，已请求完整主线程重算"),

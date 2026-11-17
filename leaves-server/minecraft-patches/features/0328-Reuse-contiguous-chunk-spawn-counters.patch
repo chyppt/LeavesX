@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 3 Oct 2026 01:00:00 +0800
+Subject: [PATCH] Reuse contiguous chunk spawn counters after locality admission
+
+diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+--- a/net/minecraft/world/level/MobSpawnCountAccumulator.java
++++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+@@ -53,9 +53,45 @@
+     }
+ 
+     private static Long2ObjectOpenHashMap<int[]> countRange(final Inputs inputs, final int start, final int end) {
++        if (hasChunkLocality(inputs.chunkKeys(), start, end)) {
++            return countLocalRange(inputs, start, end);
++        }
+         final Long2ObjectOpenHashMap<int[]> counts = new Long2ObjectOpenHashMap<>();
+         for (int index = start; index < end; index++) {
+             add(counts, inputs.chunkKeys()[index], Byte.toUnsignedInt(inputs.categoryOrdinals()[index]));
++        }
++        return counts;
++    }
++
++    /** 只决定使用哪种等价计数循环；不排序输入，也不缓存跨批次状态。 */
++    private static boolean hasChunkLocality(final long[] keys, final int start, final int end) {
++        final int size = end - start;
++        if (size < 128) return false;
++        final int step = (size - 1) / 8;
++        int repeated = 0;
++        for (int sample = 0; sample < 8; sample++) {
++            final int index = start + sample * step;
++            if (keys[index] == keys[index + 1] && ++repeated >= 4) return true;
++        }
++        return false;
++    }
++
++    private static Long2ObjectOpenHashMap<int[]> countLocalRange(final Inputs inputs, final int start, final int end) {
++        final Long2ObjectOpenHashMap<int[]> counts = new Long2ObjectOpenHashMap<>();
++        long previousChunkKey = 0L;
++        int[] previousCounts = null;
++        for (int index = start; index < end; index++) {
++            final long chunkKey = inputs.chunkKeys()[index];
++            // 密集农场常有连续的同区块实体；每个分片只缓存自己的最近计数，不共享可变数组。
++            if (previousCounts == null || chunkKey != previousChunkKey) {
++                previousCounts = counts.get(chunkKey);
++                if (previousCounts == null) {
++                    previousCounts = new int[CATEGORY_COUNT];
++                    counts.put(chunkKey, previousCounts);
++                }
++                previousChunkKey = chunkKey;
++            }
++            previousCounts[Byte.toUnsignedInt(inputs.categoryOrdinals()[index])]++;
+         }
+         return counts;
+     }

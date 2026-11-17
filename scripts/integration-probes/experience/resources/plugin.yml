@@ -1,0 +1,4 @@
+name: LeavesXExperienceVisibilityProbe
+version: '1.0'
+main: org.leavesx.probe.ExperienceVisibilityProbe
+api-version: '26.1.2'

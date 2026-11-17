@@ -1,0 +1,14 @@
+name: LeavesXNekoProbe
+version: 1.1.2
+main: org.leavesx.probe.neko.NekoMovementProbe
+api-version: '1.13'
+depend: [NekoAntiCheat]
+description: MovementValidation 只读来源及移动事件诊断
+commands:
+  nekoorigin:
+    description: 记录 Neko 检测来源及首次移动误判前后的事件
+    usage: /nekoorigin start <玩家> [秒] | status | stop
+    permission: leavesx.nekoorigin
+permissions:
+  leavesx.nekoorigin:
+    default: op

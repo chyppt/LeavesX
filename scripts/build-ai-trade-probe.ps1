@@ -1,11 +1,15 @@
 [CmdletBinding()]
-param([ValidateSet('ai-tool', 'performance')][string]$ProbeName = 'ai-tool')
+param([ValidateSet('ai-tool', 'performance', 'experience')][string]$ProbeName = 'ai-tool')
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $probe = Join-Path $PSScriptRoot ('integration-probes/' + $ProbeName)
 $relativeClasses = 'build/' + $ProbeName + '-probe/classes'
 $classes = Join-Path $root $relativeClasses
-$outputJar = if ($ProbeName -eq 'performance') { 'build/LeavesXPerformanceProbe.jar' } else { 'build/LeavesXAiTradeProbe.jar' }
+$outputJar = switch ($ProbeName) {
+    'performance' { 'build/LeavesXPerformanceProbe.jar' }
+    'experience' { 'build/LeavesXExperienceVisibilityProbe.jar' }
+    default { 'build/LeavesXAiTradeProbe.jar' }
+}
 New-Item -ItemType Directory -Path $classes -Force | Out-Null
 $javaBin = Join-Path $env:JAVA_HOME 'bin'
 $classpath = @('leaves-api/build/libs/leaves-api-26.1.2-R0.1-SNAPSHOT.jar', 'leaves-server/build/classes/java/main')

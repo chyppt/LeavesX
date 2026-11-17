@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 14 Nov 2026 12:00:00 +0800
+Subject: [PATCH] Reuse nearest target spatial query storage
+
+diff --git a/net/minecraft/server/level/ServerEntityGetter.java b/net/minecraft/server/level/ServerEntityGetter.java
+--- a/net/minecraft/server/level/ServerEntityGetter.java
++++ b/net/minecraft/server/level/ServerEntityGetter.java
+@@ -35,5 +35,15 @@ public interface ServerEntityGetter extends EntityGetter {
+         final double z,
+         final AABB bb
+     ) {
++        if (this == this.getLevel()
++            && !(source instanceof net.minecraft.world.entity.npc.villager.Villager)
++            && org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++            try (net.minecraft.world.level.Level.LeavesXEntityQueryBuffer buffer =
++                     net.minecraft.world.level.Level.leavesX$acquireEntityQueryBuffer()) {
++                // 保留完整空间查询及候选顺序；选择器执行期间保持缓冲占用，隔离嵌套查询。
++                return this.getNearestEntity(buffer.queryOfClass(this.getLevel(), type, null, bb, entity -> true),
++                    targetConditions, source, x, y, z);
++            }
++        }
+         return this.getNearestEntity(this.getEntitiesOfClass(type, bb, entity -> true), targetConditions, source, x, y, z);
+     }

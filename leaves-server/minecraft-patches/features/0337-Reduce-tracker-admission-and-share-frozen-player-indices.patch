@@ -1,0 +1,244 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sun, 15 Nov 2026 23:20:00 +0800
+Subject: [PATCH] Reduce tracker admission scans and reuse frozen player indices
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1183,14 +1183,18 @@
+         final ca.spottedleaf.moonrise.common.list.ReferenceList<Entity> trackerEntities
+     ) {
+         final Entity[] entities = trackerEntities.getRawDataUnchecked();
++        // 准入只需要知道是否达到并行下限；达到后继续扫描不会改变 shouldAttempt 的结果，
++        // 却会在实体密集区为每个追踪实体再做一次玩家列表读取。
++        final int admissionLimit = 256;
+         long comparisons = 0L;
+         for (int index = 0, len = trackerEntities.size(); index < len; index++) {
+             final Entity entity = entities[index];
++            if (entity == null) continue;
+             final ChunkMap.TrackedEntity tracker =
+                 ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
+             if (tracker != null) {
+                 comparisons += tracker.leavesX$nearbyPlayerCount();
+-                if (comparisons >= Integer.MAX_VALUE) return Integer.MAX_VALUE;
++                if (comparisons >= admissionLimit) return admissionLimit;
+             }
+         }
+         return (int)comparisons;
+@@ -1215,8 +1219,11 @@
+             }
+             final LeavesXTrackerSnapshot[] snapshots = this.leavesX$trackerSnapshots;
+             final org.leavesx.leavesx.performance.EntityTrackingRangeBatch rangeBatch = this.leavesX$trackerRangeBatch;
+-            final boolean pipelined = org.leavesx.leavesx.config.LeavesXRuntime.asyncSettings().trackerComparisonSharding()
+-                && org.leavesx.leavesx.config.LeavesXRuntime.asyncSettings().trackerSnapshotPipeline();
++            final org.leavesx.leavesx.config.LeavesXConfig.AsyncSettings trackerSettings =
++                org.leavesx.leavesx.config.LeavesXRuntime.asyncSettings();
++            final boolean pipelined = trackerSettings.trackerComparisonSharding() && trackerSettings.trackerSnapshotPipeline();
++            final boolean emptyRangeFastPath = trackerSettings.kernels().trackerEmptyRangeFastPath();
++            final boolean sharedPlayerLists = entityCount > 1 && trackerSettings.kernels().trackerPlayerLists();
+             try (final org.leavesx.leavesx.runtime.LeavesXSnapshotBatch pipeline = pipelined
+                 ? new org.leavesx.leavesx.runtime.LeavesXSnapshotBatch(
+                     org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING) : null) {
+@@ -1234,7 +1241,8 @@
+                     snapshots[index] = tracker == null
+                         ? null
+                         : tracker.leavesX$createTrackerSnapshot(
+-                            ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkData().nearbyPlayers
++                            ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkData().nearbyPlayers,
++                            emptyRangeFastPath, sharedPlayerLists
+                         );
+                     if (pipeline != null) {
+                         if (snapshots[index] == null) rangeBatch.setEmptyRow(index);
+@@ -1331,6 +1339,7 @@
+                 if (snapshot != null) {
+                     snapshot.chunk = null;
+                     snapshot.playerCount = 0;
++                    snapshot.playerIndices = snapshot.ownedPlayerIndices;
+                 }
+             }
+             java.util.Arrays.fill(this.leavesX$trackerSnapshots, null);
+@@ -1704,34 +1713,42 @@
+         }
+ 
+         private LeavesXTrackerSnapshot leavesX$createTrackerSnapshot(
+-            final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.TrackedChunk chunk
++            final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.TrackedChunk chunk,
++            final boolean emptyRangeFastPath,
++            final boolean sharedPlayerLists
+         ) {
+             if (chunk == null) {
+-                return this.leavesX$trackerSnapshot.resetEmpty(null, -1L);
++                return this.leavesX$trackerSnapshot.resetEmpty(null, -1L, emptyRangeFastPath);
+             }
+             final ca.spottedleaf.moonrise.common.list.ReferenceList<ServerPlayer> playerList =
+                 chunk.getPlayers(ca.spottedleaf.moonrise.common.misc.NearbyPlayers.NearbyMapType.VIEW_DISTANCE);
+             if (playerList == null || playerList.size() == 0) {
+-                return this.leavesX$trackerSnapshot.resetEmpty(chunk, chunk.getUpdateCount());
++                return this.leavesX$trackerSnapshot.resetEmpty(chunk, chunk.getUpdateCount(), emptyRangeFastPath);
+             }
+ 
+             final int count = playerList.size();
++            final long update = chunk.getUpdateCount();
++            final int[] sharedIndices = sharedPlayerLists
++                ? ChunkMap.this.leavesX$trackerPlayerFrame.playerLists.get(chunk, playerList, update, count)
++                : null;
+             final LeavesXTrackerSnapshot snapshot = this.leavesX$trackerSnapshot.reset(
+                 this.entity.getX(),
+                 this.entity.getY(),
+                 this.entity.getZ(),
+                 chunk,
+-                chunk.getUpdateCount(),
++                update,
+                 count,
+-                this.getEffectiveRange()
++                this.getEffectiveRange(),
++                sharedIndices
+             );
+-            final ServerPlayer[] sourcePlayers = playerList.getRawDataUnchecked();
+-            for (int index = 0; index < count; index++) {
+-                final ServerPlayer player = sourcePlayers[index];
+-                snapshot.setPlayer(index, ChunkMap.this.leavesX$trackerPlayerFrame.indexOfOrAdd(
+-                    player,
+-                    ChunkMap.this.getPlayerViewDistance(player) * 16.0D
+-                ));
++            if (sharedIndices == null) {
++                final ServerPlayer[] sourcePlayers = playerList.getRawDataUnchecked();
++                for (int index = 0; index < count; index++) {
++                    snapshot.setPlayer(index, ChunkMap.this.leavesX$trackerPlayerFrame.indexOfOrAdd(sourcePlayers[index]));
++                }
++                if (sharedPlayerLists) {
++                    ChunkMap.this.leavesX$trackerPlayerFrame.playerLists.remember(chunk, playerList, update, count, snapshot.playerIndices);
++                }
+             }
+             snapshot.rangeY = ChunkMap.this.level.paperConfig().entities.trackingRangeY.enabled
+                 ? ChunkMap.this.level.paperConfig().entities.trackingRangeY.get(this.entity, -1)
+@@ -1789,8 +1806,9 @@
+             final LeavesXTrackerSnapshot snapshot,
+             final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.@Nullable TrackedChunk currentChunk
+         ) {
+-            if (currentChunk != snapshot.chunk || this.entity.getX() != snapshot.entityX
+-                || this.entity.getY() != snapshot.entityY || this.entity.getZ() != snapshot.entityZ) {
++            if (currentChunk != snapshot.chunk || (!snapshot.emptyRangeFastPath
++                && (this.entity.getX() != snapshot.entityX || this.entity.getY() != snapshot.entityY
++                    || this.entity.getZ() != snapshot.entityZ))) {
+                 return false;
+             }
+             if (currentChunk == null) return snapshot.playerCount == 0;
+@@ -1860,11 +1878,13 @@
+         private double entityZ;
+         private ca.spottedleaf.moonrise.common.misc.NearbyPlayers.@Nullable TrackedChunk chunk;
+         private long chunkUpdate;
+-        private int[] playerIndices = new int[0];
++        private int[] ownedPlayerIndices = new int[0];
++        private int[] playerIndices = this.ownedPlayerIndices;
+         private double effectiveRange;
+         private double rangeY;
+         private boolean[] inRange = new boolean[0];
+         private int playerCount;
++        private boolean emptyRangeFastPath;
+ 
+         private LeavesXTrackerSnapshot(
+             final ChunkMap.TrackedEntity tracker,
+@@ -1883,9 +1903,19 @@
+             final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.TrackedChunk chunk,
+             final long chunkUpdate,
+             final int playerCount,
+-            final double effectiveRange
++            final double effectiveRange,
++            final int @Nullable [] sharedIndices
+         ) {
++            if (sharedIndices == null) {
++                if (this.ownedPlayerIndices.length < playerCount) {
++                    this.ownedPlayerIndices = new int[Math.max(playerCount, Math.max(4, this.ownedPlayerIndices.length << 1))];
++                }
++                this.playerIndices = this.ownedPlayerIndices;
++            } else {
++                this.playerIndices = sharedIndices;
++            }
+             this.ensureCapacity(playerCount);
++            this.emptyRangeFastPath = false;
+             this.entityX = entityX;
+             this.entityY = entityY;
+             this.entityZ = entityZ;
+@@ -1898,11 +1928,16 @@
+ 
+         private LeavesXTrackerSnapshot resetEmpty(
+             final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.@Nullable TrackedChunk chunk,
+-            final long chunkUpdate
++            final long chunkUpdate,
++            final boolean skipCoordinateChecks
+         ) {
+-            this.entityX = this.entity.getX();
+-            this.entityY = this.entity.getY();
+-            this.entityZ = this.entity.getZ();
++            // 空玩家集合的可见性与实体坐标无关；提交时仍核验区块版本、列表大小和顺序。
++            this.emptyRangeFastPath = skipCoordinateChecks;
++            if (!this.emptyRangeFastPath) {
++                this.entityX = this.entity.getX();
++                this.entityY = this.entity.getY();
++                this.entityZ = this.entity.getZ();
++            }
+             this.chunk = chunk;
+             this.chunkUpdate = chunkUpdate;
+             this.rangeY = -1.0D;
+@@ -1911,11 +1946,10 @@
+         }
+ 
+         private void ensureCapacity(final int required) {
+-            if (this.playerIndices.length >= required) {
++            if (this.inRange.length >= required) {
+                 return;
+             }
+-            final int capacity = Math.max(required, Math.max(4, this.playerIndices.length << 1));
+-            this.playerIndices = java.util.Arrays.copyOf(this.playerIndices, capacity);
++            final int capacity = Math.max(required, Math.max(4, this.inRange.length << 1));
+             this.inRange = java.util.Arrays.copyOf(this.inRange, capacity);
+         }
+ 
+@@ -1953,6 +1987,10 @@
+             final org.leavesx.leavesx.performance.EntityTrackingRangeBatch batch,
+             final int row
+         ) {
++            if (this.playerCount == 0) {
++                batch.setEmptyRow(row);
++                return;
++            }
+             batch.setRow(
+                 row,
+                 this.entityX,
+@@ -1982,6 +2020,8 @@
+         private final it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap<ServerPlayer> playerIndices =
+             new it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap<>();
+         private boolean indexed;
++        private final org.leavesx.leavesx.performance.TrackerPlayerIndexCache playerLists =
++            new org.leavesx.leavesx.performance.TrackerPlayerIndexCache();
+ 
+         private void prepare(final List<ServerPlayer> currentPlayers) {
+             final int previousSize = this.size;
+@@ -1999,7 +2039,7 @@
+             }
+         }
+ 
+-        private int indexOfOrAdd(final ServerPlayer player, final double viewDistance) {
++        private int indexOfOrAdd(final ServerPlayer player) {
+             if (this.indexed) {
+                 final int existing = this.playerIndices.getOrDefault(player, -1);
+                 if (existing >= 0) return existing;
+@@ -2010,7 +2050,7 @@
+             }
+             this.ensureCapacity(this.size + 1);
+             final int index = this.size++;
+-            this.capture(index, player, viewDistance);
++            this.capture(index, player, ChunkMap.this.getPlayerViewDistance(player) * 16.0D);
+             return index;
+         }
+ 
+@@ -2018,6 +2058,7 @@
+             // 准备过程可能提前失败，仍需清除上一帧所有槽位中的玩家引用。
+             java.util.Arrays.fill(this.players, null);
+             this.playerIndices.clear();
++            this.playerLists.clear();
+             this.indexed = false;
+             this.size = 0;
+         }

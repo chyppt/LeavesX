@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 3 Oct 2026 01:00:00 +0800
+Subject: [PATCH] Preserve animal goal semantics in snapshot calculations
+
+diff --git a/net/minecraft/world/entity/ai/goal/BreedGoal.java b/net/minecraft/world/entity/ai/goal/BreedGoal.java
+--- a/net/minecraft/world/entity/ai/goal/BreedGoal.java
++++ b/net/minecraft/world/entity/ai/goal/BreedGoal.java
+@@ -6,6 +6,8 @@
+ import net.minecraft.world.entity.ai.targeting.TargetingConditions;
+ import net.minecraft.world.entity.animal.Animal;
+ import org.jspecify.annotations.Nullable;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.leavesx.leavesx.performance.AnimalTargetSnapshot;
+ 
+ public class BreedGoal extends Goal {
+     private static final TargetingConditions PARTNER_TARGETING = TargetingConditions.forNonCombat().range(8.0).ignoreLineOfSight();
+@@ -62,6 +64,19 @@
+     private @Nullable Animal getFreePartner() {
+         List<? extends Animal> animals = this.level
+             .getNearbyEntities(this.partnerClass, PARTNER_TARGETING, this.animal, this.animal.getBoundingBox().inflate(8.0));
++        if (this.getClass() == BreedGoal.class
++            && this.animal.getClass() == this.partnerClass
++            && LeavesXRuntime.animalBreedingSnapshot()
++            && AnimalTargetSnapshot.canSnapshot(this.animal, animals)) {
++            final AnimalTargetSnapshot.Match<Animal> match =
++                AnimalTargetSnapshot.findNearest(
++                    animals,
++                    potentialPartner -> this.animal.canMate(potentialPartner) && !potentialPartner.isPanicking(),
++                    this.animal, false
++                );
++            return match == null ? null : match.entity();
++        }
++
+         double dist = Double.MAX_VALUE;
+         Animal partner = null;
+ 
+diff --git a/net/minecraft/world/entity/ai/goal/FollowParentGoal.java b/net/minecraft/world/entity/ai/goal/FollowParentGoal.java
+--- a/net/minecraft/world/entity/ai/goal/FollowParentGoal.java
++++ b/net/minecraft/world/entity/ai/goal/FollowParentGoal.java
+@@ -3,6 +3,8 @@
+ import java.util.List;
+ import net.minecraft.world.entity.animal.Animal;
+ import org.jspecify.annotations.Nullable;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.leavesx.leavesx.performance.AnimalTargetSnapshot;
+ 
+ public class FollowParentGoal extends Goal {
+     public static final int HORIZONTAL_SCAN_RANGE = 8;
+@@ -24,9 +26,38 @@
+             return false;
+         }
+ 
++        if (this.getClass() == FollowParentGoal.class && LeavesXRuntime.entityQueryOptimizations()) {
++            try (net.minecraft.world.level.Level.LeavesXEntityQueryBuffer buffer =
++                     net.minecraft.world.level.Level.leavesX$acquireEntityQueryBuffer()) {
++                final List<? extends Animal> parents = buffer.queryOfClass(
++                    this.animal.level(), (Class<? extends Animal>) this.animal.getClass(), null,
++                    this.animal.getBoundingBox().inflate(8.0, 4.0, 8.0), net.minecraft.world.entity.EntitySelector.NO_SPECTATORS
++                );
++                return this.leavesX$selectParent(parents);
++            }
++        }
++
+         List<? extends Animal> parents = this.animal
+             .level()
+             .getEntitiesOfClass((Class<? extends Animal>)this.animal.getClass(), this.animal.getBoundingBox().inflate(8.0, 4.0, 8.0));
++        return this.leavesX$selectParent(parents);
++    }
++
++    /** 查询复用和原查询共享同一比较循环，避免两条路径的跟随边界逐渐分叉。 */
++    private boolean leavesX$selectParent(final List<? extends Animal> parents) {
++        if (this.getClass() == FollowParentGoal.class
++            && LeavesXRuntime.animalFollowParentSnapshot()
++            && AnimalTargetSnapshot.canSnapshot(this.animal, parents)) {
++            final AnimalTargetSnapshot.Match<Animal> match = AnimalTargetSnapshot.findNearest(
++                parents,
++                parent -> parent.getAge() >= 0,
++                this.animal, true
++            );
++            if (match == null || match.distanceSquared() < 9.0) return false;
++            this.parent = match.entity();
++            return true;
++        }
++
+         Animal closest = null;
+         double closestDistSqr = Double.MAX_VALUE;
+ 
+diff --git a/net/minecraft/server/level/ServerEntityGetter.java b/net/minecraft/server/level/ServerEntityGetter.java
+--- a/net/minecraft/server/level/ServerEntityGetter.java
++++ b/net/minecraft/server/level/ServerEntityGetter.java
+@@ -112,6 +112,22 @@
+     default <T extends LivingEntity> List<T> getNearbyEntities(
+         final Class<T> type, final TargetingConditions targetConditions, final LivingEntity source, final AABB bb
+     ) {
++        if (this == this.getLevel()
++            && !(source instanceof net.minecraft.world.entity.npc.villager.Villager)
++            && org.leavesx.leavesx.config.LeavesXRuntime.entityQueryOptimizations()) {
++            try (net.minecraft.world.level.Level.LeavesXEntityQueryBuffer buffer =
++                     net.minecraft.world.level.Level.leavesX$acquireEntityQueryBuffer()) {
++                final List<T> nearby = buffer.queryOfClass(this.getLevel(), type, null, bb, entity -> true);
++                final List<T> entities = new ArrayList<>();
++                for (final T entity : nearby) {
++                    // 保持原版顺序：先完成实体查询，再按 TargetingConditions 逐个判断。
++                    if (targetConditions.test(this.getLevel(), source, entity)) {
++                        entities.add(entity);
++                    }
++                }
++                return entities;
++            }
++        }
+         List<T> nearby = this.getEntitiesOfClass(type, bb, entityx -> true);
+         List<T> entities = new ArrayList<>();
+ 

@@ -1,11 +1,13 @@
 package org.leavesx.leavesx.config;
 
+import java.util.List;
 import java.util.Map;
 import org.spongepowered.configurate.ConfigurationNode;
 
 /** 单向别名：只写入整理后的结构，同时继续接受旧配置文件。 */
 final class LeavesXConfigPaths {
-    private static final Map<String, String> ALIASES = Map.ofEntries(
+    // 按旧结构到新结构依次迁移，避免同一项跨多版改名时依赖 Map 的遍历顺序。
+    private static final List<Map.Entry<String, String>> ALIASES = List.of(
         Map.entry("performance.optimized-varint", "performance.network.optimized-varint"),
         Map.entry("performance.immutable-cache-optimizations", "performance.memory.immutable-caches"),
         Map.entry("performance.resource-identifier-cache", "performance.memory.resource-identifiers"),
@@ -27,14 +29,31 @@ final class LeavesXConfigPaths {
         Map.entry("performance.startup-resident-bots", "fakeplayer.startup-restore"),
         Map.entry("performance.spectator-no-chunk-loading", "features.spectator-no-chunk-loading"),
         Map.entry("performance.container-copy-reuse", "performance.blocks.container-copy-reuse"),
-        Map.entry("async.virtual-chat", "performance.use-virtual-thread.async-chat-executor")
+        Map.entry("async.virtual-chat", "performance.use-virtual-thread.async-chat-executor"),
+        Map.entry("parallelism", "async.compute"),
+        Map.entry("regionized-ticking", "async.world-ticking"),
+        Map.entry("performance.use-virtual-thread", "async.virtual-threads"),
+        Map.entry("performance.compute", "async.compute.kernels"),
+        Map.entry("performance.memory.compute-cache-max-candidates", "async.compute.cache-max-candidates"),
+        Map.entry("async.low-load-workers", "async.compute.low-load-workers"),
+        Map.entry("async.shared-compute-workers", "async.compute.shared-workers"),
+        Map.entry("async.ai-candidates", "async.compute.ai-candidates"),
+        Map.entry("async.animals", "async.compute.animals"),
+        Map.entry("async.isolate-chunk-packing", "async.chunk-send.isolate-packing"),
+        Map.entry("performance.chunk", "performance.chunks"),
+        Map.entry("performance.reduce-packets", "performance.network.reduce-packets"),
+        Map.entry("performance.cache-biome", "performance.memory.biome-cache"),
+        Map.entry("performance.optimize-player-movement", "performance.entities.player-movement"),
+        Map.entry("performance.optimized-powered-rails", "performance.blocks.powered-rails"),
+        Map.entry("performance.optimize-random-tick", "performance.blocks.random-tick"),
+        Map.entry("performance.faster-random-generator", "performance.random-generator")
     );
 
     private LeavesXConfigPaths() {}
 
     static ConfigurationNode normalized(final ConfigurationNode source) {
-        for (final String path : ALIASES.keySet()) {
-            if (!source.node((Object[]) path.split("\\.")).virtual()) {
+        for (final Map.Entry<String, String> alias : ALIASES) {
+            if (!source.node((Object[]) alias.getKey().split("\\.")).virtual()) {
                 final ConfigurationNode copy = source.copy();
                 migrate(copy);
                 return copy;
@@ -45,7 +64,7 @@ final class LeavesXConfigPaths {
 
     static boolean migrate(final ConfigurationNode root) {
         boolean changed = false;
-        for (final Map.Entry<String, String> alias : ALIASES.entrySet()) {
+        for (final Map.Entry<String, String> alias : ALIASES) {
             final Object[] oldPath = alias.getKey().split("\\.");
             final ConfigurationNode source = root.node(oldPath);
             if (source.virtual()) continue;

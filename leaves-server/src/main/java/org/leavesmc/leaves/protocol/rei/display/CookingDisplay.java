@@ -31,7 +31,7 @@ public abstract class CookingDisplay extends Display {
     protected float xp;
     protected double cookTime;
 
-    private CookingDisplay(@NotNull List<EntryIngredient> inputs, @NotNull List<EntryIngredient> outputs, @NotNull Identifier id, float xp, double cookTime) {
+    protected CookingDisplay(@NotNull List<EntryIngredient> inputs, @NotNull List<EntryIngredient> outputs, @NotNull Identifier id, float xp, double cookTime) {
         super(inputs, outputs, id);
         this.xp = xp;
         this.cookTime = cookTime;

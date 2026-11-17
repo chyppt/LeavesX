@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Mon, 16 Nov 2026 16:00:00 +0800
+Subject: [PATCH] Reuse tracker batches and shorten low-load admission
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1185,7 +1185,7 @@
+         final Entity[] entities = trackerEntities.getRawDataUnchecked();
+         // 准入只需要知道是否达到并行下限；达到后继续扫描不会改变 shouldAttempt 的结果，
+         // 却会在实体密集区为每个追踪实体再做一次玩家列表读取。
+-        final int admissionLimit = 256;
++        final int admissionLimit = org.leavesx.leavesx.config.LeavesXRuntime.asyncSettings().lowLoadWorkers() ? 1 : 256;
+         long comparisons = 0L;
+         for (int index = 0, len = trackerEntities.size(); index < len; index++) {
+             final Entity entity = entities[index];
+@@ -1225,7 +1225,7 @@
+             final boolean emptyRangeFastPath = trackerSettings.kernels().trackerEmptyRangeFastPath();
+             final boolean sharedPlayerLists = entityCount > 1 && trackerSettings.kernels().trackerPlayerLists();
+             try (final org.leavesx.leavesx.runtime.LeavesXSnapshotBatch pipeline = pipelined
+-                ? new org.leavesx.leavesx.runtime.LeavesXSnapshotBatch(
++                ? org.leavesx.leavesx.runtime.LeavesXSnapshotBatch.acquire(
+                     org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING) : null) {
+                 if (pipeline != null) {
+                     rangeBatch.prepare(entityCount, this.leavesX$trackerPlayerFrame.positionData, this.leavesX$trackerPlayerFrame.viewDistanceBlocks,

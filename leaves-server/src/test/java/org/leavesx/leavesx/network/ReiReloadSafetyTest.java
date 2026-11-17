@@ -22,6 +22,38 @@ import static org.mockito.Mockito.*;
 @Normal
 class ReiReloadSafetyTest {
     @Test
+    void existingNegotiatedReiChannelIsRecoveredWithoutAnotherRegisterPacket() throws Exception {
+        var cache = field("cachedPayloads");
+        var version = field("minecraftRecipeVer");
+        var next = field("nextReiRecipeVer");
+        Object oldCache = cache.get(null);
+        int oldNext = next.getInt(null);
+        var player = mock(net.minecraft.server.level.ServerPlayer.class);
+        var bukkitPlayer = mock(org.bukkit.craftbukkit.entity.CraftPlayer.class);
+        var connection = mock(net.minecraft.server.network.ServerGamePacketListenerImpl.class);
+        player.connection = connection;
+        when(player.getUUID()).thenReturn(java.util.UUID.randomUUID());
+        when(player.getBukkitEntity()).thenReturn(bukkitPlayer);
+        when(bukkitPlayer.getListeningPluginChannels()).thenReturn(java.util.Set.of("roughlyenoughitems:sync_displays"));
+        var server = mock(net.minecraft.server.MinecraftServer.class, RETURNS_DEEP_STUBS);
+        when(server.getPlayerList().getPlayers()).thenReturn(List.of(player));
+        var payload = new net.minecraft.network.protocol.common.custom.DiscardedPayload(
+                REIServerProtocol.SYNC_DISPLAYS_PACKET, new byte[0]);
+        try (var servers = mockStatic(net.minecraft.server.MinecraftServer.class)) {
+            servers.when(net.minecraft.server.MinecraftServer::getServer).thenReturn(server);
+            cache.set(null, com.google.common.collect.ImmutableList.of(payload));
+            next.setInt(null, version.getInt(null));
+            REIServerProtocol.tick();
+            REIServerProtocol.tick();
+            verify(connection, times(1)).send(any(net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket.class));
+        } finally {
+            REIServerProtocol.onPlayerLoggedOut(player);
+            cache.set(null, oldCache);
+            next.setInt(null, oldNext);
+        }
+    }
+
+    @Test
     void recipeReloadDiscardsPreviouslyEncodedDisplays() throws Exception {
         verifyPublication(true);
     }

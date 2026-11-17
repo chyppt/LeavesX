@@ -1,0 +1,103 @@
+Subject: [PATCH] Align release configuration and buffer regressions
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -660 +660 @@
+-        comments.put("async.entity-tracker.event-listeners", "插件监听实体追踪或玩家速度事件时仍并行计算距离；事件、发包和追踪变更按原实体顺序在主线程执行，输入被事件改动时只重算当前实体。关闭后有监听器就使用 Paper 原循环，可重载。默认：true。");
++        comments.put("async.entity-tracker.event-listeners", "插件监听时仍并行算距离；事件、发包和提交按原实体顺序在主线程执行，输入变化时重算。默认：true。");
+@@ -597 +597 @@
+-        comments.put("async.compute.cache-max-candidates", "排序与激活的日常候选缓存上限；目标查询、动物目标和追踪行也采用此值，另有 16384 项保留上限。0 为不保留，仅在计算完成后回收，不限制实体数，可重载。默认：32768。");
++        comments.put("async.compute.cache-max-candidates", "查询、动物目标和追踪共用的候选缓存上限；只回收缓存，不限制实体数。0 不保留。默认：32768。");
+@@ -606 +606 @@
+-        comments.put("async.compute.mob-collision-math", "实验性：并行普通生物的简单碰撞盒计算，小任务受 async.compute.low-load-workers 控制；不处理村民、TNT和复杂形状。默认：false。");
++        comments.put("async.compute.mob-collision-math", "实验性并行简单生物碰撞盒；不处理村民、TNT和复杂形状，小任务仍可同步。默认：false。");
+@@ -731 +731 @@
+-        comments.put("async.compute.scheduling.realtime-reserved-workers", "给实体、AI、追踪等实时计算保留的空闲线程数；区块噪声等低优先级计算不能占用这部分，繁忙时在原线程完整计算。-1 为自动（4 线程以上保留 1 个），0 为不保留，可重载。默认：-1。");
++        comments.put("async.compute.scheduling.realtime-reserved-workers", "实时计算保留线程数；低优先级任务繁忙时同步回退。-1 自动，0 不保留，可重载。默认：-1。");
+diff --git a/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java b/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
+index 40c45b0856..ec321a2a9a 100644
+--- a/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
++++ b/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
+@@ -161,9 +161,9 @@ public class NaturalSpawnPositionHotPathTest {
+         final String upgraded = Files.readString(path);
+ 
+         assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
+-        assertFalse(upgraded.contains("spawn-position-distance-checks: true"));
+-        assertFalse(upgraded.contains("spawn-chunk-readiness-checks: true"));
+-        assertFalse(upgraded.contains("local-cap-accounting: true"));
++        assertTrue(upgraded.contains("spawn-position-distance-checks: true"));
++        assertTrue(upgraded.contains("spawn-chunk-readiness-checks: true"));
++        assertTrue(upgraded.contains("local-cap-accounting: true"));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx.yml.bak")));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx-migration-report.yml")));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java b/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java
+index 7977ad1dee..f7373eec6d 100644
+--- a/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java
+@@ -50,7 +50,7 @@ class EntityActivationQueryBufferConfigTest {
+ 
+         assertTrue(config.optimizationEnabled(LeavesXOptimization.ENTITY_ACTIVATION_BUFFER_REUSE));
+         assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
+-        assertFalse(upgraded.contains("entity-activation-buffer-reuse: true"));
++        assertTrue(upgraded.contains("entity-activation-buffer-reuse: true"));
+         assertTrue(upgraded.contains("retained: true"));
+         assertTrue(upgraded.startsWith("# 用户配置。"));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
+index 555771e6f6..1bd0f5903e 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
+@@ -101,7 +101,7 @@ class BlockEntityTypeValidationHotPathTest {
+ 
+         assertTrue(config.enabledFineGrainedOptimizationCount() > 0);
+         assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
+-        assertFalse(upgraded.contains("type-validation: true"));
++        assertTrue(upgraded.contains("type-validation: true"));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx.yml.bak")));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx-migration-report.yml")));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java
+index b5bb19be36..daf1d6939e 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java
+@@ -63,7 +63,7 @@ class InsideBlockEffectCollectorHotPathTest {
+ 
+         assertTrue(config.enabledFineGrainedOptimizationCount() > 0);
+         assertTrue(upgraded.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
+-        assertFalse(upgraded.contains("inside-block-effect-collector: true"));
++        assertTrue(upgraded.contains("inside-block-effect-collector: true"));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx.yml.bak")));
+         assertFalse(Files.exists(this.tempDir.resolve("leavesx-migration-report.yml")));
+     }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java
+index 2713ce23e1..da25051f57 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java
+@@ -44,7 +44,23 @@ class TripWireEntityScanHotPathTest {
+         assertEquals("Z", field(buffer, "inUse").desc);
+         assertEquals("Z", field(buffer, "pooled").desc);
+         assertTrue(hasInvocation(method(buffer, "query"), level.name, "leavesX$getEntities"));
+-        assertTrue(hasInvocation(method(buffer, "close"), "java/util/List", "clear"));
++        assertTrue(hasInvocation(method(buffer, "close"), buffer.name, "clearResults"));
++        assertTrue(hasInvocation(method(buffer, "clearResults"), "java/util/List", "clear"));
++    }
++
++    @Test
++    void closingBufferReleasesEntityReferences() throws ReflectiveOperationException {
++        final Object buffer = Level.class.getDeclaredMethod("leavesX$acquireEntityQueryBuffer").invoke(null);
++        final var resultsField = buffer.getClass().getDeclaredField("results");
++        resultsField.setAccessible(true);
++        @SuppressWarnings("unchecked")
++        final List<Object> results = (List<Object>)resultsField.get(buffer);
++        try {
++            results.add(new Object());
++        } finally {
++            buffer.getClass().getDeclaredMethod("close").invoke(buffer);
++        }
++        assertTrue(results.isEmpty(), "归还查询缓冲时必须清除全部实体引用");
+     }
+ 
+     @Test
+

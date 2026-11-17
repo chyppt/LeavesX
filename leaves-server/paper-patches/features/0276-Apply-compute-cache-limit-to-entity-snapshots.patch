@@ -1,0 +1,10 @@
+Subject: [PATCH] Apply compute cache limit to entity snapshots
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -594,3 +594,3 @@
+         comments.put("async.compute.kernels.snapshot-batch-reuse", "每线程复用已完成的快照调度容器，减少 AI、激活与追踪派发分配；重入隔离，失败仍完整回退，可重载。默认：true。");
+-        comments.put("async.compute.cache-max-candidates", "距离排序、最近目标与激活计算每线程的日常候选缓存上限；持续高负载时复用更大缓存，后续小任务到来时回收，0 为不保留；不限制实体数，可重载。默认：32768。");
++        comments.put("async.compute.cache-max-candidates", "排序与激活的日常候选缓存上限；目标查询、动物目标和追踪行也采用此值，另有 16384 项保留上限。0 为不保留，仅在计算完成后回收，不限制实体数，可重载。默认：32768。");
+         comments.put("async.compute.animals.breeding", "并行计算鸡牛羊猪繁殖配对距离；搜索范围、繁殖时机和事件不变。默认：true。");

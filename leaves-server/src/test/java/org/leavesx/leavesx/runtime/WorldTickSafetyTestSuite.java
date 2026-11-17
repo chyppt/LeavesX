@@ -5,7 +5,8 @@ import org.junit.platform.suite.api.SelectClasses;
 import org.junit.platform.suite.api.Suite;
 
 @Suite(failIfNoTests = false)
-@SelectClasses(WorldTickSafetyRegressionTest.class)
+@SelectClasses({WorldTickSafetyRegressionTest.class, LeavesXEventGateTest.class, LeavesXWorldTickerTest.class,
+    EventGateLifecycleTest.class, ExperiencePickupRegressionTest.class})
 @ConfigurationParameter(key = "TestSuite", value = "Normal")
 public class WorldTickSafetyTestSuite {
 }

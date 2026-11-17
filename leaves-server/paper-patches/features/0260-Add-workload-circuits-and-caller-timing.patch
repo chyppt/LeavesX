@@ -1,0 +1,262 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 3 Oct 2026 01:00:00 +0800
+Subject: [PATCH] Add workload circuits and caller timing
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -88,6 +88,8 @@
+     /** Marks code running on a LeavesX worker so nested pure computations can help inline instead of deadlocking. */
+     private static final ThreadLocal<Boolean> COMPUTE_WORKER_CONTEXT = new ThreadLocal<>();
+     private static final WorkloadCounters[] WORKLOAD_COUNTERS = createWorkloadCounters();
++    private static final int CIRCUIT_FAILURE_LIMIT = 3;
++    private static final long CIRCUIT_COOLDOWN_NANOS = 30_000_000_000L;
+ 
+     private LeavesXComputeExecutor() {
+     }
+@@ -291,6 +293,9 @@
+         if (current == null || current.isShutdown() || (workerCount <= 1 && !allowSmall)) {
+             return rejectBeforeSubmission(workload, size, FallbackReason.POOL_UNAVAILABLE);
+         }
++        if (WORKLOAD_COUNTERS[workload.ordinal()].circuitOpen(System.nanoTime())) {
++            return rejectBeforeSubmission(workload, size, FallbackReason.CIRCUIT_OPEN);
++        }
+         if (allowSmall) {
+             if (isComputeWorkerThread() || current.availableWorkerSlotCount() > 0) return true;
+             return rejectBeforeSubmission(workload, size, FallbackReason.POOL_BUSY_CALLER_ONLY);
+@@ -342,7 +347,7 @@
+                 insufficientPartitionFallbackCount.incrementAndGet();
+                 counters.insufficientPartitionFallbacks.incrementAndGet();
+             }
+-            case POOL_UNAVAILABLE, POOL_BUSY_CALLER_ONLY -> {
++            case POOL_UNAVAILABLE, POOL_BUSY_CALLER_ONLY, CIRCUIT_OPEN -> {
+                 unavailableParallelismFallbackCount.incrementAndGet();
+                 counters.unavailableParallelismFallbacks.incrementAndGet();
+             }
+@@ -418,6 +423,22 @@
+         final int minimumItemsPerTask,
+         final RangeTask task
+     ) {
++        final long started = System.nanoTime();
++        try {
++            return invokeRangesUntimed(workload, size, minimumSize, minimumItemsPerTask, task);
++        } finally {
++            // 调用线程从提交到合并的完整墙钟时间，用于判断并行是否真正减轻 Tick 负担。
++            if (workload != null && size > 0) WORKLOAD_COUNTERS[workload.ordinal()].callerNanos.addAndGet(System.nanoTime() - started);
++        }
++    }
++
++    private static int invokeRangesUntimed(
++        final Workload workload,
++        final int size,
++        final int minimumSize,
++        final int minimumItemsPerTask,
++        final RangeTask task
++    ) {
+         Objects.requireNonNull(workload, "workload");
+         Objects.requireNonNull(task, "task");
+         if (size <= 0) {
+@@ -430,6 +451,10 @@
+         final boolean allowSmall = lowLoadWorkers && supportsLowLoadScheduling(workload);
+         if (current == null || current.isShutdown() || (workerCount <= 1 && !allowSmall)) {
+             recordAdmissionRejection(workload, workloadCounters, FallbackReason.POOL_UNAVAILABLE, size);
++            return 0;
++        }
++        if (workloadCounters.circuitOpen(System.nanoTime())) {
++            recordAdmissionRejection(workload, workloadCounters, FallbackReason.CIRCUIT_OPEN, size);
+             return 0;
+         }
+         // 区块特征属于可延后的低优先级计算；玩家实体计算积压时直接回退调用线程，
+@@ -520,7 +545,7 @@
+             if (invocation.failure != null) {
+                 LOGGER.error("LeavesX synchronous backpressure computation failed", invocation.failure);
+                 failedInvocationCount.incrementAndGet();
+-                workloadCounters.failedInvocations.incrementAndGet();
++                workloadCounters.recordFailure(System.nanoTime());
+                 recordFullRecomputation(workload, workloadCounters, FallbackReason.COMPUTATION_FAILED, size);
+                 return 0;
+             }
+@@ -589,10 +614,10 @@
+         final boolean completed = failure == null;
+         if (completed) {
+             parallelInvocationCount.incrementAndGet();
+-            workloadCounters.parallelInvocations.incrementAndGet();
++            workloadCounters.recordSuccess();
+         } else {
+             failedInvocationCount.incrementAndGet();
+-            workloadCounters.failedInvocations.incrementAndGet();
++            workloadCounters.recordFailure(System.nanoTime());
+             recordFullRecomputation(workload, workloadCounters, FallbackReason.COMPUTATION_FAILED, size);
+         }
+         return completed ? expectedTaskCount : 0;
+@@ -777,13 +802,13 @@
+         }
+         if (batch.failure != null) {
+             failedInvocationCount.incrementAndGet();
+-            counters.failedInvocations.incrementAndGet();
++            counters.recordFailure(System.nanoTime());
+             recordFullRecomputation(workload, counters, FallbackReason.COMPUTATION_FAILED, size);
+             return 0;
+         }
+         lowLoadDispatchCount.incrementAndGet();
+         parallelInvocationCount.incrementAndGet();
+-        counters.parallelInvocations.incrementAndGet();
++        counters.recordSuccess();
+         return 1;
+     }
+ 
+@@ -818,12 +843,12 @@
+         if (failure != null) {
+             LOGGER.error("LeavesX nested pure computation failed; requesting synchronous recomputation", failure);
+             failedInvocationCount.incrementAndGet();
+-            workloadCounters.failedInvocations.incrementAndGet();
++            workloadCounters.recordFailure(System.nanoTime());
+             recordFullRecomputation(workload, workloadCounters, FallbackReason.NESTED_COMPUTATION_FAILED, size);
+             return 0;
+         }
+         parallelInvocationCount.incrementAndGet();
+-        workloadCounters.parallelInvocations.incrementAndGet();
++        workloadCounters.recordSuccess();
+         return taskCount;
+     }
+ 
+@@ -1173,8 +1198,13 @@
+         long callerItems,
+         long workerItems,
+         int maximumConcurrentWorkers,
+-        long workerBatches
++        long workerBatches,
++        long callerNanos
+     ) {
++        /** 每次调用在调用线程上的平均耗时，单位毫秒。 */
++        public double averageCallerMillis() {
++            return this.invocations == 0L ? 0.0D : this.callerNanos / (double)this.invocations / 1_000_000.0D;
++        }
+     }
+ 
+     /** Immutable deltas for one recent diagnostic window. */
+@@ -1224,7 +1254,8 @@
+         SUBMISSION_REJECTED("工作任务提交被拒绝"),
+         SUBMISSION_FAILED("工作任务提交异常"),
+         COMPUTATION_FAILED("工作线程计算异常，已请求完整主线程重算"),
+-        NESTED_COMPUTATION_FAILED("嵌套计算异常，已请求完整主线程重算");
++        NESTED_COMPUTATION_FAILED("嵌套计算异常，已请求完整主线程重算"),
++        CIRCUIT_OPEN("连续异常后暂时关闭该类并行计算");
+ 
+         private final String displayName;
+ 
+@@ -1298,6 +1329,31 @@
+         private final AtomicLong workerItems = new AtomicLong();
+         private final AtomicLong maximumConcurrentWorkers = new AtomicLong();
+         private final AtomicLong workerBatches = new AtomicLong();
++        private final AtomicLong callerNanos = new AtomicLong();
++        private final AtomicInteger consecutiveFailures = new AtomicInteger();
++        private final AtomicLong circuitOpenUntil = new AtomicLong();
++
++        /** 连续异常会暂时关闭本类并行；调用方仍走自己的完整同步路径。 */
++        private boolean circuitOpen(final long now) {
++            final long until = this.circuitOpenUntil.get();
++            if (until == 0L) return false;
++            if (now - until < 0L) return true;
++            this.circuitOpenUntil.compareAndSet(until, 0L);
++            return false;
++        }
++
++        private void recordFailure(final long now) {
++            this.failedInvocations.incrementAndGet();
++            if (this.consecutiveFailures.incrementAndGet() >= CIRCUIT_FAILURE_LIMIT) {
++                this.consecutiveFailures.set(0);
++                this.circuitOpenUntil.set(now + CIRCUIT_COOLDOWN_NANOS);
++            }
++        }
++
++        private void recordSuccess() {
++            this.parallelInvocations.incrementAndGet();
++            this.consecutiveFailures.set(0);
++        }
+ 
+         private void recordInvocation(final int size) {
+             this.invocations.incrementAndGet();
+@@ -1329,6 +1385,9 @@
+             this.workerItems.set(0L);
+             this.maximumConcurrentWorkers.set(0L);
+             this.workerBatches.set(0L);
++            this.callerNanos.set(0L);
++            this.consecutiveFailures.set(0);
++            this.circuitOpenUntil.set(0L);
+         }
+ 
+         private WorkloadMetrics snapshot(final Workload workload) {
+@@ -1355,7 +1414,8 @@
+                 this.callerItems.get(),
+                 this.workerItems.get(),
+                 (int)Math.min(Integer.MAX_VALUE, this.maximumConcurrentWorkers.get()),
+-                this.workerBatches.get()
++                this.workerBatches.get(),
++                this.callerNanos.get()
+             );
+         }
+ 
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -747,6 +747,46 @@
+         release.countDown();
+     }
+ 
++    @Test
++    void recordsCallerWallTimeOnlyForTheInvokedWorkload() {
++        LeavesXComputeExecutor.configure(2, 16, true);
++        LeavesXComputeExecutor.invokeRangesWithCount(LeavesXComputeExecutor.Workload.ENTITY_TRACKING, 256, 1, 16,
++            (taskIndex, start, end) -> java.util.concurrent.locks.LockSupport.parkNanos(200_000L));
++        final var workloads = LeavesXComputeExecutor.metrics().workloads();
++        for (final var workload : workloads) {
++            if (workload.workload() == LeavesXComputeExecutor.Workload.ENTITY_TRACKING) {
++                assertTrue(workload.callerNanos() > 0L);
++                assertTrue(workload.averageCallerMillis() > 0.0D);
++            } else {
++                assertEquals(0L, workload.callerNanos(), workload.workload().name());
++            }
++        }
++    }
++    @Test
++    void repeatedWorkerFailuresOpenOnlyTheAffectedWorkloadCircuit() {
++        LeavesXComputeExecutor.configure(2, 16, true);
++        for (int attempt = 0; attempt < 3; attempt++) {
++            assertEquals(0, LeavesXComputeExecutor.invokeRangesWithCount(
++                LeavesXComputeExecutor.Workload.AI_TARGET_SELECT, 256, 1, 16,
++                (taskIndex, start, end) -> {
++                    if (taskIndex == 0) throw new IllegalStateException("synthetic circuit failure");
++                }));
++        }
++        final java.util.concurrent.atomic.AtomicInteger executed = new java.util.concurrent.atomic.AtomicInteger();
++        // 熔断后不再派发，调用方继续使用原同步路径。
++        assertEquals(0, LeavesXComputeExecutor.invokeRangesWithCount(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SELECT, 256, 1, 16,
++            (taskIndex, start, end) -> executed.incrementAndGet()));
++        assertEquals(0, executed.get());
++        assertFalse(LeavesXComputeExecutor.shouldAttempt(LeavesXComputeExecutor.Workload.AI_TARGET_SELECT, 256, 1, 16));
++        assertTrue(LeavesXComputeExecutor.metrics().lastFallbackReason().contains("连续异常"));
++        assertTrue(LeavesXComputeExecutor.invokeRangesWithCount(
++            LeavesXComputeExecutor.Workload.ENTITY_TRACKING, 256, 1, 16, (taskIndex, start, end) -> {}) > 0);
++        // 重新配置会清除熔断状态，便于运维热重载后恢复。
++        LeavesXComputeExecutor.configure(2, 16, true);
++        assertTrue(LeavesXComputeExecutor.invokeRangesWithCount(
++            LeavesXComputeExecutor.Workload.AI_TARGET_SELECT, 256, 1, 16, (taskIndex, start, end) -> {}) > 0);
++    }
+     @Test
+     void reportsRecentFullRecomputationAfterWorkerFailure() {
+         LeavesXComputeExecutor.configure(2, 16, true);
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1136,7 +1136,7 @@
+             ));
+             sender.sendMessage(line(
+                 "  分片负载",
+-                "主线程 " + workload.callerItems() + " 项 / 工作线程 " + workload.workerItems()
++                "调用线程平均 " + String.format(java.util.Locale.ROOT, "%.3f", workload.averageCallerMillis()) + " ms / 主线程 " + workload.callerItems() + " 项 / 工作线程 " + workload.workerItems()
+                     + " 项 / 并发峰值 " + workload.maximumConcurrentWorkers(),
+                 NamedTextColor.DARK_GRAY
+             ));

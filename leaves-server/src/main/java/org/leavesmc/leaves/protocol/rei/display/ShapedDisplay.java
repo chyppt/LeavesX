@@ -46,6 +46,14 @@ public class ShapedDisplay extends CraftingDisplay {
         this.height = recipeHolder.value().getHeight();
     }
 
+    /** Creates a standard shaped display from a provider snapshot while retaining item components. */
+    public ShapedDisplay(@NotNull List<EntryIngredient> inputs, @NotNull List<EntryIngredient> outputs,
+                         @NotNull Identifier location, int width, int height) {
+        super(inputs, outputs, location);
+        this.width = width;
+        this.height = height;
+    }
+
     public ShapedDisplay(@NotNull ShapedCraftingRecipeDisplay recipeDisplay, Identifier id) {
         super(
             Display.ofSlotDisplays(recipeDisplay.ingredients()),

@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Wed, 11 Nov 2026 12:00:00 +0800
+Subject: [PATCH] Preserve concurrent world tick failures
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXWorldTicker.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXWorldTicker.java
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXWorldTicker.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXWorldTicker.java
+@@ -252,4 +252,4 @@ public final class LeavesXWorldTicker {
+         } catch (final CompletionException failure) {
+             SERIAL_DEGRADED_TICKS.incrementAndGet();
+-            LOGGER.error("LeavesX parallel world tick failed; degrading this ticker to serial until restart", failure.getCause());
++            LOGGER.error("LeavesX parallel world tick failed; degrading this ticker to serial until restart", failure);
+             degradedToSerial = true;
+@@ -274,9 +274,18 @@ public final class LeavesXWorldTicker {
+-        if (dispatchFailure != null) {
+-            throw new CompletionException(dispatchFailure);
+-        }
+-        // isDone includes exceptional completion; join is required to surface failures.
++        // 所有世界退出后汇总失败；保留并发故障，避免只看到第一个异常。
++        CompletionException combined = dispatchFailure == null ? null : new CompletionException(dispatchFailure);
+         for (final CompletableFuture<Void> future : futures) {
+-            future.join();
++            try {
++                future.join();
++            } catch (final CompletionException failure) {
++                if (combined == null) {
++                    combined = failure;
++                } else if (combined != failure && combined.getCause() != failure.getCause()) {
++                    combined.addSuppressed(failure);
++                }
++            }
++        }
++        if (combined != null) {
++            throw combined;
+         }
+     }
+ 

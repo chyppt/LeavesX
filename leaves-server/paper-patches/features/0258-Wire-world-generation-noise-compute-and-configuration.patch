@@ -1,0 +1,166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Fri, 16 Oct 2026 12:00:00 +0800
+Subject: [PATCH] Wire world generation noise compute and configuration
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -723,7 +723,7 @@
+     private static boolean supportsAdaptiveScheduling(final Workload workload) {
+         return switch (workload) {
+             case AI_TARGET_SORT, AI_TARGET_SELECT, ENTITY_ACTIVATION, ENTITY_TRACKING, MOB_SPAWN_COUNTING -> true;
+-            case UNSPECIFIED, AI_TARGET_MERGE, MOB_COLLISION -> false;
++            case UNSPECIFIED, AI_TARGET_MERGE, MOB_COLLISION, WORLDGEN_NOISE -> false;
+         };
+     }
+ 
+@@ -731,7 +731,7 @@
+         return switch (workload) {
+             case AI_TARGET_SORT, AI_TARGET_SELECT, ENTITY_ACTIVATION, ENTITY_TRACKING, MOB_SPAWN_COUNTING, MOB_COLLISION -> true;
+             // 归并和未分类任务保留原准入，不能给没有收益的末尾排序再加一次派发。
+-            case UNSPECIFIED, AI_TARGET_MERGE -> false;
++            case UNSPECIFIED, AI_TARGET_MERGE, WORLDGEN_NOISE -> false;
+         };
+     }
+ 
+@@ -783,7 +783,7 @@
+     private static boolean supportsAdaptivePartitioning(final Workload workload) {
+         return switch (workload) {
+             case AI_TARGET_SORT, AI_TARGET_SELECT, ENTITY_ACTIVATION, ENTITY_TRACKING -> true;
+-            case UNSPECIFIED, AI_TARGET_MERGE, MOB_SPAWN_COUNTING, MOB_COLLISION -> false;
++            case UNSPECIFIED, AI_TARGET_MERGE, MOB_SPAWN_COUNTING, MOB_COLLISION, WORLDGEN_NOISE -> false;
+         };
+     }
+ 
+@@ -1072,7 +1072,8 @@
+         ENTITY_ACTIVATION("实体激活范围"),
+         ENTITY_TRACKING("实体追踪计算"),
+         MOB_SPAWN_COUNTING("刷怪统计"),
+-        MOB_COLLISION("生物碰撞数值计算");
++        MOB_COLLISION("生物碰撞数值计算"),
++        WORLDGEN_NOISE("区块噪声采样");
+ 
+         private final String displayName;
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -36,6 +36,7 @@
+     int denseMonsterAiMinimumEntities,
+     int denseMonsterAiCheckIntervalTicks,
+     int denseMonsterAiGoalIntervalTicks,
++    boolean parallelNoiseSampling,
+     boolean parallelAiTargetSearch,
+     int aiTargetSearchMinimumCandidates,
+     int aiTargetSearchMinimumItemsPerWorker,
+@@ -90,7 +91,7 @@
+     RegionTickingSettings regionTickingSettings
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 88;
++    public static final int CURRENT_CONFIG_VERSION = 89;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -230,6 +231,7 @@
+             32,
+             20,
+             4,
++            true,
+             true,
+             256,
+             128,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -204,6 +204,11 @@
+                     node.node("performance", "ai", "dense-monsters", "goal-interval-ticks"),
+                     "performance.ai.dense-monsters.goal-interval-ticks",
+                     4
++                ),
++                readBoolean(
++                    node.node("parallelism", "chunk-generation", "noise-sampling"),
++                    "parallelism.chunk-generation.noise-sampling",
++                    true
+                 ),
+                 readBoolean(
+                     node.node("parallelism", "ai-target-search", "enabled"),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -418,6 +418,12 @@
+             node.node("performance", "ai", "dense-monsters", "goal-interval-ticks"),
+             "performance.ai.dense-monsters.goal-interval-ticks",
+             config.denseMonsterAiGoalIntervalTicks(),
++            missingOnly
++        );
++        changed |= writeValue(
++            node.node("parallelism", "chunk-generation", "noise-sampling"),
++            "parallelism.chunk-generation.noise-sampling",
++            config.parallelNoiseSampling(),
+             missingOnly
+         );
+         changed |= writeValue(
+@@ -687,6 +693,7 @@
+         comments.put("parallelism.prestart-workers", "启动时预热计算线程，减少重启后第一次并行任务的延迟。默认：true。");
+         comments.put("parallelism.mob-spawning.enabled", "允许刷怪统计使用多线程，只分离计数计算。默认：true。");
+         comments.put("parallelism.mob-spawning.minimum-entities", "关闭 async.low-load-workers 时的刷怪计数并行阈值；开启后单项也可派发。默认：2048。");
++        comments.put("parallelism.chunk-generation.noise-sampling", "并行计算原版密度单元的纯噪声；偏移图与插值缓存留在生成线程。小批次或计算池繁忙时同步执行。默认：true。");
+         comments.put("parallelism.ai-target-search.enabled", "允许 AI 目标距离计算使用多线程；实体状态和目标事件仍在原线程处理。默认：true。");
+         comments.put("parallelism.ai-target-search.minimum-candidates", "关闭 async.low-load-workers 时的 AI 计算并行阈值；开启后单候选也可派发。默认：256。");
+         comments.put("parallelism.ai-target-search.minimum-items-per-worker", "每个 AI 计算分片至少处理的候选数。默认：128。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -128,6 +128,7 @@
+     private static boolean naturalSpawnLocalCapAccountingOptimization = true;
+     // Worker-owned light and chunk tasks read these masks. Volatile publication makes reload changes visible without
+     // adding locks to any hot path.
++    private static volatile boolean parallelNoiseSampling = true;
+     private static volatile long fineGrainedOptimizationMaskLow = LeavesXOptimization.allEnabledMaskLow();
+     private static volatile long fineGrainedOptimizationMaskHigh = LeavesXOptimization.allEnabledMaskHigh();
+     private static final int VILLAGER_FULL_COMPATIBILITY_CONTEXT = 1;
+@@ -281,6 +282,7 @@
+             && validated.optimizationEnabled(LeavesXOptimization.NATURAL_SPAWN_CHUNK_READINESS);
+         naturalSpawnLocalCapAccountingOptimization = validated.mobSpawningOptimizations()
+             && validated.optimizationEnabled(LeavesXOptimization.NATURAL_SPAWN_LOCAL_CAP_ACCOUNTING);
++        parallelNoiseSampling = validated.parallelNoiseSampling();
+         fineGrainedOptimizationMaskLow = validated.fineGrainedOptimizationMaskLow();
+         fineGrainedOptimizationMaskHigh = validated.fineGrainedOptimizationMaskHigh();
+         configuration = validated;
+@@ -1529,6 +1531,11 @@
+         return mobSpawningOptimizations && enabled(LeavesXOptimization.NATURAL_SPAWN_STATE);
+     }
+ 
++    /** Only detached noise samples may use the shared compute pool. */
++    public static boolean parallelNoiseSampling() {
++        return parallelNoiseSampling;
++    }
++
+     private static boolean enabled(final LeavesXOptimization optimization) {
+         return !villagerOptimizationContextActive()
+             && optimization.enabledIn(fineGrainedOptimizationMaskLow, fineGrainedOptimizationMaskHigh);
+diff --git a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+--- a/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/VillagerCompatibilityContextTest.java
+@@ -227,6 +227,7 @@
+             20,
+             4,
+             true,
++            true,
+             256,
+             128,
+             true,
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXPlayerPresentationTest.java
+@@ -86,7 +86,7 @@
+             true, 10, 60, 2,
+             true, true, true, true, true, true, true, true,
+             true, true, true, true, true, false, 2, false, 8, 32, 20, 4,
+-            true, 256, 128, true, 2_048, 512, true, 0, 64, true, 2_048,
++            true, true, 256, 128, true, 2_048, 512, true, 0, 64, true, 2_048,
+             true, true, true, true, true, 1_000, 100, 500,
+             LeavesXOptimization.allEnabledMaskLow(), LeavesXOptimization.allEnabledMaskHigh(),
+             true, false, false, 1, true, 40, 16,

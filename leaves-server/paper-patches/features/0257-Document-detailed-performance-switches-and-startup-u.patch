@@ -1,0 +1,365 @@
+From 3021c9d4281de3092d607dfae8c80f706c375255 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Wed, 14 Oct 2026 13:24:53 +0800
+Subject: [PATCH] Document detailed performance switches and startup update
+ notices
+
+---
+ .../papermc/paper/command/PaperCommands.java  |  2 +
+ .../leavesx/leavesx/config/LeavesXConfig.java |  2 +-
+ .../leavesx/config/LeavesXConfigLoader.java   | 12 +----
+ .../leavesx/config/LeavesXConfigWriter.java   | 15 ++++--
+ .../leavesx/config/LeavesXOptimization.java   | 20 +++----
+ .../leavesx/update/LeavesXUpdateNotifier.java | 25 +++++++++
+ .../leavesx/update/LeavesXUpdateService.java  | 10 +++-
+ .../config/LeavesXConfigLoaderTest.java       | 53 +++++++++++++++----
+ 8 files changed, 101 insertions(+), 38 deletions(-)
+ create mode 100644 src/main/java/org/leavesx/leavesx/update/LeavesXUpdateNotifier.java
+
+diff --git a/src/main/java/io/papermc/paper/command/PaperCommands.java b/src/main/java/io/papermc/paper/command/PaperCommands.java
+index 7577a70cad..eea97a2af7 100644
+--- a/src/main/java/io/papermc/paper/command/PaperCommands.java
++++ b/src/main/java/io/papermc/paper/command/PaperCommands.java
+@@ -22,6 +22,8 @@ public final class PaperCommands {
+     private static final Map<String, Command> COMMANDS = new HashMap<>();
+ 
+     public static void registerCommands(final MinecraftServer server) {
++        server.server.getPluginManager().registerEvents(new org.leavesx.leavesx.update.LeavesXUpdateNotifier(),
++            org.leavesmc.leaves.plugin.MinecraftInternalPlugin.INSTANCE);
+         COMMANDS.put("paper", new PaperCommand("paper"));
+         COMMANDS.put("tpsbar", new org.leavesx.leavesx.command.TpsBarCommand());
+         COMMANDS.put("mspt", new MSPTCommand("mspt"));
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 88f9f1c91c..17c74b98c1 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -90,7 +90,7 @@ public record LeavesXConfig(
+     RegionTickingSettings regionTickingSettings
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 87;
++    public static final int CURRENT_CONFIG_VERSION = 88;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 663c9f35d6..a5312b51c1 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -761,8 +761,7 @@ public final class LeavesXConfigLoader {
+     }
+ 
+     /**
+-     * Removes generated implementation-detail switches and shortens the redundant async paths introduced in v74.
+-     * Explicit {@code false} fine-grained overrides remain valid and are deliberately preserved.
++     * 迁移 v74 的重复异步路径，保留所有细粒度开关及管理员的显式取值。
+      */
+     private static boolean migrateSimplifiedSettings(
+         final CommentedConfigurationNode node,
+@@ -783,15 +782,6 @@ public final class LeavesXConfigLoader {
+         changed |= moveNode(node, path("async", "async-playerdata-save"), path("async", "playerdata-save"));
+         changed |= moveNode(node, path("async", "async-entity-tracker"), path("async", "entity-tracker"));
+ 
+-        for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
+-            final Object[] optimizationPath = optimization.nodePath();
+-            final CommentedConfigurationNode setting = node.node(optimizationPath);
+-            if (Boolean.TRUE.equals(setting.rawScalar())) {
+-                setting.raw(null);
+-                pruneEmptyParents(node, optimizationPath);
+-                changed = true;
+-            }
+-        }
+         return changed;
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 24c3ac1962..587a6fe5e7 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -529,6 +529,15 @@ public final class LeavesXConfigWriter {
+             config.chunkUnloadMaximumPerTick(),
+             missingOnly
+         );
++        // 写出每个细项的配置取值；实际执行还受总开关与兼容保护约束。
++        for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
++            changed |= writeValue(
++                node.node(optimization.nodePath()),
++                optimization.path(),
++                config.optimizationEnabled(optimization),
++                missingOnly
++            );
++        }
+         return changed;
+     }
+ 
+@@ -547,7 +556,7 @@ public final class LeavesXConfigWriter {
+ 
+     private static Map<String, String> createComments() {
+         final Map<String, String> comments = new LinkedHashMap<>();
+-        comments.put("performance", "性能优化：按功能分组，关闭开关可使用原处理逻辑。");
++        comments.put("performance", "性能优化：细项可独立关闭；带总开关的优化还受总开关控制。兼容保护项和实验性选项请阅读各自说明。");
+         comments.put("async", "异步任务：区块打包、刷怪统计、追踪计算和玩家存档。");
+         comments.put("async.animals", "动物目标计算只并行距离数据；资格判断、行为节奏和寻路仍按原版执行。");
+         comments.put("performance.compute.activation-bounds-prefilter", "先排除肯定不在任何玩家激活范围内的实体，实际激活范围不变。默认：true。");
+@@ -616,7 +625,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.crafting.recipe-index", "合成台查询按材料数量索引直达候选配方，跳过不可能匹配的配方；结果顺序与原版一致。默认：true。");
+         comments.put("performance.network.buffer-optimizations", "减少字符串编码和 Java 压缩的临时缓冲区；不改协议，可重载，关闭后使用原路径。默认：true。");
+         comments.put("features.tpsbar.enabled", "启用 /tpsbar 性能条，显示 TPS、MSPT 和内存；关闭后自动隐藏，可重载。默认：true。");
+-        comments.put("updates.check", "仅在服务器启动时检查一次 LeavesX 正式版更新，仅匹配当前 MC 版本。默认：true。");
++        comments.put("updates.check", "启动时检查一次当前 MC 版本的正式版更新；OP 进服读取缓存，有更新才提示，重载不重复请求。默认：true。");
+         comments.put("updates.auto-download", "自动下载并校验更新，重启后使用；不会自动重启服务器。默认：false。");
+         comments.put("performance.ai.sensor-list-reuse", "物品传感器复用扫描列表；生物扫描结果会存入 Brain，不复用，避免旧记忆被清空。默认：true。");
+         comments.put("performance.chunk.poi-async-serialization", "暂不可用：异步编码失败时可能丢失床和工作站数据；当前仍在 Tick 线程编码、异步写盘。默认：false。");
+@@ -667,7 +676,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.ai.dense-monsters.goal-interval-ticks", "密集且无目标时完整选择 AI 目标的间隔，单位为 Tick。默认：4。");
+         comments.put("performance.entities.item-merge", "物品堆满后停止无用合并扫描。默认：true。");
+         comments.put("performance.blocks.block-entities", "减少漏斗等方块实体每刻创建的临时对象。默认：true。");
+-        comments.put("performance.blocks.ticker-removal", "加快区块卸载时清理方块实体更新项。默认：true。");
++        comments.put("performance.blocks.ticker-removal", "保留旧方块实体更新项清理开关；当前兼容保护强制使用原版清理，设为 true 也不启用。默认：true。");
+         comments.put("performance.spawning.chunk-range", "减少刷怪范围判断的重复计算。默认：true。");
+         comments.put("performance.chunks.unloading.enabled", "有 tick 余量时加快处理积压的区块卸载。默认：true。");
+         comments.put("performance.chunks.unloading.backlog-threshold", "达到此积压数量后提高卸载速度。默认：1000。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index cdf87247f6..ee962e8d14 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -10,7 +10,7 @@ enum LeavesXOptimization {
+ 
+     HOPPER_ENTITY_QUERIES(
+         "performance.block-entity.hopper-entity-queries",
+-        "优化漏斗实体查询，关闭后使用原版查询。默认：true。"
++        "保留旧漏斗查询开关；当前兼容保护强制使用原版查询，设为 true 也不启用。默认：true。"
+     ),
+     FIRST_MATCH_ENTITY_QUERIES(
+         "performance.entity-queries.first-match-queries",
+@@ -22,15 +22,15 @@ enum LeavesXOptimization {
+     ),
+     PRESSURE_PLATE_ENTITY_SCANS(
+         "performance.entity-queries.pressure-plate-scans",
+-        "复用压力板实体扫描结果，关闭后使用原版扫描。默认：true。"
++        "保留旧压力板扫描开关；当前兼容保护强制使用原版扫描，设为 true 也不启用。默认：true。"
+     ),
+     TRIPWIRE_ENTITY_SCANS(
+         "performance.entity-queries.tripwire-scans",
+-        "复用绊线实体扫描结果，关闭后使用原版扫描。默认：true。"
++        "保留旧绊线扫描开关；当前兼容保护强制使用原版扫描，设为 true 也不启用。默认：true。"
+     ),
+     DETECTOR_RAIL_ENTITY_QUERIES(
+         "performance.entity-queries.detector-rail-queries",
+-        "限制探测铁轨只查需要的矿车，关闭后查询完整列表。默认：true。"
++        "保留旧探测铁轨查询开关；当前兼容保护强制使用原版查询，设为 true 也不启用。默认：true。"
+     ),
+     COMPARATOR_ITEM_FRAME_QUERIES(
+         "performance.entity-queries.comparator-item-frame-queries",
+@@ -78,7 +78,7 @@ enum LeavesXOptimization {
+     ),
+     VILLAGER_HOSTILE_SENSOR(
+         "performance.ai.villager-hostile-sensor",
+-        "减少村民敌对生物传感器的重复查找，关闭后使用原版流程。默认：true。"
++        "保留旧村民敌对感知开关；为保护恐吓和刷铁，当前强制使用原版流程，设为 true 也不启用。默认：true。"
+     ),
+     ARMOR_STAND_PLACEMENT(
+         "performance.entity-queries.armor-stand-placement",
+@@ -246,7 +246,7 @@ enum LeavesXOptimization {
+     ),
+     MINECART_MOTION_DISTANCE(
+         "performance.entity-sync.minecart-motion-distance",
+-        "矿车速度未变时跳过距离计算，关闭后每次计算。默认：true。"
++        "保留旧矿车距离计算开关；当前兼容保护强制使用原版计算，设为 true 也不启用。默认：true。"
+     ),
+     POI_BOUNDED_TRAVERSAL(
+         "performance.ai.poi-bounded-traversal",
+@@ -258,11 +258,11 @@ enum LeavesXOptimization {
+     ),
+     VILLAGER_GOLEM_AGREEMENT(
+         "performance.ai.villager-golem-agreement",
+-        "村民召唤铁傀儡时达到人数后停止计数，关闭后完整收集。默认：true。"
++        "保留旧铁傀儡召唤计数开关；为保护刷铁，当前强制使用原版流程，设为 true 也不启用。默认：true。"
+     ),
+     TARGETING_RANGE_CHECKS(
+         "performance.ai.targeting-range-checks",
+-        "目标超出可见距离时提前结束判断，关闭后使用原版顺序。默认：true。"
++        "保留旧目标范围检查开关；当前兼容保护强制使用原版顺序，设为 true 也不启用。默认：true。"
+     ),
+     TEMPTING_PLAYER_SEARCH(
+         "performance.ai.tempting-player-search",
+@@ -270,11 +270,11 @@ enum LeavesXOptimization {
+     ),
+     SENSOR_FOLLOW_RANGE_CACHE(
+         "performance.ai.sensor-follow-range-cache",
+-        "跟随距离未变时复用传感器范围，关闭后每次更新。默认：true。"
++        "保留旧传感器范围缓存开关；当前兼容保护强制使用原版更新，设为 true 也不启用。默认：true。"
+     ),
+     NEAREST_ENTITY_DISTANCE_SORT(
+         "performance.ai.nearest-entity-distance-sort",
+-        "附近实体按距离排序时复用稳定排序缓冲，关闭后使用原版排序。默认：true。"
++        "保留旧感知器排序开关；当前兼容保护强制使用原版排序，设为 true 也不启用。默认：true。"
+     ),
+     VISIBLE_ENTITY_TARGET_CACHE(
+         "performance.ai.visible-entity-target-cache",
+diff --git a/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateNotifier.java b/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateNotifier.java
+new file mode 100644
+index 0000000000..37f883227c
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateNotifier.java
+@@ -0,0 +1,25 @@
++package org.leavesx.leavesx.update;
++
++import net.kyori.adventure.text.Component;
++import org.bukkit.event.EventHandler;
++import org.bukkit.event.EventPriority;
++import org.bukkit.event.Listener;
++import org.bukkit.event.player.PlayerJoinEvent;
++import org.leavesx.leavesx.config.LeavesXRuntime;
++import org.leavesx.leavesx.presentation.LeavesXPlayerPresentation;
++
++/** OP 加入时提示已确认的更新；事件线程只读取缓存，不等待网络。 */
++public final class LeavesXUpdateNotifier implements Listener {
++    @EventHandler(priority = EventPriority.MONITOR)
++    public void onJoin(final PlayerJoinEvent event) {
++        if (!event.getPlayer().isOp() || !LeavesXRuntime.configuration().extensions().updateCheck()) {
++            return;
++        }
++        final String version = LeavesXUpdateService.availableVersion();
++        if (version != null) {
++            event.getPlayer().sendMessage(LeavesXPlayerPresentation.withCorePrefix(
++                Component.text("发现 LeavesX " + version + " 更新，请查看 GitHub 发布页面。")
++            ));
++        }
++    }
++}
+diff --git a/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateService.java b/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateService.java
+index c898fcb315..e6cf642ea6 100644
+--- a/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateService.java
++++ b/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateService.java
+@@ -36,6 +36,8 @@ public final class LeavesXUpdateService {
+         });
+     private static final AtomicBoolean BUSY = new AtomicBoolean();
+     private static boolean configured;
++    // 后台只发布不可变版本号；玩家加入时读取缓存，不重复发起网络请求。
++    private static volatile String availableVersion;
+     private static final long MAX_SIZE = 512L * 1024 * 1024;
+ 
+     private LeavesXUpdateService() {}
+@@ -84,8 +86,8 @@ public final class LeavesXUpdateService {
+             }
+         }
+         String version = tag.replaceFirst("(?i)^(leavesx[-_]?|v)", "");
++        availableVersion = null;
+         if (current == null || !newer(version, current)) {
+-            LOGGER.info("当前没有适用的 LeavesX 正式版更新。");
+             return;
+         }
+         String mc = ServerBuildInfo.buildInfo().minecraftVersionId();
+@@ -93,6 +95,7 @@ public final class LeavesXUpdateService {
+             var asset = element.getAsJsonObject();
+             String name = asset.get("name").getAsString();
+             if (!name.equalsIgnoreCase("LeavesX-" + version + "-" + mc + ".jar")) continue;
++            availableVersion = version;
+             LOGGER.info("发现 LeavesX {} 更新（Minecraft {}）。", version, mc);
+             if (!download) return;
+             String digest = asset.has("digest") && !asset.get("digest").isJsonNull() ? asset.get("digest").getAsString() : "";
+@@ -106,7 +109,10 @@ public final class LeavesXUpdateService {
+             download(url, name, size, digest.substring(7));
+             return;
+         }
+-        LOGGER.info("最新发布中没有 Minecraft {} 的 LeavesX 构建。", mc);
++    }
++
++    static String availableVersion() {
++        return availableVersion;
+     }
+ 
+     static boolean newer(String candidate, String current) {
+diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+index c1aa9cc77a..f5425ec829 100644
+--- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
++++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
+@@ -76,9 +76,9 @@ class LeavesXConfigLoaderTest {
+         assertTrue(generated.contains("nearby-radius:"));
+         assertTrue(generated.contains("workers:"));
+         assertTrue(generated.contains("entity-activation:"));
+-        assertFalse(generated.contains("hopper-entity-queries:"));
+-        assertFalse(generated.contains("warden-target-sensor:"));
+-        assertFalse(generated.contains("unload-section-snapshot-cache:"));
++        assertTrue(generated.contains("hopper-entity-queries:"));
++        assertTrue(generated.contains("warden-target-sensor:"));
++        assertTrue(generated.contains("unload-section-snapshot-cache:"));
+         assertTrue(generated.contains("# 是否异步计算生物生成统计"));
+         assertTrue(generated.contains("# 是否异步保存玩家数据"));
+         assertTrue(generated.contains("ai-candidates: true"));
+@@ -86,9 +86,40 @@ class LeavesXConfigLoaderTest {
+         assertTrue(generated.contains("mob-collision-math: false"));
+         assertFalse(generated.contains("threading:"));
+         assertFalse(generated.contains("folia"));
+-        // 两个新增开关及其分组使默认布局从 298 行增至 304 行，仍限制无关配置膨胀。
+-        assertTrue(generated.lines().count() <= 304L,
+-            "默认配置应保持简洁；实际行数：" + generated.lines().count());
++        final var node = io.papermc.paper.configuration.ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
++        for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
++            assertTrue(node.node(optimization.nodePath()).getBoolean(), optimization.path());
++            assertTrue(generated.contains("# " + optimization.comment()), optimization.path());
++        }
++    }
++
++    @Test
++    void detailedSwitchesPreserveChoicesAndMigrationIsIdempotent() throws Exception {
++        final Path path = write("""
++            config-version: 87
++            performance:
++              ai:
++                enabled: false
++                villager-hostile-sensor: true
++                player-sensor: false
++            custom-extension:
++              retained: true
++            """);
++        final LeavesXConfig config = LeavesXConfigLoader.load(path);
++        assertFalse(config.aiOptimizations());
++        assertTrue(config.optimizationEnabled(LeavesXOptimization.VILLAGER_HOSTILE_SENSOR));
++        assertFalse(config.optimizationEnabled(LeavesXOptimization.PLAYER_SENSOR));
++        final String first = Files.readString(path);
++        assertEquals(config, LeavesXConfigLoader.load(path));
++        assertEquals(first, Files.readString(path));
++        final var node = io.papermc.paper.configuration.ConfigurationLoaders.naturallySortedWithoutHeader(path).load();
++        assertTrue(node.node("custom-extension", "retained").getBoolean());
++        for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
++            assertEquals(config.optimizationEnabled(optimization), node.node(optimization.nodePath()).getBoolean(), optimization.path());
++            final var disabled = node.copy();
++            disabled.node(optimization.nodePath()).raw(false);
++            assertFalse(LeavesXConfigLoader.fromNode(disabled, path).optimizationEnabled(optimization), optimization.path());
++        }
+     }
+ 
+     @Test
+@@ -154,7 +185,7 @@ class LeavesXConfigLoaderTest {
+         assertTrue(yaml.contains("mob-spawning: false"));
+         assertTrue(yaml.contains("pathfinding:"));
+         assertFalse(yaml.contains("async-chunk-send:"));
+-        assertFalse(yaml.contains("hopper-entity-queries: true"));
++        assertTrue(yaml.contains("hopper-entity-queries: true"));
+         assertTrue(yaml.contains("pressure-plate-scans: false"));
+     }
+ 
+@@ -229,8 +260,8 @@ class LeavesXConfigLoaderTest {
+         assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get("performance.ai.ram-position-selection")));
+         for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
+             assertTrue(config.optimizationEnabled(optimization));
+-            assertTrue(reloaded.node(optimization.nodePath()).virtual(), optimization.path());
+-            assertFalse(upgraded.contains("# " + LeavesXConfigWriter.comments().get(optimization.path())), optimization.path());
++            assertTrue(reloaded.node(optimization.nodePath()).getBoolean(), optimization.path());
++            assertTrue(upgraded.contains("# " + LeavesXConfigWriter.comments().get(optimization.path())), optimization.path());
+         }
+     }
+ 
+@@ -266,8 +297,8 @@ class LeavesXConfigLoaderTest {
+         assertFalse(node.node("performance", "network", "light-update-notification-deduplication").getBoolean());
+         assertFalse(node.node("performance", "chunk", "unload-stage-buffer-reuse").getBoolean());
+         assertFalse(node.node("performance", "chunk", "unload-section-snapshot-cache").getBoolean());
+-        assertTrue(node.node("performance", "chunk", "autosave-buffer-reuse").virtual());
+-        assertTrue(node.node("performance", "chunk", "status-update-buffer-reuse").virtual());
++        assertTrue(node.node("performance", "chunk", "autosave-buffer-reuse").getBoolean());
++        assertTrue(node.node("performance", "chunk", "status-update-buffer-reuse").getBoolean());
+         assertTrue(node.node("custom-extension", "retained").getBoolean());
+         assertTrue(upgraded.startsWith("# 用户配置。"));
+ 

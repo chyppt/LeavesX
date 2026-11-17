@@ -39,7 +39,8 @@ public class JeiConfigurationTest {
         assertFalse(config.extensions().jeiRecipeSync());
         assertFalse(config.extensions().jeiRecipeTransfer());
         assertTrue(output.contains("Just Enough Items"));
-        assertTrue(output.indexOf("config-version: 82") < output.indexOf("features:"));
+        assertTrue(output.contains("config-version: " + LeavesXConfig.CURRENT_CONFIG_VERSION));
+        assertTrue(output.indexOf("config-version:") < output.indexOf("features:"));
         assertTrue(LeavesXConfigInspection.unknownKeys(path).isEmpty());
     }
 }

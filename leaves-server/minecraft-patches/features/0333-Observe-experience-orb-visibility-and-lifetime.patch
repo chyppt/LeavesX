@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 3 Oct 2026 01:00:00 +0800
+Subject: [PATCH] Observe experience orb visibility and lifetime
+
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -960,6 +960,7 @@
+         this.debugSynchronizers.tick(this.server.debugSubscribers());
+         profiler.pop();
+         this.environmentAttributes().invalidateTickCache();
++        org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.sampleWorld(this);
+     }
+ 
+     @Override
+diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
+--- a/net/minecraft/server/level/ServerEntity.java
++++ b/net/minecraft/server/level/ServerEntity.java
+@@ -350,6 +350,7 @@
+         List<Packet<? super ClientGamePacketListener>> packets = new ArrayList<>();
+         this.sendPairingData(player, packets::add);
+         player.connection.send(new ClientboundBundlePacket(packets));
++        org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.pairingSubmitted(this.entity, player, packets);
+         this.entity.startSeenByPlayer(player);
+     }
+ 
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1656,6 +1656,8 @@
+                         }
+ 
+                         ChunkMap.this.level.debugSynchronizers().startTrackingEntity(player, this.entity);
++                        } else {
++                            org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.trackingCancelled(this.entity, player);
+                         }
+                         // Paper end - entity tracking events
+                         this.serverEntity.onPlayerAdd(); // Paper - fix desync when a player is added to the tracker
+diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
+--- a/net/minecraft/world/entity/Entity.java
++++ b/net/minecraft/world/entity/Entity.java
+@@ -5202,6 +5202,9 @@
+         final boolean alreadyRemoved = this.removalReason != null; // Paper - Folia schedulers
+         if (this.removalReason == null) {
+             this.removalReason = reason;
++            if (this instanceof ExperienceOrb orb) {
++                org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.removed(orb, reason, cause);
++            }
+         }
+ 
+         if (this.removalReason.shouldDestroy()) {
+diff --git a/net/minecraft/world/entity/ExperienceOrb.java b/net/minecraft/world/entity/ExperienceOrb.java
+--- a/net/minecraft/world/entity/ExperienceOrb.java
++++ b/net/minecraft/world/entity/ExperienceOrb.java
+@@ -394,6 +394,7 @@
+ 
+     @Override
+     public void playerTouch(final Player player) {
++        org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.touched(this, player);
+         if (player instanceof ServerPlayer serverPlayer) {
+             if (player.takeXpDelay == 0) {
+                 if (!new com.destroystokyo.paper.event.player.PlayerPickupExperienceEvent(serverPlayer.getBukkitEntity(), (org.bukkit.entity.ExperienceOrb) this.getBukkitEntity()).callEvent()) {

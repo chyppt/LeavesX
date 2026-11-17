@@ -1,0 +1,94 @@
+Subject: [PATCH] Reuse immutable equipment lists and identical item checks
+
+Inspired by GaleMC/Gale patches 0074 and 0076 (GPL-3.0-only).
+Existing immutable list is reused without exposing a mutable shared enum array.
+
+diff --git a/net/minecraft/world/entity/EquipmentTable.java b/net/minecraft/world/entity/EquipmentTable.java
+index fca66938..60025abc 100644
+--- a/net/minecraft/world/entity/EquipmentTable.java
++++ b/net/minecraft/world/entity/EquipmentTable.java
+@@ -35,7 +35,8 @@ public record EquipmentTable(ResourceKey<LootTable> lootTable, Map<EquipmentSlot
+     }
+ 
+     private static Map<EquipmentSlot, Float> createForAllSlots(final float dropChance) {
+-        return createForAllSlots(List.of(EquipmentSlot.values()), dropChance);
++        return createForAllSlots(org.leavesx.leavesx.config.LeavesXRuntime.immutableCacheOptimizations()
++            ? EquipmentSlot.VALUES : List.of(EquipmentSlot.values()), dropChance);
+     }
+ 
+     private static Map<EquipmentSlot, Float> createForAllSlots(final List<EquipmentSlot> slots, final float dropChance) {
+@@ -47,4 +48,4 @@ public record EquipmentTable(ResourceKey<LootTable> lootTable, Map<EquipmentSlot
+ 
+         return values;
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/net/minecraft/world/level/saveddata/maps/MapItemSavedData.java b/net/minecraft/world/level/saveddata/maps/MapItemSavedData.java
+index 1d899e97..7ac997fe 100644
+--- a/net/minecraft/world/level/saveddata/maps/MapItemSavedData.java
++++ b/net/minecraft/world/level/saveddata/maps/MapItemSavedData.java
+@@ -269,14 +269,18 @@ public class MapItemSavedData extends SavedData {
+     }
+ 
+     private static boolean hasMapInvisibilityItemEquipped(final Player player) {
+-        for (EquipmentSlot equipmentSlot : EquipmentSlot.values()) {
+-            if (equipmentSlot != EquipmentSlot.MAINHAND
+-                && equipmentSlot != EquipmentSlot.OFFHAND
+-                && player.getItemBySlot(equipmentSlot).is(ItemTags.MAP_INVISIBILITY_EQUIPMENT)) {
+-                return true;
++        if (org.leavesx.leavesx.config.LeavesXRuntime.immutableCacheOptimizations()) {
++            for (int index = 0; index < EquipmentSlot.VALUES.size(); index++) {
++                final EquipmentSlot slot = EquipmentSlot.VALUES.get(index);
++                if (slot != EquipmentSlot.MAINHAND && slot != EquipmentSlot.OFFHAND
++                    && player.getItemBySlot(slot).is(ItemTags.MAP_INVISIBILITY_EQUIPMENT)) return true;
++            }
++        } else {
++            for (EquipmentSlot slot : EquipmentSlot.values()) {
++                if (slot != EquipmentSlot.MAINHAND && slot != EquipmentSlot.OFFHAND
++                    && player.getItemBySlot(slot).is(ItemTags.MAP_INVISIBILITY_EQUIPMENT)) return true;
+             }
+         }
+-
+         return false;
+     }
+ 
+@@ -762,4 +766,4 @@ public class MapItemSavedData extends SavedData {
+         };
+     }
+     // Paper end - store target world by uuid in addition to dimension
+-}
+\ No newline at end of file
++}
+diff --git a/net/minecraft/world/item/ItemStack.java b/net/minecraft/world/item/ItemStack.java
+index b0e384e9..7e37c52e 100644
+--- a/net/minecraft/world/item/ItemStack.java
++++ b/net/minecraft/world/item/ItemStack.java
+@@ -883,11 +883,17 @@ public final class ItemStack implements DataComponentHolder, ItemInstance, Chang
+     }
+ 
+     public static boolean isSameItem(final ItemStack a, final ItemStack b) {
+-        return a.is(b.getItem());
++        if (a != null && a == b && org.leavesx.leavesx.config.LeavesXRuntime.immutableCacheOptimizations()) {
++            return true;
++        }
++        return a.is(b.getItem());
+     }
+ 
+     public static boolean isSameItemSameComponents(final ItemStack a, final ItemStack b) {
+-        return a.is(b.getItem()) && (a.isEmpty() && b.isEmpty() || Objects.equals(a.components, b.components));
++        if (a != null && a == b && org.leavesx.leavesx.config.LeavesXRuntime.immutableCacheOptimizations()) {
++            return true;
++        }
++        return a.is(b.getItem()) && (a.isEmpty() && b.isEmpty() || Objects.equals(a.components, b.components));
+     }
+ 
+     public static boolean matchesIgnoringComponents(final ItemStack a, final ItemStack b, final Predicate<DataComponentType<?>> ignoredPredicate) {
+@@ -1534,4 +1536,4 @@ public final class ItemStack implements DataComponentHolder, ItemInstance, Chang
+         }
+     }
+     // Leaves end - Lithium Sleeping Block Entity
+-}
+\ No newline at end of file
++}
+

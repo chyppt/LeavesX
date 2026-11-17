@@ -5,7 +5,7 @@ import java.util.function.Supplier;
 
 /** 对明确阻塞点做有界累计测量；不会据此推断 CPU 时间。 */
 public final class OwnerThreadWaits {
-    public enum Site { PATH_RESULT, ORDERED_BARRIER, ADMISSION, COMPUTE_RANGES, COMPUTE_BATCHES }
+    public enum Site { PATH_RESULT, ORDERED_BARRIER, ADMISSION, COMPUTE_RANGES, COMPUTE_BATCHES, AI_CANDIDATES }
     private static final AsyncTaskTiming[] TIMINGS = java.util.Arrays.stream(Site.values())
         .map(ignored -> new AsyncTaskTiming()).toArray(AsyncTaskTiming[]::new);
     private static final AsyncTaskTiming[] MAIN_TIMINGS = java.util.Arrays.stream(Site.values())

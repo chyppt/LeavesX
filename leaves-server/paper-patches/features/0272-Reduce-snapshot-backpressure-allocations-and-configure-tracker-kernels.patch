@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sun, 15 Nov 2026 23:20:00 +0800
+Subject: [PATCH] Reduce snapshot backpressure allocations and configure tracker kernels
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -229,6 +229,14 @@
+         return tryExecuteSnapshot(Workload.UNSPECIFIED, task, cancelled);
+     }
+ 
++    /** 仅作快照对象分配前的提示；真正提交仍会原子预留线程名额，不能依赖此提示发布结果。 */
++    static boolean canExecuteSnapshot(final Workload workload) {
++        final ComputeThreadPoolExecutor current = executor;
++        return current != null && !current.isShutdown() && !isComputeWorkerThread()
++            && !WORKLOAD_COUNTERS[workload.ordinal()].circuitOpen(System.nanoTime())
++            && !lowPriorityBlocked(current, workload) && current.availableWorkerSlotCount() > 0;
++    }
++
+     /** 快照流水批次沿用同一线程预算、熔断保护和嵌套调用保护。 */
+     static boolean tryExecuteSnapshot(final Workload workload, final Runnable task, final Consumer<Throwable> cancelled) {
+         Objects.requireNonNull(task, "task");
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java
+@@ -47,11 +47,24 @@
+         Objects.requireNonNull(computation, "computation");
+         final long started = System.nanoTime();
+         try {
++            this.items = Math.addExact(this.items, size);
++            if (!LeavesXComputeExecutor.canExecuteSnapshot(this.workload)) {
++                // 没有空闲线程时完整执行当前片段；不为同步路径创建 Task、原子状态和闩锁。
++                // 其余已发布片段仍由 finish 统一等待，异常状态也保留到整批回退。
++                this.callerItems += size;
++                this.callerTasks++;
++                try {
++                    computation.run();
++                } catch (final Throwable computationFailure) {
++                    this.successful = false;
++                    if (this.failure == null) this.failure = computationFailure;
++                }
++                return;
++            }
+             if (this.pending.size() == MAX_PENDING_TASKS) {
+                 this.reapCompleted();
+                 if (this.pending.size() == MAX_PENDING_TASKS) this.drain();
+             }
+-            this.items = Math.addExact(this.items, size);
+             final Task task = new Task(size, computation, this.activeWorkers, this.maximumWorkers);
+             this.pending.add(task);
+             try {
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -346,9 +346,21 @@
+         boolean distanceHistograms,
+         boolean nearestReduction,
+         boolean trackerRowKernel,
++        boolean trackerEmptyRangeFastPath,
++        boolean trackerPlayerLists,
+         boolean spatialActivationGroups,
+         int cacheMaxCandidates
+     ) {
++        public ComputeKernelSettings(
++            final boolean distanceHistograms,
++            final boolean nearestReduction,
++            final boolean trackerRowKernel,
++            final boolean spatialActivationGroups,
++            final int cacheMaxCandidates
++        ) {
++            this(distanceHistograms, nearestReduction, trackerRowKernel, true, true, spatialActivationGroups, cacheMaxCandidates);
++        }
++
+         public ComputeKernelSettings {
+             if (cacheMaxCandidates < 0 || cacheMaxCandidates > 1_048_576) {
+                 throw new IllegalArgumentException("async.compute.cache-max-candidates must be between 0 and 1048576");
+@@ -356,7 +368,7 @@
+         }
+ 
+         public static ComputeKernelSettings defaults() {
+-            return new ComputeKernelSettings(true, true, true, true, 32_768);
++            return new ComputeKernelSettings(true, true, true, true, true, true, 32_768);
+         }
+     }
+ 
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -533,6 +533,8 @@
+                         readBoolean(node.node("async", "compute", "kernels", "ai-distance-histograms"), "async.compute.kernels.ai-distance-histograms", true),
+                         readBoolean(node.node("async", "compute", "kernels", "ai-nearest-reduction"), "async.compute.kernels.ai-nearest-reduction", true),
+                         readBoolean(node.node("async", "compute", "kernels", "tracker-row-kernel"), "async.compute.kernels.tracker-row-kernel", true),
++                        readBoolean(node.node("async", "compute", "kernels", "tracker-empty-range-fastpath"), "async.compute.kernels.tracker-empty-range-fastpath", true),
++                        readBoolean(node.node("async", "compute", "kernels", "tracker-player-lists"), "async.compute.kernels.tracker-player-lists", true),
+                         readBoolean(node.node("async", "compute", "kernels", "spatial-activation-groups"), "async.compute.kernels.spatial-activation-groups", true),
+                         readInt(node.node("async", "compute", "cache-max-candidates"), "async.compute.cache-max-candidates", 32_768)
+                     )
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -201,6 +201,8 @@
+         changed |= writeValue(node.node("async", "compute", "kernels", "ai-distance-histograms"), "async.compute.kernels.ai-distance-histograms", kernels.distanceHistograms(), missingOnly);
+         changed |= writeValue(node.node("async", "compute", "kernels", "ai-nearest-reduction"), "async.compute.kernels.ai-nearest-reduction", kernels.nearestReduction(), missingOnly);
+         changed |= writeValue(node.node("async", "compute", "kernels", "tracker-row-kernel"), "async.compute.kernels.tracker-row-kernel", kernels.trackerRowKernel(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "kernels", "tracker-empty-range-fastpath"), "async.compute.kernels.tracker-empty-range-fastpath", kernels.trackerEmptyRangeFastPath(), missingOnly);
++        changed |= writeValue(node.node("async", "compute", "kernels", "tracker-player-lists"), "async.compute.kernels.tracker-player-lists", kernels.trackerPlayerLists(), missingOnly);
+         changed |= writeValue(node.node("async", "compute", "kernels", "spatial-activation-groups"), "async.compute.kernels.spatial-activation-groups", kernels.spatialActivationGroups(), missingOnly);
+         changed |= writeValue(node.node("async", "compute", "cache-max-candidates"), "async.compute.cache-max-candidates", kernels.cacheMaxCandidates(), missingOnly);
+         changed |= writeValue(node.node("async", "compute", "kernels", "activation-bounds-prefilter"), "async.compute.kernels.activation-bounds-prefilter", async.activationBoundsPrefilter(), missingOnly);
+@@ -586,6 +588,8 @@
+         comments.put("async.compute.kernels.ai-distance-histograms", "大型 AI 距离排序一次统计各字节，减少重复扫描；排序和平局顺序不变，可重载。默认：true。");
+         comments.put("async.compute.kernels.ai-nearest-reduction", "最近目标查询只保存分片赢家，减少排序数组和逐项结果写入；目标规则不变，可重载。默认：true。");
+         comments.put("async.compute.kernels.tracker-row-kernel", "同批玩家视距一致时复用追踪距离计算；视距混合时用原公式，发包及可见性规则不变，可重载。默认：true。");
++        comments.put("async.compute.kernels.tracker-empty-range-fastpath", "附近玩家列表为空时跳过无效坐标采集和比较，仍核对区块及玩家列表状态；不改变可见性结果，可重载。默认：true。");
++        comments.put("async.compute.kernels.tracker-player-lists", "同批实体共享只读的附近玩家索引，提交时仍核验实时玩家和区块状态；不跨 Tick 缓存，可重载。默认：true。");
+         comments.put("async.compute.kernels.spatial-activation-groups", "按冻结位置组织玩家激活范围，减少分散玩家之间的无效比较；激活范围和更新频率不变，可重载。默认：true。");
+         comments.put("async.compute.cache-max-candidates", "距离排序、最近目标与激活计算每线程的日常候选缓存上限；持续高负载时复用更大缓存，后续小任务到来时回收，0 为不保留；不限制实体数，可重载。默认：32768。");
+         comments.put("async.compute.animals.breeding", "并行计算鸡牛羊猪繁殖配对距离；搜索范围、繁殖时机和事件不变。默认：true。");

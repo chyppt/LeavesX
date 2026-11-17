@@ -1,0 +1,206 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Mon, 16 Nov 2026 18:00:00 +0800
+Subject: [PATCH] Make compute worker handoffs atomic
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -1938,11 +1938,13 @@
+     /** Bounded pool with lock-free active-task observation for hot-path admission decisions. */
+     private static final class ComputeThreadPoolExecutor extends ThreadPoolExecutor {
+ 
+-        private final AtomicInteger executingTasks = new AtomicInteger();
+-        /** Number of tasks accepted by execute but not handed to beforeExecute yet. */
+-        private final AtomicInteger queuedTasks = new AtomicInteger();
+-        /** Reservations made by concurrent invocations before their queue entries are handed to workers. */
+-        private final AtomicInteger reservedTasks = new AtomicInteger();
++        // 三个 20 位计数分别记录预留、排队、执行；当前硬上限为 64 线程和 128 排队任务。
++        // 阶段交接只更新一个原子值，准入不会读到重复计数或漏计数的中间状态。
++        private static final int COUNT_BITS = 20;
++        private static final long COUNT_MASK = (1L << COUNT_BITS) - 1L;
++        private static final long QUEUED_UNIT = 1L << COUNT_BITS;
++        private static final long EXECUTING_UNIT = 1L << (COUNT_BITS * 2);
++        private final AtomicLong taskCounts = new AtomicLong();
+ 
+         private ComputeThreadPoolExecutor(final int workers) {
+             super(
+@@ -1963,13 +1965,14 @@
+ 
+         @Override
+         public void execute(final Runnable command) {
+-            final int acceptedDepth = this.queuedTasks.incrementAndGet();
+-            recordMaximum(maximumQueuedTaskCount, acceptedDepth);
++            // 内部任务在入队前将同一个名额由预留转为排队，直接提交则只增加排队数量。
++            final long counts = this.taskCounts.addAndGet(QUEUED_UNIT - (command instanceof ReservedComputeTask ? 1L : 0L));
++            recordMaximum(maximumQueuedTaskCount, (counts >>> COUNT_BITS) & COUNT_MASK);
+             try {
+                 super.execute(command);
+             } catch (final RuntimeException | Error failure) {
+                 // AbortPolicy and shutdown races must not leave adaptive admission permanently disabled.
+-                this.queuedTasks.decrementAndGet();
++                this.taskCounts.addAndGet(-QUEUED_UNIT);
+                 rejectedTaskCount.incrementAndGet();
+                 throw failure;
+             }
+@@ -1978,10 +1981,7 @@
+         @Override
+         protected void beforeExecute(final Thread thread, final Runnable task) {
+             super.beforeExecute(thread, task);
+-            // Publish the execution state before removing the queue entry. This avoids a transient false idle slot
+-            // that could let a concurrent invocation over-admit another batch between the two counter updates.
+-            this.executingTasks.incrementAndGet();
+-            this.queuedTasks.decrementAndGet();
++            this.taskCounts.addAndGet(EXECUTING_UNIT - QUEUED_UNIT);
+             COMPUTE_WORKER_CONTEXT.set(Boolean.TRUE);
+         }
+ 
+@@ -1989,7 +1989,7 @@
+         protected void afterExecute(final Runnable task, final Throwable failure) {
+             try {
+                 COMPUTE_WORKER_CONTEXT.remove();
+-                this.executingTasks.decrementAndGet();
++                this.taskCounts.addAndGet(-EXECUTING_UNIT);
+             } finally {
+                 try {
+                     super.afterExecute(task, failure);
+@@ -2003,23 +2003,26 @@
+         }
+ 
+         private int executingTaskCount() {
+-            return this.executingTasks.get();
++            return (int)((this.taskCounts.get() >>> (COUNT_BITS * 2)) & COUNT_MASK);
+         }
+ 
+         private int queuedTaskCount() {
+-            return Math.max(0, this.queuedTasks.get());
++            return (int)((this.taskCounts.get() >>> COUNT_BITS) & COUNT_MASK);
+         }
+ 
+         private int reservedTaskCount() {
+-            return Math.max(0, this.reservedTasks.get());
++            return (int)(this.taskCounts.get() & COUNT_MASK);
+         }
+ 
+         /** Returns worker slots that are not executing, queued, or reserved by another invocation. */
+         private int availableWorkerSlotCount() {
+-            return Math.max(
+-                0,
+-                this.getCorePoolSize() - this.executingTaskCount() - this.queuedTaskCount() - this.reservedTasks.get()
+-            );
++            return this.availableWorkerSlotCount(this.taskCounts.get());
++        }
++
++        private int availableWorkerSlotCount(final long counts) {
++            final long occupied = (counts & COUNT_MASK) + ((counts >>> COUNT_BITS) & COUNT_MASK)
++                + ((counts >>> (COUNT_BITS * 2)) & COUNT_MASK);
++            return (int)Math.max(0L, this.getCorePoolSize() - occupied);
+         }
+ 
+         /** Atomically reserves worker slots for one invocation, preventing concurrent callers from over-admitting. */
+@@ -2028,43 +2031,40 @@
+                 return 0;
+             }
+             while (true) {
+-                final int currentReservations = this.reservedTasks.get();
+-                final int available = Math.max(
+-                    0,
+-                    this.getCorePoolSize() - this.executingTaskCount() - this.queuedTaskCount() - currentReservations
+-                );
++                final long counts = this.taskCounts.get();
++                final int available = this.availableWorkerSlotCount(counts);
+                 final int granted = Math.min(requested, available);
+                 if (granted == 0) {
+                     return 0;
+                 }
+-                if (this.reservedTasks.compareAndSet(currentReservations, currentReservations + granted)) {
++                if (this.taskCounts.compareAndSet(counts, counts + granted)) {
+                     return granted;
+                 }
+             }
+         }
+ 
+-        private void releaseWorkerSlotReservation() {
+-            this.reservedTasks.decrementAndGet();
+-        }
+-
+         private void releaseWorkerSlotReservations(final int count) {
+-            if (count > 0) {
+-                this.reservedTasks.addAndGet(-count);
+-            }
+-        }
+-
+-        /** Submits a previously reserved task and releases its reservation even when shutdown races the submit. */
++            if (count > 0) this.taskCounts.addAndGet(-count);
++        }
++
++        /** 已预留的任务由 execute 在队列计数接管后释放预留。 */
+         private void executeReserved(final Runnable command) {
+-            try {
+-                this.execute(command);
+-            } finally {
+-                this.releaseWorkerSlotReservation();
+-            }
+-        }
+-    }
++            this.execute(command);
++        }
++
++        @Override
++        public List<Runnable> shutdownNow() {
++            final List<Runnable> cancelled = super.shutdownNow();
++            this.taskCounts.addAndGet(-QUEUED_UNIT * cancelled.size());
++            return cancelled;
++        }
++    }
++
++    /** 只能通过已预留名额的内部入口提交，不增加任务包装或独立线程池。 */
++    private interface ReservedComputeTask extends Runnable {}
+ 
+     /** 单范围任务只有一次结果发布；取消排队任务不会取消正在写结果的任务。 */
+-    private static final class SmallRangeRunnable implements Runnable {
++    private static final class SmallRangeRunnable implements ReservedComputeTask {
+         private final RangeTask task;
+         private final int size;
+         private final CountDownLatch completed = new CountDownLatch(1);
+@@ -2124,12 +2124,12 @@
+     }
+ 
+     /** 内部任务自行保证领取、取消和完成发布只发生一次。 */
+-    interface SnapshotTask extends Runnable {
++    interface SnapshotTask extends ReservedComputeTask {
+         void cancel(Throwable failure);
+     }
+ 
+     /** 排队取消与开始执行只允许一方胜出，防止许可泄漏或重复完成回调。 */
+-    private static final class SnapshotRunnable implements Runnable {
++    private static final class SnapshotRunnable implements ReservedComputeTask {
+         private final Runnable task;
+         private final Consumer<Throwable> cancelled;
+         private final java.util.concurrent.atomic.AtomicBoolean claimed = new java.util.concurrent.atomic.AtomicBoolean();
+@@ -2152,7 +2152,7 @@
+     }
+ 
+     /** Runs multiple contiguous ranges from one queue entry, reducing queue/lock pressure for large snapshots. */
+-    private static final class RangeBatchRunnable implements Runnable {
++    private static final class RangeBatchRunnable implements ReservedComputeTask {
+ 
+         private final RangeInvocation invocation;
+         private final int initialTaskIndex;
+diff --git a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+--- a/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
++++ b/src/test/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutorTest.java
+@@ -573,11 +573,9 @@
+         assertTrue(started.await(2L, TimeUnit.SECONDS));
+         executor.execute(() -> { });
+ 
+-        final var queuedField = executor.getClass().getDeclaredField("queuedTasks");
+-        queuedField.setAccessible(true);
+-        final AtomicInteger queued = (AtomicInteger)queuedField.get(executor);
+-        assertEquals(1, queued.get(), "a waiting task must be visible to adaptive admission");
+         assertEquals(1, LeavesXComputeExecutor.metrics().queuedTasks());
++        assertFalse(LeavesXComputeExecutor.canExecuteSnapshot(LeavesXComputeExecutor.Workload.ENTITY_TRACKING),
++            "运行和排队任务都必须对准入可见");
+         assertTrue(LeavesXComputeExecutor.metrics().maximumQueuedTasks() >= 1L);
+         release.countDown();
+     }

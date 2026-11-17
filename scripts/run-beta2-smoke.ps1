@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory)][string]$Instance,
     [Parameter(Mandatory)][string]$Marker,
     [string]$RunName = 'smoke',
-    [string]$ReportVersion = 'beta2',
+    [string]$ReportVersion = 'beta3',
     [switch]$SecureSeed
 )
 $ErrorActionPreference = 'Stop'
@@ -18,7 +18,8 @@ if (Test-Path -LiteralPath $log) {
 }
 $start = [Diagnostics.ProcessStartInfo]::new()
 $start.FileName = Join-Path $env:JAVA_HOME 'bin/java.exe'
-$jar = Join-Path $root 'leaves-server/build/libs/leavesx-26.1.2.jar'
+$buildProperties = ConvertFrom-StringData ([IO.File]::ReadAllText((Join-Path $root 'gradle.properties')))
+$jar = Join-Path $root ('leaves-server/build/libs/LeavesX-{0}-{1}.jar' -f $buildProperties.leavesXVersion, $buildProperties.mcVersion)
 $start.Arguments = '-Xms512M -Xmx3G -Dleavesx.probe.secure=' + $SecureSeed.IsPresent.ToString().ToLowerInvariant() + ' -jar "' + $jar + '" --nogui'
 $start.WorkingDirectory = $instancePath
 $start.UseShellExecute = $false

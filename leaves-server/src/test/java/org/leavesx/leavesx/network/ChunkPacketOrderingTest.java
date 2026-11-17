@@ -13,6 +13,11 @@ import net.minecraft.network.ConnectionProtocol;
 import net.minecraft.network.PacketListener;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.PacketFlow;
+import net.minecraft.network.protocol.common.ClientboundPingPacket;
+import net.minecraft.network.protocol.game.ClientboundBlockChangedAckPacket;
+import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.Blocks;
 import org.bukkit.support.environment.Normal;
 import org.junit.jupiter.api.Test;
 import org.leavesx.leavesx.config.LeavesXConfig;
@@ -56,12 +61,15 @@ class ChunkPacketOrderingTest {
             assertTrue(started.await(5, TimeUnit.SECONDS));
             final Packet<?> chunk = mock(Packet.class);
             when(chunk.isReady()).thenAnswer(invocation -> pending.isReady());
-            final Packet<?> block = mock(Packet.class);
+            final Packet<?> block = new ClientboundBlockUpdatePacket(new BlockPos(109, 69, -103), Blocks.STONE.defaultBlockState());
+            final Packet<?> acknowledgement = new ClientboundBlockChangedAckPacket(37);
+            final Packet<?> transaction = new ClientboundPingPacket(-451);
             final Packet<?> unload = mock(Packet.class);
-            when(block.isReady()).thenReturn(true);
             when(unload.isReady()).thenReturn(true);
             connection.send(chunk);
             connection.send(block);
+            connection.send(acknowledgement);
+            connection.send(transaction);
             connection.send(unload);
             final Method drain = Connection.class.getDeclaredMethod("processQueue");
             drain.setAccessible(true);
@@ -75,6 +83,8 @@ class ChunkPacketOrderingTest {
             if (!discard) {
                 assertSame(chunk, channel.readOutbound());
                 assertSame(block, channel.readOutbound());
+                assertSame(acknowledgement, channel.readOutbound());
+                assertSame(transaction, channel.readOutbound());
                 assertSame(unload, channel.readOutbound());
             }
             assertNull(channel.readOutbound());

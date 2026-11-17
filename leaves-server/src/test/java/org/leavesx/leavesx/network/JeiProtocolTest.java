@@ -42,6 +42,57 @@ import static org.mockito.Mockito.*;
 @Normal
 class JeiProtocolTest {
     @Test
+    void providerSmithingPreservesEmptyTemplateAndAdditionSlots() {
+        try (var bytes = mockStatic(org.bukkit.inventory.ItemStack.class, CALLS_REAL_METHODS)) {
+            bytes.when(() -> org.bukkit.inventory.ItemStack.deserializeBytes(any(byte[].class)))
+                    .thenReturn(org.bukkit.craftbukkit.inventory.CraftItemStack.asCraftMirror(new ItemStack(Items.PAPER, 3)));
+            String json = """
+                {"schemaVersion":1,"recipes":[{"id":"test:smithing","type":"smithing",
+                "inputs":[{"slot":0,"empty":true},{"slot":1,"choices":["AA=="]},{"slot":2,"empty":true}],
+                "outputs":["AA=="]}]}
+                """;
+            var recipes = org.leavesmc.leaves.protocol.jei.RecipeViewerJeiSnapshot.parse(json, "craftengine:content", RegistryHelper.registryAccess());
+            assertEquals(1, recipes.size());
+            assertTrue(org.leavesmc.leaves.protocol.jei.RecipeViewerJeiSnapshot.parse(json.replace("\"slot\":2", "\"slot\":0"), "craftengine:content", RegistryHelper.registryAccess()).isEmpty());
+            assertTrue(org.leavesmc.leaves.protocol.jei.RecipeViewerJeiSnapshot.parse(json.replace("\"slot\":1,\"choices\":[\"AA==\"]", "\"slot\":1,\"empty\":true"), "craftengine:content", RegistryHelper.registryAccess()).isEmpty());
+            var smithing = (net.minecraft.world.item.crafting.SmithingTransformRecipe) recipes.getFirst().value();
+            assertTrue(smithing.templateIngredient().isEmpty());
+            assertTrue(smithing.additionIngredient().isEmpty());
+            assertFalse(smithing.baseIngredient().isEmpty());
+            for (var channel : List.of(JeiRecipeSync.FABRIC, JeiRecipeSync.NEOFORGE)) {
+                assertTrue(JeiRecipeSync.encode(channel, recipes, RegistryHelper.registryAccess()).data().length > 0);
+            }
+        }
+    }
+
+    @Test
+    void lateFabricSyncSendsRecipeUpdateAfterContentAndOnlyOnce() {
+        var server = mock(MinecraftServer.class, RETURNS_DEEP_STUBS);
+        var player = mock(ServerPlayer.class);
+        var bukkitPlayer = mock(CraftPlayer.class);
+        var connection = mock(net.minecraft.server.network.ServerGamePacketListenerImpl.class);
+        player.connection = connection;
+        when(player.getUUID()).thenReturn(java.util.UUID.randomUUID());
+        when(player.getBukkitEntity()).thenReturn(bukkitPlayer);
+        when(bukkitPlayer.getListeningPluginChannels()).thenReturn(Set.of("fabric:recipe_sync"));
+        when(server.getPlayerList().getPlayers()).thenReturn(List.of(player));
+        when(server.getRecipeManager()).thenReturn(RegistryHelper.context().datapack().getRecipeManager());
+        when(server.registryAccess()).thenReturn((net.minecraft.core.RegistryAccess.Frozen) RegistryHelper.registryAccess());
+        try (var servers = mockStatic(MinecraftServer.class);
+             var runtime = mockStatic(org.leavesx.leavesx.config.LeavesXRuntime.class, RETURNS_DEEP_STUBS)) {
+            servers.when(MinecraftServer::getServer).thenReturn(server);
+            when(org.leavesx.leavesx.config.LeavesXRuntime.configuration().extensions().jeiRecipeSync()).thenReturn(true);
+            org.leavesmc.leaves.protocol.jei.JEIRecipeSyncProtocol.invalidate();
+            org.leavesmc.leaves.protocol.jei.JEIRecipeSyncProtocol.tick();
+            org.leavesmc.leaves.protocol.jei.JEIRecipeSyncProtocol.tick();
+            var ordered = inOrder(connection);
+            ordered.verify(connection).send(any(net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket.class));
+            ordered.verify(connection).send(any(net.minecraft.network.protocol.game.ClientboundUpdateRecipesPacket.class));
+            ordered.verifyNoMoreInteractions();
+        } finally { org.leavesmc.leaves.protocol.jei.JEIRecipeSyncProtocol.invalidate(); }
+    }
+
+    @Test
     void bothLoaderFormatsDecodeAllVanillaRecipesWithoutLosingIds() {
         final var recipes = RegistryHelper.context().datapack().getRecipeManager().getRecipes();
         final Set<Object> expected = new HashSet<>(recipes.stream().map(RecipeHolder::id).toList());
@@ -71,6 +122,31 @@ class JeiProtocolTest {
                 assertEquals(expected, actual);
             } finally {
                 buffer.release();
+            }
+        }
+    }
+
+    @Test
+    void providerFromAnotherNamespaceIsEncodedWithoutLosingOutput() {
+        // Isolate Bukkit's static bytes loader: this test environment has no running CraftServer.
+        final var output = new ItemStack(Items.STONE, 4);
+        final var bukkitStack = org.bukkit.craftbukkit.inventory.CraftItemStack.asCraftMirror(output);
+        try (var loader = mockStatic(org.bukkit.inventory.ItemStack.class, CALLS_REAL_METHODS)) {
+            loader.when(() -> org.bukkit.inventory.ItemStack.deserializeBytes(any(byte[].class))).thenReturn(bukkitStack);
+            final String snapshot = """
+                {"schemaVersion":1,"recipes":[{"id":"farmersdelight:probe","type":"shaped",
+                "width":2,"height":1,"inputs":[{"slot":1,"choices":["AA=="]}],"outputs":["AA=="]}]}
+                """;
+            final var holders = org.leavesmc.leaves.protocol.jei.RecipeViewerJeiSnapshot.parse(
+                    snapshot, "craftengine:content", RegistryHelper.registryAccess());
+            assertEquals(1, holders.size());
+            assertEquals("farmersdelight:probe", holders.getFirst().id().identifier().toString());
+            final var shaped = (net.minecraft.world.item.crafting.ShapedRecipe) holders.getFirst().value();
+            assertTrue(shaped.getIngredients().getFirst().isEmpty());
+            assertEquals(4, shaped.assemble(net.minecraft.world.item.crafting.CraftingInput.EMPTY).getCount());
+            for (Identifier channel : List.of(JeiRecipeSync.FABRIC, JeiRecipeSync.NEOFORGE)) {
+                final var payload = JeiRecipeSync.encode(channel, holders, RegistryHelper.registryAccess());
+                assertTrue(payload.data().length > 0);
             }
         }
     }
@@ -258,3 +334,4 @@ class JeiProtocolTest {
         }
     }
 }
+

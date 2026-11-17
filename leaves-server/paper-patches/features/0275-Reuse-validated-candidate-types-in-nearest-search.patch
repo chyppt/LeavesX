@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Mon, 16 Nov 2026 07:00:00 +0800
+Subject: [PATCH] Reuse validated candidate types in nearest search
+
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -126,7 +126,7 @@ public final class StableDistanceSorter {
+         if (size == 0) {
+             return -1;
+         }
+-        if (!supportsPrimitiveDistance(entities, origin)) {
++        if (!supportsPrimitiveNearestDistance(entities, origin)) {
+             double best = 0.0;
+             int nearest = -1;
+             for (int index = 0; index < size; index++) {
+@@ -915,6 +915,27 @@ public final class StableDistanceSorter {
+         return true;
+     }
+ 
++    /** 最近目标不需要构建排序工作区，单独复用已核验的类型，保持排序准入的原有成本。 */
++    private static boolean supportsPrimitiveNearestDistance(final List<? extends Entity> entities, final Entity origin) {
++        if (!VANILLA_DISTANCE.get(origin.getClass())) {
++            return false;
++        }
++        Class<?> firstType = null;
++        Class<?> recentType = null;
++        for (final Entity entity : entities) {
++            final Class<?> type = entity.getClass();
++            // 只复用当前调用中核验过的类；遇到新类仍检查 position 覆写，不改变整次回退条件。
++            if (type != firstType && type != recentType) {
++                if (!VANILLA_POSITION.get(type)) {
++                    return false;
++                }
++                if (firstType == null) firstType = type;
++                else recentType = type;
++            }
++        }
++        return true;
++    }
++
+     private static Workspace acquireWorkspace(final int size) {
+         Workspace cached = WORKSPACE.get();
+         final int cacheLimit = LeavesXRuntime.asyncSettings().kernels().cacheMaxCandidates();

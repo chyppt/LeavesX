@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 3 Oct 2026 01:00:00 +0800
+Subject: [PATCH] Combine mob spawn count snapshots
+
+diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+--- a/net/minecraft/world/level/MobSpawnCountAccumulator.java
++++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
+@@ -51,6 +51,54 @@
+         }
+         return merge(partialCounts, completedPartitions);
+     }
++
++    /** 同一实体快照衍生的两套计数共用一次派发与等待，避免两个计数阶段串行占用 Tick 预算。 */
++    static Counts countBoth(final Inputs local, final Inputs players, final int minimumParallelSize) {
++        // 按玩家生成通常只有一套输入，直接复用原路径，避免为另一侧创建每片空表。
++        if (local.size() == 0) return new Counts(emptyCounts(), count(players, true, minimumParallelSize));
++        if (players.size() == 0) return new Counts(count(local, true, minimumParallelSize), emptyCounts());
++        final int size = Math.max(local.size(), players.size());
++        if (size < minimumParallelSize && !org.leavesx.leavesx.runtime.LeavesXComputeExecutor.lowLoadWorkersEnabled()) {
++            return new Counts(countRange(local, 0, local.size()), countRange(players, 0, players.size()));
++        }
++
++        final Counts[] partials = new Counts[
++            org.leavesx.leavesx.runtime.LeavesXComputeExecutor.computePartitionCapacity()
++        ];
++        final int completed = org.leavesx.leavesx.runtime.LeavesXComputeExecutor.invokeRangesWithCount(
++            org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.MOB_SPAWN_COUNTING,
++            size,
++            minimumParallelSize,
++            (partition, start, end) -> {
++                // 映射到各自快照的等比区间：即使 local 过滤掉多数实体，也完整覆盖且不重复任何元素。
++                final int localStart = (int)((long)start * local.size() / size);
++                final int localEnd = (int)((long)end * local.size() / size);
++                final int playerStart = (int)((long)start * players.size() / size);
++                final int playerEnd = (int)((long)end * players.size() / size);
++                partials[partition] = new Counts(
++                    countRange(local, localStart, localEnd),
++                    countRange(players, playerStart, playerEnd)
++                );
++            }
++        );
++        if (completed == 0) {
++            return new Counts(countRange(local, 0, local.size()), countRange(players, 0, players.size()));
++        }
++
++        @SuppressWarnings("unchecked") final Long2ObjectOpenHashMap<int[]>[] localParts = new Long2ObjectOpenHashMap[completed];
++        @SuppressWarnings("unchecked") final Long2ObjectOpenHashMap<int[]>[] playerParts = new Long2ObjectOpenHashMap[completed];
++        for (int partition = 0; partition < completed; partition++) {
++            localParts[partition] = partials[partition].local();
++            playerParts[partition] = partials[partition].players();
++        }
++        return new Counts(merge(localParts, completed), merge(playerParts, completed));
++    }
++
++    private static Long2ObjectOpenHashMap<int[]> emptyCounts() {
++        return new Long2ObjectOpenHashMap<>(0);
++    }
++
++    record Counts(Long2ObjectOpenHashMap<int[]> local, Long2ObjectOpenHashMap<int[]> players) {}
+ 
+     private static Long2ObjectOpenHashMap<int[]> countRange(final Inputs inputs, final int start, final int end) {
+         if (hasChunkLocality(inputs.chunkKeys(), start, end)) {
+diff --git a/net/minecraft/world/level/MobSpawnCounting.java b/net/minecraft/world/level/MobSpawnCounting.java
+--- a/net/minecraft/world/level/MobSpawnCounting.java
++++ b/net/minecraft/world/level/MobSpawnCounting.java
+@@ -65,6 +65,12 @@
+     /** Aggregates only primitive snapshot arrays and is safe to execute on a LeavesX worker. */
+     public static Computed compute(final Prepared prepared, final boolean parallelCounting) {
+         final int minimumEntities = org.leavesx.leavesx.config.LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities();
++        if (parallelCounting && org.leavesx.leavesx.config.LeavesXRuntime.asyncSettings().combinedSpawnCounting()) {
++            final MobSpawnCountAccumulator.Counts counts = MobSpawnCountAccumulator.countBoth(
++                prepared.localInputs(), prepared.playerInputs(), minimumEntities
++            );
++            return new Computed(prepared, counts.local(), counts.players());
++        }
+         final Long2ObjectOpenHashMap<int[]> localCounts = MobSpawnCountAccumulator.count(
+             prepared.localInputs(), parallelCounting, minimumEntities
+         );

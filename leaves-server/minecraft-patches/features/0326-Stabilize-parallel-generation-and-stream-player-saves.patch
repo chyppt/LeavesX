@@ -1,0 +1,109 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Fri, 16 Oct 2026 18:00:00 +0800
+Subject: [PATCH] Stabilize parallel generation and stream ordered player saves
+
+diff --git a/net/minecraft/world/level/levelgen/structure/placement/RandomSpreadStructurePlacement.java b/net/minecraft/world/level/levelgen/structure/placement/RandomSpreadStructurePlacement.java
+--- a/net/minecraft/world/level/levelgen/structure/placement/RandomSpreadStructurePlacement.java
++++ b/net/minecraft/world/level/levelgen/structure/placement/RandomSpreadStructurePlacement.java
+@@ -12,6 +12,10 @@
+ import net.minecraft.world.level.levelgen.WorldgenRandom;
+ 
+ public class RandomSpreadStructurePlacement extends StructurePlacement {
++    // 每个生成线程独占随机源；每次查询完整重置种子，不持有区块、世界或插件对象。
++    // 这里只调用原版枚举的 nextInt，没有回调或重入，不与装饰阶段的随机序列共享状态。
++    private static final ThreadLocal<WorldgenRandom> LEAVESX_PLACEMENT_RANDOM =
++        ThreadLocal.withInitial(() -> new WorldgenRandom(new LegacyRandomSource(0L)));
+     public static final MapCodec<RandomSpreadStructurePlacement> CODEC = RecordCodecBuilder.<RandomSpreadStructurePlacement>mapCodec(
+             i -> placementCodec(i)
+                 .and(
+@@ -72,7 +76,7 @@
+         final org.leavesx.leavesx.worldgen.SecureFeatureSeed.@org.jspecify.annotations.Nullable Context secureSeed) {
+         int spacedGridX = Math.floorDiv(sourceX, this.spacing);
+         int spacedGridZ = Math.floorDiv(sourceZ, this.spacing);
+-        WorldgenRandom random = secureSeed == null ? new WorldgenRandom(new LegacyRandomSource(0L))
++        WorldgenRandom random = secureSeed == null ? LEAVESX_PLACEMENT_RANDOM.get()
+             : secureSeed.random("structure-placement", spacedGridX, spacedGridZ, this.salt());
+         random.setLargeFeatureWithSalt(seed, spacedGridX, spacedGridZ, this.salt());
+         int limit = this.spacing - this.separation;
+diff --git a/net/minecraft/world/level/storage/PlayerDataStorage.java b/net/minecraft/world/level/storage/PlayerDataStorage.java
+--- a/net/minecraft/world/level/storage/PlayerDataStorage.java
++++ b/net/minecraft/world/level/storage/PlayerDataStorage.java
+@@ -55,7 +55,12 @@
+             org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.submitKeyedOrRun(
+                 org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE,
+                 uniqueId,
+-                () -> this.writeEncoded(playerName, stringId, encode(snapshot))
++                () -> this.writeFile(playerName, stringId, path -> {
++                    // 沿用原有 Files.write 的打开选项，避免 Path 重载引入每次写入的同步刷盘。
++                    try (var output = new java.io.BufferedOutputStream(Files.newOutputStream(path))) {
++                        NbtIo.writeCompressed(snapshot, output);
++                    }
++                })
+             ).exceptionally(failure -> {
+                 LOGGER.warn("Failed to compress or save player data for {} ({})", playerName, uniqueId, failure);
+                 return null;
+@@ -81,21 +86,23 @@
+         });
+     }
+ 
+-    private static byte[] encode(final CompoundTag snapshot) {
+-        try (ByteArrayOutputStream output = new ByteArrayOutputStream(65_536)) {
+-            NbtIo.writeCompressed(snapshot, output);
+-            return output.toByteArray();
+-        } catch (final java.io.IOException failure) {
+-            throw new java.io.UncheckedIOException("Failed to compress detached player data", failure);
+-        }
++    private void writeEncoded(final String playerName, final String stringId, final byte[] encoded) {
++        this.writeFile(playerName, stringId, path -> Files.write(path, encoded));
+     }
+ 
+-    private void writeEncoded(final String playerName, final String stringId, final byte[] encoded) {
++    @FunctionalInterface
++    private interface SaveWriter {
++        void write(Path path) throws java.io.IOException;
++    }
++
++    /** 压缩流关闭成功后才替换正式文件；失败时旧存档与临时文件清理使用同一路径。 */
++    private void writeFile(final String playerName, final String stringId, final SaveWriter writer) {
+         Path temporaryFile = null;
+         try {
+             final Path playerDirPath = this.playerDir.toPath();
+             temporaryFile = Files.createTempFile(playerDirPath, stringId + "-", ".dat");
+-            Files.write(temporaryFile, encoded);
++            // 异步压缩直接写入临时文件，避免压缩缓冲扩容及 toByteArray 的整份复制。
++            writer.write(temporaryFile);
+             final Path realFile = playerDirPath.resolve(stringId + ".dat");
+             final Path oldFile = playerDirPath.resolve(stringId + ".dat_old");
+             // The void wrapper only logs exhausted retries. Propagate failure to the save lane
+@@ -134,7 +141,11 @@
+         // Spigot start
+         boolean usingWrongFile = false;
+         if (org.bukkit.Bukkit.getOnlineMode() && !realFile.exists()) { // Paper - Check online mode first
+-            realFile = new File(this.playerDir, net.minecraft.core.UUIDUtil.createOfflinePlayerUUID(nameAndId.name()) + suffix);
++            final UUID offlineId = net.minecraft.core.UUIDUtil.createOfflinePlayerUUID(nameAndId.name());
++            // 离线 UUID 是另一条保存队列；先等候已提交的写入，再检查和重命名文件。
++            org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.awaitKey(
++                org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE, offlineId);
++            realFile = new File(this.playerDir, offlineId + suffix);
+             if (realFile.exists()) {
+                 usingWrongFile = true;
+                 LOGGER.warn("Using offline mode UUID file for player {} as it is the only copy we can find.", nameAndId.name());
+@@ -159,12 +170,11 @@
+     }
+ 
+     public Optional<CompoundTag> load(final NameAndId nameAndId) {
+-        if (org.leavesx.leavesx.config.LeavesXRuntime.asyncPlayerDataSave()) {
+-            org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.awaitKey(
+-                org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE,
+-                nameAndId.id()
+-            );
+-        }
++        // 热重载关闭配置后，之前提交的保存仍可能在队列里；屏障应依据队列而非当前开关。
++        org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.awaitKey(
++            org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.PLAYER_DATA_SAVE,
++            nameAndId.id()
++        );
+         Optional<CompoundTag> optTag = this.load(nameAndId, ".dat");
+         if (optTag.isEmpty()) {
+             this.backup(nameAndId, ".dat");

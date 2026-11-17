@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 3 Oct 2026 01:00:00 +0800
+Subject: [PATCH] Observe spawn-time experience merging
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java b/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java
+--- a/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java
++++ b/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java
+@@ -773,10 +773,13 @@
+                             long newTotal = (long)xp.getValue() + (long)loopItem.getValue();
+                             if ((int) newTotal < 0) continue; // Overflow
+                             if (!mergeUnconditionally && newTotal > maxValue) {
++                                final int transferredValue = (int) (maxValue - xp.getValue());
+                                 loopItem.setValue((int) (newTotal - maxValue));
+                                 xp.setValue((int) maxValue);
++                                org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.mergedDuringSpawn(xp, loopItem, transferredValue);
+                             } else {
+                             xp.setValue(xp.getValue() + loopItem.getValue());
++                            org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.mergedDuringSpawn(xp, loopItem, loopItem.getValue());
+                             loopItem.discard(null); // Add Bukkit remove cause
+                             } // Paper end - Maximum exp value when merging
+                         }

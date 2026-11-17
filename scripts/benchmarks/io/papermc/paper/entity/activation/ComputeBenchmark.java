@@ -6,6 +6,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Random;
+import org.leavesx.leavesx.performance.EntityTrackingRangeBatch;
 import org.leavesx.leavesx.performance.StableDistanceSorter;
 import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
 
@@ -20,23 +21,106 @@ class ComputeBenchmark {
     private static final long WINDOW_NANOS = 25_000_000L;
 
     public static void main(final String[] args) {
+        if (args.length > 3 && args[3].equals("poi-memory")) {
+            org.leavesx.leavesx.performance.PoiMemoryBenchmark.main(args);
+            return;
+        }
+        if (args.length > 3 && args[3].equals("snapshot-cache")) {
+            org.leavesx.leavesx.performance.SnapshotCacheBenchmark.main(args);
+            return;
+        }
+        if (args.length > 3 && args[3].equals("tracker-frame-peak")) {
+            org.leavesx.leavesx.performance.PeakFrameTrackingBenchmark.main(args);
+            return;
+        }
+        if (args.length > 3 && args[3].equals("compute-handoff")) {
+            try { org.leavesx.leavesx.runtime.ComputeHandoffBenchmark.main(args); }
+            catch (Exception failure) { throw new IllegalStateException(failure); }
+            return;
+        }
+        if (args.length > 3 && args[3].equals("tracker-player-lists")) {
+            org.leavesx.leavesx.performance.TrackerPlayerIndexBenchmark.main(args);
+            return;
+        }
+        if (args.length > 3 && args[3].equals("snapshot-backpressure")) {
+            try { org.leavesx.leavesx.runtime.SnapshotBackpressureBenchmark.main(args); }
+            catch (Exception error) { throw new IllegalStateException(error); }
+            return;
+        }
+        if (args.length > 3 && args[3].equals("snapshot-reuse")) {
+            org.leavesx.leavesx.runtime.SnapshotReuseBenchmark.main(args);
+            return;
+        }
+        if (args.length > 3 && args[3].equals("tracker-prepare")) {
+            org.leavesx.leavesx.performance.TrackingPreparationBenchmark.main(args);
+            return;
+        }
+        if (args.length > 3 && args[3].equals("entity-kernels")) {
+            org.leavesx.leavesx.performance.EntityKernelBenchmark.main(args);
+            return;
+        }
+        if (args.length > 3 && args[3].equals("entity-compute")) {
+            net.minecraft.world.level.EntityComputeBenchmark.main(args);
+            return;
+        }
+        if (args.length > 3 && args[3].equals("entity-pipeline")) {
+            EntityPipelineBenchmark.main(args);
+            return;
+        }
+        if (args.length > 3 && args[3].equals("spawn-count")) {
+            net.minecraft.world.level.SpawnCountBenchmark.main(args);
+            return;
+        }
+        if (args.length > 3 && args[3].equals("kernels")) {
+            KernelBenchmark.main(args);
+            return;
+        }
         final int workers = Integer.parseInt(args[0]);
         final int orderSeed = Integer.parseInt(args[1]);
-        System.out.printf(Locale.ROOT, "BENCH_ENV java=%s processors=%d workers=%d order=%d%n",
-            Runtime.version(), Runtime.getRuntime().availableProcessors(), workers, orderSeed);
-        LeavesXComputeExecutor.configure(workers, 64);
+        final boolean lowLoadWorkers = args.length > 2 && Boolean.parseBoolean(args[2]);
+        final boolean lowLoadSuite = args.length > 3 && args[3].equals("low-load");
+        final boolean smallSortSuite = args.length > 3 && args[3].equals("small-sort");
+        final boolean mediumSortSuite = args.length > 3 && args[3].equals("medium-sort");
+        System.out.printf(Locale.ROOT, "BENCH_ENV java=%s processors=%d workers=%d order=%d low-load=%s%n",
+            Runtime.version(), Runtime.getRuntime().availableProcessors(), workers, orderSeed, lowLoadWorkers);
+        LeavesXComputeExecutor.configure(workers, 64, true, lowLoadWorkers);
         try {
             final List<Runnable> cases = new ArrayList<>();
-            for (final int size : new int[] {
-                82, 192, 245, 512, 2_048, 8_192, 32_768, 65_536, 131_072, 262_144, 524_288
-            }) {
-                for (final boolean integral : new boolean[] {true, false}) {
-                    cases.add(() -> sorting(size, integral));
+            if (args.length > 3 && args[3].equals("tracking-sparse")) {
+                for (final int size : new int[] {1, 512, 8_192}) {
+                    for (final int stride : new int[] {1, 16, 128}) {
+                        cases.add(() -> tracking(size, 10, stride));
+                    }
                 }
-            }
-            for (final int size : new int[] {245, 2_048, 8_192, 32_768}) {
-                for (final int players : new int[] {2, 10}) {
-                    cases.add(() -> activation(size, players));
+            } else if (lowLoadSuite) {
+                // 包含单项任务与大批次；只比较真实数值计算，不把结果当成整服 MSPT。
+                for (final int size : new int[] {1, 64, 2_048, 8_192, 32_768}) {
+                    cases.add(() -> activation(size, 1));
+                    cases.add(() -> tracking(size, 10));
+                }
+            } else if (smallSortSuite) {
+                for (final int size : new int[] {2, 8, 32, 64}) {
+                    cases.add(() -> sorting(size, true));
+                    cases.add(() -> sorting(size, false));
+                }
+            } else if (mediumSortSuite) {
+                // 覆盖分片开销占比较高的普通传感器列表及单线程批次的上界。
+                for (final int size : new int[] {512, 2_048, 8_192, 8_193}) {
+                    cases.add(() -> sorting(size, true));
+                    cases.add(() -> sorting(size, false));
+                }
+            } else {
+                for (final int size : new int[] {
+                    82, 192, 245, 512, 2_048, 8_192, 32_768, 65_536, 131_072, 262_144, 524_288
+                }) {
+                    for (final boolean integral : new boolean[] {true, false}) {
+                        cases.add(() -> sorting(size, integral));
+                    }
+                }
+                for (final int size : new int[] {245, 2_048, 8_192, 32_768}) {
+                    for (final int players : new int[] {2, 10}) {
+                        cases.add(() -> activation(size, players));
+                    }
                 }
             }
             Collections.shuffle(cases, new Random(orderSeed));
@@ -128,6 +212,52 @@ class ComputeBenchmark {
 
     private static void consume(final int[] order) {
         consumed = order[0] * 31L + order[order.length / 2] * 17L + order[order.length - 1];
+    }
+
+    private static void tracking(final int size, final int players) {
+        tracking(size, players, 1);
+    }
+
+    private static void tracking(final int size, final int players, final int stride) {
+        final EntityTrackingRangeBatch batch = new EntityTrackingRangeBatch();
+        final double[] coordinates = new double[players * 3];
+        final double[] views = new double[players];
+        final int[] indices = new int[players];
+        for (int player = 0; player < players; player++) {
+            coordinates[player * 3] = player * 16.0;
+            coordinates[player * 3 + 1] = 64.0;
+            indices[player] = player;
+            views[player] = 128.0;
+        }
+        batch.prepare(size, coordinates, views);
+        final boolean[][] results = new boolean[size][players];
+        for (int row = 0; row < size; row++) {
+            if (row % stride == 0) {
+                batch.setRow(row, row % 512, 64.0, row % 64, 128.0, -1.0, indices, players, results[row]);
+            } else {
+                batch.setEmptyRow(row);
+            }
+        }
+        final int comparisons = batch.comparisonCount();
+        batch.compute(0, comparisons);
+        final boolean[][] expected = Arrays.stream(results).map(boolean[]::clone).toArray(boolean[][]::new);
+        final Runnable serial = () -> {
+            batch.compute(0, comparisons);
+            consumed = results[size / 2][players / 2] ? 1 : 0;
+        };
+        final Runnable configured = () -> {
+            final int partitions = LeavesXComputeExecutor.invokeRangesWithCount(
+                LeavesXComputeExecutor.Workload.ENTITY_TRACKING, comparisons, 256, 64,
+                (partition, start, end) -> batch.compute(start, end));
+            if (partitions == 0) batch.compute(0, comparisons);
+            consumed = results[size / 2][players / 2] ? 1 : 0;
+        };
+        configured.run();
+        if (!Arrays.deepEquals(expected, results)) throw new AssertionError("tracker differential mismatch");
+        final String distribution = stride == 1 ? "range" : "range-stride-" + stride;
+        measure("tracking", size, players, distribution, "serial", serial);
+        measure("tracking", size, players, distribution, "configured", configured);
+        batch.clear();
     }
 
     private static void measure(final String workload, final int size, final int players,

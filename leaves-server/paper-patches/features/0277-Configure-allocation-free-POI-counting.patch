@@ -1,0 +1,26 @@
+Subject: [PATCH] Configure POI counting without candidate collection
+
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -299,4 +299,4 @@
+     ACQUIRE_POI_CANDIDATES(
+         "performance.ai.acquire-poi-candidates",
+-        "生物寻找 POI 时减少候选集合分配，关闭后使用原版集合。默认：true。"
++        "POI 搜索、数量及阈值查询减少候选集合分配；加载、占用与遍历顺序不变，关闭后恢复原集合，可重载。默认：true。"
+     ),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -1308,6 +1308,11 @@
+     public static boolean poiSectionBitSetOptimization() {
+         return aiOptimizations && enabled(LeavesXOptimization.POI_SECTION_BITSET);
+     }
++
++    /** POI 计数仅省略结果集合，仍在原线程执行完整筛选和区段加载。 */
++    public static boolean poiCountWithoutCollectionOptimization() {
++        return aiOptimizations && enabled(LeavesXOptimization.ACQUIRE_POI_CANDIDATES);
++    }
+ 
+     /** Returns whether villager job-site competitor scans may skip loading unloaded POI sections. */
+     public static boolean poiCompetitorScanNoLoadOptimization() {

@@ -1,0 +1,1130 @@
+From fdf955c13532495136272eaf9fe630ba9083ab5e Mon Sep 17 00:00:00 2001
+From: LeavesX Build <build@leavesx.local>
+Date: Mon, 12 Oct 2026 02:46:38 +0800
+Subject: [PATCH] Complete low-load snapshot scheduling
+
+---
+ .../activation/ActivationRangeSnapshot.java   |   5 +
+ .../leavesx/command/LeavesXCommand.java       |  19 +-
+ .../leavesx/leavesx/config/LeavesXConfig.java |  43 +++-
+ .../config/LeavesXConfigBootstrap.java        |   6 +-
+ .../leavesx/config/LeavesXConfigLoader.java   |  15 ++
+ .../leavesx/config/LeavesXConfigWriter.java   |  20 +-
+ .../leavesx/config/LeavesXOptimization.java   |   4 +
+ .../leavesx/config/LeavesXRuntime.java        |   6 +
+ .../performance/StableDistanceSorter.java     |  76 ++++++-
+ .../leavesx/runtime/LeavesXAsyncRuntime.java  |  55 +++++
+ .../runtime/LeavesXComputeExecutor.java       | 212 +++++++++++++++++-
+ .../ActivationRangeSnapshotTest.java          |  37 +++
+ .../level/MobSpawnCountAccumulatorTest.java   |  16 ++
+ .../performance/StableDistanceSorterTest.java | 142 +++++++++++-
+ 14 files changed, 636 insertions(+), 20 deletions(-)
+
+diff --git a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+index b36545e23b..2965a281ca 100644
+--- a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
++++ b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+@@ -55,6 +55,7 @@ final class ActivationRangeSnapshot {
+     ) {
+         final int estimatedEntities = world.getEntityCount();
+         final int minimumCandidates = LeavesXRuntime.entityActivationMinimumEntities();
++        // 小世界沿用附近实体查询，实际数值判断仍可由 activateEntities 派发单个工作线程。
+         if (!LeavesXRuntime.parallelEntityActivation() || estimatedEntities < minimumCandidates) {
+             return false;
+         }
+@@ -67,6 +68,10 @@ final class ActivationRangeSnapshot {
+         if (eligiblePlayers < 2) {
+             return false;
+         }
++        if (!LeavesXComputeExecutor.shouldAttempt(LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION,
++            estimatedEntities, minimumCandidates, LeavesXRuntime.entityActivationMinimumItemsPerWorker())) {
++            return false;
++        }
+ 
+         final Workspace workspace = acquireWorkspace(Math.max(estimatedEntities, MINIMUM_CAPACITY));
+         try {
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 8f9c10e3da..686b35c640 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1059,6 +1059,12 @@ public final class LeavesXCommand extends Command {
+                 + metrics.failedInvocations() + " 失败 / 背压接管 " + metrics.backpressureCallerRuns(),
+             metrics.failedInvocations() == 0 ? NamedTextColor.AQUA : NamedTextColor.RED
+         ));
++        sender.sendMessage(line(
++            "低负载派发",
++            (LeavesXComputeExecutor.lowLoadWorkersEnabled() ? "已开启" : "已关闭")
++                + " / 单工作线程完成 " + LeavesXComputeExecutor.lowLoadDispatchCount() + " 次",
++            NamedTextColor.GRAY
++        ));
+         sender.sendMessage(line(
+             "同步原因",
+             "低于功能阈值 " + metrics.belowFeatureThresholdFallbacks()
+@@ -1154,6 +1160,9 @@ public final class LeavesXCommand extends Command {
+                     ? NamedTextColor.GRAY
+                     : NamedTextColor.YELLOW
+             ));
++            if (workload == LeavesXAsyncRuntime.Workload.PATHFINDING || workload == LeavesXAsyncRuntime.Workload.AI_CANDIDATES) {
++                sender.sendMessage(line("  借用空闲计算线程", LeavesXAsyncRuntime.borrowedTaskCount(workload) + " 次", NamedTextColor.DARK_GRAY));
++            }
+             final var admissionWait = LeavesXAsyncRuntime.recentAdmissionWaitTiming(workload);
+             if (admissionWait.samples() > 0L) {
+                 sender.sendMessage(line(
+@@ -1502,18 +1511,22 @@ public final class LeavesXCommand extends Command {
+             config.denseMonsterAiThrottling() ? NamedTextColor.YELLOW : NamedTextColor.GREEN
+         ));
+         sender.sendMessage(line("刷怪优化", onOff(config.mobSpawningOptimizations()) + "，并行 " + onOff(config.parallelMobSpawnCounting()), NamedTextColor.AQUA));
+-        sender.sendMessage(line("刷怪并行阈值", LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities() + " 实体", NamedTextColor.AQUA));
++        sender.sendMessage(line("刷怪并行阈值", LeavesXRuntime.effectiveMobSpawnCountingMinimumEntities() + " 实体"
++            + (LeavesXComputeExecutor.lowLoadWorkersEnabled() ? "，小任务也尝试派发" : ""), NamedTextColor.AQUA));
+         sender.sendMessage(line("方块实体优化", onOff(config.blockEntityOptimizations()), NamedTextColor.AQUA));
+         sender.sendMessage(line(
+             "目标距离并行",
+-            onOff(config.parallelAiTargetSearch()) + "，生效阈值 " + LeavesXRuntime.aiTargetSearchMinimumCandidates()
++            onOff(config.parallelAiTargetSearch())
++                + (LeavesXComputeExecutor.lowLoadWorkersEnabled() ? "，小任务也派发，分片参考 " : "，生效阈值 ")
++                + LeavesXRuntime.aiTargetSearchMinimumCandidates()
+                 + "（配置 " + config.aiTargetSearchMinimumCandidates() + "），每分片 "
+                 + LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker(),
+             NamedTextColor.AQUA
+         ));
+         sender.sendMessage(line(
+             "实体激活并行",
+-            onOff(config.parallelEntityActivation()) + "，生效阈值 "
++            onOff(config.parallelEntityActivation())
++                + (LeavesXComputeExecutor.lowLoadWorkersEnabled() ? "，小任务也派发，分片参考 " : "，生效阈值 ")
+                 + LeavesXRuntime.entityActivationMinimumEntities() + "（配置 "
+                 + config.entityActivationMinimumEntities() + "），每分片 "
+                 + LeavesXRuntime.entityActivationMinimumItemsPerWorker(),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index e989a44cd4..9696183b0e 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -90,7 +90,7 @@ public record LeavesXConfig(
+     RegionTickingSettings regionTickingSettings
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 82;
++    public static final int CURRENT_CONFIG_VERSION = 84;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -318,7 +318,10 @@ public record LeavesXConfig(
+         int playerDataSaveQueueSize,
+         boolean entityTrackerEnabled,
+         int entityTrackerThreads,
+-        int entityTrackerQueueSize
++        int entityTrackerQueueSize,
++        boolean sharedComputeWorkers,
++        boolean trackerComparisonSharding,
++        boolean lowLoadWorkers
+     ) {
+ 
+         public AsyncSettings {
+@@ -335,6 +338,42 @@ public record LeavesXConfig(
+             }
+         }
+ 
++        /** 保留已有内部调用的构造方式；新配置默认允许纯快照借用空闲计算线程。 */
++        public AsyncSettings(
++            final boolean chunkSendEnabled, final int chunkSendQueueSize, final boolean mobSpawningEnabled,
++            final boolean pathfindingEnabled, final int pathfindingThreads, final int pathfindingQueueSize,
++            final int pathfindingKeepaliveSeconds, final boolean playerDataSaveEnabled, final int playerDataSaveQueueSize,
++            final boolean entityTrackerEnabled, final int entityTrackerThreads, final int entityTrackerQueueSize
++        ) {
++            this(chunkSendEnabled, chunkSendQueueSize, mobSpawningEnabled, pathfindingEnabled, pathfindingThreads,
++                pathfindingQueueSize, pathfindingKeepaliveSeconds, playerDataSaveEnabled, playerDataSaveQueueSize,
++                entityTrackerEnabled, entityTrackerThreads, entityTrackerQueueSize, true, true, true);
++        }
++
++        public AsyncSettings(
++            final boolean chunkSendEnabled, final int chunkSendQueueSize, final boolean mobSpawningEnabled,
++            final boolean pathfindingEnabled, final int pathfindingThreads, final int pathfindingQueueSize,
++            final int pathfindingKeepaliveSeconds, final boolean playerDataSaveEnabled, final int playerDataSaveQueueSize,
++            final boolean entityTrackerEnabled, final int entityTrackerThreads, final int entityTrackerQueueSize,
++            final boolean sharedComputeWorkers
++        ) {
++            this(chunkSendEnabled, chunkSendQueueSize, mobSpawningEnabled, pathfindingEnabled, pathfindingThreads,
++                pathfindingQueueSize, pathfindingKeepaliveSeconds, playerDataSaveEnabled, playerDataSaveQueueSize,
++                entityTrackerEnabled, entityTrackerThreads, entityTrackerQueueSize, sharedComputeWorkers, true, true);
++        }
++
++        public AsyncSettings(
++            final boolean chunkSendEnabled, final int chunkSendQueueSize, final boolean mobSpawningEnabled,
++            final boolean pathfindingEnabled, final int pathfindingThreads, final int pathfindingQueueSize,
++            final int pathfindingKeepaliveSeconds, final boolean playerDataSaveEnabled, final int playerDataSaveQueueSize,
++            final boolean entityTrackerEnabled, final int entityTrackerThreads, final int entityTrackerQueueSize,
++            final boolean sharedComputeWorkers, final boolean trackerComparisonSharding
++        ) {
++            this(chunkSendEnabled, chunkSendQueueSize, mobSpawningEnabled, pathfindingEnabled, pathfindingThreads,
++                pathfindingQueueSize, pathfindingKeepaliveSeconds, playerDataSaveEnabled, playerDataSaveQueueSize,
++                entityTrackerEnabled, entityTrackerThreads, entityTrackerQueueSize, sharedComputeWorkers, trackerComparisonSharding, true);
++        }
++
+         public static AsyncSettings safeDefaults() {
+             return new AsyncSettings(
+                 false,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 8d0669c9fb..eee8db8aca 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+@@ -42,7 +42,8 @@ public final class LeavesXConfigBootstrap {
+         org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(
+             config.computeWorkers(),
+             config.minimumItemsPerWorker(),
+-            config.prestartWorkers()
++            config.prestartWorkers(),
++            config.asyncSettings().lowLoadWorkers()
+         );
+         org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.configure(config.asyncSettings(), config.extensions().isolateChunkPacking());
+         org.leavesx.leavesx.runtime.LeavesXRegionTicking.configure(config.regionTickingSettings());
+@@ -92,7 +93,8 @@ public final class LeavesXConfigBootstrap {
+             org.leavesx.leavesx.runtime.LeavesXComputeExecutor.configure(
+                 next.computeWorkers(),
+                 next.minimumItemsPerWorker(),
+-                next.prestartWorkers()
++                next.prestartWorkers(),
++                org.leavesx.leavesx.runtime.LeavesXComputeExecutor.lowLoadWorkersEnabled()
+             );
+         }
+         LeavesXRuntime.publish(next);
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 43ac4f29ba..5b804f3a38 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -490,6 +490,21 @@ public final class LeavesXConfigLoader {
+                         node.node("async", "entity-tracker", "queue-size"),
+                         "async.entity-tracker.queue-size",
+                         1_024
++                    ),
++                    readBoolean(
++                        node.node("async", "shared-compute-workers"),
++                        "async.shared-compute-workers",
++                        true
++                    ),
++                    readBoolean(
++                        node.node("async", "entity-tracker", "comparison-sharding"),
++                        "async.entity-tracker.comparison-sharding",
++                        true
++                    ),
++                    readBoolean(
++                        node.node("async", "low-load-workers"),
++                        "async.low-load-workers",
++                        true
+                     )
+                 ),
+                 new LeavesXConfig.ExtensionSettings(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index ee9adfa083..d4477b121f 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -197,6 +197,9 @@ public final class LeavesXConfigWriter {
+         changed |= writeValue(node.node("messages", "quit"), "messages.quit", config.quitMessage(), missingOnly);
+         changed |= writeValue(node.node("messages", "core-prefix"), "messages.core-prefix", config.coreMessagePrefix(), missingOnly);
+         final LeavesXConfig.AsyncSettings async = config.asyncSettings();
++        changed |= writeValue(node.node("async", "low-load-workers"), "async.low-load-workers", async.lowLoadWorkers(), missingOnly);
++        changed |= writeValue(node.node("async", "shared-compute-workers"), "async.shared-compute-workers", async.sharedComputeWorkers(), missingOnly);
++        changed |= writeValue(node.node("async", "entity-tracker", "comparison-sharding"), "async.entity-tracker.comparison-sharding", async.trackerComparisonSharding(), missingOnly);
+         changed |= writeValue(node.node("async", "chunk-send", "enabled"), "async.chunk-send.enabled", async.chunkSendEnabled(), missingOnly);
+         changed |= writeValue(node.node("async", "chunk-send", "queue-size"), "async.chunk-send.queue-size", async.chunkSendQueueSize(), missingOnly);
+         changed |= writeValue(node.node("async", "mob-spawning"), "async.mob-spawning", async.mobSpawningEnabled(), missingOnly);
+@@ -545,7 +548,7 @@ public final class LeavesXConfigWriter {
+         comments.put("performance.faster-random-generator.enabled", "更换运行时随机算法，天气、作物等随机结果会改变，依赖 RNG 序列的装置可能受影响；不改地形和史莱姆区块，需重启。默认：false。");
+         comments.put("async.ai-candidates", "后台准备山羊和青蛙的长跳候选位置；保持候选顺序、随机抽取及跳跃时机，共用计算池。默认：true。");
+         comments.put("async.playerdata-save.compression", "后台压缩玩家存档，减少自动保存卡顿；需要启用异步玩家保存，同一玩家仍按顺序保存。默认：true。");
+-        comments.put("parallelism.mob-collision-math", "实验性：仅并行普通生物的大批简单碰撞盒计算，小批量走原流程；不处理村民、TNT和复杂形状，实际收益取决于场景。默认：false。");
++        comments.put("parallelism.mob-collision-math", "实验性：并行普通生物的简单碰撞盒计算，小任务受 async.low-load-workers 控制；不处理村民、TNT和复杂形状。默认：false。");
+         comments.put("performance.cache-biome.enabled", "用少量缓存内存减少群系计算；保持精确群系边界，插件修改群系后立即生效。默认：true。");
+         comments.put("performance.cache-biome.mob-spawning", "刷怪检查使用群系计算缓存。默认：true。");
+         comments.put("performance.cache-biome.advancements", "进度条件检查使用群系计算缓存。默认：true。");
+@@ -591,6 +594,9 @@ public final class LeavesXConfigWriter {
+         comments.put("async.pathfinding.threads", "寻路为共享计算池提供的线程数，0 为自动，最多 16。默认：0。");
+         comments.put("async.pathfinding.queue-size", "寻路线程队列容量；水中快照另有内存上限，队列或快照名额用完时主线程完整计算。默认：1024。");
+         comments.put("async.pathfinding.keepalive-seconds", "通用计算线程空闲保留时间，单位为秒。默认：60。");
++        comments.put("async.shared-compute-workers", "寻路快照和 AI 候选可借用空闲计算线程；繁忙时使用原异步池或主线程完整回退，修改需重启。默认：true。");
++        comments.put("async.low-load-workers", "已有并行计算在单实体或小任务时也尝试工作线程；会增加调度与等待开销，关闭后恢复按工作量派发，修改需重启。默认：true。");
++        comments.put("async.entity-tracker.comparison-sharding", "按实体与玩家的比较次数分配追踪计算；关闭后使用原来的实体分片，修改需重启。默认：true。");
+         comments.put("async.playerdata-save.enabled", "是否异步保存玩家数据；采集玩家状态仍在主线程，同一玩家按顺序保存。默认：true。");
+         comments.put("async.playerdata-save.queue-size", "玩家数据写入最多排队任务数；队列满时等待空位，不会让新存档越过旧存档。默认：1024。");
+         comments.put("async.entity-tracker.enabled", "是否并行计算实体追踪变化；发包、事件和追踪关系提交仍在主线程。默认：true。");
+@@ -659,13 +665,13 @@ public final class LeavesXConfigWriter {
+         comments.put("parallelism.workers", "LeavesX 纯计算线程数，0 为自动。默认：0。");
+         comments.put("parallelism.minimum-items-per-worker", "每个计算分片至少处理的项目数。默认：64。");
+         comments.put("parallelism.prestart-workers", "启动时预热计算线程，减少重启后第一次并行任务的延迟。默认：true。");
+-        comments.put("parallelism.mob-spawning.enabled", "允许超大规模刷怪计数使用多线程。默认：true。");
+-        comments.put("parallelism.mob-spawning.minimum-entities", "实体达到此数量才并行统计刷怪。默认：2048。");
+-        comments.put("parallelism.ai-target-search.enabled", "多线程计算大量 AI 目标的距离。默认：true。");
+-        comments.put("parallelism.ai-target-search.minimum-candidates", "AI 候选达到此数量才使用多线程。默认：256。");
++        comments.put("parallelism.mob-spawning.enabled", "允许刷怪统计使用多线程，只分离计数计算。默认：true。");
++        comments.put("parallelism.mob-spawning.minimum-entities", "关闭 async.low-load-workers 时的刷怪计数并行阈值；开启后单项也可派发。默认：2048。");
++        comments.put("parallelism.ai-target-search.enabled", "允许 AI 目标距离计算使用多线程；实体状态和目标事件仍在原线程处理。默认：true。");
++        comments.put("parallelism.ai-target-search.minimum-candidates", "关闭 async.low-load-workers 时的 AI 计算并行阈值；开启后单候选也可派发。默认：256。");
+         comments.put("parallelism.ai-target-search.minimum-items-per-worker", "每个 AI 计算分片至少处理的候选数。默认：128。");
+-        comments.put("parallelism.entity-activation.enabled", "允许超大实体激活批次使用多线程。默认：true。");
+-        comments.put("parallelism.entity-activation.minimum-entities", "激活实体达到此数量才使用多线程。默认：2048。");
++        comments.put("parallelism.entity-activation.enabled", "允许实体激活范围的数值判断使用多线程。默认：true。");
++        comments.put("parallelism.entity-activation.minimum-entities", "关闭 async.low-load-workers 时的激活计算并行阈值；开启后附近单实体也可派发。默认：2048。");
+         comments.put("parallelism.entity-activation.minimum-items-per-worker", "每个激活计算分片至少处理的实体数。默认：512。");
+         for (final LeavesXOptimization optimization : LeavesXOptimization.cachedValues()) {
+             comments.put(optimization.path(), optimization.comment());
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+index bd94a21fe4..cdf87247f6 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
+@@ -515,6 +515,10 @@ enum LeavesXOptimization {
+     LITHIUM_IDLE_GLIDE(
+         "performance.entity-update.lithium-idle-glide",
+         "实体未滑翔且没有滑翔计时时跳过装备扫描。默认：true。"
++    ),
++    NEAREST_QUERY_DISTANCE_SNAPSHOT(
++        "parallelism.ai-target-search.nearest-query",
++        "普通目标查询的距离计算使用数值快照；选择器和视线仍在原线程，村民保留原路径。默认：true。"
+     );
+ 
+     private static final LeavesXOptimization[] VALUES = values();
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+index 9341a196b3..814304d285 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -1008,6 +1008,12 @@ public final class LeavesXRuntime {
+             && enabledForPureComputation(LeavesXOptimization.NEAREST_ENTITY_DISTANCE_SORT);
+     }
+ 
++    /** 普通目标查询独立开关；村民上下文继续使用原版资格与距离计算。 */
++    public static boolean nearestQueryDistanceSnapshot() {
++        return parallelAiTargetSearch && aiOptimizations && !villagerOptimizationContextActive()
++            && enabledForPureComputation(LeavesXOptimization.NEAREST_QUERY_DISTANCE_SNAPSHOT);
++    }
++
+     /** Returns whether stable distance ordering itself is safe to use for a primitive snapshot. */
+     public static boolean nearestEntityDistanceSortPureComputation() {
+         return aiOptimizations
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+index f6e70f4ac4..0a4ccdb9e9 100644
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -1,8 +1,10 @@
+ package org.leavesx.leavesx.performance;
+ 
+ import java.util.Arrays;
++import java.util.Comparator;
+ import java.util.List;
+ import net.minecraft.world.entity.Entity;
++import net.minecraft.world.phys.Vec3;
+ import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
+ 
+@@ -14,13 +16,36 @@ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
+  */
+ public final class StableDistanceSorter {
+ 
+-    /** 小列表保留原版 TimSort，避免建立工作区的固定开销。 */
++    /** 低负载派发关闭时，小列表保留原版排序入口，避免建立工作区的固定开销。 */
+     public static final int MINIMUM_OPTIMIZED_ENTITY_COUNT = 64;
+     private static final int RADIX_BUCKETS = 256;
++    /** 小分片使用稳定插入排序，省去最多八轮直方图清零与散射。 */
++    private static final int INSERTION_SORT_MAX_ITEMS = 32;
+     /** 最后只有一两对归并任务时不再派发工作线程。 */
+     private static final int MIN_PARALLEL_MERGE_PAIRS = 4;
+     private static final int INITIAL_WORKSPACE_CAPACITY = 64;
+     private static final ThreadLocal<Workspace> WORKSPACE = ThreadLocal.withInitial(() -> new Workspace(true));
++    private static final ClassValue<Boolean> VANILLA_DISTANCE = new ClassValue<>() {
++        @Override
++        protected Boolean computeValue(final Class<?> type) {
++            try {
++                return type.getMethod("distanceToSqr", Entity.class).getDeclaringClass() == Entity.class
++                    && type.getMethod("distanceToSqr", Vec3.class).getDeclaringClass() == Entity.class;
++            } catch (final NoSuchMethodException failure) {
++                return false;
++            }
++        }
++    };
++    private static final ClassValue<Boolean> VANILLA_POSITION = new ClassValue<>() {
++        @Override
++        protected Boolean computeValue(final Class<?> type) {
++            try {
++                return type.getMethod("position").getDeclaringClass() == Entity.class;
++            } catch (final NoSuchMethodException failure) {
++                return false;
++            }
++        }
++    };
+ 
+     private StableDistanceSorter() {
+     }
+@@ -40,6 +65,11 @@ public final class StableDistanceSorter {
+         if (size < 2) {
+             return;
+         }
++        if (!supportsPrimitiveDistance(entities, origin)) {
++            // 插件或自定义实体覆写距离方法时，保留原方法调用和排序稳定性。
++            entities.sort(Comparator.comparingDouble(origin::distanceToSqr));
++            return;
++        }
+ 
+         final Workspace workspace = acquireWorkspace(size);
+         try {
+@@ -84,6 +114,18 @@ public final class StableDistanceSorter {
+         if (size == 0) {
+             return -1;
+         }
++        if (!supportsPrimitiveDistance(entities, origin)) {
++            double best = 0.0;
++            int nearest = -1;
++            for (int index = 0; index < size; index++) {
++                final double distance = origin.distanceToSqr(entities.get(index));
++                if (nearest < 0 || Double.compare(distance, best) < 0) {
++                    best = distance;
++                    nearest = index;
++                }
++            }
++            return nearest;
++        }
+ 
+         final Workspace workspace = acquireWorkspace(size);
+         try {
+@@ -103,7 +145,7 @@ public final class StableDistanceSorter {
+                 snapshotEntityDistanceKeys(entities, workspace, size, originX, originY, originZ);
+             }
+ 
+-            // 小列表不进入共享调度器，避免每次普通传感器查询都付出原子计数和提交开销。
++            // 只有准入通过才进入调度器，避免线程池不可用时重复提交。
+             final int completedPartitions = useCoordinateSnapshot
+                 ? LeavesXComputeExecutor.invokeRangesWithCount(
+                     LeavesXComputeExecutor.Workload.AI_TARGET_SELECT,
+@@ -435,6 +477,10 @@ public final class StableDistanceSorter {
+         if (end - start < 2) {
+             return;
+         }
++        if (end - start <= INSERTION_SORT_MAX_ITEMS) {
++            stableInsertionRange(order, keys, start, end);
++            return;
++        }
+         final int[] resultOrder = order;
+         final long firstKey = keys[order[start]];
+         long previousKey = firstKey;
+@@ -484,6 +530,20 @@ public final class StableDistanceSorter {
+         }
+     }
+ 
++    /** 只移动严格更大的距离键，等距离候选保留原输入顺序。 */
++    private static void stableInsertionRange(final int[] order, final long[] keys, final int start, final int end) {
++        for (int index = start + 1; index < end; index++) {
++            final int value = order[index];
++            final long key = keys[value];
++            int destination = index;
++            while (destination > start && Long.compareUnsigned(keys[order[destination - 1]], key) > 0) {
++                order[destination] = order[destination - 1];
++                destination--;
++            }
++            order[destination] = value;
++        }
++    }
++
+     private static void mergeByKey(
+         final int[] order,
+         final int[] scratch,
+@@ -583,6 +643,18 @@ public final class StableDistanceSorter {
+         }
+     }
+ 
++    private static boolean supportsPrimitiveDistance(final List<? extends Entity> entities, final Entity origin) {
++        if (!VANILLA_DISTANCE.get(origin.getClass())) {
++            return false;
++        }
++        for (final Entity entity : entities) {
++            if (!VANILLA_POSITION.get(entity.getClass())) {
++                return false;
++            }
++        }
++        return true;
++    }
++
+     private static Workspace acquireWorkspace(final int size) {
+         final Workspace cached = WORKSPACE.get();
+         final Workspace workspace;
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+index b680cd05dd..0cafd9d5af 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXAsyncRuntime.java
+@@ -42,6 +42,7 @@ public final class LeavesXAsyncRuntime {
+     private static final Object GLOBAL_ORDER_OWNER = new Object();
+     private static volatile Map<Workload, ExecutorState> executors = Map.of();
+     private static volatile boolean configured;
++    private static volatile boolean sharedComputeWorkers;
+ 
+     private LeavesXAsyncRuntime() {
+     }
+@@ -98,6 +99,7 @@ public final class LeavesXAsyncRuntime {
+         }
+ 
+         executors = Map.copyOf(next);
++        sharedComputeWorkers = settings.sharedComputeWorkers();
+         configured = true;
+     }
+ 
+@@ -216,6 +218,53 @@ public final class LeavesXAsyncRuntime {
+         }
+     }
+ 
++    /**
++     * 仅供已审计的脱离快照使用；先借用空闲计算线程，再尝试原有有界异步池。
++     * 同一任务只派发一次，两个池都不能接收时返回 null，由原线程完整计算。
++     */
++    public static <T> CompletableFuture<T> trySubmitPureValue(final Workload workload, final Supplier<T> task) {
++        Objects.requireNonNull(task, "task");
++        if (workload != Workload.PATHFINDING && workload != Workload.AI_CANDIDATES) {
++            throw new IllegalArgumentException("Workload does not accept detached computation: " + workload);
++        }
++        final ExecutorState state = executors.get(workload);
++        if (!configured || state == null || !state.reservePure()) {
++            if (state != null) state.rejected.incrementAndGet();
++            return null;
++        }
++        final CompletableFuture<T> completion = new CompletableFuture<>();
++        final long queuedAt = System.nanoTime();
++        try {
++            if (sharedComputeWorkers && LeavesXComputeExecutor.tryExecuteSnapshot(
++                () -> runValueTask(state, task, completion, queuedAt),
++                failure -> {
++                    // 计算池关闭时也完成 Future 和释放准入许可，不能把所有者线程留在 join 中。
++                    state.failed.incrementAndGet();
++                    state.release();
++                    completion.completeExceptionally(failure);
++                }
++            )) {
++                state.borrowedTasks.incrementAndGet();
++            } else {
++                state.executor.execute(() -> runValueTask(state, task, completion, queuedAt));
++            }
++            state.submitted.incrementAndGet();
++            return completion;
++        } catch (final RejectedExecutionException rejection) {
++            state.release();
++            state.rejected.incrementAndGet();
++            return null;
++        } catch (final RuntimeException | Error failure) {
++            state.release();
++            throw failure;
++        }
++    }
++
++    public static long borrowedTaskCount(final Workload workload) {
++        final ExecutorState state = executors.get(workload);
++        return state == null ? 0L : state.borrowedTasks.get();
++    }
++
+     /**
+      * Submits work to an identity-owned lane.
+      *
+@@ -841,6 +890,7 @@ public final class LeavesXAsyncRuntime {
+         private final AtomicLong rejected = new AtomicLong();
+         private final AtomicLong failed = new AtomicLong();
+         private final AtomicLong ownedSubmissions = new AtomicLong();
++        private final AtomicLong borrowedTasks = new AtomicLong();
+         private final AtomicInteger maximumQueueDepth = new AtomicInteger();
+         private final ConcurrentHashMap<LaneKey, OwnedLane> ownedLanes = new ConcurrentHashMap<>();
+         private volatile boolean acceptingOwned = true;
+@@ -859,6 +909,11 @@ public final class LeavesXAsyncRuntime {
+             return true;
+         }
+ 
++        /** 与关闭准入共用锁，防止旧代任务在停机检查已完成后借用另一个池。 */
++        private synchronized boolean reservePure() {
++            return this.acceptingOwned && !this.executor.isShutdown() && this.reserve();
++        }
++
+         /**
+          * Applies bounded backpressure before entering an owned FIFO lane. Running inline here could overtake an older
+          * task for the same owner. Executor rejection still uses the same bounded lane; runtime
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index 924ffb89f2..a47eaf3cdd 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.atomic.AtomicInteger;
+ import java.util.concurrent.atomic.AtomicLong;
+ import java.util.concurrent.atomic.AtomicReference;
++import java.util.function.Consumer;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+@@ -31,6 +32,8 @@ public final class LeavesXComputeExecutor {
+     private static final int MAX_AUTOMATIC_WORKERS = 24;
+     /** Do not create ranges smaller than this when an idle pool is deliberately over-partitioned. */
+     private static final int MIN_ADAPTIVE_ITEMS_PER_TASK = 32;
++    /** 中等距离排序整批交给一个线程，避免分片后再次派发归并；更大的批次仍分片。 */
++    private static final int MAX_SINGLE_WORKER_SORT_ITEMS = 2_048;
+     /** Hard safety cap for callers that use the runtime API directly instead of the validated YAML config. */
+     private static final int MAX_RUNTIME_WORKERS = 64;
+     /** A short spin closes the common sub-millisecond tail without parking the server thread. */
+@@ -44,6 +47,8 @@ public final class LeavesXComputeExecutor {
+     private static volatile int workerCount = 1;
+     private static volatile int minimumItemsPerWorker = 64;
+     private static volatile boolean prestartWorkers = true;
++    private static volatile boolean lowLoadWorkers;
++    private static final AtomicLong lowLoadDispatchCount = new AtomicLong();
+     private static final AtomicLong invocationCount = new AtomicLong();
+     private static final AtomicLong parallelInvocationCount = new AtomicLong();
+     private static final AtomicLong belowFeatureThresholdFallbackCount = new AtomicLong();
+@@ -107,6 +112,16 @@ public final class LeavesXComputeExecutor {
+         final int configuredWorkers,
+         final int configuredMinimumItemsPerWorker,
+         final boolean configuredPrestartWorkers
++    ) {
++        configure(configuredWorkers, configuredMinimumItemsPerWorker, configuredPrestartWorkers, false);
++    }
++
++    /** 小任务模式只改变已有纯快照的派发，不把实体 Tick 或插件调用移动到工作线程。 */
++    public static synchronized void configure(
++        final int configuredWorkers,
++        final int configuredMinimumItemsPerWorker,
++        final boolean configuredPrestartWorkers,
++        final boolean configuredLowLoadWorkers
+     ) {
+         shutdown();
+         final int availableProcessors = Runtime.getRuntime().availableProcessors();
+@@ -114,6 +129,8 @@ public final class LeavesXComputeExecutor {
+         workerCount = normalizeWorkerCount(configuredWorkers, automaticWorkers);
+         minimumItemsPerWorker = Math.max(16, configuredMinimumItemsPerWorker);
+         prestartWorkers = configuredPrestartWorkers;
++        lowLoadWorkers = configuredLowLoadWorkers;
++        lowLoadDispatchCount.set(0L);
+         invocationCount.set(0L);
+         parallelInvocationCount.set(0L);
+         belowFeatureThresholdFallbackCount.set(0L);
+@@ -159,6 +176,17 @@ public final class LeavesXComputeExecutor {
+         return workerCount;
+     }
+ 
++    public static boolean lowLoadWorkersEnabled() {
++        final ComputeThreadPoolExecutor current = executor;
++        // 停止或重建期间不进入小任务快照路径，避免只有设置开启却无线程可用。
++        return lowLoadWorkers && current != null && !current.isShutdown();
++    }
++
++    /** 返回真正交给单个工作线程完成的低负载调用数，不能据此推断性能提升。 */
++    public static long lowLoadDispatchCount() {
++        return lowLoadDispatchCount.get();
++    }
++
+     /** Returns zero while the pool is stopped so other runtimes do not reserve CPU for stale worker settings. */
+     static int configuredWorkerCount() {
+         return executor == null ? 0 : workerCount;
+@@ -173,6 +201,25 @@ public final class LeavesXComputeExecutor {
+         return prestartWorkers;
+     }
+ 
++    /**
++     * 为独立快照计算借用一个立即可用的工作线程，不在分片任务后面排长队。
++     * 调用者负责结果采用、异常回退和资源释放；此入口禁止读取实体或世界。
++     */
++    public static boolean tryExecuteSnapshot(final Runnable task, final Consumer<Throwable> cancelled) {
++        Objects.requireNonNull(task, "task");
++        Objects.requireNonNull(cancelled, "cancelled");
++        final ComputeThreadPoolExecutor current = executor;
++        if (current == null || current.isShutdown() || isComputeWorkerThread() || current.reserveWorkerSlots(1) == 0) {
++            return false;
++        }
++        try {
++            current.executeReserved(new SnapshotRunnable(task, cancelled));
++            return true;
++        } catch (final RejectedExecutionException rejection) {
++            return false;
++        }
++    }
++
+     static int automaticWorkerCount(final int availableProcessors) {
+         return Math.max(1, Math.min(MAX_AUTOMATIC_WORKERS, availableProcessors - 2));
+     }
+@@ -240,9 +287,14 @@ public final class LeavesXComputeExecutor {
+             return false;
+         }
+         final ComputeThreadPoolExecutor current = executor;
+-        if (current == null || current.isShutdown() || workerCount <= 1) {
++        final boolean allowSmall = lowLoadWorkers && supportsLowLoadScheduling(workload);
++        if (current == null || current.isShutdown() || (workerCount <= 1 && !allowSmall)) {
+             return rejectBeforeSubmission(workload, size, FallbackReason.POOL_UNAVAILABLE);
+         }
++        if (allowSmall) {
++            if (isComputeWorkerThread() || current.availableWorkerSlotCount() > 0) return true;
++            return rejectBeforeSubmission(workload, size, FallbackReason.POOL_BUSY_CALLER_ONLY);
++        }
+         final boolean adaptivelyAdmitted = size < minimumSize
+             && canAdaptivelyAdmit(current, workload, size, minimumSize);
+         if (size < minimumSize && !adaptivelyAdmitted) {
+@@ -375,14 +427,20 @@ public final class LeavesXComputeExecutor {
+         invocationCount.incrementAndGet();
+         workloadCounters.recordInvocation(size);
+         final ComputeThreadPoolExecutor current = executor;
+-        if (current == null || current.isShutdown() || workerCount <= 1) {
++        final boolean allowSmall = lowLoadWorkers && supportsLowLoadScheduling(workload);
++        if (current == null || current.isShutdown() || (workerCount <= 1 && !allowSmall)) {
+             recordAdmissionRejection(workload, workloadCounters, FallbackReason.POOL_UNAVAILABLE, size);
+             return 0;
+         }
++        if (allowSmall && workload == Workload.AI_TARGET_SORT && size <= MAX_SINGLE_WORKER_SORT_ITEMS) {
++            // 距离计算与稳定排序在同一任务内完成，调用线程只采用完整结果。
++            return invokeSmallOnWorker(current, workload, workloadCounters, task, size);
++        }
+         final boolean belowConfiguredThreshold = size < minimumSize;
+         final boolean adaptivelyAdmitted = belowConfiguredThreshold
+             && canAdaptivelyAdmit(current, workload, size, minimumSize);
+         if (belowConfiguredThreshold && !adaptivelyAdmitted) {
++            if (allowSmall) return invokeSmallOnWorker(current, workload, workloadCounters, task, size);
+             recordAdmissionRejection(workload, workloadCounters, FallbackReason.BELOW_THRESHOLD, size);
+             return 0;
+         }
+@@ -403,6 +461,7 @@ public final class LeavesXComputeExecutor {
+             adaptivelyAdmitted || minimumSize >= 256
+         );
+         if (taskCount <= 1) {
++            if (allowSmall) return invokeSmallOnWorker(current, workload, workloadCounters, task, size);
+             recordAdmissionRejection(workload, workloadCounters, FallbackReason.INSUFFICIENT_PARTITIONS, size);
+             return 0;
+         }
+@@ -668,6 +727,59 @@ public final class LeavesXComputeExecutor {
+         };
+     }
+ 
++    private static boolean supportsLowLoadScheduling(final Workload workload) {
++        return switch (workload) {
++            case AI_TARGET_SORT, AI_TARGET_SELECT, ENTITY_ACTIVATION, ENTITY_TRACKING, MOB_SPAWN_COUNTING, MOB_COLLISION -> true;
++            // 归并和未分类任务保留原准入，不能给没有收益的末尾排序再加一次派发。
++            case UNSPECIFIED, AI_TARGET_MERGE -> false;
++        };
++    }
++
++    /** 单份快照派发给一个空闲线程；不排队等待名额，也不拆空分片。 */
++    private static int invokeSmallOnWorker(
++        final ComputeThreadPoolExecutor current,
++        final Workload workload,
++        final WorkloadCounters counters,
++        final RangeTask task,
++        final int size
++    ) {
++        if (isComputeWorkerThread()) return invokeInlineOnWorker(workload, counters, task, size, 1);
++        if (current.reserveWorkerSlots(1) == 0) {
++            recordAdmissionRejection(workload, counters, FallbackReason.POOL_BUSY_CALLER_ONLY, size);
++            return 0;
++        }
++        // 单个范围不需要游标、帮助分片或两道闩锁，避免把调度成本放大到计算成本之上。
++        final SmallRangeRunnable batch = new SmallRangeRunnable(task, size);
++        try {
++            current.executeReserved(batch);
++        } catch (final RuntimeException submissionFailure) {
++            batch.cancel();
++            submissionFallbackInvocationCount.incrementAndGet();
++            counters.submissionFallbackInvocations.incrementAndGet();
++            recordFullRecomputation(workload, counters,
++                submissionFailure instanceof RejectedExecutionException ? FallbackReason.SUBMISSION_REJECTED : FallbackReason.SUBMISSION_FAILED, size);
++            return 0;
++        }
++        batch.awaitCompletion();
++        if (batch.executed) {
++            workerRangeCount.incrementAndGet();
++            workerItemCount.addAndGet(size);
++            workerBatchCount.incrementAndGet();
++            recordMaximumConcurrentWorkers(1);
++            counters.recordLoad(0L, 1L, 0L, size, 1, 1L);
++        }
++        if (batch.failure != null) {
++            failedInvocationCount.incrementAndGet();
++            counters.failedInvocations.incrementAndGet();
++            recordFullRecomputation(workload, counters, FallbackReason.COMPUTATION_FAILED, size);
++            return 0;
++        }
++        lowLoadDispatchCount.incrementAndGet();
++        parallelInvocationCount.incrementAndGet();
++        counters.parallelInvocations.incrementAndGet();
++        return 1;
++    }
++
+     private static boolean supportsAdaptivePartitioning(final Workload workload) {
+         return switch (workload) {
+             case AI_TARGET_SORT, AI_TARGET_SELECT, ENTITY_ACTIVATION, ENTITY_TRACKING -> true;
+@@ -937,6 +1049,10 @@ public final class LeavesXComputeExecutor {
+             for (final Runnable pending : current.shutdownNow()) {
+                 if (pending instanceof RangeBatchRunnable range) {
+                     range.cancel();
++                } else if (pending instanceof SmallRangeRunnable small) {
++                    small.cancel();
++                } else if (pending instanceof SnapshotRunnable snapshot) {
++                    snapshot.cancel();
+                 }
+             }
+         }
+@@ -1672,7 +1788,14 @@ public final class LeavesXComputeExecutor {
+                 COMPUTE_WORKER_CONTEXT.remove();
+                 this.executingTasks.decrementAndGet();
+             } finally {
+-                super.afterExecute(task, failure);
++                try {
++                    super.afterExecute(task, failure);
++                } finally {
++                    if (task instanceof SmallRangeRunnable small) {
++                        // 先归还计算名额，再发布小任务完成；下一次调用不能误判刚完成的线程仍繁忙。
++                        small.complete();
++                    }
++                }
+             }
+         }
+ 
+@@ -1737,6 +1860,89 @@ public final class LeavesXComputeExecutor {
+         }
+     }
+ 
++    /** 单范围任务只有一次结果发布；取消排队任务不会取消正在写结果的任务。 */
++    private static final class SmallRangeRunnable implements Runnable {
++        private final RangeTask task;
++        private final int size;
++        private final CountDownLatch completed = new CountDownLatch(1);
++        private final java.util.concurrent.atomic.AtomicBoolean claimed = new java.util.concurrent.atomic.AtomicBoolean();
++        private volatile Throwable failure;
++        private boolean executed;
++
++        private SmallRangeRunnable(final RangeTask task, final int size) {
++            this.task = task;
++            this.size = size;
++        }
++
++        @Override
++        public void run() {
++            if (!this.claimed.compareAndSet(false, true)) return;
++            this.executed = true;
++            try {
++                this.task.run(0, 0, this.size);
++            } catch (final Throwable computationFailure) {
++                this.recordFailure(computationFailure);
++            }
++            // 完成通知由线程池在 afterExecute 中发布，确保数值写入和执行状态都已结束。
++        }
++
++        private void complete() {
++            this.completed.countDown();
++        }
++
++        private void cancel() {
++            if (this.claimed.compareAndSet(false, true)) {
++                this.recordFailure(new CancellationException("LeavesX small computation cancelled before execution"));
++                this.completed.countDown();
++            }
++        }
++
++        private void awaitCompletion() {
++            boolean interrupted = false;
++            for (int spin = 0; spin < WAIT_SPIN_LIMIT && this.completed.getCount() != 0L; spin++) {
++                Thread.onSpinWait();
++            }
++            while (this.completed.getCount() != 0L) {
++                try {
++                    timedWorkerWaitCount.incrementAndGet();
++                    org.leavesx.leavesx.diagnostics.OwnerThreadWaits.await(
++                        org.leavesx.leavesx.diagnostics.OwnerThreadWaits.Site.COMPUTE_RANGES, this.completed, 0L);
++                } catch (final InterruptedException interruption) {
++                    interrupted = true;
++                    this.recordFailure(interruption);
++                }
++            }
++            if (interrupted) Thread.currentThread().interrupt();
++        }
++
++        private synchronized void recordFailure(final Throwable cause) {
++            if (this.failure == null) this.failure = cause;
++        }
++    }
++
++    /** 排队取消与开始执行只允许一方胜出，防止许可泄漏或重复完成回调。 */
++    private static final class SnapshotRunnable implements Runnable {
++        private final Runnable task;
++        private final Consumer<Throwable> cancelled;
++        private final java.util.concurrent.atomic.AtomicBoolean claimed = new java.util.concurrent.atomic.AtomicBoolean();
++
++        private SnapshotRunnable(final Runnable task, final Consumer<Throwable> cancelled) {
++            this.task = task;
++            this.cancelled = cancelled;
++        }
++
++        @Override
++        public void run() {
++            if (this.claimed.compareAndSet(false, true)) this.task.run();
++        }
++
++        private void cancel() {
++            if (this.claimed.compareAndSet(false, true)) {
++                this.cancelled.accept(new CancellationException("LeavesX snapshot task cancelled before execution"));
++            }
++        }
++    }
++
+     /** Runs multiple contiguous ranges from one queue entry, reducing queue/lock pressure for large snapshots. */
+     private static final class RangeBatchRunnable implements Runnable {
+ 
+diff --git a/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java b/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
+index e1ab7abdcb..4ab7e11cbc 100644
+--- a/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
++++ b/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
+@@ -4,11 +4,14 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
+ 
+ import java.io.IOException;
+ import java.util.Arrays;
+ import java.util.Random;
+ import net.minecraft.world.phys.AABB;
++import net.minecraft.world.entity.Entity;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.Test;
+@@ -117,6 +120,40 @@ public class ActivationRangeSnapshotTest {
+         assertEquals(1L, workload().belowFeatureThresholdFallbacks());
+     }
+ 
++    @Test
++    void oneEntityReachesTheWorkerThroughTheActualActivationEntry() throws ReflectiveOperationException {
++        final Entity entity = mock(Entity.class);
++        // Mockito 不执行实体构造器，只在夹具中补齐由 Paper 构造器初始化的 final 字段。
++        final java.lang.reflect.Field activationType = Entity.class.getField("activationType");
++        activationType.setAccessible(true);
++        activationType.set(entity, ActivationType.MONSTER);
++        entity.activatedTick = 0L;
++        when(entity.getBoundingBox()).thenReturn(new AABB(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0));
++        final AABB previousBounds = ActivationType.MONSTER.boundingBox;
++        try {
++            ActivationType.MONSTER.boundingBox = new AABB(-16.0, -16.0, -16.0, 16.0, 16.0, 16.0);
++            LeavesXComputeExecutor.configure(1, 64, true, true);
++            assertTrue(ActivationRangeSnapshot.activateEntities(java.util.List.of(entity), true, 10L));
++            assertEquals(10L, entity.activatedTick);
++            assertEquals(1L, LeavesXComputeExecutor.metrics().workerItems());
++            assertEquals(0L, LeavesXComputeExecutor.metrics().callerItems());
++        } finally {
++            ActivationType.MONSTER.boundingBox = previousBounds;
++        }
++    }
++
++    @Test
++    void oneEntitySnapshotRetainsPaperTouchingFaceSemantics() {
++        final double[] entityBounds = {16.0, -1.0, -1.0, 17.0, 1.0, 1.0};
++        final byte[] activationTypes = {0};
++        final boolean[] actual = {true};
++        LeavesXComputeExecutor.configure(1, 64, true, true);
++        assertEquals(1, ActivationRangeSnapshot.evaluateSnapshot(entityBounds, activationTypes,
++            activationBounds(), actual, 1, 2_048, 512));
++        assertFalse(actual[0]);
++        assertEquals(1L, LeavesXComputeExecutor.lowLoadDispatchCount());
++    }
++
+     @Test
+     void worldWideRangesMatchAnyPlayerActivationSemantics() {
+         final int entityCount = 4_096;
+diff --git a/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java b/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java
+index 16fd257163..e47b7b4f6d 100644
+--- a/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java
++++ b/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java
+@@ -120,4 +120,20 @@ public final class MobSpawnCountAccumulatorTest {
+ 
+         assertEquals(0L, LeavesXComputeExecutor.metrics().invocations());
+     }
++
++    @Test
++    void oneCandidateUsesTheWorkerWhenLowLoadDispatchIsEnabled() {
++        final long[] chunkKeys = {ChunkPos.pack(3, -2)};
++        final byte[] categories = {(byte)MobCategory.MONSTER.ordinal()};
++        final MobSpawnCountAccumulator.Inputs inputs = new MobSpawnCountAccumulator.Inputs(chunkKeys, categories, 1);
++
++        LeavesXComputeExecutor.configure(1, 64, true, true);
++        final Long2ObjectOpenHashMap<int[]> actual = MobSpawnCountAccumulator.count(inputs, true, 2_048);
++
++        assertEquals(1, actual.size());
++        assertEquals(1, actual.get(chunkKeys[0])[MobCategory.MONSTER.ordinal()]);
++        assertEquals(1L, LeavesXComputeExecutor.lowLoadDispatchCount());
++        assertEquals(1L, LeavesXComputeExecutor.metrics().workerItems());
++        assertEquals(0L, LeavesXComputeExecutor.metrics().callerItems());
++    }
+ }
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+index 21c9f03bb9..7db14bbea6 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
+ import static org.junit.jupiter.api.Assertions.assertSame;
+ import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.ArgumentMatchers.any;
+ import static org.mockito.Mockito.mock;
+ import static org.mockito.Mockito.when;
+ 
+@@ -15,13 +17,16 @@ import java.util.List;
+ import java.util.Random;
+ import java.util.concurrent.atomic.AtomicBoolean;
+ import net.minecraft.world.entity.Entity;
++import net.minecraft.world.entity.EntityType;
++import net.minecraft.world.entity.monster.zombie.Zombie;
++import net.minecraft.world.phys.Vec3;
+ import org.bukkit.support.environment.Normal;
+ import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.Test;
+ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
+ 
+ @Normal
+-class StableDistanceSorterTest {
++public class StableDistanceSorterTest {
+ 
+     @AfterEach
+     void shutdownExecutor() {
+@@ -217,6 +222,119 @@ class StableDistanceSorterTest {
+         assertSame(farther, entities.get(3));
+     }
+ 
++    @Test
++    void smallCandidateListsUseWorkersWithStableEquivalentOrder() {
++        LeavesXComputeExecutor.configure(1, 64, true, true);
++        final Random random = new Random(0x536d616c6cL);
++        for (final int size : new int[] {2, 8, 31, 32, 33, 64}) {
++            final double[] x = new double[size];
++            final double[] zeros = new double[size];
++            for (int index = 0; index < size; index++) {
++                x[index] = random.nextInt(8) - 4.0;
++            }
++            x[0] = Double.NaN;
++            x[1] = Double.POSITIVE_INFINITY;
++            assertArrayEquals(referenceOrder(x, zeros, zeros, 0.0, 0.0, 0.0),
++                StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, true, 2_048));
++        }
++        assertEquals(6L, LeavesXComputeExecutor.lowLoadDispatchCount());
++        assertEquals(0L, LeavesXComputeExecutor.metrics().callerItems());
++    }
++
++    @Test
++    void oneNearestCandidateRunsNumericsOnWorkerButKeepsGettersOnCaller() {
++        final Thread caller = Thread.currentThread();
++        final AtomicBoolean offThreadGetter = new AtomicBoolean();
++        final Entity origin = threadConfinedEntityAt(0.0, 0.0, 0.0, caller, offThreadGetter);
++        final Entity candidate = threadConfinedEntityAt(1.0, 2.0, 3.0, caller, offThreadGetter);
++        LeavesXComputeExecutor.configure(1, 64, true, true);
++        assertEquals(0, StableDistanceSorter.findNearestIndex(List.of(candidate), origin, true, 2_048));
++        assertFalse(offThreadGetter.get());
++        assertEquals(1L, LeavesXComputeExecutor.lowLoadDispatchCount());
++        assertEquals(0L, LeavesXComputeExecutor.metrics().callerItems());
++    }
++
++    @Test
++    void ordinarySensorSortUsesOneWorkerWithoutCallerMerge() {
++        LeavesXComputeExecutor.configure(4, 64, true, true);
++        final Random random = new Random(0x4D656469756D5L);
++        for (final int size : new int[] {512, 2_048}) {
++            final double[] x = new double[size];
++            final double[] zeros = new double[size];
++            for (int index = 0; index < size; index++) {
++                x[index] = index % 3 == 0 ? 2.0 : random.nextDouble(-64.0, 64.0);
++            }
++            x[size - 2] = Double.POSITIVE_INFINITY;
++            x[size - 1] = Double.NaN;
++            assertArrayEquals(referenceOrder(x, zeros, zeros, 0.0, 0.0, 0.0),
++                StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, true, 256));
++        }
++        assertEquals(2L, LeavesXComputeExecutor.lowLoadDispatchCount());
++        assertEquals(0L, LeavesXComputeExecutor.metrics().callerItems());
++        assertEquals(512L + 2_048L, LeavesXComputeExecutor.metrics().workerItems());
++    }
++
++    @Test
++    void largerSensorSortKeepsStableShardedComputation() {
++        LeavesXComputeExecutor.configure(4, 64, true, true);
++        final Random random = new Random(0x4C617267655L);
++        for (final int size : new int[] {2_049, 8_193, 32_768}) {
++            final double[] x = new double[size];
++            final double[] zeros = new double[size];
++            for (int index = 0; index < size; index++) {
++                x[index] = random.nextInt(33) - 16;
++            }
++            x[size - 2] = Double.POSITIVE_INFINITY;
++            x[size - 1] = Double.NaN;
++            assertArrayEquals(referenceOrder(x, zeros, zeros, 0.0, 0.0, 0.0),
++                StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, true, 256));
++        }
++        assertEquals(0L, LeavesXComputeExecutor.lowLoadDispatchCount());
++        assertEquals(3L, workload(LeavesXComputeExecutor.Workload.AI_TARGET_SORT).parallelInvocations());
++        assertTrue(workload(LeavesXComputeExecutor.Workload.AI_TARGET_SORT).workerRanges() > 3);
++    }
++
++    @Test
++    void customEntityDistanceKeepsTheOverrideOnTheCallingThread() {
++        final Thread caller = Thread.currentThread();
++        final Entity origin = mock(CustomDistanceEntity.class);
++        final Entity first = entityAt(10.0, 0.0, 0.0);
++        final Entity second = entityAt(1.0, 0.0, 0.0);
++        final Entity equal = entityAt(-1.0, 0.0, 0.0);
++        when(origin.distanceToSqr(first)).thenAnswer(ignored -> {
++            assertSame(caller, Thread.currentThread());
++            return 1.0;
++        });
++        when(origin.distanceToSqr(second)).thenReturn(9.0);
++        when(origin.distanceToSqr(equal)).thenReturn(1.0);
++        final List<Entity> entities = new ArrayList<>(List.of(first, second, equal));
++        LeavesXComputeExecutor.configure(1, 64, true, true);
++
++        assertEquals(0, StableDistanceSorter.findNearestIndex(entities, origin, true, 2_048));
++        StableDistanceSorter.sortEntitiesByDistance(entities, origin, true, 2_048);
++        assertEquals(List.of(first, equal, second), entities);
++        assertEquals(0L, LeavesXComputeExecutor.metrics().workerItems());
++    }
++
++    @Test
++    void customCandidatePositionRetainsTheDistanceMethodSemantics() {
++        final Entity origin = mock(Zombie.class);
++        when(origin.distanceToSqr(any(Entity.class))).thenCallRealMethod();
++        when(origin.distanceToSqr(any(Vec3.class))).thenCallRealMethod();
++        final Entity custom = mock(CustomPositionEntity.class);
++        final Entity ordinary = entityAt(10.0, 0.0, 0.0);
++        when(custom.getX()).thenReturn(1.0);
++        when(custom.position()).thenReturn(new Vec3(100.0, 0.0, 0.0));
++        when(ordinary.position()).thenReturn(new Vec3(10.0, 0.0, 0.0));
++        final List<Entity> entities = new ArrayList<>(List.of(custom, ordinary));
++        LeavesXComputeExecutor.configure(1, 64, true, true);
++
++        assertEquals(1, StableDistanceSorter.findNearestIndex(entities, origin, true, 2_048));
++        StableDistanceSorter.sortEntitiesByDistance(entities, origin, true, 2_048);
++        assertEquals(List.of(ordinary, custom), entities);
++        assertEquals(0L, LeavesXComputeExecutor.metrics().workerItems());
++    }
++
+     @Test
+     void nearestPrimitiveReductionMatchesVanillaFirstTieRule() {
+         final Entity origin = entityAt(0.0D, 0.0D, 0.0D);
+@@ -348,6 +466,28 @@ class StableDistanceSorterTest {
+         return entity;
+     }
+ 
++    private abstract static class CustomDistanceEntity extends Entity {
++        private CustomDistanceEntity() {
++            super(EntityType.MARKER, null);
++        }
++
++        @Override
++        public double distanceToSqr(final Entity entity) {
++            return super.distanceToSqr(entity);
++        }
++    }
++
++    private abstract static class CustomPositionEntity extends Entity {
++        private CustomPositionEntity() {
++            super(EntityType.MARKER, null);
++        }
++
++        @Override
++        public Vec3 position() {
++            return super.position();
++        }
++    }
++
+     private static Entity threadConfinedEntityAt(
+         final double x,
+         final double y,
+-- 
+2.52.0.windows.1
+

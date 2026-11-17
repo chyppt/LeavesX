@@ -31,6 +31,8 @@ gradle.projectsEvaluated {
         systemProperty('file.encoding', 'UTF-8')
         args(gradle.rootProject.findProperty('benchmarkWorkers') ?: '4')
         args(gradle.rootProject.findProperty('benchmarkOrder') ?: '0')
+        args(gradle.rootProject.findProperty('benchmarkLowLoadWorkers') ?: 'false')
+        args(gradle.rootProject.findProperty('benchmarkSuite') ?: 'standard')
         doFirst { scratch.mkdirs() }
     }
 }

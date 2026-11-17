@@ -5,7 +5,7 @@ import org.junit.platform.suite.api.SelectClasses;
 import org.junit.platform.suite.api.Suite;
 
 @Suite
-@SelectClasses({ReiPacketTransformerTest.class, ReiTransferSafetyTest.class, ReiReloadSafetyTest.class,
+@SelectClasses({ReiPacketTransformerTest.class, ReiTransferSafetyTest.class, ReiReloadSafetyTest.class, ReiProviderSnapshotTest.class,
     JeiProtocolTest.class, ProtocolDispatchTest.class, ReiRequestValidationTest.class,
     org.leavesx.leavesx.config.JeiConfigurationTest.class})
 @ConfigurationParameter(key = "TestSuite", value = "Normal")

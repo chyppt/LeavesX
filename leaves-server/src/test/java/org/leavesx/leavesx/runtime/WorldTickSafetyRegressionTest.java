@@ -76,6 +76,25 @@ public class WorldTickSafetyRegressionTest {
     }
 
     @Test
+    void refreshDoesNotReenableParallelTicksAfterWorkerFailure() {
+        LeavesXWorldTicker.configure(1);
+        final List<ServerLevel> levels = List.of(world("isolated", customDimension()));
+        LeavesXWorldTicker.refreshWorlds(levels);
+        assertThrows(CompletionException.class,
+            () -> LeavesXWorldTicker.tickAllParallel(() -> true, (level, time) -> {
+                throw new IllegalStateException("world tick failed");
+            }));
+        LeavesXWorldTicker.refreshWorlds(levels);
+        final Thread serverThread = Thread.currentThread();
+        final AtomicInteger calls = new AtomicInteger();
+        assertFalse(LeavesXWorldTicker.tickAllParallel(() -> true, (level, time) -> {
+            assertSame(serverThread, Thread.currentThread());
+            calls.incrementAndGet();
+        }));
+        assertEquals(1, calls.get());
+    }
+
+    @Test
     void successfulWorkersCompleteAndClearOwnership() {
         LeavesXWorldTicker.configure(2);
         LeavesXWorldTicker.refreshWorlds(List.of(world("a", customDimension()), world("b", customDimension())));
@@ -171,6 +190,26 @@ public class WorldTickSafetyRegressionTest {
             () -> LeavesXWorldTicker.tickAllParallel(() -> true, (level, time) -> calls.incrementAndGet()));
         assertTrue(failure.getCause() instanceof RejectedExecutionException);
         assertEquals(0, calls.get());
+    }
+
+    @Test
+    void simultaneousWorldFailuresAreReportedAfterBothWorkersExit() {
+        LeavesXWorldTicker.configure(2);
+        LeavesXWorldTicker.refreshWorlds(List.of(world("a", customDimension()), world("b", customDimension())));
+        final AtomicInteger exited = new AtomicInteger();
+        final CompletionException failure = assertThrows(CompletionException.class,
+            () -> LeavesXWorldTicker.tickAllParallel(() -> true, (level, time) -> {
+                try {
+                    throw new IllegalStateException(level.getWorld().getName());
+                } finally {
+                    exited.incrementAndGet();
+                }
+            }));
+        assertEquals(2, exited.get(), "报告失败前必须等所有已提交世界退出");
+        assertEquals("a", failure.getCause().getMessage());
+        assertEquals(1, failure.getSuppressed().length);
+        assertEquals("b", failure.getSuppressed()[0].getCause().getMessage());
+        assertTrue(LeavesXWorldTicker.usesSerialCompatibility());
     }
 
     @Test

@@ -1,0 +1,239 @@
+Subject: [PATCH] Count POIs without materializing candidate lists
+
+diff --git a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
+--- a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
++++ b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
+@@ -680,80 +680,102 @@
+                                          final boolean load,
+                                          final int max,
+                                          final List<PoiRecord> ret) {
+-        // the biggest issue with the original mojang implementation is that they chain so many streams together
+-        // the amount of streams chained just rolls performance, even if nothing is iterated over
+-        final Predicate<? super PoiRecord> occupancyFilter = occupancy.getTest();
+-
+-        int added = 0;
+-
+-        // First up, we need to iterate the chunks
+-        // all the values here are in chunk sections
+-        final int lowerX = Mth.floor(sourcePosition.getX() - range) >> 4;
+-        final int lowerY = Math.max(WorldUtil.getMinSection(poiStorage.levelHeightAccessor), Mth.floor(sourcePosition.getY() - range) >> 4);
+-        final int lowerZ = Mth.floor(sourcePosition.getZ() - range) >> 4;
+-        final int upperX = Mth.floor(sourcePosition.getX() + range) >> 4;
+-        final int upperY = Math.min(WorldUtil.getMaxSection(poiStorage.levelHeightAccessor), Mth.floor(sourcePosition.getY() + range) >> 4);
+-        final int upperZ = Mth.floor(sourcePosition.getZ() + range) >> 4;
+-
+-        // Vanilla iterates by x until max is reached then increases z
+-        // vanilla also searches by increasing Y section value
+-        for (int currZ = lowerZ; currZ <= upperZ; ++currZ) {
+-            for (int currX = lowerX; currX <= upperX; ++currX) {
+-                for (int currY = lowerY; currY <= upperY; ++currY) { // vanilla searches the entire chunk because they're actually stupid. just search the sections we need
+-                    final Optional<PoiSection> poiSectionOptional = load ? poiStorage.getOrLoad(CoordinateUtils.getChunkSectionKey(currX, currY, currZ)) :
+-                            poiStorage.get(CoordinateUtils.getChunkSectionKey(currX, currY, currZ));
+-                    final PoiSection poiSection = poiSectionOptional == null ? null : poiSectionOptional.orElse(null);
+-                    if (poiSection == null) {
+-                        continue;
+-                    }
+-
+-                    final Map<Holder<PoiType>, Set<PoiRecord>> sectionData = poiSection.byType;
+-                    if (sectionData.isEmpty()) {
+-                        continue;
+-                    }
+-
+-                    // now we search the section data
+-                    for (final Map.Entry<Holder<PoiType>, Set<PoiRecord>> entry : sectionData.entrySet()) {
+-                        if (!villagePlaceType.test(entry.getKey())) {
+-                            // filter out by poi type
+-                            continue;
+-                        }
+-
+-                        // now we can look at the poi data
+-                        for (final PoiRecord poiData : entry.getValue()) {
+-                            if (!occupancyFilter.test(poiData)) {
+-                                // filter by occupancy
+-                                continue;
+-                            }
+-
+-                            final BlockPos poiPosition = poiData.getPos();
+-
+-                            if (Math.abs(poiPosition.getX() - sourcePosition.getX()) > range
+-                                    || Math.abs(poiPosition.getZ() - sourcePosition.getZ()) > range) {
+-                                // out of range for square radius
+-                                continue;
+-                            }
+-
+-                            if (poiPosition.distSqr(sourcePosition) > maxDistanceSqr) {
+-                                // out of range for distance check
+-                                continue;
+-                            }
+-
+-                            if (positionPredicate != null && !positionPredicate.test(poiPosition)) {
+-                                // filter by position
+-                                continue;
+-                            }
+-
+-                            // found one!
+-                            ret.add(poiData);
+-                            if (++added >= max) {
+-                                return;
+-                            }
+-                        }
+-                    }
+-                }
+-            }
+-        }
++        scanPoiRecords(poiStorage, villagePlaceType, positionPredicate, sourcePosition, range,
++            maxDistanceSqr, occupancy, load, max, ret);
++    }
++
++    /** 只计数，不保留 POI 引用；与列表查询使用同一遍历、加载及谓词顺序。 */
++    public static int countPoiRecords(final PoiManager poiStorage,
++                                     final Predicate<Holder<PoiType>> villagePlaceType,
++                                     final BlockPos sourcePosition, final int range,
++                                     final double maxDistanceSqr, final PoiManager.Occupancy occupancy,
++                                     final boolean load, final int max) {
++        return scanPoiRecords(poiStorage, villagePlaceType, null, sourcePosition, range,
++            maxDistanceSqr, occupancy, load, max, null);
++    }
++
++    private static int scanPoiRecords(final PoiManager poiStorage,
++                                     final Predicate<Holder<PoiType>> villagePlaceType,
++                                     final Predicate<BlockPos> positionPredicate,
++                                     final BlockPos sourcePosition, final int range,
++                                     final double maxDistanceSqr, final PoiManager.Occupancy occupancy,
++                                     final boolean load, final int max,
++                                     final @org.jspecify.annotations.Nullable List<PoiRecord> ret) {
++        // the biggest issue with the original mojang implementation is that they chain so many streams together
++        // the amount of streams chained just rolls performance, even if nothing is iterated over
++        final Predicate<? super PoiRecord> occupancyFilter = occupancy.getTest();
++
++        int added = 0;
++
++        // First up, we need to iterate the chunks
++        // all the values here are in chunk sections
++        final int lowerX = Mth.floor(sourcePosition.getX() - range) >> 4;
++        final int lowerY = Math.max(WorldUtil.getMinSection(poiStorage.levelHeightAccessor), Mth.floor(sourcePosition.getY() - range) >> 4);
++        final int lowerZ = Mth.floor(sourcePosition.getZ() - range) >> 4;
++        final int upperX = Mth.floor(sourcePosition.getX() + range) >> 4;
++        final int upperY = Math.min(WorldUtil.getMaxSection(poiStorage.levelHeightAccessor), Mth.floor(sourcePosition.getY() + range) >> 4);
++        final int upperZ = Mth.floor(sourcePosition.getZ() + range) >> 4;
++
++        // Vanilla iterates by x until max is reached then increases z
++        // vanilla also searches by increasing Y section value
++        for (int currZ = lowerZ; currZ <= upperZ; ++currZ) {
++            for (int currX = lowerX; currX <= upperX; ++currX) {
++                for (int currY = lowerY; currY <= upperY; ++currY) { // vanilla searches the entire chunk because they're actually stupid. just search the sections we need
++                    final Optional<PoiSection> poiSectionOptional = load ? poiStorage.getOrLoad(CoordinateUtils.getChunkSectionKey(currX, currY, currZ)) :
++                            poiStorage.get(CoordinateUtils.getChunkSectionKey(currX, currY, currZ));
++                    final PoiSection poiSection = poiSectionOptional == null ? null : poiSectionOptional.orElse(null);
++                    if (poiSection == null) {
++                        continue;
++                    }
++
++                    final Map<Holder<PoiType>, Set<PoiRecord>> sectionData = poiSection.byType;
++                    if (sectionData.isEmpty()) {
++                        continue;
++                    }
++
++                    // now we search the section data
++                    for (final Map.Entry<Holder<PoiType>, Set<PoiRecord>> entry : sectionData.entrySet()) {
++                        if (!villagePlaceType.test(entry.getKey())) {
++                            // filter out by poi type
++                            continue;
++                        }
++
++                        // now we can look at the poi data
++                        for (final PoiRecord poiData : entry.getValue()) {
++                            if (!occupancyFilter.test(poiData)) {
++                                // filter by occupancy
++                                continue;
++                            }
++
++                            final BlockPos poiPosition = poiData.getPos();
++
++                            if (Math.abs(poiPosition.getX() - sourcePosition.getX()) > range
++                                    || Math.abs(poiPosition.getZ() - sourcePosition.getZ()) > range) {
++                                // out of range for square radius
++                                continue;
++                            }
++
++                            if (poiPosition.distSqr(sourcePosition) > maxDistanceSqr) {
++                                // out of range for distance check
++                                continue;
++                            }
++
++                            if (positionPredicate != null && !positionPredicate.test(poiPosition)) {
++                                // filter by position
++                                continue;
++                            }
++
++                            // found one!
++                            if (ret != null) ret.add(poiData);
++                            if (++added >= max) {
++                                return added;
++                            }
++                        }
++                    }
++                }
++            }
++        }
++        return added;
+     }
+ 
+     public static PoiRecord findAnyPoiRecord(final PoiManager poiStorage,
+diff --git a/net/minecraft/world/entity/ai/village/poi/PoiManager.java b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
+--- a/net/minecraft/world/entity/ai/village/poi/PoiManager.java
++++ b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
+@@ -203,19 +203,40 @@
+     }
+ 
+     public long getCountInRange(final Predicate<Holder<PoiType>> predicate, final BlockPos center, final int radius, final PoiManager.Occupancy occupancy) {
+-        return this.getInRange(predicate, center, radius, occupancy).count();
+-    }
+-
+-    /** Checks a count threshold without collecting POIs that cannot change the result. */
+-    public boolean leavesX$hasAtLeastInRange(
+-        final Predicate<Holder<PoiType>> predicate,
+-        final BlockPos center,
+-        final int radius,
+-        final PoiManager.Occupancy occupancy,
+-        final int requiredCount
+-    ) {
+-        if (requiredCount <= 0) {
+-            return true;
++        // 自定义管理器可能覆盖 getInRange，必须保留其原有分派。
++        if (this.getClass() != PoiManager.class
++            || !org.leavesx.leavesx.config.LeavesXRuntime.poiCountWithoutCollectionOptimization()) {
++            return this.getInRange(predicate, center, radius, occupancy).count();
++        }
++        return ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.countPoiRecords(
++            (PoiManager)(Object)this,
++            predicate,
++            center,
++            radius,
++            (double)((long)radius * (long)radius),
++            occupancy,
++            ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.LOAD_FOR_SEARCHING,
++            Integer.MAX_VALUE
++        );
++    }
++
++    /** Checks a count threshold without collecting POIs that cannot change the result. */
++    public boolean leavesX$hasAtLeastInRange(
++        final Predicate<Holder<PoiType>> predicate,
++        final BlockPos center,
++        final int radius,
++        final PoiManager.Occupancy occupancy,
++        final int requiredCount
++    ) {
++        if (requiredCount <= 0) {
++            return true;
++        }
++        if (org.leavesx.leavesx.config.LeavesXRuntime.poiCountWithoutCollectionOptimization()) {
++            return ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.countPoiRecords(
++                (PoiManager)(Object)this, predicate, center, radius, (double)((long)radius * (long)radius),
++                occupancy, ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.LOAD_FOR_SEARCHING,
++                requiredCount
++            ) >= requiredCount;
+         }
+         final List<PoiRecord> matches = new java.util.ArrayList<>(requiredCount);
+         ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.findAnyPoiRecords(

@@ -1,0 +1,157 @@
+From a0df451ddbd35caae6a330748835ff7cf047f3ac Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sun, 18 Oct 2026 10:53:15 +0800
+Subject: [PATCH] Match Paper activation query bounds and report world serial
+ causes
+
+---
+ .../activation/ActivationRangeSnapshot.java   | 23 ++++++++++++++----
+ .../leavesx/command/LeavesXCommand.java       | 11 +++++++++
+ .../leavesx/runtime/LeavesXWorldTicker.java   | 24 +++++++++++++++----
+ .../ActivationRangeSnapshotTest.java          |  7 ++++--
+ 4 files changed, 55 insertions(+), 10 deletions(-)
+
+diff --git a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+index 92f99f9792..d83dcb1688 100644
+--- a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
++++ b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+@@ -211,8 +211,7 @@ final class ActivationRangeSnapshot {
+             boolean intersects = false;
+             if (activationGroups == null) {
+                 for (int playerIndex = 0; playerIndex < playerCount; playerIndex++) {
+-                    final int activationOffset = (playerIndex * PLAYER_BOXES + boxIndex) * AABB_COMPONENTS;
+-                    if (intersects(playerBounds, activationOffset, entityBounds, entityOffset)) {
++                    if (playerActivates(playerBounds, playerIndex, boxIndex, entityBounds, entityOffset)) {
+                         intersects = true;
+                         break;
+                     }
+@@ -225,8 +224,7 @@ final class ActivationRangeSnapshot {
+                     final int firstPlayer = group * PREFILTER_GROUP_SIZE;
+                     final int lastPlayer = Math.min(playerCount, firstPlayer + PREFILTER_GROUP_SIZE);
+                     for (int playerIndex = firstPlayer; playerIndex < lastPlayer; playerIndex++) {
+-                        final int activationOffset = (playerIndex * PLAYER_BOXES + boxIndex) * AABB_COMPONENTS;
+-                        if (intersects(playerBounds, activationOffset, entityBounds, entityOffset)) {
++                        if (playerActivates(playerBounds, playerIndex, boxIndex, entityBounds, entityOffset)) {
+                             intersects = true;
+                             break;
+                         }
+@@ -237,6 +235,23 @@ final class ActivationRangeSnapshot {
+         }
+     }
+ 
++    /**
++     * Paper 先用同一玩家的 maxBB 查询候选，再检查类型激活框；两者都必须相交。
++     * 类型范围可大于按模拟距离截断后的 maxRange，只检查类型框会激活原循环不会访问的实体。
++     */
++    private static boolean playerActivates(
++        final double[] playerBounds,
++        final int playerIndex,
++        final int boxIndex,
++        final double[] entityBounds,
++        final int entityOffset
++    ) {
++        final int playerOffset = playerIndex * PLAYER_BOXES * AABB_COMPONENTS;
++        return intersects(playerBounds, playerOffset, entityBounds, entityOffset)
++            && (boxIndex == 0
++                || intersects(playerBounds, playerOffset + boxIndex * AABB_COMPONENTS, entityBounds, entityOffset));
++    }
++
+     /** 合并同类玩家激活框；实体不与并集相交时，可以确定它不与任何单个玩家相交。 */
+     static void snapshotActivationUnions(final double[] playerBounds, final double[] unions, final int playerCount) {
+         snapshotActivationUnions(playerBounds, 0, unions, 0, playerCount);
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 54b11f4a30..e778d589ea 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1634,6 +1634,17 @@ public final class LeavesXCommand extends Command {
+             strict.isEmpty() ? "无" : String.join(", ", strict),
+             NamedTextColor.AQUA
+         ));
++        final var ticker = org.leavesx.leavesx.runtime.LeavesXWorldTicker.counters();
++        sender.sendMessage(line(
++            "世界串行原因",
++            org.leavesx.leavesx.runtime.LeavesXWorldTicker.serialReason(),
++            org.leavesx.leavesx.runtime.LeavesXWorldTicker.usesSerialCompatibility() ? NamedTextColor.YELLOW : NamedTextColor.GREEN
++        ));
++        sender.sendMessage(line(
++            "世界并行 Tick",
++            ticker.parallelTicks() + " 次 / 降级 " + ticker.degradedTicks() + " 次 / 提交失败 " + ticker.submitFailures() + " 次",
++            ticker.degradedTicks() == 0L ? NamedTextColor.GRAY : NamedTextColor.RED
++        ));
+         sender.sendMessage(line(
+             "Tick 关键 intent",
+             counters.tickCriticalSubmits() + " 提交 / " + counters.tickCriticalCompleted() + " 完成 / "
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXWorldTicker.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXWorldTicker.java
+index f16818dad5..20e82cbcde 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXWorldTicker.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXWorldTicker.java
+@@ -75,6 +75,7 @@ public final class LeavesXWorldTicker {
+     private static volatile boolean initialized;
+     private static volatile boolean degradedToSerial;
+     private static volatile boolean serialCompatibility;
++    private static volatile String serialReason = "未启用";
+     private static volatile boolean terminationFailed;
+ 
+     private static final AtomicLong PARALLEL_TICKS = new AtomicLong();
+@@ -96,10 +97,19 @@ public final class LeavesXWorldTicker {
+         shutdownExecutors();
+         // A plugin can transfer to an otherwise independent custom world. Pinning only the
+         // vanilla trio would still race that destination, so preserve the whole list's order.
+-        serialCompatibility = levels.stream().anyMatch(level ->
+-            Level.OVERWORLD.equals(level.dimension()) || Level.NETHER.equals(level.dimension())
+-                || Level.END.equals(level.dimension())
+-                || LeavesXRegionTicking.isStrictSerialWorld(level.getWorld().getName()));
++        final List<String> serialWorlds = new ArrayList<>();
++        for (final ServerLevel level : levels) {
++            final String name = level.getWorld().getName();
++            if (Level.OVERWORLD.equals(level.dimension()) || Level.NETHER.equals(level.dimension())
++                || Level.END.equals(level.dimension())) {
++                serialWorlds.add(name + "（原版维度）");
++            } else if (LeavesXRegionTicking.isStrictSerialWorld(name)) {
++                serialWorlds.add(name + "（配置强制串行）");
++            }
++        }
++        serialCompatibility = !serialWorlds.isEmpty();
++        // 跨世界传送会立即修改两个世界；任一受保护世界存在时，不能只让其余世界并行。
++        serialReason = serialCompatibility ? String.join("、", serialWorlds) : "无";
+         final List<WorldExecutor> next = new ArrayList<>(levels.size());
+         for (final ServerLevel level : levels) {
+             next.add(new WorldExecutor(level, serialCompatibility));
+@@ -175,6 +185,12 @@ public final class LeavesXWorldTicker {
+         return serialCompatibility || degradedToSerial;
+     }
+ 
++    /** 只读诊断：说明为什么当前世界 Tick 回到原串行顺序。 */
++    public static String serialReason() {
++        if (degradedToSerial) return "并行世界 Tick 曾发生异常，已降级到重启";
++        return serialCompatibility ? serialReason : "无";
++    }
++
+     /**
+      * Runs bounded batches while pumping synchronous events on the calling server thread.
+      * Returns false when compatibility requires the original serial world order.
+diff --git a/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java b/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
+index 4ab7e11cbc..7e6a9b43ca 100644
+--- a/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
++++ b/src/test/java/io/papermc/paper/entity/activation/ActivationRangeSnapshotTest.java
+@@ -170,7 +170,8 @@ public class ActivationRangeSnapshotTest {
+             final double centerX = random.nextDouble(-256.0D, 256.0D);
+             final double centerZ = random.nextDouble(-256.0D, 256.0D);
+             for (int box = 0; box < boxesPerPlayer; box++) {
+-                final double radius = 24.0D + box * 8.0D;
++                // 第 0 个是按模拟距离截断后的 maxBB；部分类型范围故意大于它，复现 Paper 的二次过滤。
++                final double radius = box == 0 ? 48.0D : 24.0D + box * 8.0D;
+                 writeBounds(
+                     playerBounds,
+                     player * boxesPerPlayer + box,
+@@ -197,7 +198,9 @@ public class ActivationRangeSnapshotTest {
+                 : activationTypes[entity] + 1;
+             final AABB entityBox = boxAt(entityBounds, entity * AABB_COMPONENTS);
+             for (int player = 0; player < playerCount; player++) {
+-                if (boxAt(playerBounds, (player * boxesPerPlayer + box) * AABB_COMPONENTS).intersects(entityBox)) {
++                // Paper 先以 maxBB 查询候选，再检查实体所属类型的激活框。
++                if (boxAt(playerBounds, player * boxesPerPlayer * AABB_COMPONENTS).intersects(entityBox)
++                    && boxAt(playerBounds, (player * boxesPerPlayer + box) * AABB_COMPONENTS).intersects(entityBox)) {
+                     expected[entity] = true;
+                     break;
+                 }

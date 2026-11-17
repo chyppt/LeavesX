@@ -1,0 +1,655 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 3 Oct 2026 01:00:00 +0800
+Subject: [PATCH] Pipeline AI snapshots and parallel large merges
+
+diff --git a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+--- a/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
++++ b/src/main/java/org/leavesx/leavesx/performance/StableDistanceSorter.java
+@@ -7,6 +7,7 @@
+ import net.minecraft.world.phys.Vec3;
+ import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
++import org.leavesx.leavesx.runtime.LeavesXSnapshotBatch;
+ 
+ /**
+  * 对不可变距离键做稳定排序，不向工作线程暴露实时实体。
+@@ -21,8 +22,11 @@
+     private static final int RADIX_BUCKETS = 256;
+     /** 小分片使用稳定插入排序，省去最多八轮直方图清零与散射。 */
+     private static final int INSERTION_SORT_MAX_ITEMS = 32;
+-    /** 最后只有一两对归并任务时不再派发工作线程。 */
++    /** 小列表按区间对归并；大列表按输出位置切分，避免最后一对归并成为串行瓶颈。 */
+     private static final int MIN_PARALLEL_MERGE_PAIRS = 4;
++    private static final int MIN_PIPELINE_ITEMS = 2048;
++    private static final int MIN_PARALLEL_MERGE_ITEMS = 32768;
++    private static final int MIN_MERGE_ITEMS_PER_WORKER = 8192;
+     private static final int INITIAL_WORKSPACE_CAPACITY = 64;
+     private static final ThreadLocal<Workspace> WORKSPACE = ThreadLocal.withInitial(() -> new Workspace(true));
+     private static final ClassValue<Boolean> VANILLA_DISTANCE = new ClassValue<>() {
+@@ -85,8 +89,12 @@
+                     LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker()
+                 );
+             if (parallelEligible) {
+-                snapshotEntityCoordinates(entities, workspace, size);
+-                sortCoordinateSnapshot(workspace, size, originX, originY, originZ, true, parallelThreshold);
++                if (size > MIN_PIPELINE_ITEMS && LeavesXRuntime.asyncSettings().aiSnapshotPipeline()) {
++                    sortEntitySnapshotPipeline(entities, workspace, size, originX, originY, originZ);
++                } else {
++                    snapshotEntityCoordinates(entities, workspace, size);
++                    sortCoordinateSnapshot(workspace, size, originX, originY, originZ, true, parallelThreshold);
++                }
+             } else {
+                 snapshotEntityDistanceKeys(entities, workspace, size, originX, originY, originZ);
+                 sortPreparedKeys(workspace, size, parallelEligible, parallelThreshold);
+@@ -140,6 +148,9 @@
+                     LeavesXRuntime.aiTargetSearchMinimumItemsPerWorker()
+                 );
+             if (useCoordinateSnapshot) {
++                if (size > MIN_PIPELINE_ITEMS && LeavesXRuntime.asyncSettings().aiSnapshotPipeline()) {
++                    return findNearestSnapshotPipeline(entities, workspace, size, originX, originY, originZ);
++                }
+                 snapshotEntityCoordinates(entities, workspace, size);
+             } else {
+                 snapshotEntityDistanceKeys(entities, workspace, size, originX, originY, originZ);
+@@ -168,17 +179,7 @@
+                     : nearestInRange(workspace.keys, 0, size);
+             }
+ 
+-            int nearest = -1;
+-            for (int partition = 0; partition < completedPartitions; partition++) {
+-                final int candidate = workspace.nearestByPartition[partition];
+-                if (candidate < 0) {
+-                    continue;
+-                }
+-                if (nearest < 0 || Long.compareUnsigned(workspace.keys[candidate], workspace.keys[nearest]) < 0) {
+-                    nearest = candidate;
+-                }
+-            }
+-            return nearest;
++            return nearestPartitionWinner(workspace, completedPartitions);
+         } finally {
+             releaseWorkspace(workspace);
+         }
+@@ -262,7 +263,7 @@
+             return;
+         }
+ 
+-        mergeSortedPartitions(workspace, size, completedPartitions);
++        mergeSortedPartitions(workspace, size, divideCeil(size, completedPartitions));
+     }
+ 
+     /**
+@@ -314,19 +315,118 @@
+             return;
+         }
+ 
+-        mergeSortedPartitions(workspace, size, completedPartitions);
++        mergeSortedPartitions(workspace, size, divideCeil(size, completedPartitions));
++    }
++
++    /** 已冻结的前缀可以提前计算；后续实时实体访问仍严格留在调用线程。 */
++    private static <T extends Entity> void sortEntitySnapshotPipeline(
++        final List<T> entities, final Workspace workspace, final int size,
++        final double originX, final double originY, final double originZ
++    ) {
++        workspace.ensureCoordinateCapacity(size);
++        // 以已经分配的直方图槽数为上限，热重载改变线程数也不会让片段越界。
++        final int rangeSize = Math.max(divideCeil(size, workspace.laneOffsets.length / RADIX_BUCKETS),
++            LeavesXSnapshotBatch.partitionSize(size, MIN_PIPELINE_ITEMS));
++        try (final LeavesXSnapshotBatch batch = new LeavesXSnapshotBatch(LeavesXComputeExecutor.Workload.AI_TARGET_SORT)) {
++            for (int start = 0, partition = 0; start < size; start += rangeSize, partition++) {
++                final int from = start;
++                final int to = (int)Math.min(size, (long)start + rangeSize);
++                final int offsetBase = partition * RADIX_BUCKETS;
++                for (int index = from; index < to; index++) {
++                    final Entity entity = entities.get(index);
++                    workspace.x[index] = entity.getX();
++                    workspace.y[index] = entity.getY();
++                    workspace.z[index] = entity.getZ();
++                }
++                batch.submit(to - from, () -> {
++                    computeDistanceKeysAndInitializeOrder(workspace, from, to, originX, originY, originZ);
++                    stableRadixRange(workspace.order, workspace.scratch, workspace.keys,
++                        from, to, workspace.laneOffsets, offsetBase);
++                });
++            }
++            if (!batch.finish()) {
++                // 必须重算全部距离键；失败片段可能只写了一部分键和索引。
++                computeDistanceKeysAndInitializeOrder(workspace, 0, size, originX, originY, originZ);
++                stableRadixRange(workspace.order, workspace.scratch, workspace.keys, 0, size, workspace.offsets, 0);
++                return;
++            }
++        }
++        // 尾片可能短于前面的片段，归并必须沿用实际片宽，不能由片数反推。
++        mergeSortedPartitions(workspace, size, rangeSize);
++    }
++
++    /** 最近索引查询与排序一样提前处理已冻结的片段，不把实时实体交给工作线程。 */
++    private static <T extends Entity> int findNearestSnapshotPipeline(
++        final List<T> entities, final Workspace workspace, final int size,
++        final double originX, final double originY, final double originZ
++    ) {
++        workspace.ensureCoordinateCapacity(size);
++        final int rangeSize = Math.max(divideCeil(size, workspace.nearestByPartition.length),
++            LeavesXSnapshotBatch.partitionSize(size, MIN_PIPELINE_ITEMS));
++        int partitions = 0;
++        try (final LeavesXSnapshotBatch batch = new LeavesXSnapshotBatch(LeavesXComputeExecutor.Workload.AI_TARGET_SELECT)) {
++            for (int start = 0; start < size; start += rangeSize) {
++                final int from = start;
++                final int to = (int)Math.min(size, (long)start + rangeSize);
++                final int partition = partitions++;
++                for (int index = from; index < to; index++) {
++                    final Entity entity = entities.get(index);
++                    workspace.x[index] = entity.getX();
++                    workspace.y[index] = entity.getY();
++                    workspace.z[index] = entity.getZ();
++                }
++                batch.submit(to - from, () -> workspace.nearestByPartition[partition]
++                    = computeDistanceKeysAndFindNearest(workspace, from, to, originX, originY, originZ));
++            }
++            if (!batch.finish()) {
++                return computeDistanceKeysAndFindNearest(workspace, 0, size, originX, originY, originZ);
++            }
++        }
++        return nearestPartitionWinner(workspace, partitions);
++    }
++
++    /** 按原片段顺序合并局部赢家；同距离只保留最早出现的实体。 */
++    private static int nearestPartitionWinner(final Workspace workspace, final int partitions) {
++        int nearest = -1;
++        for (int partition = 0; partition < partitions; partition++) {
++            final int candidate = workspace.nearestByPartition[partition];
++            if (candidate >= 0 && (nearest < 0
++                || Long.compareUnsigned(workspace.keys[candidate], workspace.keys[nearest]) < 0)) {
++                nearest = candidate;
++            }
++        }
++        return nearest;
+     }
+ 
+     /** 将独立排序的连续分片稳定归并。 */
+     private static void mergeSortedPartitions(
+         final Workspace workspace,
+         final int size,
+-        final int completedPartitions
+-    ) {
+-        final int rangeSize = divideCeil(size, completedPartitions);
++        final int rangeSize
++    ) {
+         for (int width = rangeSize; width < size; width = nextMergeWidth(width, size)) {
+             final int step = width >= size - width ? size : width << 1;
+             final int pairCount = divideCeil(size, step);
++            if (size >= MIN_PARALLEL_MERGE_ITEMS && LeavesXRuntime.asyncSettings().aiParallelMerge()) {
++                final int[] input = workspace.order;
++                final int[] output = workspace.scratch;
++                final int mergeWidth = width;
++                final int merged = LeavesXComputeExecutor.invokeRangesWithCount(
++                    LeavesXComputeExecutor.Workload.AI_TARGET_MERGE, size,
++                    MIN_PARALLEL_MERGE_ITEMS, MIN_MERGE_ITEMS_PER_WORKER,
++                    (partition, start, end) -> mergeOutputRange(input, output, workspace.keys,
++                        size, mergeWidth, step, start, end)
++                );
++                if (merged == 0) {
++                    initializeOrder(input, size);
++                    stableRadixRange(input, output, workspace.keys, 0, size, workspace.offsets, 0);
++                    return;
++                }
++                // 所有片段结束后才交换缓冲区，工作线程绝不读到正在改写的输入。
++                workspace.order = output;
++                workspace.scratch = input;
++                continue;
++            }
+             if (pairCount >= MIN_PARALLEL_MERGE_PAIRS) {
+                 final int mergeWidth = width;
+                 final int mergeStep = step;
+@@ -358,6 +458,47 @@
+         }
+     }
+ 
++    /** 以输出区间切分归并；二分确定左右游标，相等键始终优先取左边以保持稳定顺序。 */
++    private static void mergeOutputRange(
++        final int[] input, final int[] output, final long[] keys, final int size,
++        final int width, final int step, final int start, final int end
++    ) {
++        for (int from = start; from < end;) {
++            final int base = from / step * step;
++            final int middle = (int)Math.min(size, (long)base + width);
++            final int limit = (int)Math.min(size, (long)base + step);
++            final int to = Math.min(end, limit);
++            if (middle == limit || Long.compareUnsigned(keys[input[middle - 1]], keys[input[middle]]) <= 0) {
++                System.arraycopy(input, from, output, from, to - from);
++            } else {
++                final int rank = from - base;
++                int low = Math.max(0, rank - (limit - middle));
++                int high = Math.min(rank, middle - base);
++                while (low < high) {
++                    final int left = (low + high) >>> 1;
++                    final int right = rank - left;
++                    if (right > 0 && left < middle - base
++                        && Long.compareUnsigned(keys[input[middle + right - 1]], keys[input[base + left]]) >= 0) {
++                        low = left + 1;
++                    } else {
++                        high = left;
++                    }
++                }
++                int left = base + low;
++                int right = middle + rank - low;
++                for (int destination = from; destination < to; destination++) {
++                    if (left < middle && (right == limit
++                        || Long.compareUnsigned(keys[input[left]], keys[input[right]]) <= 0)) {
++                        output[destination] = input[left++];
++                    } else {
++                        output[destination] = input[right++];
++                    }
++                }
++            }
++            from = to;
++        }
++    }
++
+     /** 派发工作线程前，在调用 Tick 线程上采集全部实时坐标。 */
+     private static <T extends Entity> void snapshotEntityCoordinates(
+         final List<T> entities,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -365,7 +365,10 @@
+         ComputeSchedulingSettings scheduling,
+         boolean trackerEventListeners,
+         boolean trackerSnapshotPipeline,
+-        boolean activationSnapshotPipeline
++        boolean activationSnapshotPipeline,
++        boolean aiSnapshotPipeline,
++        boolean aiParallelMerge,
++        boolean combinedSpawnCounting
+     ) {
+ 
+         public AsyncSettings {
+@@ -382,6 +385,25 @@
+                     "async.pathfinding.keepalive-seconds must be between 1 and 600"
+                 );
+             }
++        }
++
++        /** 保留已有构造；新增开关只改变不可变快照的调度方式。 */
++        public AsyncSettings(
++            final boolean chunkSendEnabled, final int chunkSendQueueSize, final boolean mobSpawningEnabled,
++            final boolean pathfindingEnabled, final int pathfindingThreads, final int pathfindingQueueSize,
++            final int pathfindingKeepaliveSeconds, final boolean playerDataSaveEnabled, final int playerDataSaveQueueSize,
++            final boolean entityTrackerEnabled, final int entityTrackerThreads, final int entityTrackerQueueSize,
++            final boolean sharedComputeWorkers, final boolean trackerComparisonSharding, final boolean lowLoadWorkers,
++            final boolean animalBreeding, final boolean animalFollowParent, final boolean activationBoundsPrefilter,
++            final ComputeFailureSettings failureProtection, final ComputeSchedulingSettings scheduling,
++            final boolean trackerEventListeners, final boolean trackerSnapshotPipeline, final boolean activationSnapshotPipeline
++        ) {
++            this(chunkSendEnabled, chunkSendQueueSize, mobSpawningEnabled, pathfindingEnabled, pathfindingThreads,
++                pathfindingQueueSize, pathfindingKeepaliveSeconds, playerDataSaveEnabled, playerDataSaveQueueSize,
++                entityTrackerEnabled, entityTrackerThreads, entityTrackerQueueSize, sharedComputeWorkers,
++                trackerComparisonSharding, lowLoadWorkers, animalBreeding, animalFollowParent, activationBoundsPrefilter,
++                failureProtection, scheduling, trackerEventListeners, trackerSnapshotPipeline, activationSnapshotPipeline,
++                true, true, true);
+         }
+ 
+         /** 保留已有构造；数值快照流水处理默认开启，不调整实体行为或激活范围。 */
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -525,7 +525,10 @@
+                     ),
+                     readBoolean(node.node("async", "entity-tracker", "event-listeners"), "async.entity-tracker.event-listeners", true),
+                     readBoolean(node.node("async", "entity-tracker", "snapshot-pipeline"), "async.entity-tracker.snapshot-pipeline", true),
+-                    readBoolean(node.node("parallelism", "entity-activation", "snapshot-pipeline"), "parallelism.entity-activation.snapshot-pipeline", true)
++                    readBoolean(node.node("parallelism", "entity-activation", "snapshot-pipeline"), "parallelism.entity-activation.snapshot-pipeline", true),
++                    readBoolean(node.node("parallelism", "ai-target-search", "snapshot-pipeline"), "parallelism.ai-target-search.snapshot-pipeline", true),
++                    readBoolean(node.node("parallelism", "ai-target-search", "parallel-merge"), "parallelism.ai-target-search.parallel-merge", true),
++                    readBoolean(node.node("parallelism", "mob-spawning", "combined-counting"), "parallelism.mob-spawning.combined-counting", true)
+                 ),
+                 new LeavesXConfig.ExtensionSettings(
+                     readBoolean(node.node("features", "tripwire-hook-duplication"), "features.tripwire-hook-duplication", false),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -214,6 +214,9 @@
+         changed |= writeValue(node.node("async", "entity-tracker", "comparison-sharding"), "async.entity-tracker.comparison-sharding", async.trackerComparisonSharding(), missingOnly);
+         changed |= writeValue(node.node("async", "entity-tracker", "snapshot-pipeline"), "async.entity-tracker.snapshot-pipeline", async.trackerSnapshotPipeline(), missingOnly);
+         changed |= writeValue(node.node("parallelism", "entity-activation", "snapshot-pipeline"), "parallelism.entity-activation.snapshot-pipeline", async.activationSnapshotPipeline(), missingOnly);
++        changed |= writeValue(node.node("parallelism", "ai-target-search", "snapshot-pipeline"), "parallelism.ai-target-search.snapshot-pipeline", async.aiSnapshotPipeline(), missingOnly);
++        changed |= writeValue(node.node("parallelism", "ai-target-search", "parallel-merge"), "parallelism.ai-target-search.parallel-merge", async.aiParallelMerge(), missingOnly);
++        changed |= writeValue(node.node("parallelism", "mob-spawning", "combined-counting"), "parallelism.mob-spawning.combined-counting", async.combinedSpawnCounting(), missingOnly);
+         changed |= writeValue(node.node("async", "entity-tracker", "event-listeners"), "async.entity-tracker.event-listeners", async.trackerEventListeners(), missingOnly);
+         changed |= writeValue(node.node("async", "chunk-send", "enabled"), "async.chunk-send.enabled", async.chunkSendEnabled(), missingOnly);
+         changed |= writeValue(node.node("async", "chunk-send", "queue-size"), "async.chunk-send.queue-size", async.chunkSendQueueSize(), missingOnly);
+@@ -635,6 +638,9 @@
+         comments.put("async.entity-tracker.comparison-sharding", "按实体与玩家的比较次数分配追踪计算；关闭后使用原来的实体分片，修改需重启。默认：true。");
+         comments.put("async.entity-tracker.snapshot-pipeline", "分批准备并提前计算追踪范围，整批校验后才发包；需开启 comparison-sharding，可热重载。默认：true。");
+         comments.put("parallelism.entity-activation.snapshot-pipeline", "分批准备并提前计算实体激活范围，不改变激活规则和更新频率；可热重载。默认：true。");
++        comments.put("parallelism.ai-target-search.snapshot-pipeline", "采集 AI 候选位置时提前计算已完成的片段，保留目标筛选顺序；可热重载。默认：true。");
++        comments.put("parallelism.ai-target-search.parallel-merge", "并行合并大型 AI 距离排序结果，保留相同距离的原顺序；可热重载。默认：true。");
++        comments.put("parallelism.mob-spawning.combined-counting", "同批计算区块和玩家生物生成计数，减少两次调度等待，不改变生成上限；可热重载。默认：true。");
+         comments.put("async.entity-tracker.event-listeners", "插件监听实体追踪或玩家速度事件时仍并行计算距离；事件、发包和追踪变更按原实体顺序在主线程执行，输入被事件改动时只重算当前实体。关闭后有监听器就使用 Paper 原循环，可重载。默认：true。");
+         comments.put("async.playerdata-save.enabled", "是否异步保存玩家数据；采集玩家状态仍在主线程，同一玩家按顺序保存。默认：true。");
+         comments.put("async.playerdata-save.queue-size", "玩家数据写入最多排队任务数；队列满时等待空位，不会让新存档越过旧存档。默认：1024。");
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1283,7 +1283,14 @@
+             "数值快照流水",
+             "追踪 " + (LeavesXRuntime.asyncSettings().trackerSnapshotPipeline() ? "开启" : "关闭")
+                 + " / 激活 " + (LeavesXRuntime.asyncSettings().activationSnapshotPipeline() ? "开启" : "关闭")
++                + " / AI " + (LeavesXRuntime.asyncSettings().aiSnapshotPipeline() ? "开启" : "关闭")
+                 + "；实际工作量见上方分类统计",
++            NamedTextColor.GRAY
++        ));
++        sender.sendMessage(line(
++            "计算合并",
++            "大列表并行归并 " + (LeavesXRuntime.asyncSettings().aiParallelMerge() ? "开启" : "关闭")
++                + " / 生物生成联合计数 " + (LeavesXRuntime.asyncSettings().combinedSpawnCounting() ? "开启" : "关闭"),
+             NamedTextColor.GRAY
+         ));
+         sender.sendMessage(Component.text(
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -9,6 +9,7 @@
+ import static org.mockito.ArgumentMatchers.any;
+ import static org.mockito.Mockito.mock;
+ import static org.mockito.Mockito.when;
++import static org.leavesx.leavesx.config.ConfigurationTestSupport.publish;
+ 
+ import java.util.ArrayList;
+ import java.util.Arrays;
+@@ -24,6 +25,8 @@
+ import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.Test;
+ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
++import org.leavesx.leavesx.config.LeavesXConfig;
++import org.spongepowered.configurate.CommentedConfigurationNode;
+ 
+ @Normal
+ public class StableDistanceSorterTest {
+@@ -31,6 +34,7 @@
+     @AfterEach
+     void shutdownExecutor() {
+         LeavesXComputeExecutor.shutdown();
++        publish(LeavesXConfig.safeDefaults());
+     }
+ 
+     @Test
+@@ -55,6 +59,31 @@
+     }
+ 
+     @Test
++    void preservesOrderedRunsAndReordersLateInversion() {
++        LeavesXComputeExecutor.configure(4, 64);
++        for (final int size : new int[] {64, 257, 1_027, 4_097}) {
++            final double[] x = new double[size];
++            final double[] zeros = new double[size];
++            for (int index = 0; index < size; index++) {
++                // 连续相等距离用于观察稳定性；无穷大和 NaN 覆盖原版 Double.compare 的末尾顺序。
++                x[index] = index / 3;
++            }
++            x[size - 2] = Double.POSITIVE_INFINITY;
++            x[size - 1] = Double.NaN;
++            for (final boolean parallel : new boolean[] {false, true}) {
++                assertArrayEquals(referenceOrder(x, zeros, zeros, 0.0, 0.0, 0.0),
++                    StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, parallel, 256));
++            }
++            // 最后一个有限距离发生逆序时必须完整排序，不能错误采用已扫描的有序前缀。
++            x[size - 3] = 0.0;
++            for (final boolean parallel : new boolean[] {false, true}) {
++                assertArrayEquals(referenceOrder(x, zeros, zeros, 0.0, 0.0, 0.0),
++                    StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, parallel, 256));
++            }
++        }
++    }
++
++    @Test
+     void matchesStableOrderWhenAdaptivePartitionUsesFewerLanes() {
+         final Random random = new Random(0x506172746974696fL);
+         final int size = 191;
+@@ -108,6 +137,42 @@
+ 
+         LeavesXComputeExecutor.configure(3);
+         assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, 0.0, 0.0, 0.0, true, 1));
++    }
++
++    @Test
++    void preservesIdentityWhenEveryDistanceKeyIsEqual() {
++        LeavesXComputeExecutor.configure(4, 64);
++        for (final double coordinate : new double[] {0.0, 1.0, Double.POSITIVE_INFINITY, Double.NaN}) {
++            final double[] x = new double[257];
++            Arrays.fill(x, coordinate);
++            final double[] zeros = new double[x.length];
++            final int[] expected = referenceOrder(x, zeros, zeros, 0.0, 0.0, 0.0);
++            assertArrayEquals(expected, StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, false, 256));
++            assertArrayEquals(expected, StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, true, 256));
++        }
++    }
++
++    @Test
++    void preservesStableOrderWithDifferentNumbersOfVaryingRadixDigits() {
++        LeavesXComputeExecutor.configure(4, 64);
++        final Random random = new Random(0x5261646978446967L);
++        final double[] scales = {0.0, 1.0, 1.0E-150, 1.0E150, 1.0E155};
++        for (final int size : new int[] {2, 63, 128, 257, 513, 2_049}) {
++            final double[] x = new double[size];
++            final double[] y = new double[size];
++            final double[] z = new double[size];
++            for (int round = 0; round < 8; round++) {
++                for (int index = 0; index < size; index++) {
++                    final double scale = scales[round % scales.length];
++                    x[index] = (random.nextInt(33) - 16 + (round < 5 ? 0.0 : random.nextDouble())) * scale;
++                    y[index] = (random.nextInt(9) - 4) * scale;
++                    z[index] = (random.nextInt(33) - 16) * scale;
++                }
++                final int[] expected = referenceOrder(x, y, z, 0.0, 0.0, 0.0);
++                assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, 0.0, 0.0, 0.0, false, 256));
++                assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, 0.0, 0.0, 0.0, true, 256));
++            }
++        }
+     }
+ 
+     @Test
+@@ -395,6 +460,128 @@
+         assertFalse(offThreadGetter.get(), "workers must receive primitive snapshots, never live entities");
+         assertEquals(1L, workload(LeavesXComputeExecutor.Workload.AI_TARGET_SORT).parallelInvocations());
+         assertEquals(1L, workload(LeavesXComputeExecutor.Workload.AI_TARGET_SELECT).parallelInvocations());
++    }
++
++    @Test
++    void outputShardedMergeMatchesStableComparatorWithUnevenTailAndDuplicateKeys() throws Exception {
++        LeavesXComputeExecutor.configure(6, 64, true, true);
++        final Random random = new Random(0x4D65726765546169L);
++        for (final int size : new int[] {32_768, 32_769, 49_157, 65_537, 131_071}) {
++            final double[] x = new double[size];
++            final double[] zeros = new double[size];
++            for (int index = 0; index < size; index++) x[index] = random.nextInt(129) - 64;
++            x[1] = Double.NaN;
++            x[size - 2] = Double.POSITIVE_INFINITY;
++            final int[] expected = referenceOrder(x, zeros, zeros, 0.0, 0.0, 0.0);
++            for (final boolean enabled : new boolean[] {false, true}) {
++                final var node = CommentedConfigurationNode.root();
++                node.node("parallelism", "ai-target-search", "parallel-merge").set(enabled);
++                publish(node);
++                assertArrayEquals(expected, StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, true, 256),
++                    "size=" + size + ", parallel-merge=" + enabled);
++            }
++        }
++        assertTrue(workload(LeavesXComputeExecutor.Workload.AI_TARGET_MERGE).workerItems() > 0);
++    }
++
++    @Test
++    void entitySnapshotPipelineKeepsGettersOnOwnerAndStableOrderAcrossPartialTail() throws Exception {
++        LeavesXComputeExecutor.configure(4, 64, true, true);
++        final Thread owner = Thread.currentThread();
++        final AtomicBoolean offThread = new AtomicBoolean();
++        final Entity origin = threadConfinedEntityAt(0.0, 0.0, 0.0, owner, offThread);
++        final List<Entity> pool = new ArrayList<>();
++        final java.util.IdentityHashMap<Entity, Double> distances = new java.util.IdentityHashMap<>();
++        for (int index = 0; index < 17; index++) {
++            final Entity entity = threadConfinedEntityAt(index - 8, 0, 0, owner, offThread);
++            pool.add(entity);
++            distances.put(entity, (double)(index - 8) * (index - 8));
++        }
++        for (final int size : new int[] {2_048, 2_049, 4_097}) {
++            final List<Entity> input = new ArrayList<>();
++            for (int index = 0; index < size; index++) input.add(pool.get((index * 7) % pool.size()));
++            final List<Entity> expected = new ArrayList<>(input);
++            expected.sort(Comparator.comparingDouble(distances::get));
++            for (final boolean enabled : new boolean[] {false, true}) {
++                final var node = CommentedConfigurationNode.root();
++                node.node("parallelism", "ai-target-search", "snapshot-pipeline").set(enabled);
++                publish(node);
++                final List<Entity> actual = new ArrayList<>(input);
++                StableDistanceSorter.sortEntitiesByDistance(actual, origin, true, 256);
++                assertEquals(expected, actual, "size=" + size + ", pipeline=" + enabled);
++            }
++        }
++        assertFalse(offThread.get(), "工作线程不得读取实体坐标");
++    }
++
++    @Test
++    void interruptedPipelineFullyRecomputesFrozenCoordinatesAndReusesBuffersSafely() {
++        publish(LeavesXConfig.safeDefaults());
++        LeavesXComputeExecutor.configure(2, 64, true, true);
++        final Entity origin = entityAt(0, 0, 0);
++        final Entity farther = entityAt(10, 0, 0);
++        final Entity nearest = entityAt(1, 0, 0);
++        final AtomicBoolean interruptCapture = new AtomicBoolean(true);
++        when(nearest.getZ()).thenAnswer(ignored -> {
++            if (interruptCapture.getAndSet(false)) Thread.currentThread().interrupt();
++            return 0.0;
++        });
++        final List<Entity> entities = new ArrayList<>(java.util.Collections.nCopies(4_096, farther));
++        entities.add(nearest);
++        try {
++            StableDistanceSorter.sortEntitiesByDistance(entities, origin, true, 256);
++            assertTrue(Thread.currentThread().isInterrupted());
++            assertSame(nearest, entities.getFirst());
++            assertEquals(1, LeavesXComputeExecutor.metrics().fullRecomputationRequests());
++        } finally {
++            Thread.interrupted();
++        }
++        StableDistanceSorter.sortEntitiesByDistance(entities, origin, true, 256);
++        assertSame(nearest, entities.getFirst());
++    }
++
++    @Test
++    void partialParallelMergeFailureTriggersCompleteStableSort() {
++        publish(LeavesXConfig.safeDefaults());
++        LeavesXComputeExecutor.configure(4, 64, true, true);
++        final double[] x = new double[65_537];
++        final double[] zeros = new double[x.length];
++        for (int index = 0; index < x.length; index++) x[index] = (x.length - index) % 257;
++        try (var compute = org.mockito.Mockito.mockStatic(LeavesXComputeExecutor.class, invocation -> {
++            if (invocation.getMethod().getName().equals("invokeRangesWithCount")
++                && invocation.getArguments().length == 5
++                && invocation.getArgument(0) == LeavesXComputeExecutor.Workload.AI_TARGET_MERGE) {
++                final LeavesXComputeExecutor.RangeTask task = invocation.getArgument(4);
++                task.run(0, 0, x.length / 3);
++                return 0;
++            }
++            return invocation.callRealMethod();
++        })) {
++            assertArrayEquals(referenceOrder(x, zeros, zeros, 0, 0, 0),
++                StableDistanceSorter.sort(x, zeros, zeros, 0, 0, 0, true, 256));
++        }
++    }
++
++    @Test
++    void nearestIndexPipelineRetainsComparatorNanOrderAndFirstTie() throws Exception {
++        LeavesXComputeExecutor.configure(3, 64, true, true);
++        final Thread owner = Thread.currentThread();
++        final AtomicBoolean offThread = new AtomicBoolean();
++        final Entity origin = threadConfinedEntityAt(0, 0, 0, owner, offThread);
++        final Entity far = threadConfinedEntityAt(8, 0, 0, owner, offThread);
++        final Entity near = threadConfinedEntityAt(1, 0, 0, owner, offThread);
++        final Entity nan = threadConfinedEntityAt(Double.NaN, 0, 0, owner, offThread);
++        for (final boolean enabled : new boolean[] {false, true}) {
++            final var node = CommentedConfigurationNode.root();
++            node.node("parallelism", "ai-target-search", "snapshot-pipeline").set(enabled);
++            publish(node);
++            final List<Entity> input = new ArrayList<>(java.util.Collections.nCopies(4_097, far));
++            input.set(0, nan);
++            input.set(2_048, near);
++            input.set(4_096, near);
++            assertEquals(2_048, StableDistanceSorter.findNearestIndex(input, origin, true, 256));
++        }
++        assertFalse(offThread.get());
+     }
+ 
+     private static Entity entityAt(final double x, final double y, final double z) {
+diff --git a/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java b/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java
+--- a/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java
++++ b/src/test/java/net/minecraft/world/level/MobSpawnCountAccumulatorTest.java
+@@ -122,6 +122,69 @@
+     }
+ 
+     @Test
++    void combinedCountsMatchIndependentCountsAcrossUnequalSizesAndEmptySides() {
++        for (final int[] sizes : new int[][] {{0, 0}, {0, 4_097}, {4_097, 0}, {1, 1}, {7, 8_193}, {8_193, 7}, {4_097, 4_097}}) {
++            final var local = inputs(sizes[0], 17);
++            final var players = inputs(sizes[1], 31);
++            final var expectedLocal = MobSpawnCountAccumulator.count(local, false, 128);
++            final var expectedPlayers = MobSpawnCountAccumulator.count(players, false, 128);
++            for (final boolean workers : new boolean[] {false, true}) {
++                if (workers) LeavesXComputeExecutor.configure(4, 64, true, true);
++                else LeavesXComputeExecutor.shutdown();
++                final var actual = MobSpawnCountAccumulator.countBoth(local, players, 128);
++                assertCounts(expectedLocal, actual.local());
++                assertCounts(expectedPlayers, actual.players());
++            }
++        }
++    }
++
++    @Test
++    void twoNonemptyCountSnapshotsUseOneDispatchAndRetainLowLoadWorkerExecution() {
++        LeavesXComputeExecutor.configure(1, 64, true, true);
++        final var actual = MobSpawnCountAccumulator.countBoth(inputs(1, 1), inputs(1, 2), 2_048);
++        assertEquals(1, actual.local().size());
++        assertEquals(1, actual.players().size());
++        assertEquals(1, LeavesXComputeExecutor.metrics().invocations());
++        assertEquals(1L, LeavesXComputeExecutor.lowLoadDispatchCount());
++        assertEquals(1, LeavesXComputeExecutor.metrics().workerItems());
++    }
++
++    @Test
++    void partialCombinedCalculationIsDiscardedForBothCountersOnFailure() {
++        LeavesXComputeExecutor.configure(4, 64, true, true);
++        final var local = inputs(4_097, 17);
++        final var players = inputs(2_051, 31);
++        try (var compute = org.mockito.Mockito.mockStatic(LeavesXComputeExecutor.class, invocation -> {
++            if (invocation.getMethod().getName().equals("invokeRangesWithCount")
++                && invocation.getArguments().length == 4) {
++                final LeavesXComputeExecutor.RangeTask task = invocation.getArgument(3);
++                task.run(0, 0, 1_024);
++                return 0;
++            }
++            return invocation.callRealMethod();
++        })) {
++            final var actual = MobSpawnCountAccumulator.countBoth(local, players, 128);
++            assertCounts(MobSpawnCountAccumulator.count(local, false, 128), actual.local());
++            assertCounts(MobSpawnCountAccumulator.count(players, false, 128), actual.players());
++        }
++    }
++
++    private static MobSpawnCountAccumulator.Inputs inputs(final int size, final int salt) {
++        final long[] keys = new long[size];
++        final byte[] categories = new byte[size];
++        for (int index = 0; index < size; index++) {
++            keys[index] = ChunkPos.pack((index / salt) % 29, (index / (salt + 1)) % 13);
++            categories[index] = (byte)((index + salt) % MobCategory.values().length);
++        }
++        return new MobSpawnCountAccumulator.Inputs(keys, categories, size);
++    }
++
++    private static void assertCounts(final Long2ObjectOpenHashMap<int[]> expected, final Long2ObjectOpenHashMap<int[]> actual) {
++        assertEquals(expected.size(), actual.size());
++        for (final var entry : expected.long2ObjectEntrySet()) assertArrayEquals(entry.getValue(), actual.get(entry.getLongKey()));
++    }
++
++    @Test
+     void oneCandidateUsesTheWorkerWhenLowLoadDispatchIsEnabled() {
+         final long[] chunkKeys = {ChunkPos.pack(3, -2)};
+         final byte[] categories = {(byte)MobCategory.MONSTER.ordinal()};

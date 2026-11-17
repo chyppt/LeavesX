@@ -1,0 +1,315 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 3 Oct 2026 01:00:00 +0800
+Subject: [PATCH] Prefilter entity activation player bounds
+
+diff --git a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+--- a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
++++ b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+@@ -26,6 +26,7 @@
+     static final byte DEFAULT_ACTIVATION_ENTITY = -3;
+     private static final ActivationType[] ACTIVATION_TYPES = ActivationType.values();
+     private static final int PLAYER_BOXES = ACTIVATION_TYPES.length + 1;
++    private static final int PREFILTER_GROUP_SIZE = 4;
+     private static final ThreadLocal<Workspace> WORKSPACE = ThreadLocal.withInitial(() -> new Workspace(true));
+ 
+     private ActivationRangeSnapshot() {
+@@ -96,10 +97,20 @@
+             if (playerCount == 0) {
+                 Arrays.fill(workspace.intersections, 0, entityCount, false);
+             } else {
++                final boolean useBoundsPrefilter = LeavesXRuntime.activationBoundsPrefilter() && playerCount >= 4;
++                if (useBoundsPrefilter) {
++                    if (playerCount >= PREFILTER_GROUP_SIZE * 2) {
++                        snapshotActivationGroups(workspace.playerBounds, workspace.activationGroups, playerCount);
++                    } else {
++                        snapshotActivationUnions(workspace.playerBounds, workspace.activationUnions, playerCount);
++                    }
++                }
+                 evaluateWorldSnapshot(
+                     workspace.entityBounds,
+                     workspace.activationTypes,
+                     workspace.playerBounds,
++                    useBoundsPrefilter && playerCount < PREFILTER_GROUP_SIZE * 2 ? workspace.activationUnions : null,
++                    useBoundsPrefilter && playerCount >= PREFILTER_GROUP_SIZE * 2 ? workspace.activationGroups : null,
+                     workspace.intersections,
+                     entityCount,
+                     playerCount,
+@@ -124,18 +135,36 @@
+         final int minimumCandidates,
+         final int minimumItemsPerWorker
+     ) {
++        return evaluateWorldSnapshot(entityBounds, activationTypes, playerBounds, null, null, intersections,
++            entityCount, playerCount, minimumCandidates, minimumItemsPerWorker);
++    }
++
++    static int evaluateWorldSnapshot(
++        final double[] entityBounds,
++        final byte[] activationTypes,
++        final double[] playerBounds,
++        final double[] activationUnions,
++        final double[] activationGroups,
++        final boolean[] intersections,
++        final int entityCount,
++        final int playerCount,
++        final int minimumCandidates,
++        final int minimumItemsPerWorker
++    ) {
+         final int completedPartitions = LeavesXComputeExecutor.invokeRangesWithCount(
+             LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION,
+             entityCount,
+             minimumCandidates,
+             minimumItemsPerWorker,
+             (taskIndex, start, end) -> evaluateWorldRange(
+-                entityBounds, activationTypes, playerBounds, intersections, playerCount, start, end
++                entityBounds, activationTypes, playerBounds, activationUnions, activationGroups,
++                intersections, playerCount, start, end
+             )
+         );
+         if (completedPartitions == 0) {
+             evaluateWorldRange(
+-                entityBounds, activationTypes, playerBounds, intersections, playerCount, 0, entityCount
++                entityBounds, activationTypes, playerBounds, activationUnions, activationGroups,
++                intersections, playerCount, 0, entityCount
+             );
+         }
+         return completedPartitions;
+@@ -151,6 +180,21 @@
+         final int start,
+         final int end
+     ) {
++        evaluateWorldRange(entityBounds, activationTypes, playerBounds, null, null,
++            intersections, playerCount, start, end);
++    }
++
++    static void evaluateWorldRange(
++        final double[] entityBounds,
++        final byte[] activationTypes,
++        final double[] playerBounds,
++        final double[] activationUnions,
++        final double[] activationGroups,
++        final boolean[] intersections,
++        final int playerCount,
++        final int start,
++        final int end
++    ) {
+         for (int entityIndex = start; entityIndex < end; entityIndex++) {
+             final byte activationType = activationTypes[entityIndex];
+             if (activationType == SKIP_ENTITY) {
+@@ -159,16 +203,95 @@
+             }
+             final int entityOffset = entityIndex * AABB_COMPONENTS;
+             final int boxIndex = activationType == DEFAULT_ACTIVATION_ENTITY ? 0 : activationType + 1;
++            if (activationUnions != null
++                && !intersects(activationUnions, boxIndex * AABB_COMPONENTS, entityBounds, entityOffset)) {
++                intersections[entityIndex] = false;
++                continue;
++            }
+             boolean intersects = false;
+-            for (int playerIndex = 0; playerIndex < playerCount; playerIndex++) {
+-                final int activationOffset = (playerIndex * PLAYER_BOXES + boxIndex) * AABB_COMPONENTS;
+-                if (intersects(playerBounds, activationOffset, entityBounds, entityOffset)) {
+-                    intersects = true;
+-                    break;
++            if (activationGroups == null) {
++                for (int playerIndex = 0; playerIndex < playerCount; playerIndex++) {
++                    final int activationOffset = (playerIndex * PLAYER_BOXES + boxIndex) * AABB_COMPONENTS;
++                    if (intersects(playerBounds, activationOffset, entityBounds, entityOffset)) {
++                        intersects = true;
++                        break;
++                    }
+                 }
++            } else {
++                final int groupCount = divideCeil(playerCount, PREFILTER_GROUP_SIZE);
++                for (int group = 0; group < groupCount && !intersects; group++) {
++                    final int groupOffset = (group * PLAYER_BOXES + boxIndex) * AABB_COMPONENTS;
++                    if (!intersects(activationGroups, groupOffset, entityBounds, entityOffset)) continue;
++                    final int firstPlayer = group * PREFILTER_GROUP_SIZE;
++                    final int lastPlayer = Math.min(playerCount, firstPlayer + PREFILTER_GROUP_SIZE);
++                    for (int playerIndex = firstPlayer; playerIndex < lastPlayer; playerIndex++) {
++                        final int activationOffset = (playerIndex * PLAYER_BOXES + boxIndex) * AABB_COMPONENTS;
++                        if (intersects(playerBounds, activationOffset, entityBounds, entityOffset)) {
++                            intersects = true;
++                            break;
++                        }
++                    }
++                }
+             }
+             intersections[entityIndex] = intersects;
+         }
++    }
++
++    /** 合并同类玩家激活框；实体不与并集相交时，可以确定它不与任何单个玩家相交。 */
++    static void snapshotActivationUnions(final double[] playerBounds, final double[] unions, final int playerCount) {
++        snapshotActivationUnions(playerBounds, 0, unions, 0, playerCount);
++    }
++
++    private static void snapshotActivationUnions(
++        final double[] playerBounds,
++        final int playerBase,
++        final double[] unions,
++        final int unionBase,
++        final int playerCount
++    ) {
++        for (int box = 0; box < PLAYER_BOXES; box++) {
++            final int firstOffset = playerBase + box * AABB_COMPONENTS;
++            final int unionOffset = unionBase + box * AABB_COMPONENTS;
++            for (int component = 0; component < AABB_COMPONENTS; component++) {
++                unions[unionOffset + component] = playerBounds[firstOffset + component];
++            }
++            for (int player = 1; player < playerCount; player++) {
++                final int playerOffset = playerBase + (player * PLAYER_BOXES + box) * AABB_COMPONENTS;
++                unions[unionOffset] = Math.min(unions[unionOffset], playerBounds[playerOffset]);
++                unions[unionOffset + 1] = Math.min(unions[unionOffset + 1], playerBounds[playerOffset + 1]);
++                unions[unionOffset + 2] = Math.min(unions[unionOffset + 2], playerBounds[playerOffset + 2]);
++                unions[unionOffset + 3] = Math.max(unions[unionOffset + 3], playerBounds[playerOffset + 3]);
++                unions[unionOffset + 4] = Math.max(unions[unionOffset + 4], playerBounds[playerOffset + 4]);
++                unions[unionOffset + 5] = Math.max(unions[unionOffset + 5], playerBounds[playerOffset + 5]);
++            }
++            // 异常扩展值不能让某个 NaN 玩家框阻断其他玩家的正常激活；放宽对应轴，仍逐玩家精确判断。
++            for (int axis = 0; axis < 3; axis++) {
++                if (Double.isNaN(unions[unionOffset + axis]) || Double.isNaN(unions[unionOffset + axis + 3])) {
++                    unions[unionOffset + axis] = Double.NEGATIVE_INFINITY;
++                    unions[unionOffset + axis + 3] = Double.POSITIVE_INFINITY;
++                }
++            }
++        }
++    }
++
++    /** 每四名玩家建立一个并集；玩家分散时避免大并集跨越未加载区域而失去筛选能力。 */
++    static void snapshotActivationGroups(final double[] playerBounds, final double[] groups, final int playerCount) {
++        final int groupCount = divideCeil(playerCount, PREFILTER_GROUP_SIZE);
++        for (int group = 0; group < groupCount; group++) {
++            final int firstPlayer = group * PREFILTER_GROUP_SIZE;
++            final int count = Math.min(PREFILTER_GROUP_SIZE, playerCount - firstPlayer);
++            snapshotActivationUnions(
++                playerBounds,
++                firstPlayer * PLAYER_BOXES * AABB_COMPONENTS,
++                groups,
++                group * PLAYER_BOXES * AABB_COMPONENTS,
++                count
++            );
++        }
++    }
++
++    private static int divideCeil(final int value, final int divisor) {
++        return value == 0 ? 0 : 1 + (value - 1) / divisor;
+     }
+ 
+     /**
+@@ -487,6 +610,8 @@
+         private boolean[] intersections = new boolean[0];
+         private Entity[] entities = new Entity[0];
+         private double[] playerBounds = new double[0];
++        private final double[] activationUnions = new double[PLAYER_BOXES * AABB_COMPONENTS];
++        private double[] activationGroups = new double[0];
+         private int entityCount;
+         private boolean inUse;
+ 
+@@ -515,6 +640,15 @@
+                     expandedCapacity(this.playerBounds.length, required)
+                 );
+             }
++            final int groupRequired = Math.multiplyExact(
++                Math.multiplyExact(divideCeil(playerCount, PREFILTER_GROUP_SIZE), PLAYER_BOXES), AABB_COMPONENTS
++            );
++            if (this.activationGroups.length < groupRequired) {
++                this.activationGroups = Arrays.copyOf(
++                    this.activationGroups,
++                    expandedCapacity(this.activationGroups.length, groupRequired)
++                );
++            }
+         }
+     }
+ }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -90,7 +90,7 @@
+     RegionTickingSettings regionTickingSettings
+ ) {
+ 
+-    public static final int CURRENT_CONFIG_VERSION = 85;
++    public static final int CURRENT_CONFIG_VERSION = 86;
+     public LeavesXConfig {
+         if (configVersion != CURRENT_CONFIG_VERSION) {
+             throw new IllegalArgumentException(
+@@ -323,7 +323,8 @@
+         boolean trackerComparisonSharding,
+         boolean lowLoadWorkers,
+         boolean animalBreeding,
+-        boolean animalFollowParent
++        boolean animalFollowParent,
++        boolean activationBoundsPrefilter
+     ) {
+ 
+         public AsyncSettings {
+@@ -338,6 +339,21 @@
+                     "async.pathfinding.keepalive-seconds must be between 1 and 600"
+                 );
+             }
++        }
++
++        /** 保留既有构造；数值内核只改变计算方式，可即时重载。 */
++        public AsyncSettings(
++            final boolean chunkSendEnabled, final int chunkSendQueueSize, final boolean mobSpawningEnabled,
++            final boolean pathfindingEnabled, final int pathfindingThreads, final int pathfindingQueueSize,
++            final int pathfindingKeepaliveSeconds, final boolean playerDataSaveEnabled, final int playerDataSaveQueueSize,
++            final boolean entityTrackerEnabled, final int entityTrackerThreads, final int entityTrackerQueueSize,
++            final boolean sharedComputeWorkers, final boolean trackerComparisonSharding, final boolean lowLoadWorkers,
++            final boolean animalBreeding, final boolean animalFollowParent
++        ) {
++            this(chunkSendEnabled, chunkSendQueueSize, mobSpawningEnabled, pathfindingEnabled, pathfindingThreads,
++                pathfindingQueueSize, pathfindingKeepaliveSeconds, playerDataSaveEnabled, playerDataSaveQueueSize,
++                entityTrackerEnabled, entityTrackerThreads, entityTrackerQueueSize, sharedComputeWorkers,
++                trackerComparisonSharding, lowLoadWorkers, animalBreeding, animalFollowParent, true);
+         }
+ 
+         /** 保留旧构造；动物数值快照可热重载，线程池设置仍需重启。 */
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -507,7 +507,8 @@
+                         true
+                     ),
+                     readBoolean(node.node("async", "animals", "breeding"), "async.animals.breeding", true),
+-                    readBoolean(node.node("async", "animals", "follow-parent"), "async.animals.follow-parent", true)
++                    readBoolean(node.node("async", "animals", "follow-parent"), "async.animals.follow-parent", true),
++                    readBoolean(node.node("performance", "compute", "activation-bounds-prefilter"), "performance.compute.activation-bounds-prefilter", true)
+                 ),
+                 new LeavesXConfig.ExtensionSettings(
+                     readBoolean(node.node("features", "tripwire-hook-duplication"), "features.tripwire-hook-duplication", false),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -197,6 +197,7 @@
+         changed |= writeValue(node.node("messages", "quit"), "messages.quit", config.quitMessage(), missingOnly);
+         changed |= writeValue(node.node("messages", "core-prefix"), "messages.core-prefix", config.coreMessagePrefix(), missingOnly);
+         final LeavesXConfig.AsyncSettings async = config.asyncSettings();
++        changed |= writeValue(node.node("performance", "compute", "activation-bounds-prefilter"), "performance.compute.activation-bounds-prefilter", async.activationBoundsPrefilter(), missingOnly);
+         changed |= writeValue(node.node("async", "animals", "breeding"), "async.animals.breeding", async.animalBreeding(), missingOnly);
+         changed |= writeValue(node.node("async", "animals", "follow-parent"), "async.animals.follow-parent", async.animalFollowParent(), missingOnly);
+         changed |= writeValue(node.node("async", "low-load-workers"), "async.low-load-workers", async.lowLoadWorkers(), missingOnly);
+@@ -547,6 +548,7 @@
+         comments.put("performance", "性能优化：按功能分组，关闭开关可使用原处理逻辑。");
+         comments.put("async", "异步任务：区块打包、刷怪统计、追踪计算和玩家存档。");
+         comments.put("async.animals", "动物目标计算只并行距离数据；资格判断、行为节奏和寻路仍按原版执行。");
++        comments.put("performance.compute.activation-bounds-prefilter", "先排除肯定不在任何玩家激活范围内的实体，实际激活范围不变。默认：true。");
+         comments.put("async.animals.breeding", "并行计算鸡牛羊猪繁殖配对距离；搜索范围、繁殖时机和事件不变。默认：true。");
+         comments.put("async.animals.follow-parent", "并行计算鸡牛羊猪幼体跟随距离；跟随条件、更新频率和寻路不变。默认：true。");
+         comments.put("parallelism", "计算线程：控制线程数量和任务达到多大规模时并行。");
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXRuntime.java
+@@ -1023,6 +1023,11 @@
+         return parallelAiTargetSearch && aiOptimizationsEnabled() && asyncSettings.animalFollowParent();
+     }
+ 
++    /** 数值内核只处理快照，不扩大异步世界访问范围。 */
++    public static boolean activationBoundsPrefilter() {
++        return asyncSettings.activationBoundsPrefilter();
++    }
++
+     /** Returns whether stable distance ordering itself is safe to use for a primitive snapshot. */
+     public static boolean nearestEntityDistanceSortPureComputation() {
+         return aiOptimizations

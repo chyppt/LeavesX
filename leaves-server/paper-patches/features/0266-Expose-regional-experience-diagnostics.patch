@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 14 Nov 2026 16:00:00 +0800
+Subject: [PATCH] Expose regional experience diagnostics
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java b/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java
+index ac6e81f26f..91afd0d07b 100644
+--- a/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java
++++ b/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java
+@@ -795,6 +795,7 @@ public class CraftEventFactory {
+ 
+         EntitySpawnEvent event = new EntitySpawnEvent(bukkitEntity);
+         bukkitEntity.getServer().getPluginManager().callEvent(event);
++        org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.spawnEvent(entity, event.isCancelled());
+         return event;
+     }
+ 
+@@ -972,7 +973,9 @@ public class CraftEventFactory {
+         CraftWorld world = (CraftWorld) entity.getWorld();
+         EntityDeathEvent event = new EntityDeathEvent(entity, bukkitDamageSource, new io.papermc.paper.util.TransformingRandomAccessList<>(drops, Entity.DefaultDrop::stack, FROM_FUNCTION), victim.getExpReward(world.getHandle(), damageSource.getEntity()), victim.getExperienceReward(world.getHandle(), damageSource.getEntity())); // Paper - Restore vanilla drops behavior // Leaves - exp fix
+         populateFields(victim, event); // Paper - make cancellable
++        final var leavesXExperienceTrace = org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.beforeDeath(victim, damageSource, event);
+         Bukkit.getServer().getPluginManager().callEvent(event);
++        org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.afterDeath(leavesXExperienceTrace, event);
+ 
+         // Paper start - make cancellable
+         if (event.isCancelled()) {
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -76,5 +76,5 @@
+         "ai", "health", "report", "status", "all", "gui", "worlds", "entities", "hotspots", "blockentities", "blockhotspots",
+         "villagers", "activity", "tickets", "plugins", "memory", "network", "threads", "parallel", "system", "stalls",
+-        "regions", "safety", "config", "reload", "update", "help"
++        "regions", "safety", "config", "reload", "update", "xp", "help"
+     );
+ 
+@@ -82,5 +82,5 @@
+         super(name);
+         this.description = "查看 LeavesX 服务器性能状态";
+-        this.usageMessage = "/leavesx <status|all|gui|worlds|activity|entities|hotspots|villagers|blockentities|blockhotspots|tickets|plugins|memory|network|threads|parallel|system|stalls|regions|safety|config|reload|ai>";
++        this.usageMessage = "/leavesx <status|all|gui|worlds|activity|entities|hotspots|villagers|blockentities|blockhotspots|tickets|plugins|memory|network|threads|parallel|xp|system|stalls|regions|safety|config|reload|ai>";
+         this.setPermission("leavesx.command.performance");
+     }
+@@ -118,4 +118,5 @@
+             case "threads" -> sendThreads(sender);
+             case "parallel" -> sendParallel(sender, args);
++            case "xp" -> ExperienceDiagnosticCommand.execute(sender, args);
+             case "system" -> sendSystem(sender);
+             case "stalls" -> sendStalls(sender, args);
+@@ -161,4 +162,7 @@
+             return StringUtil.copyPartialMatches(args[1], List.of("5", "10", "20", "clear"), new ArrayList<>());
+         }
++        if (args.length == 2 && args[0].equalsIgnoreCase("xp")) {
++            return StringUtil.copyPartialMatches(args[1], List.of("start", "report", "stop"), new ArrayList<>());
++        }
+         if (args.length == 2 && args[0].equalsIgnoreCase("config")) {
+             return StringUtil.copyPartialMatches(args[1], List.of("check"), new ArrayList<>());
+@@ -1607,4 +1611,5 @@
+         sender.sendMessage(Component.text("/leavesx stalls [数量|clear] - 最近慢 Tick 的 CPU、等待和调用栈", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx parallel [10-300秒] - 最近并行、回退、拒绝和异常", NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("/leavesx xp start [秒] | report | stop - 限时采样附近经验掉落链路", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx regions - 区域化流水线模式与配置", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx safety - 区域化降级、重放与线程域违规计数", NamedTextColor.GRAY));

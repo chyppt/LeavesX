@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $gradleWrapper = Join-Path $repositoryRoot "gradlew.bat"
+. (Join-Path $PSScriptRoot "Invoke-HiddenBatchCommand.ps1")
 $hasOriginalGradleOptions = Test-Path Env:GRADLE_OPTS
 $originalGradleOptions = if ($hasOriginalGradleOptions) { $env:GRADLE_OPTS } else { $null }
 
@@ -19,7 +20,28 @@ function Get-JavaNativeEncoding {
         (Get-Command java -ErrorAction Stop).Source
     }
 
-    $nativeEncodingLine = & $javaExecutable "-XshowSettings:properties" "-version" 2>&1 |
+    # 编码探测也必须隐藏窗口，避免正式测试尚未开始就弹出 Java 控制台。
+    $startInfo = [Diagnostics.ProcessStartInfo]::new($javaExecutable)
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.ArgumentList.Add('-XshowSettings:properties')
+    $startInfo.ArgumentList.Add('-version')
+    $process = [Diagnostics.Process]::Start($startInfo)
+    try {
+        $outputTask = $process.StandardOutput.ReadToEndAsync()
+        $errorTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $javaOutput = $outputTask.GetAwaiter().GetResult() + $errorTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) {
+            throw "Java encoding check failed: $javaOutput"
+        }
+    } finally {
+        $process.Dispose()
+    }
+    $nativeEncodingLine = $javaOutput -split "`r?`n" |
         Select-String -Pattern '^\s*native\.encoding\s*=\s*(\S+)\s*$' |
         Select-Object -First 1
 
@@ -52,8 +74,13 @@ try {
     }
 
     $arguments = @(':leaves-server:test', '--no-daemon') + $GradleArguments
-    & $gradleWrapper @arguments
-    exit $LASTEXITCODE
+    $result = Invoke-HiddenBatchCommand `
+        -BatchFile $gradleWrapper `
+        -Arguments $arguments `
+        -WorkingDirectory $repositoryRoot `
+        -LogPath (Join-Path $repositoryRoot 'build/reports/gradle-tests-last.log')
+    $result.Output | Write-Output
+    exit $result.ExitCode
 } finally {
     if ($hasOriginalGradleOptions) {
         $env:GRADLE_OPTS = $originalGradleOptions

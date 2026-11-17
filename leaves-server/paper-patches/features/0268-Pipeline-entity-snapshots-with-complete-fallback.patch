@@ -1,0 +1,566 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Sat, 14 Nov 2026 21:45:00 +0800
+Subject: [PATCH] Pipeline entity snapshots with complete fallback
+
+diff --git a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+index d83dcb1..bf8d2ce 100644
+--- a/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
++++ b/src/main/java/io/papermc/paper/entity/activation/ActivationRangeSnapshot.java
+@@ -9,6 +9,7 @@ import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.world.phys.AABB;
+ import org.leavesx.leavesx.config.LeavesXRuntime;
+ import org.leavesx.leavesx.runtime.LeavesXComputeExecutor;
++import org.leavesx.leavesx.runtime.LeavesXSnapshotBatch;
+ 
+ /**
+  * Evaluates unusually large entity-activation batches without exposing live entities to compute workers.
+@@ -21,6 +22,7 @@ final class ActivationRangeSnapshot {
+ 
+     private static final int AABB_COMPONENTS = 6;
+     private static final int MINIMUM_CAPACITY = 64;
++    private static final int PIPELINE_ENTITIES = 512;
+     static final byte SKIP_ENTITY = -1;
+     static final byte ALWAYS_ACTIVATE = -2;
+     static final byte DEFAULT_ACTIVATION_ENTITY = -3;
+@@ -91,26 +93,29 @@ final class ActivationRangeSnapshot {
+                 flyingRange,
+                 villagerRange
+             );
++            final boolean useBoundsPrefilter = LeavesXRuntime.activationBoundsPrefilter() && playerCount >= 4;
++            if (useBoundsPrefilter) {
++                if (playerCount >= PREFILTER_GROUP_SIZE * 2) {
++                    snapshotActivationGroups(workspace.playerBounds, workspace.activationGroups, playerCount);
++                } else {
++                    snapshotActivationUnions(workspace.playerBounds, workspace.activationUnions, playerCount);
++                }
++            }
++            final double[] unions = useBoundsPrefilter && playerCount < PREFILTER_GROUP_SIZE * 2 ? workspace.activationUnions : null;
++            final double[] groups = useBoundsPrefilter && playerCount >= PREFILTER_GROUP_SIZE * 2 ? workspace.activationGroups : null;
++            final boolean pipelined = playerCount > 0 && LeavesXRuntime.asyncSettings().activationSnapshotPipeline();
+             final int entityCount = snapshotWorldEntities(
+-                world.getAllEntities(), workspace, tickMarkers, currentTick
++                world.getAllEntities(), workspace, tickMarkers, currentTick, playerCount, unions, groups, pipelined
+             );
+             if (playerCount == 0) {
+                 Arrays.fill(workspace.intersections, 0, entityCount, false);
+-            } else {
+-                final boolean useBoundsPrefilter = LeavesXRuntime.activationBoundsPrefilter() && playerCount >= 4;
+-                if (useBoundsPrefilter) {
+-                    if (playerCount >= PREFILTER_GROUP_SIZE * 2) {
+-                        snapshotActivationGroups(workspace.playerBounds, workspace.activationGroups, playerCount);
+-                    } else {
+-                        snapshotActivationUnions(workspace.playerBounds, workspace.activationUnions, playerCount);
+-                    }
+-                }
++            } else if (!pipelined) {
+                 evaluateWorldSnapshot(
+                     workspace.entityBounds,
+                     workspace.activationTypes,
+                     workspace.playerBounds,
+-                    useBoundsPrefilter && playerCount < PREFILTER_GROUP_SIZE * 2 ? workspace.activationUnions : null,
+-                    useBoundsPrefilter && playerCount >= PREFILTER_GROUP_SIZE * 2 ? workspace.activationGroups : null,
++                    unions,
++                    groups,
+                     workspace.intersections,
+                     entityCount,
+                     playerCount,
+@@ -334,16 +339,26 @@ final class ActivationRangeSnapshot {
+         final Workspace workspace = acquireWorkspace(size);
+         try {
+             snapshotActivationBounds(workspace.activationBounds);
+-            snapshotEntityBounds(entities, workspace, tickMarkers, currentTick, size);
+-            evaluateSnapshot(
+-                workspace.entityBounds,
+-                workspace.activationTypes,
+-                workspace.activationBounds,
+-                workspace.intersections,
+-                size,
+-                minimumCandidates,
+-                LeavesXRuntime.entityActivationMinimumItemsPerWorker()
+-            );
++            try (final LeavesXSnapshotBatch pipeline = LeavesXRuntime.asyncSettings().activationSnapshotPipeline()
++                ? new LeavesXSnapshotBatch(LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION) : null) {
++                snapshotEntityBounds(entities, workspace, tickMarkers, currentTick, size, pipeline);
++                if (pipeline != null) {
++                    if (!pipeline.finish()) {
++                        evaluateRange(workspace.entityBounds, workspace.activationTypes, workspace.activationBounds,
++                            workspace.intersections, 0, size);
++                    }
++                } else {
++                    evaluateSnapshot(
++                        workspace.entityBounds,
++                        workspace.activationTypes,
++                        workspace.activationBounds,
++                        workspace.intersections,
++                        size,
++                        minimumCandidates,
++                        LeavesXRuntime.entityActivationMinimumItemsPerWorker()
++                    );
++                }
++            }
+             commitActivations(entities, workspace.intersections, tickMarkers, currentTick, size);
+             return true;
+         } finally {
+@@ -422,24 +437,38 @@ final class ActivationRangeSnapshot {
+         final Workspace workspace,
+         final boolean tickMarkers,
+         final long currentTick,
+-        final int size
++        final int size,
++        final LeavesXSnapshotBatch pipeline
+     ) {
+         int entityOffset = 0;
++        int published = 0;
++        final int entitiesPerBatch = LeavesXSnapshotBatch.partitionSize(size, PIPELINE_ENTITIES);
+         for (int index = 0; index < size; index++, entityOffset += AABB_COMPONENTS) {
+             final Entity entity = entities.get(index);
+             if ((!tickMarkers && entity instanceof Marker) || currentTick <= entity.activatedTick) {
+                 workspace.activationTypes[index] = SKIP_ENTITY;
+-                continue;
+-            }
+-            if (entity.defaultActivationState) {
++            } else if (entity.defaultActivationState) {
+                 workspace.activationTypes[index] = ALWAYS_ACTIVATE;
+-                continue;
++            } else {
++                workspace.activationTypes[index] = (byte)entity.activationType.ordinal();
++                writeBounds(workspace.entityBounds, entityOffset, entity.getBoundingBox());
++            }
++            final int captured = index + 1;
++            if (pipeline != null && (captured - published == entitiesPerBatch || captured == size)) {
++                // 数组提前按候选数分配，片段发布后只追加其他槽位，工作线程不持有实体或 Workspace。
++                submitEntityRange(pipeline, workspace.entityBounds, workspace.activationTypes,
++                    workspace.activationBounds, workspace.intersections, published, captured);
++                published = captured;
+             }
+-            workspace.activationTypes[index] = (byte)entity.activationType.ordinal();
+-            writeBounds(workspace.entityBounds, entityOffset, entity.getBoundingBox());
+         }
+     }
+ 
++    static void submitEntityRange(final LeavesXSnapshotBatch pipeline, final double[] bounds,
++                                  final byte[] types, final double[] activation, final boolean[] results,
++                                  final int start, final int end) {
++        pipeline.submit(end - start, () -> evaluateRange(bounds, types, activation, results, start, end));
++    }
++
+     private static void writeBounds(final double[] destination, final int offset, final AABB bounds) {
+         destination[offset] = bounds.minX;
+         destination[offset + 1] = bounds.minY;
+@@ -531,22 +560,50 @@ final class ActivationRangeSnapshot {
+         final Iterable<Entity> source,
+         final Workspace workspace,
+         final boolean tickMarkers,
+-        final long currentTick
++        final long currentTick,
++        final int playerCount,
++        final double[] unions,
++        final double[] groups,
++        final boolean pipelined
+     ) {
+         final int previousCount = workspace.entityCount;
+         int count = 0;
+-        for (final Entity entity : source) {
+-            workspace.ensureCapacity(count + 1);
+-            workspace.entities[count] = entity;
+-            if ((!tickMarkers && entity instanceof Marker) || currentTick <= entity.activatedTick) {
+-                workspace.activationTypes[count] = SKIP_ENTITY;
+-            } else {
+-                workspace.activationTypes[count] = entity.defaultActivationState
+-                    ? DEFAULT_ACTIVATION_ENTITY
+-                    : (byte)entity.activationType.ordinal();
+-                writeBounds(workspace.entityBounds, count * AABB_COMPONENTS, entity.getBoundingBox());
++        int published = 0;
++        final int entitiesPerBatch = LeavesXSnapshotBatch.partitionSize(workspace.activationTypes.length, PIPELINE_ENTITIES);
++        try (final LeavesXSnapshotBatch pipeline = pipelined
++            ? new LeavesXSnapshotBatch(LeavesXComputeExecutor.Workload.ENTITY_ACTIVATION) : null) {
++            for (final Entity entity : source) {
++                if (pipeline != null && count == workspace.activationTypes.length) {
++                    // 世界实体数是估计值；扩容复制输出前必须等待旧数组上的全部写入结束。
++                    pipeline.flush();
++                }
++                workspace.ensureCapacity(count + 1);
++                workspace.entities[count] = entity;
++                if ((!tickMarkers && entity instanceof Marker) || currentTick <= entity.activatedTick) {
++                    workspace.activationTypes[count] = SKIP_ENTITY;
++                } else {
++                    workspace.activationTypes[count] = entity.defaultActivationState
++                        ? DEFAULT_ACTIVATION_ENTITY
++                        : (byte)entity.activationType.ordinal();
++                    writeBounds(workspace.entityBounds, count * AABB_COMPONENTS, entity.getBoundingBox());
++                }
++                count++;
++                if (pipeline != null && count - published == entitiesPerBatch) {
++                    submitWorldRange(pipeline, workspace.entityBounds, workspace.activationTypes, workspace.playerBounds,
++                        unions, groups, workspace.intersections, playerCount, published, count);
++                    published = count;
++                }
++            }
++            if (pipeline != null) {
++                if (published < count) {
++                    submitWorldRange(pipeline, workspace.entityBounds, workspace.activationTypes, workspace.playerBounds,
++                        unions, groups, workspace.intersections, playerCount, published, count);
++                }
++                if (!pipeline.finish()) {
++                    evaluateWorldRange(workspace.entityBounds, workspace.activationTypes, workspace.playerBounds,
++                        unions, groups, workspace.intersections, playerCount, 0, count);
++                }
+             }
+-            count++;
+         }
+         if (count < previousCount) {
+             Arrays.fill(workspace.entities, count, previousCount, null);
+@@ -555,6 +612,13 @@ final class ActivationRangeSnapshot {
+         return count;
+     }
+ 
++    static void submitWorldRange(final LeavesXSnapshotBatch pipeline, final double[] bounds, final byte[] types,
++                                 final double[] players, final double[] unions, final double[] groups,
++                                 final boolean[] results, final int playerCount, final int start, final int end) {
++        pipeline.submit(end - start, () -> evaluateWorldRange(bounds, types, players, unions, groups,
++            results, playerCount, start, end));
++    }
++
+     private static void commitWorldActivations(
+         final Entity[] entities,
+         final boolean[] intersections,
+diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index 728fbe0..30664c1 100644
+--- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
++++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+@@ -1279,6 +1279,13 @@ public final class LeavesXCommand extends Command {
+             ));
+         }
+         final LeavesXComputeExecutor.Metrics lifetime = LeavesXComputeExecutor.metrics();
++        sender.sendMessage(line(
++            "数值快照流水",
++            "追踪 " + (LeavesXRuntime.asyncSettings().trackerSnapshotPipeline() ? "开启" : "关闭")
++                + " / 激活 " + (LeavesXRuntime.asyncSettings().activationSnapshotPipeline() ? "开启" : "关闭")
++                + "；实际工作量见上方分类统计",
++            NamedTextColor.GRAY
++        ));
+         sender.sendMessage(Component.text(
+             "最近一次原因：" + lifetime.lastFallbackReason()
+                 + (lifetime.lastFallbackWorkload() == null ? "" : " / " + lifetime.lastFallbackWorkload().displayName()),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index b1fecb3..c3b50c8 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+@@ -363,7 +363,9 @@ public record LeavesXConfig(
+         boolean activationBoundsPrefilter,
+         ComputeFailureSettings failureProtection,
+         ComputeSchedulingSettings scheduling,
+-        boolean trackerEventListeners
++        boolean trackerEventListeners,
++        boolean trackerSnapshotPipeline,
++        boolean activationSnapshotPipeline
+     ) {
+ 
+         public AsyncSettings {
+@@ -382,6 +384,24 @@ public record LeavesXConfig(
+             }
+         }
+ 
++        /** 保留已有构造；数值快照流水处理默认开启，不调整实体行为或激活范围。 */
++        public AsyncSettings(
++            final boolean chunkSendEnabled, final int chunkSendQueueSize, final boolean mobSpawningEnabled,
++            final boolean pathfindingEnabled, final int pathfindingThreads, final int pathfindingQueueSize,
++            final int pathfindingKeepaliveSeconds, final boolean playerDataSaveEnabled, final int playerDataSaveQueueSize,
++            final boolean entityTrackerEnabled, final int entityTrackerThreads, final int entityTrackerQueueSize,
++            final boolean sharedComputeWorkers, final boolean trackerComparisonSharding, final boolean lowLoadWorkers,
++            final boolean animalBreeding, final boolean animalFollowParent, final boolean activationBoundsPrefilter,
++            final ComputeFailureSettings failureProtection, final ComputeSchedulingSettings scheduling,
++            final boolean trackerEventListeners
++        ) {
++            this(chunkSendEnabled, chunkSendQueueSize, mobSpawningEnabled, pathfindingEnabled, pathfindingThreads,
++                pathfindingQueueSize, pathfindingKeepaliveSeconds, playerDataSaveEnabled, playerDataSaveQueueSize,
++                entityTrackerEnabled, entityTrackerThreads, entityTrackerQueueSize, sharedComputeWorkers,
++                trackerComparisonSharding, lowLoadWorkers, animalBreeding, animalFollowParent, activationBoundsPrefilter,
++                failureProtection, scheduling, trackerEventListeners, true, true);
++        }
++
+         /** 保留补丁 0262 的构造；追踪事件兼容模式默认开启。 */
+         public AsyncSettings(
+             final boolean chunkSendEnabled, final int chunkSendQueueSize, final boolean mobSpawningEnabled,
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index bcb3339..56320e1 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -523,7 +523,9 @@ public final class LeavesXConfigLoader {
+                         readInt(node.node("parallelism", "scheduling", "realtime-reserved-workers"), "parallelism.scheduling.realtime-reserved-workers", -1),
+                         readInt(node.node("parallelism", "scheduling", "low-priority-queue-limit"), "parallelism.scheduling.low-priority-queue-limit", 0)
+                     ),
+-                    readBoolean(node.node("async", "entity-tracker", "event-listeners"), "async.entity-tracker.event-listeners", true)
++                    readBoolean(node.node("async", "entity-tracker", "event-listeners"), "async.entity-tracker.event-listeners", true),
++                    readBoolean(node.node("async", "entity-tracker", "snapshot-pipeline"), "async.entity-tracker.snapshot-pipeline", true),
++                    readBoolean(node.node("parallelism", "entity-activation", "snapshot-pipeline"), "parallelism.entity-activation.snapshot-pipeline", true)
+                 ),
+                 new LeavesXConfig.ExtensionSettings(
+                     readBoolean(node.node("features", "tripwire-hook-duplication"), "features.tripwire-hook-duplication", false),
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 24483a7..06cb475 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -212,6 +212,8 @@ public final class LeavesXConfigWriter {
+         changed |= writeValue(node.node("parallelism", "scheduling", "low-priority-queue-limit"), "parallelism.scheduling.low-priority-queue-limit", scheduling.lowPriorityQueueLimit(), missingOnly);
+         changed |= writeValue(node.node("async", "shared-compute-workers"), "async.shared-compute-workers", async.sharedComputeWorkers(), missingOnly);
+         changed |= writeValue(node.node("async", "entity-tracker", "comparison-sharding"), "async.entity-tracker.comparison-sharding", async.trackerComparisonSharding(), missingOnly);
++        changed |= writeValue(node.node("async", "entity-tracker", "snapshot-pipeline"), "async.entity-tracker.snapshot-pipeline", async.trackerSnapshotPipeline(), missingOnly);
++        changed |= writeValue(node.node("parallelism", "entity-activation", "snapshot-pipeline"), "parallelism.entity-activation.snapshot-pipeline", async.activationSnapshotPipeline(), missingOnly);
+         changed |= writeValue(node.node("async", "entity-tracker", "event-listeners"), "async.entity-tracker.event-listeners", async.trackerEventListeners(), missingOnly);
+         changed |= writeValue(node.node("async", "chunk-send", "enabled"), "async.chunk-send.enabled", async.chunkSendEnabled(), missingOnly);
+         changed |= writeValue(node.node("async", "chunk-send", "queue-size"), "async.chunk-send.queue-size", async.chunkSendQueueSize(), missingOnly);
+@@ -631,6 +633,8 @@ public final class LeavesXConfigWriter {
+         comments.put("async.shared-compute-workers", "寻路快照和 AI 候选可借用空闲计算线程；繁忙时使用原异步池或主线程完整回退，修改需重启。默认：true。");
+         comments.put("async.low-load-workers", "已有并行计算在单实体或小任务时也尝试工作线程；会增加调度与等待开销，关闭后恢复按工作量派发，修改需重启。默认：true。");
+         comments.put("async.entity-tracker.comparison-sharding", "按实体与玩家的比较次数分配追踪计算；关闭后使用原来的实体分片，修改需重启。默认：true。");
++        comments.put("async.entity-tracker.snapshot-pipeline", "分批准备并提前计算追踪范围，整批校验后才发包；需开启 comparison-sharding，可热重载。默认：true。");
++        comments.put("parallelism.entity-activation.snapshot-pipeline", "分批准备并提前计算实体激活范围，不改变激活规则和更新频率；可热重载。默认：true。");
+         comments.put("async.entity-tracker.event-listeners", "插件监听实体追踪或玩家速度事件时仍并行计算距离；事件、发包和追踪变更按原实体顺序在主线程执行，输入被事件改动时只重算当前实体。关闭后有监听器就使用 Paper 原循环，可重载。默认：true。");
+         comments.put("async.playerdata-save.enabled", "是否异步保存玩家数据；采集玩家状态仍在主线程，同一玩家按顺序保存。默认：true。");
+         comments.put("async.playerdata-save.queue-size", "玩家数据写入最多排队任务数；队列满时等待空位，不会让新存档越过旧存档。默认：1024。");
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index db08e54..bdd7632 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -226,10 +226,17 @@ public final class LeavesXComputeExecutor {
+      * 调用者负责结果采用、异常回退和资源释放；此入口禁止读取实体或世界。
+      */
+     public static boolean tryExecuteSnapshot(final Runnable task, final Consumer<Throwable> cancelled) {
++        return tryExecuteSnapshot(Workload.UNSPECIFIED, task, cancelled);
++    }
++
++    /** 快照流水批次沿用同一线程预算、熔断保护和嵌套调用保护。 */
++    static boolean tryExecuteSnapshot(final Workload workload, final Runnable task, final Consumer<Throwable> cancelled) {
+         Objects.requireNonNull(task, "task");
+         Objects.requireNonNull(cancelled, "cancelled");
+         final ComputeThreadPoolExecutor current = executor;
+-        if (current == null || current.isShutdown() || isComputeWorkerThread() || current.reserveWorkerSlots(1) == 0) {
++        if (current == null || current.isShutdown() || isComputeWorkerThread()
++            || WORKLOAD_COUNTERS[workload.ordinal()].circuitOpen(System.nanoTime())
++            || lowPriorityBlocked(current, workload) || current.reserveWorkerSlots(1) == 0) {
+             return false;
+         }
+         try {
+@@ -240,6 +247,36 @@ public final class LeavesXComputeExecutor {
+         }
+     }
+ 
++    /** 只在整批全部写入结束后记账；派发与调用线程接管分别统计，不把换线程当成同时并行。 */
++    static void recordSnapshotBatch(
++        final Workload workload, final int items, final long callerTasks, final long workerTasks,
++        final long callerItems, final long workerItems, final int maximumWorkers, final long callerNanos,
++        final boolean successful, final Throwable failure
++    ) {
++        final WorkloadCounters counters = WORKLOAD_COUNTERS[workload.ordinal()];
++        invocationCount.incrementAndGet();
++        counters.recordInvocation(items);
++        counters.callerNanos.addAndGet(callerNanos);
++        callerRangeCount.addAndGet(callerTasks);
++        workerRangeCount.addAndGet(workerTasks);
++        callerItemCount.addAndGet(callerItems);
++        workerItemCount.addAndGet(workerItems);
++        workerBatchCount.addAndGet(workerTasks);
++        recordMaximumConcurrentWorkers(maximumWorkers);
++        counters.recordLoad(callerTasks, workerTasks, callerItems, workerItems, maximumWorkers, workerTasks);
++        if (!successful) {
++            if (failure != null) LOGGER.error("LeavesX {} 快照批次失败，已等待全部任务结束，将完整重算", workload.displayName(), failure);
++            failedInvocationCount.incrementAndGet();
++            counters.recordFailure(System.nanoTime());
++            recordFullRecomputation(workload, counters, FallbackReason.COMPUTATION_FAILED, items);
++        } else if (workerTasks > 0) {
++            parallelInvocationCount.incrementAndGet();
++            counters.recordSuccess();
++        } else {
++            callerOnlyInvocationCount.incrementAndGet();
++        }
++    }
++
+     static int automaticWorkerCount(final int availableProcessors) {
+         return Math.max(1, Math.min(MAX_AUTOMATIC_WORKERS, availableProcessors - 2));
+     }
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java
+new file mode 100644
+index 0000000..1f38b56
+--- /dev/null
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXSnapshotBatch.java
+@@ -0,0 +1,178 @@
++package org.leavesx.leavesx.runtime;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Objects;
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.atomic.AtomicBoolean;
++import java.util.concurrent.atomic.AtomicInteger;
++import org.leavesx.leavesx.diagnostics.OwnerThreadWaits;
++
++/**
++ * 边采集边提交独立的数值片段；提交不等待上一片段，结束后才允许采用结果。
++ * 调用者只能提交不可变输入和互不重叠的输出；异常时须在 finish 返回后完整重算。
++ */
++public final class LeavesXSnapshotBatch implements AutoCloseable {
++    private static final int MAX_PENDING_TASKS = 64;
++    private final Thread owner = Thread.currentThread();
++    private final LeavesXComputeExecutor.Workload workload;
++    private final List<Task> pending = new ArrayList<>();
++    private final AtomicInteger activeWorkers = new AtomicInteger();
++    private final AtomicInteger maximumWorkers = new AtomicInteger();
++    private int items;
++    private long callerItems;
++    private long workerItems;
++    private long callerTasks;
++    private long workerTasks;
++    private long callerNanos;
++    private boolean successful = true;
++    private Throwable failure;
++    private boolean finished;
++
++    public LeavesXSnapshotBatch(final LeavesXComputeExecutor.Workload workload) {
++        this.workload = Objects.requireNonNull(workload, "workload");
++    }
++
++    /** 控制每批任务数，避免密集场景把数值计算拆成数百次跨线程唤醒。 */
++    public static int partitionSize(final long items, final int minimum) {
++        final int partitions = Math.max(1, LeavesXComputeExecutor.workerCount()) * 2;
++        return (int)Math.min(Integer.MAX_VALUE, Math.max(minimum, (items + partitions - 1) / partitions));
++    }
++
++    /** 没有空闲线程时调用者完成这一整个片段，同时让其他片段继续运行。 */
++    public void submit(final int size, final Runnable computation) {
++        this.checkOwner();
++        if (this.finished) throw new IllegalStateException("Snapshot batch already finished");
++        if (size <= 0) throw new IllegalArgumentException("Snapshot size must be positive");
++        Objects.requireNonNull(computation, "computation");
++        final long started = System.nanoTime();
++        try {
++            if (this.pending.size() == MAX_PENDING_TASKS) this.drain();
++            this.items = Math.addExact(this.items, size);
++            final Task task = new Task(size, computation, this.activeWorkers, this.maximumWorkers);
++            this.pending.add(task);
++            try {
++                if (!LeavesXComputeExecutor.tryExecuteSnapshot(this.workload, task::runOnWorker, task::cancel)) {
++                    task.run(false);
++                }
++            } catch (final Throwable submissionFailure) {
++                // 提交本身异常也必须结束未领取任务，不能在 close 等待一个永远不会执行的片段。
++                this.successful = false;
++                if (this.failure == null) this.failure = submissionFailure;
++                task.cancel(submissionFailure);
++            }
++        } finally {
++            this.callerNanos += System.nanoTime() - started;
++        }
++    }
++
++    /** 扩容输出缓冲区前等待已发布片段；失败状态保留到整批结束。 */
++    public void flush() {
++        this.checkOwner();
++        final long started = System.nanoTime();
++        try {
++            this.drain();
++        } finally {
++            this.callerNanos += System.nanoTime() - started;
++        }
++    }
++
++    public boolean finish() {
++        this.checkOwner();
++        if (!this.finished) {
++            this.flush();
++            this.finished = true;
++            if (this.items > 0) {
++                LeavesXComputeExecutor.recordSnapshotBatch(this.workload, this.items, this.callerTasks,
++                    this.workerTasks, this.callerItems, this.workerItems, this.maximumWorkers.get(),
++                    this.callerNanos, this.successful, this.failure);
++            }
++        }
++        return this.successful;
++    }
++
++    @Override
++    public void close() {
++        // 即使后续采集抛异常，也必须先停止全部写入，再让调用者清理或复用缓冲区。
++        this.finish();
++    }
++
++    private void drain() {
++        if (!this.pending.isEmpty() && Thread.currentThread().isInterrupted()) this.successful = false;
++        boolean interrupted = false;
++        for (final Task task : this.pending) {
++            while (task.completed.getCount() != 0L) {
++                try {
++                    OwnerThreadWaits.await(OwnerThreadWaits.Site.COMPUTE_BATCHES, task.completed, 0L);
++                } catch (final InterruptedException interruption) {
++                    interrupted = true;
++                    this.successful = false;
++                    if (this.failure == null) this.failure = interruption;
++                }
++            }
++            this.successful &= task.failure == null;
++            if (this.failure == null) this.failure = task.failure;
++            if (!task.executed) continue;
++            if (task.worker) {
++                this.workerItems += task.size;
++                this.workerTasks++;
++            } else {
++                this.callerItems += task.size;
++                this.callerTasks++;
++            }
++        }
++        this.pending.clear();
++        if (interrupted) Thread.currentThread().interrupt();
++    }
++
++    private void checkOwner() {
++        if (Thread.currentThread() != this.owner) throw new IllegalStateException("Snapshot batch used by a different owner");
++    }
++
++    private static final class Task {
++        private final int size;
++        private Runnable computation;
++        private final AtomicInteger active;
++        private final AtomicInteger maximum;
++        private final AtomicBoolean claimed = new AtomicBoolean();
++        private final CountDownLatch completed = new CountDownLatch(1);
++        private Throwable failure;
++        private boolean worker;
++        private boolean executed;
++
++        private Task(final int size, final Runnable computation, final AtomicInteger active, final AtomicInteger maximum) {
++            this.size = size;
++            this.computation = computation;
++            this.active = active;
++            this.maximum = maximum;
++        }
++
++        private void runOnWorker() {
++            this.run(true);
++        }
++
++        private void run(final boolean worker) {
++            if (!this.claimed.compareAndSet(false, true)) return;
++            this.executed = true;
++            this.worker = worker;
++            if (worker) this.maximum.accumulateAndGet(this.active.incrementAndGet(), Math::max);
++            try {
++                this.computation.run();
++            } catch (final Throwable failure) {
++                this.failure = failure;
++            } finally {
++                this.computation = null;
++                if (worker) this.active.decrementAndGet();
++                this.completed.countDown();
++            }
++        }
++
++        private void cancel(final Throwable failure) {
++            if (this.claimed.compareAndSet(false, true)) {
++                this.failure = failure;
++                this.computation = null;
++                this.completed.countDown();
++            }
++        }
++    }
++}
