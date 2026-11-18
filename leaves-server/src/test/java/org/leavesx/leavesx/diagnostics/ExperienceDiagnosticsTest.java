@@ -84,6 +84,9 @@ public class ExperienceDiagnosticsTest {
         when(victim.getExpReward(any(), any())).thenReturn(5);
         when(victim.getExperienceReward(any(), any())).thenReturn(5);
         when(victim.getSoundSource()).thenReturn(net.minecraft.sounds.SoundSource.HOSTILE);
+        final var attribute = mock(net.minecraft.world.entity.ai.attributes.AttributeInstance.class);
+        when(victim.getAttribute(any())).thenReturn(attribute);
+        when(attribute.getValue()).thenReturn(20.0);
         final var maxHealth = mock(org.bukkit.attribute.AttributeInstance.class);
         when(craft.getAttribute(any())).thenReturn(maxHealth);
         when(maxHealth.getValue()).thenReturn(20.0);
@@ -96,7 +99,8 @@ public class ExperienceDiagnosticsTest {
         when(server.getPluginManager()).thenReturn(plugins);
         try (var bukkit = mockStatic(Bukkit.class); var damageBridge = mockConstruction(CraftDamageSource.class)) {
             bukkit.when(Bukkit::getServer).thenReturn(server);
-            final var event = CraftEventFactory.callEntityDeathEvent(victim, damage, new ArrayList<>(), () -> {});
+            bukkit.when(Bukkit::getPluginManager).thenReturn(plugins);
+            final var event = CraftEventFactory.callEntityDeathEvent(level, victim, damage, new ArrayList<>(), false);
             assertEquals(0, event.getDroppedExp());
             assertEquals(0, victim.expToDrop);
             verify(plugins, times(1)).callEvent(event);

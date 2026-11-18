@@ -89,7 +89,7 @@ public class ExperienceVisibilityTest {
         when(level.players()).thenReturn(List.of());
         final ExperienceOrb orb = orb(level);
         doAnswer(call -> { ((List<ExperienceOrb>) call.getArgument(3)).add(orb); return null; })
-            .when(level).getEntities(eq(EntityType.EXPERIENCE_ORB), any(AABB.class), any(), anyList(), eq(4097));
+            .when(level).getEntities(any(net.minecraft.world.level.entity.EntityTypeTest.class), any(AABB.class), any(), anyList(), eq(4097));
         ExperienceDiagnostics.sampleWorld(level);
         ExperienceDiagnostics.sampleWorld(level);
         final var snapshot = ExperienceDiagnostics.report().snapshot();
@@ -99,10 +99,10 @@ public class ExperienceVisibilityTest {
         assertEquals(1, snapshot.noHumanViewers());
         assertEquals(3.0, snapshot.mergeRadius());
         assertTrue(ExperienceDiagnostics.report().rows().isEmpty());
-        verify(level, times(1)).getEntities(eq(EntityType.EXPERIENCE_ORB), any(AABB.class), any(), anyList(), eq(4097));
+        verify(level, times(1)).getEntities(any(net.minecraft.world.level.entity.EntityTypeTest.class), any(AABB.class), any(), anyList(), eq(4097));
         clock.set(TimeUnit.SECONDS.toNanos(10));
         ExperienceDiagnostics.sampleWorld(level);
-        verify(level, times(1)).getEntities(eq(EntityType.EXPERIENCE_ORB), any(AABB.class), any(), anyList(), eq(4097));
+        verify(level, times(1)).getEntities(any(net.minecraft.world.level.entity.EntityTypeTest.class), any(AABB.class), any(), anyList(), eq(4097));
         assertEquals(snapshot, ExperienceDiagnostics.report().snapshot());
     }
 
@@ -157,7 +157,7 @@ public class ExperienceVisibilityTest {
         doAnswer(call -> {
             ((List<ExperienceOrb>) call.getArgument(3)).addAll(java.util.Collections.nCopies(4097, orb));
             return null;
-        }).when(level).getEntities(eq(EntityType.EXPERIENCE_ORB), any(AABB.class), any(), anyList(), eq(4097));
+        }).when(level).getEntities(any(net.minecraft.world.level.entity.EntityTypeTest.class), any(AABB.class), any(), anyList(), eq(4097));
         ExperienceDiagnostics.sampleWorld(level);
         final var snapshot = ExperienceDiagnostics.report().snapshot();
         assertTrue(snapshot.truncated());
@@ -200,7 +200,7 @@ public class ExperienceVisibilityTest {
     private static ExperienceOrb orb(final net.minecraft.server.level.ServerLevel level) {
         final ExperienceOrb orb = mock(ExperienceOrb.class);
         when(orb.level()).thenReturn(level);
-        doReturn(EntityType.EXPERIENCE_ORB).when(orb).getType();
+        doReturn(net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getValue(net.minecraft.resources.Identifier.withDefaultNamespace("experience_orb"))).when(orb).getType();
         when(orb.getUUID()).thenReturn(UUID.randomUUID());
         when(orb.getValue()).thenReturn(5);
         orb.count = 3;

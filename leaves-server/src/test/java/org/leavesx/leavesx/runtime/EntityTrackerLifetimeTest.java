@@ -201,7 +201,7 @@ class EntityTrackerLifetimeTest {
         final Fixture fixture = new Fixture();
         final var lookup = mock(ca.spottedleaf.moonrise.patches.chunk_system.level.entity.server.ServerEntityLookup.class);
         while (fixture.entities.size() < 256) fixture.entities.add(mock(Entity.class));
-        set(lookup, "trackerEntities", fixture.entities);
+        set(fixture.map, "trackerEntities", fixture.entities);
         when(fixture.level.moonrise$getEntityLookup()).thenReturn(lookup);
         when(fixture.level.players()).thenReturn(List.of(mock(ServerPlayer.class)));
         // 故意清空快照准备依赖：误入快照路径会抛异常，不能靠统计数字掩盖额外复制。

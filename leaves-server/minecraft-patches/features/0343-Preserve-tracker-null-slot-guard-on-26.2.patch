@@ -1,0 +1,16 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Subject: [PATCH] Preserve tracker null slot guard on 26.2
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index c3160179..f74d4f98 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1338,6 +1338,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             for (int index = 0; index < entityCount; index++) {
+                 // 与 Paper 原循环一样读取开始时的原始数组；插件事件交换列表元素后，本槽位按当前实体处理。
+                 final Entity entity = entities[index];
++                if (entity == null) continue;
+                 final ChunkMap.TrackedEntity tracker =
+                     ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
+                 if (tracker == null) {

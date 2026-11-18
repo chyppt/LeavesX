@@ -16,7 +16,7 @@ Subject: [PATCH] Use existing entity snapshots at low load
  9 files changed, 159 insertions(+), 25 deletions(-)
 
 diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
-index ba247fe2..e70dfff3 100644
+index 2adc178..083292c 100644
 --- a/net/minecraft/server/level/ChunkMap.java
 +++ b/net/minecraft/server/level/ChunkMap.java
 @@ -142,6 +142,8 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
@@ -28,8 +28,8 @@ index ba247fe2..e70dfff3 100644
      private final Long2ByteMap chunkTypeCache = new Long2ByteOpenHashMap();
      // Paper - rewrite chunk system
      public int serverViewDistance;
-@@ -1141,11 +1143,17 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
-         final ca.spottedleaf.moonrise.common.list.ReferenceList<net.minecraft.world.entity.Entity> trackerEntities = entityLookup.trackerEntities;
+@@ -1165,11 +1167,17 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         final ca.spottedleaf.moonrise.common.list.ReferenceList<net.minecraft.world.entity.Entity> trackerEntities = this.trackerEntities;
          if (org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.enabled(
              org.leavesx.leavesx.runtime.LeavesXAsyncRuntime.Workload.ENTITY_TRACKER
 -        ) && trackerEntities.size() >= 256 && !this.level.players().isEmpty()
@@ -41,14 +41,14 @@ index ba247fe2..e70dfff3 100644
              // 先检查计算池，避免繁忙时为整批实体复制快照后再串行重算。
              && org.leavesx.leavesx.runtime.LeavesXComputeExecutor.shouldAttempt(
                  org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING,
--                trackerEntities.size(), 256, 64
+-                trackerEntities.size(), 256
 +                org.leavesx.leavesx.config.LeavesXRuntime.asyncSettings().trackerComparisonSharding()
 +                    ? this.leavesX$estimatedTrackerComparisons(trackerEntities) : trackerEntities.size(),
 +                256, 64
              )
              && this.leavesX$parallelTrackerTick(trackerEntities)) {
              return;
-@@ -1165,6 +1173,24 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -1192,6 +1200,24 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
          }
      }
  
@@ -71,9 +71,9 @@ index ba247fe2..e70dfff3 100644
 +    }
 +
      /**
-      * 并行计算数值范围检查，再按原实体顺序提交追踪变化。
-      * 工作线程只读取快照数值；世界、实体、玩家、连接、插件及可变追踪状态仅由 Tick 线程准备和提交。
-@@ -1183,6 +1209,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+      * Parallelizes primitive range checks, then commits every tracking mutation in the original entity order.
+      * Workers read only primitive fields captured in the snapshots; world, entity, player, connection, plugin, and
+@@ -1211,6 +1237,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
                  );
              }
              final LeavesXTrackerSnapshot[] snapshots = this.leavesX$trackerSnapshots;
@@ -81,7 +81,7 @@ index ba247fe2..e70dfff3 100644
              for (int index = 0; index < entityCount; index++) {
                  final Entity entity = entities[index];
                  final ChunkMap.TrackedEntity tracker =
-@@ -1193,19 +1220,40 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -1221,19 +1248,40 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
                          ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkData().nearbyPlayers
                      );
              }
@@ -131,9 +131,9 @@ index ba247fe2..e70dfff3 100644
 +                );
 +            }
              if (completedPartitions == 0) {
-                 // 等全部工作线程结束后完整重算本 Tick 的有效前缀，不处理未使用的数组容量。
+                 // All workers have finished. Recompute this tick's active prefix, never the unused array capacity.
                  for (int index = 0; index < entityCount; index++) {
-@@ -1242,6 +1290,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -1270,6 +1318,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
              }
              java.util.Arrays.fill(this.leavesX$trackerSnapshots, null);
              this.leavesX$trackerPlayerFrame.clear();
@@ -141,7 +141,7 @@ index ba247fe2..e70dfff3 100644
          }
      }
      // Paper end - optimise entity tracker
-@@ -1644,6 +1693,13 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -1671,6 +1720,13 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
          }
  
          private void leavesX$applyTrackerSnapshot(final LeavesXTrackerSnapshot snapshot) {
@@ -155,7 +155,7 @@ index ba247fe2..e70dfff3 100644
              if (snapshot.playerCount == 0) {
                  this.moonrise$clearPlayers();
                  return;
-@@ -1669,6 +1725,51 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -1696,6 +1752,51 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
              }
          }
  
@@ -207,7 +207,7 @@ index ba247fe2..e70dfff3 100644
          private int scaledRange(final int range) {
              return ChunkMap.this.level.getServer().getScaledTrackingDistance(range);
          }
-@@ -1800,6 +1901,23 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -1827,6 +1928,23 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
              return false;
          }
  
@@ -232,7 +232,7 @@ index ba247fe2..e70dfff3 100644
              return this.playerFrame.players[this.playerIndices[index]];
          }
 diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
-index 11a4f6a0..b21d899f 100644
+index a72a1b6..f88ed8c 100644
 --- a/net/minecraft/server/level/ServerChunkCache.java
 +++ b/net/minecraft/server/level/ServerChunkCache.java
 @@ -689,7 +689,8 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
@@ -246,10 +246,10 @@ index 11a4f6a0..b21d899f 100644
                  chunkCount,
                  this.level.getAllEntities(),
 diff --git a/net/minecraft/server/level/ServerEntityGetter.java b/net/minecraft/server/level/ServerEntityGetter.java
-index 3a742c3a..72754d2a 100644
+index cc6f4e2..1386db0 100644
 --- a/net/minecraft/server/level/ServerEntityGetter.java
 +++ b/net/minecraft/server/level/ServerEntityGetter.java
-@@ -73,6 +73,14 @@ public interface ServerEntityGetter extends EntityGetter {
+@@ -89,6 +89,14 @@ public interface ServerEntityGetter extends EntityGetter {
          final double y,
          final double z
      ) {
@@ -265,7 +265,7 @@ index 3a742c3a..72754d2a 100644
          T result = null;
  
 diff --git a/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java b/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
-index 1666ddd2..be0f6098 100644
+index 1666ddd..be0f609 100644
 --- a/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
 +++ b/net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos.java
 @@ -137,11 +137,12 @@ public class LongJumpToRandomPos<E extends Mob> extends Behavior<E> {
@@ -296,7 +296,7 @@ index 1666ddd2..be0f6098 100644
              this.jumpCandidates = buildJumpCandidatesDirect(this.leavesX$candidateOrigin, this.maxLongJumpHeight, this.maxLongJumpWidth);
          } finally {
 diff --git a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
-index c6d6f1f2..b6b56acf 100644
+index c6d6f1f..b6b56ac 100644
 --- a/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/NearestItemSensor.java
 @@ -65,7 +65,8 @@ public class NearestItemSensor extends Sensor<Mob> {
@@ -310,7 +310,7 @@ index c6d6f1f2..b6b56acf 100644
                  items,
                  body,
 diff --git a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
-index 0eff648f..729b7f0e 100644
+index 0eff648..729b7f0 100644
 --- a/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/NearestLivingEntitySensor.java
 @@ -40,7 +40,8 @@ public class NearestLivingEntitySensor<T extends LivingEntity> extends Sensor<T>
@@ -324,7 +324,7 @@ index 0eff648f..729b7f0e 100644
                  livingEntities,
                  body,
 diff --git a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
-index d1d42cde..e463de64 100644
+index d1d42cd..e463de6 100644
 --- a/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/PlayerSensor.java
 @@ -94,7 +94,8 @@ public class PlayerSensor extends Sensor<LivingEntity> {
@@ -338,7 +338,7 @@ index d1d42cde..e463de64 100644
                  players,
                  body,
 diff --git a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
-index 7a1ec3c1..f37c3994 100644
+index 7a1ec3c..f37c399 100644
 --- a/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/TemptingSensor.java
 @@ -79,7 +79,8 @@ public class TemptingSensor extends Sensor<PathfinderMob> {
@@ -352,7 +352,7 @@ index 7a1ec3c1..f37c3994 100644
              // and the returned index keeps the original player order for equal distances.
              final List<Player> eligiblePlayers = new ArrayList<>(players.size());
 diff --git a/net/minecraft/world/level/MobSpawnCountAccumulator.java b/net/minecraft/world/level/MobSpawnCountAccumulator.java
-index 1b2c71b7..70cdfd8d 100644
+index 1b2c71b..70cdfd8 100644
 --- a/net/minecraft/world/level/MobSpawnCountAccumulator.java
 +++ b/net/minecraft/world/level/MobSpawnCountAccumulator.java
 @@ -29,9 +29,10 @@ final class MobSpawnCountAccumulator {

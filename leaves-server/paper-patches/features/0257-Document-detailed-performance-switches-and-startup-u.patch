@@ -1,4 +1,4 @@
-From 3021c9d4281de3092d607dfae8c80f706c375255 Mon Sep 17 00:00:00 2001
+From 58ca253cdf96db0aaf4e146ee9d37fb2c361cfd5 Mon Sep 17 00:00:00 2001
 From: chyppt <pptwxo@163.com>
 Date: Wed, 14 Oct 2026 13:24:53 +0800
 Subject: [PATCH] Document detailed performance switches and startup update
@@ -17,7 +17,7 @@ Subject: [PATCH] Document detailed performance switches and startup update
  create mode 100644 src/main/java/org/leavesx/leavesx/update/LeavesXUpdateNotifier.java
 
 diff --git a/src/main/java/io/papermc/paper/command/PaperCommands.java b/src/main/java/io/papermc/paper/command/PaperCommands.java
-index 7577a70cad..eea97a2af7 100644
+index 6e288d0f8..dc0dc296e 100644
 --- a/src/main/java/io/papermc/paper/command/PaperCommands.java
 +++ b/src/main/java/io/papermc/paper/command/PaperCommands.java
 @@ -22,6 +22,8 @@ public final class PaperCommands {
@@ -28,9 +28,9 @@ index 7577a70cad..eea97a2af7 100644
 +            org.leavesmc.leaves.plugin.MinecraftInternalPlugin.INSTANCE);
          COMMANDS.put("paper", new PaperCommand("paper"));
          COMMANDS.put("tpsbar", new org.leavesx.leavesx.command.TpsBarCommand());
-         COMMANDS.put("mspt", new MSPTCommand("mspt"));
+         if (org.leavesx.leavesx.config.LeavesXRuntime.diagnosticsCommandEnabled()) {
 diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
-index 88f9f1c91c..17c74b98c1 100644
+index 88f9f1c91..17c74b98c 100644
 --- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
 +++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
 @@ -90,7 +90,7 @@ public record LeavesXConfig(
@@ -43,7 +43,7 @@ index 88f9f1c91c..17c74b98c1 100644
          if (configVersion != CURRENT_CONFIG_VERSION) {
              throw new IllegalArgumentException(
 diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
-index 663c9f35d6..a5312b51c1 100644
+index 663c9f35d..a5312b51c 100644
 --- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
 +++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
 @@ -761,8 +761,7 @@ public final class LeavesXConfigLoader {
@@ -73,7 +73,7 @@ index 663c9f35d6..a5312b51c1 100644
      }
  
 diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
-index 24c3ac1962..587a6fe5e7 100644
+index 24c3ac196..587a6fe5e 100644
 --- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
 +++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
 @@ -529,6 +529,15 @@ public final class LeavesXConfigWriter {
@@ -120,7 +120,7 @@ index 24c3ac1962..587a6fe5e7 100644
          comments.put("performance.chunks.unloading.enabled", "有 tick 余量时加快处理积压的区块卸载。默认：true。");
          comments.put("performance.chunks.unloading.backlog-threshold", "达到此积压数量后提高卸载速度。默认：1000。");
 diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
-index cdf87247f6..ee962e8d14 100644
+index cdf87247f..ee962e8d1 100644
 --- a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
 +++ b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java
 @@ -10,7 +10,7 @@ enum LeavesXOptimization {
@@ -199,7 +199,7 @@ index cdf87247f6..ee962e8d14 100644
          "performance.ai.visible-entity-target-cache",
 diff --git a/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateNotifier.java b/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateNotifier.java
 new file mode 100644
-index 0000000000..37f883227c
+index 000000000..37f883227
 --- /dev/null
 +++ b/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateNotifier.java
 @@ -0,0 +1,25 @@
@@ -229,7 +229,7 @@ index 0000000000..37f883227c
 +    }
 +}
 diff --git a/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateService.java b/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateService.java
-index c898fcb315..e6cf642ea6 100644
+index c898fcb31..e6cf642ea 100644
 --- a/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateService.java
 +++ b/src/main/java/org/leavesx/leavesx/update/LeavesXUpdateService.java
 @@ -36,6 +36,8 @@ public final class LeavesXUpdateService {
@@ -272,7 +272,7 @@ index c898fcb315..e6cf642ea6 100644
  
      static boolean newer(String candidate, String current) {
 diff --git a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
-index c1aa9cc77a..f5425ec829 100644
+index c1aa9cc77..f5425ec82 100644
 --- a/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
 +++ b/src/test/java/org/leavesx/leavesx/config/LeavesXConfigLoaderTest.java
 @@ -76,9 +76,9 @@ class LeavesXConfigLoaderTest {
@@ -362,4 +362,7 @@ index c1aa9cc77a..f5425ec829 100644
 +        assertTrue(node.node("performance", "chunk", "status-update-buffer-reuse").getBoolean());
          assertTrue(node.node("custom-extension", "retained").getBoolean());
          assertTrue(upgraded.startsWith("# 用户配置。"));
+ 
+-- 
+2.52.0.windows.1
  

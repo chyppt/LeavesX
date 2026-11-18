@@ -1,13 +1,18 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 42cfd4ed7c01ac530db3e4e8e8c07cc180f6833f Mon Sep 17 00:00:00 2001
 From: chyppt <pptwxo@163.com>
 Date: Sat, 14 Nov 2026 16:00:00 +0800
 Subject: [PATCH] Expose regional experience diagnostics
 
+---
+ .../org/bukkit/craftbukkit/event/CraftEventFactory.java  | 3 +++
+ .../java/org/leavesx/leavesx/command/LeavesXCommand.java | 9 +++++++--
+ 2 files changed, 10 insertions(+), 2 deletions(-)
+
 diff --git a/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java b/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java
-index ac6e81f26f..91afd0d07b 100644
+index 95e130c77..4ea50f4c3 100644
 --- a/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java
 +++ b/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java
-@@ -795,6 +795,7 @@ public class CraftEventFactory {
+@@ -799,6 +799,7 @@ public class CraftEventFactory {
  
          EntitySpawnEvent event = new EntitySpawnEvent(bukkitEntity);
          bukkitEntity.getServer().getPluginManager().callEvent(event);
@@ -15,40 +20,46 @@ index ac6e81f26f..91afd0d07b 100644
          return event;
      }
  
-@@ -972,7 +973,9 @@ public class CraftEventFactory {
-         CraftWorld world = (CraftWorld) entity.getWorld();
-         EntityDeathEvent event = new EntityDeathEvent(entity, bukkitDamageSource, new io.papermc.paper.util.TransformingRandomAccessList<>(drops, Entity.DefaultDrop::stack, FROM_FUNCTION), victim.getExpReward(world.getHandle(), damageSource.getEntity()), victim.getExperienceReward(world.getHandle(), damageSource.getEntity())); // Paper - Restore vanilla drops behavior // Leaves - exp fix
+@@ -970,7 +971,9 @@ public class CraftEventFactory {
+         CraftDamageSource bukkitDamageSource = new CraftDamageSource(damageSource);
+         EntityDeathEvent event = new EntityDeathEvent(entity, bukkitDamageSource, new io.papermc.paper.util.TransformingRandomAccessList<>(drops, Entity.DefaultDrop::stack, FROM_FUNCTION), victim.getExpReward(level, damageSource.getEntity())); // Paper - Restore vanilla drops behavior
          populateFields(victim, event); // Paper - make cancellable
 +        final var leavesXExperienceTrace = org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.beforeDeath(victim, damageSource, event);
-         Bukkit.getServer().getPluginManager().callEvent(event);
+         event.callEvent();
 +        org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.afterDeath(leavesXExperienceTrace, event);
  
-         // Paper start - make cancellable
          if (event.isCancelled()) {
+             return event;
 diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
+index e778d589e..728fbe0be 100644
 --- a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
 +++ b/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java
-@@ -76,5 +76,5 @@
+@@ -75,13 +75,13 @@ public final class LeavesXCommand extends Command {
+     private static final List<String> SUBCOMMANDS = List.of(
          "ai", "health", "report", "status", "all", "gui", "worlds", "entities", "hotspots", "blockentities", "blockhotspots",
          "villagers", "activity", "tickets", "plugins", "memory", "network", "threads", "parallel", "system", "stalls",
 -        "regions", "safety", "config", "reload", "update", "help"
 +        "regions", "safety", "config", "reload", "update", "xp", "help"
      );
  
-@@ -82,5 +82,5 @@
+     public LeavesXCommand(final String name) {
          super(name);
          this.description = "查看 LeavesX 服务器性能状态";
 -        this.usageMessage = "/leavesx <status|all|gui|worlds|activity|entities|hotspots|villagers|blockentities|blockhotspots|tickets|plugins|memory|network|threads|parallel|system|stalls|regions|safety|config|reload|ai>";
 +        this.usageMessage = "/leavesx <status|all|gui|worlds|activity|entities|hotspots|villagers|blockentities|blockhotspots|tickets|plugins|memory|network|threads|parallel|xp|system|stalls|regions|safety|config|reload|ai>";
          this.setPermission("leavesx.command.performance");
      }
-@@ -118,4 +118,5 @@
+ 
+@@ -117,6 +117,7 @@ public final class LeavesXCommand extends Command {
+             case "network" -> sendNetwork(sender);
              case "threads" -> sendThreads(sender);
              case "parallel" -> sendParallel(sender, args);
 +            case "xp" -> ExperienceDiagnosticCommand.execute(sender, args);
              case "system" -> sendSystem(sender);
              case "stalls" -> sendStalls(sender, args);
-@@ -161,4 +162,7 @@
+             case "regions" -> sendRegions(sender);
+@@ -160,6 +161,9 @@ public final class LeavesXCommand extends Command {
+         if (args.length == 2 && args[0].equalsIgnoreCase("stalls")) {
              return StringUtil.copyPartialMatches(args[1], List.of("5", "10", "20", "clear"), new ArrayList<>());
          }
 +        if (args.length == 2 && args[0].equalsIgnoreCase("xp")) {
@@ -56,9 +67,14 @@ diff --git a/src/main/java/org/leavesx/leavesx/command/LeavesXCommand.java b/src
 +        }
          if (args.length == 2 && args[0].equalsIgnoreCase("config")) {
              return StringUtil.copyPartialMatches(args[1], List.of("check"), new ArrayList<>());
-@@ -1607,4 +1611,5 @@
+         }
+@@ -1606,6 +1610,7 @@ public final class LeavesXCommand extends Command {
+         sender.sendMessage(Component.text("/leavesx plugins - 最近较慢的 Bukkit 同步任务", NamedTextColor.GRAY));
          sender.sendMessage(Component.text("/leavesx stalls [数量|clear] - 最近慢 Tick 的 CPU、等待和调用栈", NamedTextColor.GRAY));
          sender.sendMessage(Component.text("/leavesx parallel [10-300秒] - 最近并行、回退、拒绝和异常", NamedTextColor.GRAY));
 +        sender.sendMessage(Component.text("/leavesx xp start [秒] | report | stop - 限时采样附近经验掉落链路", NamedTextColor.GRAY));
          sender.sendMessage(Component.text("/leavesx regions - 区域化流水线模式与配置", NamedTextColor.GRAY));
          sender.sendMessage(Component.text("/leavesx safety - 区域化降级、重放与线程域违规计数", NamedTextColor.GRAY));
+         sender.sendMessage(Component.text("/leavesx reload - 只重载 leavesx.yml，并提示需重启的配置", NamedTextColor.GRAY));
+-- 
+2.52.0.windows.1

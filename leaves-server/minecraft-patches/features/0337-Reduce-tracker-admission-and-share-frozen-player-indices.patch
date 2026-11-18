@@ -1,12 +1,18 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 1ab143aa23d6280970b7b3e8b8f247a90a9403c8 Mon Sep 17 00:00:00 2001
 From: chyppt <pptwxo@163.com>
 Date: Sun, 15 Nov 2026 23:20:00 +0800
-Subject: [PATCH] Reduce tracker admission scans and reuse frozen player indices
+Subject: [PATCH] Reduce tracker admission scans and reuse frozen player
+ indices
+
+---
+ net/minecraft/server/level/ChunkMap.java | 99 +++++++++++++++++-------
+ 1 file changed, 70 insertions(+), 29 deletions(-)
 
 diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index 4a30b94d..cb326d4f 100644
 --- a/net/minecraft/server/level/ChunkMap.java
 +++ b/net/minecraft/server/level/ChunkMap.java
-@@ -1183,14 +1183,18 @@
+@@ -1210,14 +1210,18 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
          final ca.spottedleaf.moonrise.common.list.ReferenceList<Entity> trackerEntities
      ) {
          final Entity[] entities = trackerEntities.getRawDataUnchecked();
@@ -26,7 +32,7 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
              }
          }
          return (int)comparisons;
-@@ -1215,8 +1219,11 @@
+@@ -1243,8 +1247,11 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
              }
              final LeavesXTrackerSnapshot[] snapshots = this.leavesX$trackerSnapshots;
              final org.leavesx.leavesx.performance.EntityTrackingRangeBatch rangeBatch = this.leavesX$trackerRangeBatch;
@@ -40,7 +46,7 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
              try (final org.leavesx.leavesx.runtime.LeavesXSnapshotBatch pipeline = pipelined
                  ? new org.leavesx.leavesx.runtime.LeavesXSnapshotBatch(
                      org.leavesx.leavesx.runtime.LeavesXComputeExecutor.Workload.ENTITY_TRACKING) : null) {
-@@ -1234,7 +1241,8 @@
+@@ -1262,7 +1269,8 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
                      snapshots[index] = tracker == null
                          ? null
                          : tracker.leavesX$createTrackerSnapshot(
@@ -50,7 +56,7 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
                          );
                      if (pipeline != null) {
                          if (snapshots[index] == null) rangeBatch.setEmptyRow(index);
-@@ -1331,6 +1339,7 @@
+@@ -1358,6 +1366,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
                  if (snapshot != null) {
                      snapshot.chunk = null;
                      snapshot.playerCount = 0;
@@ -58,7 +64,7 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
                  }
              }
              java.util.Arrays.fill(this.leavesX$trackerSnapshots, null);
-@@ -1704,34 +1713,42 @@
+@@ -1730,34 +1739,42 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
          }
  
          private LeavesXTrackerSnapshot leavesX$createTrackerSnapshot(
@@ -113,7 +119,7 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
              }
              snapshot.rangeY = ChunkMap.this.level.paperConfig().entities.trackingRangeY.enabled
                  ? ChunkMap.this.level.paperConfig().entities.trackingRangeY.get(this.entity, -1)
-@@ -1789,8 +1806,9 @@
+@@ -1815,8 +1832,9 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
              final LeavesXTrackerSnapshot snapshot,
              final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.@Nullable TrackedChunk currentChunk
          ) {
@@ -125,7 +131,7 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
                  return false;
              }
              if (currentChunk == null) return snapshot.playerCount == 0;
-@@ -1860,11 +1878,13 @@
+@@ -1886,11 +1904,13 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
          private double entityZ;
          private ca.spottedleaf.moonrise.common.misc.NearbyPlayers.@Nullable TrackedChunk chunk;
          private long chunkUpdate;
@@ -140,7 +146,7 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
  
          private LeavesXTrackerSnapshot(
              final ChunkMap.TrackedEntity tracker,
-@@ -1883,9 +1903,19 @@
+@@ -1909,9 +1929,19 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
              final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.TrackedChunk chunk,
              final long chunkUpdate,
              final int playerCount,
@@ -161,7 +167,7 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
              this.entityX = entityX;
              this.entityY = entityY;
              this.entityZ = entityZ;
-@@ -1898,11 +1928,16 @@
+@@ -1924,11 +1954,16 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
  
          private LeavesXTrackerSnapshot resetEmpty(
              final ca.spottedleaf.moonrise.common.misc.NearbyPlayers.@Nullable TrackedChunk chunk,
@@ -182,7 +188,7 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
              this.chunk = chunk;
              this.chunkUpdate = chunkUpdate;
              this.rangeY = -1.0D;
-@@ -1911,11 +1946,10 @@
+@@ -1937,11 +1972,10 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
          }
  
          private void ensureCapacity(final int required) {
@@ -196,7 +202,7 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
              this.inRange = java.util.Arrays.copyOf(this.inRange, capacity);
          }
  
-@@ -1953,6 +1987,10 @@
+@@ -1979,6 +2013,10 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
              final org.leavesx.leavesx.performance.EntityTrackingRangeBatch batch,
              final int row
          ) {
@@ -207,7 +213,7 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
              batch.setRow(
                  row,
                  this.entityX,
-@@ -1982,6 +2020,8 @@
+@@ -2008,6 +2046,8 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
          private final it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap<ServerPlayer> playerIndices =
              new it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap<>();
          private boolean indexed;
@@ -216,7 +222,7 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
  
          private void prepare(final List<ServerPlayer> currentPlayers) {
              final int previousSize = this.size;
-@@ -1999,7 +2039,7 @@
+@@ -2026,7 +2066,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
              }
          }
  
@@ -225,7 +231,7 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
              if (this.indexed) {
                  final int existing = this.playerIndices.getOrDefault(player, -1);
                  if (existing >= 0) return existing;
-@@ -2010,7 +2050,7 @@
+@@ -2037,7 +2077,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
              }
              this.ensureCapacity(this.size + 1);
              final int index = this.size++;
@@ -234,11 +240,13 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
              return index;
          }
  
-@@ -2018,6 +2058,7 @@
-             // 准备过程可能提前失败，仍需清除上一帧所有槽位中的玩家引用。
+@@ -2045,6 +2085,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             // Preparation may fail before overwriting every slot left by the previous frame.
              java.util.Arrays.fill(this.players, null);
              this.playerIndices.clear();
 +            this.playerLists.clear();
              this.indexed = false;
              this.size = 0;
          }
+-- 
+2.52.0.windows.1

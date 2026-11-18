@@ -12,7 +12,6 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
@@ -207,7 +206,7 @@ public final class ExperienceDiagnostics {
         if (elapsed < session.nextSnapshotNanos) return;
         session.nextSnapshotNanos = elapsed + TimeUnit.SECONDS.toNanos(1);
         final List<ExperienceOrb> orbs = new ArrayList<>();
-        level.getEntities(EntityType.EXPERIENCE_ORB,
+        level.getEntities(net.minecraft.world.level.entity.EntityTypeTest.forClass(ExperienceOrb.class),
             new AABB(session.x - RADIUS, session.y - RADIUS, session.z - RADIUS,
                 session.x + RADIUS, session.y + RADIUS, session.z + RADIUS),
             orb -> !orb.isRemoved() && session.contains(level, orb.getX(), orb.getY(), orb.getZ()),

@@ -1,22 +1,59 @@
+From 990ff2af1b07ab2bb3d2f15b2301b69296e52387 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Wed, 18 Nov 2026 20:39:15 +0800
 Subject: [PATCH] Align release configuration and buffer regressions
 
+---
+ .../leavesx/config/LeavesXConfigWriter.java    |  8 ++++----
+ .../level/NaturalSpawnPositionHotPathTest.java |  6 +++---
+ .../EntityActivationQueryBufferConfigTest.java |  2 +-
+ .../BlockEntityTypeValidationHotPathTest.java  |  2 +-
+ .../InsideBlockEffectCollectorHotPathTest.java |  2 +-
+ .../TripWireEntityScanHotPathTest.java         | 18 +++++++++++++++++-
+ 6 files changed, 27 insertions(+), 11 deletions(-)
+
 diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 53ffe8307..16b023897 100644
 --- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
 +++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
-@@ -660 +660 @@
--        comments.put("async.entity-tracker.event-listeners", "插件监听实体追踪或玩家速度事件时仍并行计算距离；事件、发包和追踪变更按原实体顺序在主线程执行，输入被事件改动时只重算当前实体。关闭后有监听器就使用 Paper 原循环，可重载。默认：true。");
-+        comments.put("async.entity-tracker.event-listeners", "插件监听时仍并行算距离；事件、发包和提交按原实体顺序在主线程执行，输入变化时重算。默认：true。");
-@@ -597 +597 @@
+@@ -594,7 +594,7 @@ public final class LeavesXConfigWriter {
+         comments.put("async.compute.kernels.tracker-player-lists", "同批实体共享只读的附近玩家索引，提交时仍核验实时玩家和区块状态；不跨 Tick 缓存，可重载。默认：true。");
+         comments.put("async.compute.kernels.spatial-activation-groups", "按冻结位置组织玩家激活范围，减少分散玩家之间的无效比较；激活范围和更新频率不变，可重载。默认：true。");
+         comments.put("async.compute.kernels.snapshot-batch-reuse", "每线程复用已完成的快照调度容器，减少 AI、激活与追踪派发分配；重入隔离，失败仍完整回退，可重载。默认：true。");
 -        comments.put("async.compute.cache-max-candidates", "排序与激活的日常候选缓存上限；目标查询、动物目标和追踪行也采用此值，另有 16384 项保留上限。0 为不保留，仅在计算完成后回收，不限制实体数，可重载。默认：32768。");
 +        comments.put("async.compute.cache-max-candidates", "查询、动物目标和追踪共用的候选缓存上限；只回收缓存，不限制实体数。0 不保留。默认：32768。");
-@@ -606 +606 @@
+         comments.put("async.compute.animals.breeding", "并行计算鸡牛羊猪繁殖配对距离；搜索范围、繁殖时机和事件不变。默认：true。");
+         comments.put("async.compute.animals.follow-parent", "并行计算鸡牛羊猪幼体跟随距离；跟随条件、更新频率和寻路不变。默认：true。");
+         comments.put("async.compute", "共享计算线程、任务分片与异常回退；细项可分别关闭。");
+@@ -603,7 +603,7 @@ public final class LeavesXConfigWriter {
+         comments.put("async.virtual-threads.download-pool", "下载和档案查询使用虚拟线程，最多同时执行四个任务；不改变世界和插件同步线程，需重启。默认：false。");
+         comments.put("async.compute.ai-candidates", "后台准备山羊和青蛙的长跳候选位置；保持候选顺序、随机抽取及跳跃时机，共用计算池。默认：true。");
+         comments.put("async.playerdata-save.compression", "后台压缩玩家存档，减少自动保存卡顿；需要启用异步玩家保存，同一玩家仍按顺序保存。默认：true。");
 -        comments.put("async.compute.mob-collision-math", "实验性：并行普通生物的简单碰撞盒计算，小任务受 async.compute.low-load-workers 控制；不处理村民、TNT和复杂形状。默认：false。");
 +        comments.put("async.compute.mob-collision-math", "实验性并行简单生物碰撞盒；不处理村民、TNT和复杂形状，小任务仍可同步。默认：false。");
-@@ -731 +731 @@
+         comments.put("performance.memory.biome-cache.enabled", "用少量缓存内存减少群系计算；保持精确群系边界，插件修改群系后立即生效。默认：true。");
+         comments.put("performance.memory.biome-cache.mob-spawning", "刷怪检查使用群系计算缓存。默认：true。");
+         comments.put("performance.memory.biome-cache.advancements", "进度条件检查使用群系计算缓存。默认：true。");
+@@ -657,7 +657,7 @@ public final class LeavesXConfigWriter {
+         comments.put("async.compute.ai-target-search.snapshot-pipeline", "采集 AI 候选位置时提前计算已完成的片段，保留目标筛选顺序；可热重载。默认：true。");
+         comments.put("async.compute.ai-target-search.parallel-merge", "并行合并大型 AI 距离排序结果，保留相同距离的原顺序；可热重载。默认：true。");
+         comments.put("async.compute.mob-spawning.combined-counting", "同批计算区块和玩家生物生成计数，减少两次调度等待，不改变生成上限；可热重载。默认：true。");
+-        comments.put("async.entity-tracker.event-listeners", "插件监听实体追踪或玩家速度事件时仍并行计算距离；事件、发包和追踪变更按原实体顺序在主线程执行，输入被事件改动时只重算当前实体。关闭后有监听器就使用 Paper 原循环，可重载。默认：true。");
++        comments.put("async.entity-tracker.event-listeners", "插件监听时仍并行算距离；事件、发包和提交按原实体顺序在主线程执行，输入变化时重算。默认：true。");
+         comments.put("async.playerdata-save.enabled", "是否异步保存玩家数据；采集玩家状态仍在主线程，同一玩家按顺序保存。默认：true。");
+         comments.put("async.playerdata-save.queue-size", "玩家数据写入最多排队任务数；队列满时等待空位，不会让新存档越过旧存档。默认：1024。");
+         comments.put("async.entity-tracker.enabled", "是否并行计算实体追踪变化；发包、事件和追踪关系提交仍在主线程。默认：true。");
+@@ -728,7 +728,7 @@ public final class LeavesXConfigWriter {
+         comments.put("async.compute.failure-protection.enabled", "连续计算异常时暂时关闭对应类别的并行，其他类别不受影响；关闭此项仍保留单次失败后的完整同步重算，可重载。默认：true。");
+         comments.put("async.compute.failure-protection.failure-threshold", "同类计算连续失败多少次后暂停并行，成功一次清零；范围 1～100，可重载。默认：3。");
+         comments.put("async.compute.failure-protection.cooldown-seconds", "暂停同类并行的秒数，到期自动允许重试；范围 1～3600，可重载。默认：30。");
 -        comments.put("async.compute.scheduling.realtime-reserved-workers", "给实体、AI、追踪等实时计算保留的空闲线程数；区块噪声等低优先级计算不能占用这部分，繁忙时在原线程完整计算。-1 为自动（4 线程以上保留 1 个），0 为不保留，可重载。默认：-1。");
 +        comments.put("async.compute.scheduling.realtime-reserved-workers", "实时计算保留线程数；低优先级任务繁忙时同步回退。-1 自动，0 不保留，可重载。默认：-1。");
+         comments.put("async.compute.scheduling.low-priority-queue-limit", "低优先级计算可接受的最大排队任务数；超过后不再派发，避免预生成拖慢实时计算。0 为自动（线程数×2，至少 2），可重载。默认：0。");
+         comments.put("async.compute.minimum-items-per-worker", "每个计算分片至少处理的项目数。默认：64。");
+         comments.put("async.compute.prestart-workers", "启动时预热计算线程，减少重启后第一次并行任务的延迟。默认：true。");
 diff --git a/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java b/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
-index 40c45b0856..ec321a2a9a 100644
+index 40c45b085..ec321a2a9 100644
 --- a/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
 +++ b/src/test/java/net/minecraft/world/level/NaturalSpawnPositionHotPathTest.java
 @@ -161,9 +161,9 @@ public class NaturalSpawnPositionHotPathTest {
@@ -33,7 +70,7 @@ index 40c45b0856..ec321a2a9a 100644
          assertFalse(Files.exists(this.tempDir.resolve("leavesx-migration-report.yml")));
      }
 diff --git a/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java b/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java
-index 7977ad1dee..f7373eec6d 100644
+index 7977ad1de..f7373eec6 100644
 --- a/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java
 +++ b/src/test/java/org/leavesx/leavesx/config/EntityActivationQueryBufferConfigTest.java
 @@ -50,7 +50,7 @@ class EntityActivationQueryBufferConfigTest {
@@ -46,7 +83,7 @@ index 7977ad1dee..f7373eec6d 100644
          assertTrue(upgraded.startsWith("# 用户配置。"));
      }
 diff --git a/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
-index 555771e6f6..1bd0f5903e 100644
+index 555771e6f..1bd0f5903 100644
 --- a/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
 +++ b/src/test/java/org/leavesx/leavesx/performance/BlockEntityTypeValidationHotPathTest.java
 @@ -101,7 +101,7 @@ class BlockEntityTypeValidationHotPathTest {
@@ -59,7 +96,7 @@ index 555771e6f6..1bd0f5903e 100644
          assertFalse(Files.exists(this.tempDir.resolve("leavesx-migration-report.yml")));
      }
 diff --git a/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java
-index b5bb19be36..daf1d6939e 100644
+index b5bb19be3..daf1d6939 100644
 --- a/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java
 +++ b/src/test/java/org/leavesx/leavesx/performance/InsideBlockEffectCollectorHotPathTest.java
 @@ -63,7 +63,7 @@ class InsideBlockEffectCollectorHotPathTest {
@@ -72,7 +109,7 @@ index b5bb19be36..daf1d6939e 100644
          assertFalse(Files.exists(this.tempDir.resolve("leavesx-migration-report.yml")));
      }
 diff --git a/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java b/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java
-index 2713ce23e1..da25051f57 100644
+index 2713ce23e..da25051f5 100644
 --- a/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java
 +++ b/src/test/java/org/leavesx/leavesx/performance/TripWireEntityScanHotPathTest.java
 @@ -44,7 +44,23 @@ class TripWireEntityScanHotPathTest {
@@ -100,4 +137,6 @@ index 2713ce23e1..da25051f57 100644
      }
  
      @Test
+-- 
+2.52.0.windows.1
 

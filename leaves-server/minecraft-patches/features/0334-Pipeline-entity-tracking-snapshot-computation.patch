@@ -1,13 +1,17 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 2438bfd118e6b2b73a7c7e478b02c7c36830b39e Mon Sep 17 00:00:00 2001
 From: chyppt <pptwxo@163.com>
 Date: Sat, 14 Nov 2026 21:45:00 +0800
 Subject: [PATCH] Pipeline entity snapshots with complete fallback
 
+---
+ net/minecraft/server/level/ChunkMap.java | 119 ++++++++++++++---------
+ 1 file changed, 72 insertions(+), 47 deletions(-)
+
 diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
-index e6ad21b..1b9c43e 100644
+index 753a9c4f..474f99f9 100644
 --- a/net/minecraft/server/level/ChunkMap.java
 +++ b/net/minecraft/server/level/ChunkMap.java
-@@ -1215,65 +1215,91 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -1243,60 +1243,85 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
              }
              final LeavesXTrackerSnapshot[] snapshots = this.leavesX$trackerSnapshots;
              final org.leavesx.leavesx.performance.EntityTrackingRangeBatch rangeBatch = this.leavesX$trackerRangeBatch;
@@ -121,7 +125,7 @@ index e6ad21b..1b9c43e 100644
 +                    );
 +                }
 +                if (completedPartitions == 0) {
-+                    // 等全部工作线程结束后完整重算本 Tick 的有效前缀，不处理未使用的数组容量。
++                    // All workers have finished. Recompute this tick's active prefix, never the unused array capacity.
 +                    for (int index = 0; index < entityCount; index++) {
 +                        final LeavesXTrackerSnapshot snapshot = snapshots[index];
 +                        if (snapshot != null) snapshot.computeRanges();
@@ -129,7 +133,7 @@ index e6ad21b..1b9c43e 100644
 -                );
 -            }
 -            if (completedPartitions == 0) {
--                // 等全部工作线程结束后完整重算本 Tick 的有效前缀，不处理未使用的数组容量。
+-                // All workers have finished. Recompute this tick's active prefix, never the unused array capacity.
 -                for (int index = 0; index < entityCount; index++) {
 -                    final LeavesXTrackerSnapshot snapshot = snapshots[index];
 -                    if (snapshot != null) snapshot.computeRanges();
@@ -140,9 +144,5 @@ index e6ad21b..1b9c43e 100644
              }
  
              for (int index = 0; index < entityCount; index++) {
-                 // 与 Paper 原循环一样读取开始时的原始数组；插件事件交换列表元素后，本槽位按当前实体处理。
-                 final Entity entity = entities[index];
-+                if (entity == null) continue;
-                 final ChunkMap.TrackedEntity tracker =
-                     ((ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity)entity).moonrise$getTrackedEntity();
-                 if (tracker == null) {
+-- 
+2.52.0.windows.1

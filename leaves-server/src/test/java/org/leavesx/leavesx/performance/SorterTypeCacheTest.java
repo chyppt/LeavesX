@@ -68,11 +68,11 @@ public class SorterTypeCacheTest {
     }
 
     private static class InheritedZombie extends Zombie {
-        InheritedZombie() { super(EntityType.ZOMBIE, null); }
+        InheritedZombie() { super(((EntityType<Zombie>) net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getValue(net.minecraft.resources.Identifier.withDefaultNamespace("zombie"))), null); }
     }
 
     private static class PositionZombie extends Zombie {
-        PositionZombie() { super(EntityType.ZOMBIE, null); }
+        PositionZombie() { super(((EntityType<Zombie>) net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getValue(net.minecraft.resources.Identifier.withDefaultNamespace("zombie"))), null); }
         @Override public Vec3 position() { return new Vec3(100.0, 0, 0); }
     }
 }

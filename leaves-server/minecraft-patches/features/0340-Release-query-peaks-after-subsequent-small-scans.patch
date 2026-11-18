@@ -1,3 +1,7 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Subject: [PATCH] Release query peaks after subsequent small scans
+
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
 index e5eb58c6..0647ca9a 100644
 --- a/net/minecraft/world/level/Level.java

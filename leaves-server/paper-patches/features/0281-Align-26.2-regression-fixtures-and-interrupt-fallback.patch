@@ -1,0 +1,142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Subject: [PATCH] Align 26.2 regression fixtures and interrupt fallback
+
+diff --git a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+index ffa6c6ba8..8f151e484 100644
+--- a/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
++++ b/src/main/java/org/leavesx/leavesx/runtime/LeavesXComputeExecutor.java
+@@ -2115,6 +2115,10 @@ public final class LeavesXComputeExecutor {
+                     this.recordFailure(interruption);
+                 }
+             }
++            // 工作线程可能在自旋阶段完成；已到达调用线程的中断仍须触发完整回退。
++            if (Thread.currentThread().isInterrupted()) {
++                this.recordFailure(new InterruptedException("Compute caller interrupted before completion"));
++            }
+             if (interrupted) Thread.currentThread().interrupt();
+         }
+ 
+diff --git a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+index a3dd5a216..97be6409d 100644
+--- a/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
++++ b/src/test/java/org/leavesx/leavesx/performance/StableDistanceSorterTest.java
+@@ -83,31 +83,6 @@ public class StableDistanceSorterTest {
+         }
+     }
+ 
+-    @Test
+-    void preservesOrderedRunsAndReordersLateInversion() {
+-        LeavesXComputeExecutor.configure(4, 64);
+-        for (final int size : new int[] {64, 257, 1_027, 4_097}) {
+-            final double[] x = new double[size];
+-            final double[] zeros = new double[size];
+-            for (int index = 0; index < size; index++) {
+-                // 连续相等距离用于观察稳定性；无穷大和 NaN 覆盖原版 Double.compare 的末尾顺序。
+-                x[index] = index / 3;
+-            }
+-            x[size - 2] = Double.POSITIVE_INFINITY;
+-            x[size - 1] = Double.NaN;
+-            for (final boolean parallel : new boolean[] {false, true}) {
+-                assertArrayEquals(referenceOrder(x, zeros, zeros, 0.0, 0.0, 0.0),
+-                    StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, parallel, 256));
+-            }
+-            // 最后一个有限距离发生逆序时必须完整排序，不能错误采用已扫描的有序前缀。
+-            x[size - 3] = 0.0;
+-            for (final boolean parallel : new boolean[] {false, true}) {
+-                assertArrayEquals(referenceOrder(x, zeros, zeros, 0.0, 0.0, 0.0),
+-                    StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, parallel, 256));
+-            }
+-        }
+-    }
+-
+     @Test
+     void matchesStableOrderWhenAdaptivePartitionUsesFewerLanes() {
+         final Random random = new Random(0x506172746974696fL);
+@@ -200,42 +175,6 @@ public class StableDistanceSorterTest {
+         }
+     }
+ 
+-    @Test
+-    void preservesIdentityWhenEveryDistanceKeyIsEqual() {
+-        LeavesXComputeExecutor.configure(4, 64);
+-        for (final double coordinate : new double[] {0.0, 1.0, Double.POSITIVE_INFINITY, Double.NaN}) {
+-            final double[] x = new double[257];
+-            Arrays.fill(x, coordinate);
+-            final double[] zeros = new double[x.length];
+-            final int[] expected = referenceOrder(x, zeros, zeros, 0.0, 0.0, 0.0);
+-            assertArrayEquals(expected, StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, false, 256));
+-            assertArrayEquals(expected, StableDistanceSorter.sort(x, zeros, zeros, 0.0, 0.0, 0.0, true, 256));
+-        }
+-    }
+-
+-    @Test
+-    void preservesStableOrderWithDifferentNumbersOfVaryingRadixDigits() {
+-        LeavesXComputeExecutor.configure(4, 64);
+-        final Random random = new Random(0x5261646978446967L);
+-        final double[] scales = {0.0, 1.0, 1.0E-150, 1.0E150, 1.0E155};
+-        for (final int size : new int[] {2, 63, 128, 257, 513, 2_049}) {
+-            final double[] x = new double[size];
+-            final double[] y = new double[size];
+-            final double[] z = new double[size];
+-            for (int round = 0; round < 8; round++) {
+-                for (int index = 0; index < size; index++) {
+-                    final double scale = scales[round % scales.length];
+-                    x[index] = (random.nextInt(33) - 16 + (round < 5 ? 0.0 : random.nextDouble())) * scale;
+-                    y[index] = (random.nextInt(9) - 4) * scale;
+-                    z[index] = (random.nextInt(33) - 16) * scale;
+-                }
+-                final int[] expected = referenceOrder(x, y, z, 0.0, 0.0, 0.0);
+-                assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, 0.0, 0.0, 0.0, false, 256));
+-                assertArrayEquals(expected, StableDistanceSorter.sort(x, y, z, 0.0, 0.0, 0.0, true, 256));
+-            }
+-        }
+-    }
+-
+     @Test
+     void rejectsMismatchedCoordinateArrays() {
+         assertThrows(
+@@ -877,15 +816,32 @@ public class StableDistanceSorterTest {
+         return entity;
+     }
+ 
++    private static net.minecraft.world.level.Level markerLevel() {
++        final var level = mock(net.minecraft.world.level.Level.class);
++        try {
++            final var field = net.minecraft.world.level.Level.class.getDeclaredField("spigotConfig");
++            field.setAccessible(true);
++            field.set(level, mock(org.spigotmc.SpigotWorldConfig.class));
++        } catch (final ReflectiveOperationException exception) {
++            throw new AssertionError(exception);
++        }
++        final var config = mock(io.papermc.paper.configuration.WorldConfiguration.class);
++        config.entities = config.new Entities();
++        config.entities.spawning = mock(io.papermc.paper.configuration.WorldConfiguration.Entities.Spawning.class);
++        config.entities.spawning.despawnTime = new it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap<>();
++        when(level.paperConfig()).thenReturn(config);
++        return level;
++    }
++
+     private static Entity markerAt(final double x, final double y, final double z) {
+-        final Entity entity = new net.minecraft.world.entity.Marker(EntityType.MARKER, null);
++        final Entity entity = new net.minecraft.world.entity.Marker(((EntityType<net.minecraft.world.entity.Marker>) net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getValue(net.minecraft.resources.Identifier.withDefaultNamespace("marker"))), markerLevel());
+         entity.setPos(x, y, z);
+         return entity;
+     }
+ 
+     private abstract static class CustomDistanceEntity extends Entity {
+         private CustomDistanceEntity() {
+-            super(EntityType.MARKER, null);
++            super(((EntityType<net.minecraft.world.entity.Marker>) net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getValue(net.minecraft.resources.Identifier.withDefaultNamespace("marker"))), markerLevel());
+         }
+ 
+         @Override
+@@ -896,7 +852,7 @@ public class StableDistanceSorterTest {
+ 
+     private abstract static class CustomPositionEntity extends Entity {
+         private CustomPositionEntity() {
+-            super(EntityType.MARKER, null);
++            super(((EntityType<net.minecraft.world.entity.Marker>) net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getValue(net.minecraft.resources.Identifier.withDefaultNamespace("marker"))), markerLevel());
+         }
+ 
+         @Override

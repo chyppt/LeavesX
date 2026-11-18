@@ -1,13 +1,18 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 19893e063f21f2f9cd97d53babfd02ab091d069c Mon Sep 17 00:00:00 2001
 From: chyppt <pptwxo@163.com>
 Date: Sat, 14 Nov 2026 16:00:00 +0800
 Subject: [PATCH] Observe bounded experience drop diagnostics
 
+---
+ net/minecraft/world/entity/ExperienceOrb.java | 29 +++++++++++++++----
+ net/minecraft/world/entity/LivingEntity.java  |  1 +
+ 2 files changed, 24 insertions(+), 6 deletions(-)
+
 diff --git a/net/minecraft/world/entity/ExperienceOrb.java b/net/minecraft/world/entity/ExperienceOrb.java
-index 14ee8cc6..5cb0a393 100644
+index 71e7f19c..e178bb73 100644
 --- a/net/minecraft/world/entity/ExperienceOrb.java
 +++ b/net/minecraft/world/entity/ExperienceOrb.java
-@@ -273,11 +273,16 @@ public class ExperienceOrb extends Entity {
+@@ -278,11 +278,16 @@ public class ExperienceOrb extends Entity {
      }
      public static void awardWithDirection(final ServerLevel level, final Vec3 pos, final Vec3 roughDirection, int amount, org.bukkit.entity.ExperienceOrb.@Nullable SpawnReason reason, final @Nullable Entity triggerId, final @Nullable Entity sourceId) {
      // Paper end - add reason to orbs
@@ -25,7 +30,7 @@ index 14ee8cc6..5cb0a393 100644
              }
          }
      }
-@@ -390,15 +395,23 @@ public class ExperienceOrb extends Entity {
+@@ -395,15 +400,23 @@ public class ExperienceOrb extends Entity {
      @Override
      public void playerTouch(final Player player) {
          if (player instanceof ServerPlayer serverPlayer) {
@@ -52,7 +57,7 @@ index 14ee8cc6..5cb0a393 100644
                          this.count--;
                      }
                      this.discard(org.bukkit.event.entity.EntityRemoveEvent.Cause.PICKUP); // CraftBukkit - add Bukkit remove cause
-@@ -407,10 +420,14 @@ public class ExperienceOrb extends Entity {
+@@ -412,10 +425,14 @@ public class ExperienceOrb extends Entity {
  
                  player.takeXpDelay = org.bukkit.craftbukkit.event.CraftEventFactory.callPlayerXpCooldownEvent(player, 2, org.bukkit.event.player.PlayerExpCooldownChangeEvent.ChangeReason.PICKUP_ORB).getNewCooldown(); // CraftBukkit - entity.takeXpDelay = 2;
                  player.take(this, 1);
@@ -70,14 +75,16 @@ index 14ee8cc6..5cb0a393 100644
                  this.count--;
                  if (this.count == 0) {
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index c44038b4..a595e400 100644
+index 01c50a50..c439d2cd 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
-@@ -1910,6 +1910,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
-                         sourceEntity.killedEntity((ServerLevel)this.level(), this, source);
-                     }
-                     this.gameEvent(GameEvent.ENTITY_DIE);
-+                    org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.beforeDrop(this);
-                     if (!this.wasExperienceConsumed()) this.dropExperience((ServerLevel) this.level(), source.getEntity()); // Leaves - exp fix
-                 } else {
-                     this.dead = false;
+@@ -1958,6 +1958,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         this.postDeathEventTasks.add(() -> {
+             // Leaves - the catalyst may consume experience during ENTITY_DIE before deferred drops run.
+             if (!this.wasExperienceConsumed()) {
++                org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.beforeDrop(this);
+                 this.dropExperience(level, source.getEntity());
+             }
+         }); // Paper
+-- 
+2.52.0.windows.1

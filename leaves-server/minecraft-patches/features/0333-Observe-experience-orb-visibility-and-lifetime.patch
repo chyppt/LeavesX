@@ -1,34 +1,21 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 28640ea2c147fecad470a7fe436257511ea28b0d Mon Sep 17 00:00:00 2001
 From: chyppt <pptwxo@163.com>
 Date: Sat, 3 Oct 2026 01:00:00 +0800
 Subject: [PATCH] Observe experience orb visibility and lifetime
 
-diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
---- a/net/minecraft/server/level/ServerLevel.java
-+++ b/net/minecraft/server/level/ServerLevel.java
-@@ -960,6 +960,7 @@
-         this.debugSynchronizers.tick(this.server.debugSubscribers());
-         profiler.pop();
-         this.environmentAttributes().invalidateTickCache();
-+        org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.sampleWorld(this);
-     }
- 
-     @Override
-diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
---- a/net/minecraft/server/level/ServerEntity.java
-+++ b/net/minecraft/server/level/ServerEntity.java
-@@ -350,6 +350,7 @@
-         List<Packet<? super ClientGamePacketListener>> packets = new ArrayList<>();
-         this.sendPairingData(player, packets::add);
-         player.connection.send(new ClientboundBundlePacket(packets));
-+        org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.pairingSubmitted(this.entity, player, packets);
-         this.entity.startSeenByPlayer(player);
-     }
- 
+---
+ net/minecraft/server/level/ChunkMap.java      | 2 ++
+ net/minecraft/server/level/ServerEntity.java  | 1 +
+ net/minecraft/server/level/ServerLevel.java   | 1 +
+ net/minecraft/world/entity/Entity.java        | 3 +++
+ net/minecraft/world/entity/ExperienceOrb.java | 1 +
+ 5 files changed, 8 insertions(+)
+
 diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index dd8cf6af..753a9c4f 100644
 --- a/net/minecraft/server/level/ChunkMap.java
 +++ b/net/minecraft/server/level/ChunkMap.java
-@@ -1656,6 +1656,8 @@
+@@ -1683,6 +1683,8 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
                          }
  
                          ChunkMap.this.level.debugSynchronizers().startTrackingEntity(player, this.entity);
@@ -37,13 +24,38 @@ diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/lev
                          }
                          // Paper end - entity tracking events
                          this.serverEntity.onPlayerAdd(); // Paper - fix desync when a player is added to the tracker
+diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
+index 8467b035..4ac392d6 100644
+--- a/net/minecraft/server/level/ServerEntity.java
++++ b/net/minecraft/server/level/ServerEntity.java
+@@ -355,6 +355,7 @@ public class ServerEntity {
+         List<Packet<? super ClientGamePacketListener>> packets = new ArrayList<>();
+         this.sendPairingData(player, packets::add);
+         player.connection.send(new ClientboundBundlePacket(packets));
++        org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.pairingSubmitted(this.entity, player, packets);
+         this.entity.startSeenByPlayer(player);
+     }
+ 
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index 35c169cd..a6626315 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -975,6 +975,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+ 
+         this.debugSynchronizers.tick(this.server.debugSubscribers());
+         profiler.pop();
++        org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.sampleWorld(this);
+     }
+ 
+     @Override
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
+index c1148679..07ad3123 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -5202,6 +5202,9 @@
-         final boolean alreadyRemoved = this.removalReason != null; // Paper - Folia schedulers
+@@ -5286,6 +5286,9 @@ public abstract class Entity
          if (this.removalReason == null) {
              this.removalReason = reason;
+             this.removeEventCause = cause; // Paper
 +            if (this instanceof ExperienceOrb orb) {
 +                org.leavesx.leavesx.diagnostics.ExperienceDiagnostics.removed(orb, reason, cause);
 +            }
@@ -51,9 +63,10 @@ diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity
  
          if (this.removalReason.shouldDestroy()) {
 diff --git a/net/minecraft/world/entity/ExperienceOrb.java b/net/minecraft/world/entity/ExperienceOrb.java
+index e178bb73..a6fdf16f 100644
 --- a/net/minecraft/world/entity/ExperienceOrb.java
 +++ b/net/minecraft/world/entity/ExperienceOrb.java
-@@ -394,6 +394,7 @@
+@@ -399,6 +399,7 @@ public class ExperienceOrb extends Entity {
  
      @Override
      public void playerTouch(final Player player) {
@@ -61,3 +74,5 @@ diff --git a/net/minecraft/world/entity/ExperienceOrb.java b/net/minecraft/world
          if (player instanceof ServerPlayer serverPlayer) {
              if (player.takeXpDelay == 0) {
                  if (!new com.destroystokyo.paper.event.player.PlayerPickupExperienceEvent(serverPlayer.getBukkitEntity(), (org.bukkit.entity.ExperienceOrb) this.getBukkitEntity()).callEvent()) {
+-- 
+2.52.0.windows.1

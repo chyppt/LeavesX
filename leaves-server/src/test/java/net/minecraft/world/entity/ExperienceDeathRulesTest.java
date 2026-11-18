@@ -38,7 +38,7 @@ public class ExperienceDeathRulesTest {
             when(mob.level()).thenReturn(level);
             when(mob.shouldDropExperience()).thenReturn(true);
             when(mob.getExperienceReward(any(), any())).thenReturn(5);
-            mob.goalSelector = mock(GoalSelector.class);
+            setMobField(mob, "goalSelector", mock(GoalSelector.class));
             mob.targetSelector = mock(GoalSelector.class);
             mob.navigation = mock(PathNavigation.class);
             mob.moveControl = mock(MoveControl.class);

@@ -74,7 +74,7 @@ public class TargetDistanceSnapshotTest {
     }
 
     private static class CustomDistanceZombie extends Zombie {
-        CustomDistanceZombie() { super(net.minecraft.world.entity.EntityType.ZOMBIE, null); }
+        CustomDistanceZombie() { super(((net.minecraft.world.entity.EntityType<net.minecraft.world.entity.monster.zombie.Zombie>) net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getValue(net.minecraft.resources.Identifier.withDefaultNamespace("zombie"))), null); }
 
         @Override
         public double distanceToSqr(final double x, final double y, final double z) {
