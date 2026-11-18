@@ -1,15 +1,18 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From a247ad74b97b703de3f1854849d422e6fb7b0dca Mon Sep 17 00:00:00 2001
 From: violetc <58360096+s-yh-china@users.noreply.github.com>
 Date: Sun, 14 Aug 2022 08:25:24 +0800
 Subject: [PATCH] Optimize suffocation
 
 This patch is Powered by Pufferfish(https://github.com/pufferfish-gg/Pufferfish)
+---
+ net/minecraft/world/entity/LivingEntity.java | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
 
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 61b0d1a6..b6789b31 100644
+index dcf700e5..f4e163db 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
-@@ -453,7 +453,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -456,7 +456,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
          profiler.push("livingEntityBaseTick");
          if (this.isAlive() && this.level() instanceof ServerLevel level) {
              boolean isPlayer = this instanceof Player;
@@ -18,8 +21,8 @@ index 61b0d1a6..b6789b31 100644
                  this.hurtServer(level, this.damageSources().inWall(), 1.0F);
              } else if (isPlayer && !level.getWorldBorder().isWithinBounds(this.getBoundingBox())) {
                  double dist = level.getWorldBorder().getDistanceToBorder(this) + level.getWorldBorder().getSafeZone();
-@@ -1423,6 +1423,12 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
-         return this.getHealth() <= 0.0F || this.dead;
+@@ -1438,6 +1438,12 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         return this.hurtTime > 0;
      }
  
 +    // Leaves start - optimize suffocation

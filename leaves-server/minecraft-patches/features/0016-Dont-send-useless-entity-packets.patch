@@ -1,17 +1,20 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 441ef308832e5deb39e7993c3df6c55c3e088e96 Mon Sep 17 00:00:00 2001
 From: violetc <58360096+s-yh-china@users.noreply.github.com>
 Date: Sun, 14 Aug 2022 00:00:51 +0800
 Subject: [PATCH] Dont send useless entity packets
 
 This patch is Powered by Purpur(https://github.com/PurpurMC/Purpur)
+---
+ net/minecraft/server/level/ServerEntity.java | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
 
 diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
-index 60af8292..a0a38800 100644
+index e46f95b1..2b828c62 100644
 --- a/net/minecraft/server/level/ServerEntity.java
 +++ b/net/minecraft/server/level/ServerEntity.java
-@@ -199,6 +199,11 @@ public class ServerEntity {
-                     sentPosition = true;
-                     sentRotation = true;
+@@ -189,6 +189,11 @@ public class ServerEntity {
+                     boolean shouldSendPosition = positionChanged || this.tickCount % 60 == 0;
+                     packet = this.createMovePacket(position, yRotn, xRotn, shouldSendPosition, shouldSendRotation);
                  }
 +                // Leaves start - dont send useless entity packets
 +                if (packet != null && org.leavesmc.leaves.LeavesConfig.performance.dontSendUselessEntityPackets && isUselessPacket(packet)) {
@@ -21,7 +24,7 @@ index 60af8292..a0a38800 100644
  
                  if (this.entity.needsSync || this.trackDelta || this.entity instanceof LivingEntity livingEntity && livingEntity.isFallFlying()) {
                      Vec3 movement = this.entity.getDeltaMovement();
-@@ -305,6 +310,21 @@ public class ServerEntity {
+@@ -341,6 +346,21 @@ public class ServerEntity {
          this.positionCodec.setBase(this.entity.position());
      }
  

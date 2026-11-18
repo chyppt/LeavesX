@@ -1,14 +1,17 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 2623acdd1849eee4bde92d65f158fe163dbefecf Mon Sep 17 00:00:00 2001
 From: violetc <58360096+s-yh-china@users.noreply.github.com>
 Date: Sat, 30 Jul 2022 01:11:30 +0800
 Subject: [PATCH] Configurable MC-59471
 
+---
+ net/minecraft/world/level/block/TripWireHookBlock.java | 7 +++++++
+ 1 file changed, 7 insertions(+)
 
 diff --git a/net/minecraft/world/level/block/TripWireHookBlock.java b/net/minecraft/world/level/block/TripWireHookBlock.java
-index 9d08ce61..14bfa86f 100644
+index b9090b80..c887e162 100644
 --- a/net/minecraft/world/level/block/TripWireHookBlock.java
 +++ b/net/minecraft/world/level/block/TripWireHookBlock.java
-@@ -200,10 +200,17 @@ public class TripWireHookBlock extends Block {
+@@ -193,10 +193,17 @@ public class TripWireHookBlock extends Block {
                      BlockPos testPos = pos.relative(direction, i);
                      BlockState wireData = wireStates[i];
                      if (wireData != null) {
@@ -19,7 +22,7 @@ index 9d08ce61..14bfa86f 100644
 +                        } else {
                          BlockState testPosState = level.getBlockState(testPos);
                          if (testPosState.is(Blocks.TRIPWIRE) || testPosState.is(Blocks.TRIPWIRE_HOOK)) {
-                             if (!io.papermc.paper.configuration.GlobalConfiguration.get().blockUpdates.disableTripwireUpdates || !testPosState.is(Blocks.TRIPWIRE)) level.setBlock(testPos, wireData.trySetValue(ATTACHED, attached), Block.UPDATE_ALL); // Paper - prevent tripwire from updating
+                             if (!io.papermc.paper.configuration.GlobalConfiguration.get().blockUpdates.disableTripwireUpdates || !testPosState.is(Blocks.TRIPWIRE)) level.setBlockAndUpdate(testPos, wireData.trySetValue(ATTACHED, attached)); // Paper - prevent tripwire from updating
                          }
 +                        }
 +                        // Leaves end - MC-59471

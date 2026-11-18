@@ -1,65 +1,54 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From ade538a6a8c9a2ce39de4a09d076b539fcad54f2 Mon Sep 17 00:00:00 2001
 From: violetc <58360096+s-yh-china@users.noreply.github.com>
 Date: Wed, 3 Aug 2022 11:20:51 +0800
 Subject: [PATCH] No chat sign
 
+---
+ .../arguments/ArgumentSignatures.java         |  5 +++++
+ .../protocol/game/ServerboundChatPacket.java  |  4 ++++
+ .../ServerboundChatSessionUpdatePacket.java   |  5 +++++
+ .../network/protocol/status/ServerStatus.java | 12 ++++++++++--
+ .../server/dedicated/DedicatedServer.java     |  2 +-
+ .../ServerCommonPacketListenerImpl.java       | 19 +++++++++++++++++--
+ net/minecraft/server/players/PlayerList.java  |  2 +-
+ 7 files changed, 43 insertions(+), 6 deletions(-)
 
 diff --git a/net/minecraft/commands/arguments/ArgumentSignatures.java b/net/minecraft/commands/arguments/ArgumentSignatures.java
-index 042fec0c..5048b4b9 100644
+index 78aa03db..c14e2d90 100644
 --- a/net/minecraft/commands/arguments/ArgumentSignatures.java
 +++ b/net/minecraft/commands/arguments/ArgumentSignatures.java
-@@ -13,10 +13,17 @@ public record ArgumentSignatures(List<ArgumentSignatures.Entry> entries) {
-     private static final int MAX_ARGUMENT_COUNT = 8;
-     private static final int MAX_ARGUMENT_NAME_LENGTH = 16;
- 
-+    // Leaves start - no chat sign
-     public ArgumentSignatures(final FriendlyByteBuf input) {
--        this(input.readCollection(FriendlyByteBuf.<List<ArgumentSignatures.Entry>>limitValue(ArrayList::new, 8), ArgumentSignatures.Entry::new));
-+        this(readSign(input));
-     }
- 
-+    private static List<ArgumentSignatures.Entry> readSign(final FriendlyByteBuf buf) {
-+        var entries = buf.readCollection(FriendlyByteBuf.<List<ArgumentSignatures.Entry>>limitValue(ArrayList::new, 8), ArgumentSignatures.Entry::new);
-+        return org.leavesmc.leaves.LeavesConfig.mics.noChatSign ? List.of() : entries;
-+    }
-+    // Leaves end - no chat sign
-+
-     public void write(final FriendlyByteBuf output) {
-         output.writeCollection(this.entries, (out, entry) -> entry.write(out));
-     }
-diff --git a/net/minecraft/network/protocol/game/ServerboundChatPacket.java b/net/minecraft/network/protocol/game/ServerboundChatPacket.java
-index c9623b55..f6c589f1 100644
---- a/net/minecraft/network/protocol/game/ServerboundChatPacket.java
-+++ b/net/minecraft/network/protocol/game/ServerboundChatPacket.java
-@@ -16,7 +16,7 @@ public record ServerboundChatPacket(String message, Instant timeStamp, long salt
+@@ -17,6 +17,11 @@ public record ArgumentSignatures(List<ArgumentSignatures.Entry> entries) {
+         ArgumentSignatures.Entry.STREAM_CODEC.apply(ByteBufCodecs.list(8)), ArgumentSignatures::entries, ArgumentSignatures::new
      );
  
-     private ServerboundChatPacket(final FriendlyByteBuf input) {
--        this(input.readUtf(256), input.readInstant(), input.readLong(), input.readNullable(MessageSignature::read), new LastSeenMessages.Update(input));
-+        this(input.readUtf(256), input.readInstant(), input.readLong(), input.readNullable(ServerboundChatPacket::readSign), new LastSeenMessages.Update(input)); // Leaves - no chat sign
-     }
- 
-     private void write(final FriendlyByteBuf output) {
-@@ -27,6 +27,14 @@ public record ServerboundChatPacket(String message, Instant timeStamp, long salt
-         this.lastSeenMessages.write(output);
-     }
- 
-+    // Leaves start - no chat sign
-+    private static MessageSignature readSign(final FriendlyByteBuf buf) {
-+        byte[] bs = new byte[256];
-+        buf.readBytes(bs);
-+        return org.leavesmc.leaves.LeavesConfig.mics.noChatSign ? null : new MessageSignature(bs);
++    // 解码器已消费完整签名字节，再按配置丢弃签名。
++    public ArgumentSignatures {
++        if (org.leavesmc.leaves.LeavesConfig.mics.noChatSign) entries = List.of();
 +    }
-+    // Leaves end - no chat sign
 +
+     public static ArgumentSignatures signCommand(final SignableCommand<?> command, final ArgumentSignatures.Signer signer) {
+         List<ArgumentSignatures.Entry> entries = command.arguments().stream().map(argument -> {
+             MessageSignature signature = signer.sign(argument.value());
+diff --git a/net/minecraft/network/protocol/game/ServerboundChatPacket.java b/net/minecraft/network/protocol/game/ServerboundChatPacket.java
+index b758f2d9..df98f3a9 100644
+--- a/net/minecraft/network/protocol/game/ServerboundChatPacket.java
++++ b/net/minecraft/network/protocol/game/ServerboundChatPacket.java
+@@ -26,6 +26,10 @@ public record ServerboundChatPacket(String message, Instant timeStamp, long salt
+         ServerboundChatPacket::new
+     );
+ 
++    // 保留 26.3 的 Optional 签名和流编码器格式。
++    public ServerboundChatPacket {
++        if (org.leavesmc.leaves.LeavesConfig.mics.noChatSign) signature = Optional.empty();
++    }
      @Override
      public PacketType<ServerboundChatPacket> type() {
          return GamePacketTypes.SERVERBOUND_CHAT;
 diff --git a/net/minecraft/network/protocol/game/ServerboundChatSessionUpdatePacket.java b/net/minecraft/network/protocol/game/ServerboundChatSessionUpdatePacket.java
-index a3dc386f..eb00b83b 100644
+index 0a3cffd6..ce8a32a9 100644
 --- a/net/minecraft/network/protocol/game/ServerboundChatSessionUpdatePacket.java
 +++ b/net/minecraft/network/protocol/game/ServerboundChatSessionUpdatePacket.java
-@@ -26,6 +26,11 @@ public record ServerboundChatSessionUpdatePacket(RemoteChatSession.Data chatSess
+@@ -17,6 +17,11 @@ public record ServerboundChatSessionUpdatePacket(RemoteChatSession.Data chatSess
  
      @Override
      public void handle(final ServerGamePacketListener listener) {
@@ -106,7 +95,7 @@ index 5eb7d46b..d0c9d71b 100644
          private static final String PREFIX = "data:image/png;base64,";
          public static final Codec<ServerStatus.Favicon> CODEC = Codec.STRING.comapFlatMap(string -> {
 diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
-index 5ee37941..09efa89e 100644
+index 3408c651..791a7d26 100644
 --- a/net/minecraft/server/dedicated/DedicatedServer.java
 +++ b/net/minecraft/server/dedicated/DedicatedServer.java
 @@ -773,7 +773,7 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
@@ -151,10 +140,10 @@ index 5c0073b9..4c87bef7 100644
          if (packet == null) {
              return;
 diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
-index 82aaf1a7..2bef79ca 100644
+index 2d03e700..0c01e525 100644
 --- a/net/minecraft/server/players/PlayerList.java
 +++ b/net/minecraft/server/players/PlayerList.java
-@@ -1194,7 +1194,7 @@ public abstract class PlayerList {
+@@ -1195,7 +1195,7 @@ public abstract class PlayerList {
      }
  
      public boolean verifyChatTrusted(final PlayerChatMessage message) {

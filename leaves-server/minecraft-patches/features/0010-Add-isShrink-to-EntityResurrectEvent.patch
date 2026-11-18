@@ -1,19 +1,22 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 1744f7828ce2c362766dfba2bd0d945870c463f2 Mon Sep 17 00:00:00 2001
 From: violetc <58360096+s-yh-china@users.noreply.github.com>
 Date: Wed, 30 Mar 2022 08:58:45 +0000
 Subject: [PATCH] Add isShrink to EntityResurrectEvent
 
+---
+ net/minecraft/world/entity/LivingEntity.java | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 763e96e4..61b0d1a6 100644
+index 1690187b..dcf700e5 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
-@@ -1760,14 +1760,14 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -1780,14 +1780,14 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
          }
  
          final org.bukkit.inventory.EquipmentSlot handSlot = (usedHand != null) ? org.bukkit.craftbukkit.CraftEquipmentSlot.getHand(usedHand) : null;
--        final EntityResurrectEvent event = new EntityResurrectEvent((org.bukkit.entity.LivingEntity) this.getBukkitEntity(), handSlot);
-+            final EntityResurrectEvent event = new EntityResurrectEvent((org.bukkit.entity.LivingEntity) this.getBukkitEntity(), handSlot, true); // Leaves - can dont shrink
+-        final EntityResurrectEvent event = new EntityResurrectEvent(this.getBukkitEntity(), handSlot);
++        final EntityResurrectEvent event = new EntityResurrectEvent((org.bukkit.entity.LivingEntity) this.getBukkitEntity(), handSlot, true); // Leaves - can dont shrink
          event.setCancelled(protectionItem == null);
          this.level().getCraftServer().getPluginManager().callEvent(event);
          if (event.isCancelled()) {
