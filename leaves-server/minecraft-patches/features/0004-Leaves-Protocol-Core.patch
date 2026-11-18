@@ -1,8 +1,14 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 0fbdc22917181ba529b79db7d581141942b6700f Mon Sep 17 00:00:00 2001
 From: violetc <58360096+s-yh-china@users.noreply.github.com>
 Date: Sun, 2 Feb 2025 13:08:32 +0800
 Subject: [PATCH] Leaves Protocol Core
 
+---
+ .../common/custom/CustomPacketPayload.java        | 11 ++++++++++-
+ net/minecraft/server/MinecraftServer.java         |  2 ++
+ .../network/ServerCommonPacketListenerImpl.java   | 15 +++++++++++++++
+ net/minecraft/server/players/PlayerList.java      |  4 ++++
+ 4 files changed, 31 insertions(+), 1 deletion(-)
 
 diff --git a/net/minecraft/network/protocol/common/custom/CustomPacketPayload.java b/net/minecraft/network/protocol/common/custom/CustomPacketPayload.java
 index 08e25366..2f1e5c3d 100644
@@ -33,10 +39,10 @@ index 08e25366..2f1e5c3d 100644
          };
      }
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index f7112d7e..274ef91f 100644
+index 39360c51..875c0e54 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -1846,6 +1846,8 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1830,6 +1830,8 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
  
          profiler.popPush("server gui refresh");
  
@@ -93,10 +99,10 @@ index 5dbb2849..5c0073b9 100644
              bridge.removeChannel(channel);
          }
 diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
-index 79d33646..031bac59 100644
+index 62f57eb2..6acf3448 100644
 --- a/net/minecraft/server/players/PlayerList.java
 +++ b/net/minecraft/server/players/PlayerList.java
-@@ -246,6 +246,8 @@ public abstract class PlayerList {
+@@ -248,6 +248,8 @@ public abstract class PlayerList {
              return;
          }
  
@@ -105,7 +111,7 @@ index 79d33646..031bac59 100644
          final net.kyori.adventure.text.Component jm = playerJoinEvent.joinMessage();
  
          if (jm != null && !jm.equals(net.kyori.adventure.text.Component.empty())) { // Paper - Adventure
-@@ -432,6 +434,7 @@ public abstract class PlayerList {
+@@ -435,6 +437,7 @@ public abstract class PlayerList {
          return this.remove(player, net.kyori.adventure.text.Component.translatable("multiplayer.player.left", net.kyori.adventure.text.format.NamedTextColor.YELLOW, io.papermc.paper.configuration.GlobalConfiguration.get().messages.useDisplayNameInQuitMessage ? player.getBukkitEntity().displayName() : io.papermc.paper.adventure.PaperAdventure.asAdventure(player.getDisplayName())));
      }
      public net.kyori.adventure.text.@Nullable Component remove(final ServerPlayer player, final net.kyori.adventure.text.Component leaveMessage) {
@@ -113,11 +119,10 @@ index 79d33646..031bac59 100644
          // Paper end - Fix kick event leave message not being sent
          ServerLevel level = player.level();
          player.awardStat(Stats.LEAVE_GAME);
-@@ -1298,6 +1301,7 @@ public abstract class PlayerList {
+@@ -1299,5 +1302,6 @@ public abstract class PlayerList {
              player.connection.send(recipes);
              player.getRecipeBook().sendInitialRecipeBook(player);
          }
 +        org.leavesmc.leaves.protocol.core.LeavesProtocolManager.handleDataPackReload(); // Leaves - protocol core
      }
- 
-     public boolean isAllowCommandsForAllPlayers() {
+ }

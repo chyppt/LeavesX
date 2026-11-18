@@ -100,7 +100,7 @@ index 44fcc919..0f35f52d 100644
  
          public PushReaction getPistonPushReaction() {
 -            return !this.isDestroyable() ? PushReaction.IMMOVEABLE : this.pushReaction; // Paper - Protect Bedrock and End Portal/Frames from being destroyed
-+            return !this.isDestroyable() ? PushReaction.BLOCK : this.getBlock().getResetPushReaction() == null ? this.pushReaction : this.getBlock().getResetPushReaction(); // Paper - Protect Bedrock and End Portal/Frames from being destroyed // Leaves - reset push reaction
++            return !this.isDestroyable() ? PushReaction.IMMOVEABLE : this.getBlock().getResetPushReaction() == null ? this.pushReaction : this.getBlock().getResetPushReaction(); // Paper - Protect Bedrock and End Portal/Frames from being destroyed // Leaves - reset push reaction
          }
  
          public boolean isSolidRender() {
