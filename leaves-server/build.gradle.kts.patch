@@ -1,16 +1,17 @@
 --- a/paper-server/build.gradle.kts
 +++ b/paper-server/build.gradle.kts
-@@ -1,4 +_,3 @@
+@@ -1,4 +1,3 @@
 -import io.papermc.fill.model.BuildChannel
  import io.papermc.paperweight.attribute.DevBundleOutput
  import io.papermc.paperweight.util.*
  import java.time.Instant
-@@ -7,21 +_,33 @@
+@@ -7,35 +6,45 @@ plugins {
      `java-library`
      `maven-publish`
      idea
 -    id("io.papermc.paperweight.core")
--    id("io.papermc.fill.gradle") version "1.0.12"
+-    id("io.papermc.paperweight.paper-checkstyle")
+-    id("io.papermc.fill.gradle") version "1.0.14"
 +    id("org.leavesmc.leavesweight.core") // Leaves - build change
  }
  
@@ -18,7 +19,7 @@
 +val leavesMavenPublicUrl = "https://repo.leavesmc.org/snapshots/" // Leaves - build change
  
  dependencies {
-     mache("io.papermc:mache:26.2+build.1")
+     mache("io.papermc:mache:26.3+build.2")
 -    paperclip("io.papermc:paperclip:3.0.4")
 +    leavesclip("org.leavesmc:leavesclip:3.0.10") // Leaves - build change
  }
@@ -41,9 +42,16 @@
 +    // Leaves end - build change
 +
      updatingMinecraft {
-         // oldPaperCommit = "d4fe85375af18bfa88f44d7c1e6a61904ae550cc"
+         //oldPaperCommit = "e5fe71723e2ffde7cc9fafc085ac3bb73e63175e"
      }
-@@ -31,6 +_,7 @@
+ }
+ 
+-paperCheckstyle {
+-    directoriesToSkipFile = layout.projectDirectory.file(".checkstyle/ignored_directories.txt")
+-}
++
+ 
+ tasks.generateDevelopmentBundle {
      libraryRepositories.addAll(
          "https://repo.maven.apache.org/maven2/",
          paperMavenPublicUrl,
@@ -51,7 +59,7 @@
      )
  }
  
-@@ -86,7 +_,22 @@
+@@ -91,7 +100,26 @@ if (project.providers.gradleProperty("publishDevBundle").isPresent) {
      }
  }
  
@@ -79,49 +87,38 @@
  configurations.named(log4jPlugins.compileClasspathConfigurationName) {
      extendsFrom(configurations.compileClasspath.get())
  }
-@@ -109,7 +_,18 @@
+@@ -114,7 +142,14 @@ abstract class MockitoAgentProvider : CommandLineArgumentProvider {
  }
  
  dependencies {
 -    implementation(project(":paper-api"))
-+    implementation(project(":leaves-api")) // Leaves - build change
-+    implementation("commons-lang:commons-lang:2.6") // Leaves - build change
-+    // Leaves start - linear
++    implementation(project(":leaves-api"))
++    implementation("commons-lang:commons-lang:2.6")
 +    implementation("com.github.luben:zstd-jni:1.5.4-1")
 +    implementation("net.openhft:zero-allocation-hashing:0.16")
-+    // Leaves end - linear
-+    // Leaves start - leaves plugin
 +    implementation("org.spongepowered:configurate-gson:4.2.0-SNAPSHOT") {
 +        exclude(group = "com.google.code.gson", module = "gson")
 +        exclude(group = "com.google.guava", module = "guava")
 +    }
-+    // Leaves end - leaves plugin
-     implementation("ca.spottedleaf:leafpile:1.2.0")
-     implementation("org.jline:jline-terminal-ffm:3.27.1") // use ffm on java 22+
-     implementation("org.jline:jline-terminal-jni:3.27.1") // fall back to jni on java 21
-@@ -159,26 +_,38 @@
-     implementation("me.lucko:spark-paper:1.10.180")
+     implementation(platform("ca.spottedleaf.leafpile:bom:1.3.2"))
+     implementation("ca.spottedleaf.leafpile:common")
+     implementation("ca.spottedleaf.leafpile:concurrentutil")
+@@ -167,6 +202,12 @@ dependencies {
+     implementation("me.lucko:spark-paper:1.10.191")
  }
  
-+// Leaves start - hide irrelevant compilation warnings
++// Leaves - 编译现有 SIMD 路径需要显式启用 Vector 模块。
 +tasks.withType<JavaCompile> {
-+    val compilerArgs = options.compilerArgs
-+    compilerArgs.add("-Xlint:-module")
-+    compilerArgs.add("-Xlint:-removal")
-+    compilerArgs.add("-Xlint:-dep-ann")
-+    compilerArgs.add("--add-modules=jdk.incubator.vector") // SIMD
-+    // Historical verification snapshots are retained for provenance but must never enter any compile source set.
++    options.compilerArgs.add("--add-modules=jdk.incubator.vector")
 +    exclude("**/.tmp-beta174-mc-verify/**")
 +}
-+// Leaves end - hide irrelevant compilation warnings
 +
  tasks.jar {
      manifest {
          val git = Git(rootProject.layout.projectDirectory.path)
-         val mcVersion = rootProject.providers.gradleProperty("mcVersion").get()
+@@ -174,19 +215,21 @@ tasks.jar {
          val build = System.getenv("BUILD_NUMBER") ?: null
--        val buildTime = providers.environmentVariable("BUILD_STARTED_AT").map(Instant::parse).orElse(Instant.EPOCH).get()
-+        val buildTime = Instant.now() // Leaves - always use build time
+         val buildTime = providers.environmentVariable("BUILD_STARTED_AT").map(Instant::parse).orElse(Instant.EPOCH).get()
          val gitHash = git.exec(providers, "rev-parse", "--short=7", "HEAD").get().trim()
 -        val implementationVersion = "$mcVersion-${build ?: "DEV"}-$gitHash"
 +        val leavesXVersion = rootProject.providers.gradleProperty("leavesXVersion").get()
@@ -147,11 +144,10 @@
              "Build-Number" to (build ?: ""),
              "Build-Time" to buildTime.toString(),
              "Git-Branch" to gitBranch,
-@@ -190,6 +_,12 @@
+@@ -198,6 +241,12 @@ tasks.jar {
      }
  }
--
-+
+ 
 +// Keep the distributable filename independent from the upstream Leaves task defaults.
 +tasks.named<io.papermc.paperweight.tasks.CreateLeavesclipJar>("createLeavesclipJar") {
 +    val minecraftVersion = rootProject.providers.gradleProperty("mcVersion")
@@ -161,10 +157,9 @@
  // Compile tests with -parameters for better junit parameterized test names
  tasks.compileTestJava {
      options.compilerArgs.add("-parameters")
-@@ -224,7 +_,8 @@
+@@ -241,7 +290,8 @@ tasks.jar {
  }
--
-+
+ 
  tasks.test {
 -    include("**/**TestSuite.class")
 +    // Keep the upstream test task focused on the explicit compatibility suites.
@@ -172,16 +167,16 @@
      workingDir = temporaryDir
      useJUnitPlatform {
          forkEvery = 1
-@@ -237,7 +_,7 @@
-     jvmArgumentProviders.add(provider)
+@@ -264,7 +314,7 @@ tasks.withType<io.papermc.paperweight.tasks.CreateBundlerJar>().configureEach {
+     )
  }
  
 -val generatedDir: java.nio.file.Path = layout.projectDirectory.dir("src/generated/java").asFile.toPath()
-+val generatedDir: java.nio.file.Path = rootProject.layout.projectDirectory.dir("paper-server/src/generated/java").asFile.toPath() // Leaves - build change
++val generatedDir: java.nio.file.Path = rootProject.layout.projectDirectory.dir("paper-server/src/generated/java").asFile.toPath()
  idea {
      module {
          generatedSourceDirs.add(generatedDir.toFile())
-@@ -275,6 +_,10 @@
+@@ -302,6 +352,10 @@ fun TaskContainer.registerRunTask(
      }
  
      args("--nogui")
@@ -192,7 +187,7 @@
      systemProperty("net.kyori.adventure.text.warnWhenLegacyFormattingDetected", true)
      if (providers.gradleProperty("paper.runDisableWatchdog").getOrElse("false") == "true") {
          systemProperty("disable.watchdog", true)
-@@ -309,25 +_,20 @@
+@@ -340,25 +394,20 @@ tasks.registerRunTask("runBundler") {
      classpath(tasks.createBundlerJar.flatMap { it.outputZip })
      mainClass.set(null as String?)
  }
@@ -207,7 +202,8 @@
 +    classpath(tasks.createLeavesclipJar.flatMap { it.outputZip })
      mainClass.set(null as String?)
  }
--
++// Leaves end - build change
+ 
 -fill {
 -    project("paper")
 -    versionFamily(paperweight.minecraftVersion.map { it.split(".", "-").takeWhile { part -> part.toIntOrNull() != null }.take(2).joinToString(".") })
@@ -223,8 +219,6 @@
 -            }
 -        }
 -    }
-+// Leaves end - build change
-+
 +// Leaves start - create config file
 +tasks.registerRunTask("createLeavesConfig") {
 +    description = "Create a new leaves.yml"

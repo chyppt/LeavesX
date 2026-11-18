@@ -1,3 +1,7 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Subject: [PATCH] Align release configuration and buffer regressions
+
 Subject: [PATCH] Align release configuration and buffer regressions
 
 diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java

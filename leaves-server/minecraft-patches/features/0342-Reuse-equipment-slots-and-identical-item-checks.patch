@@ -1,3 +1,7 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Subject: [PATCH] Reuse equipment slots and identical item checks
+
 Subject: [PATCH] Reuse immutable equipment lists and identical item checks
 
 Inspired by GaleMC/Gale patches 0074 and 0076 (GPL-3.0-only).

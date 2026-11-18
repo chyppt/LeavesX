@@ -1,3 +1,7 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Subject: [PATCH] Configure spark Java sampler protection
+
 Subject: [PATCH] Configure spark Java sampler protection
 
 diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java

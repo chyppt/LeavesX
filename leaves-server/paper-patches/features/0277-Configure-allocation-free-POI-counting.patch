@@ -1,3 +1,7 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Subject: [PATCH] Configure allocation free POI counting
+
 Subject: [PATCH] Configure POI counting without candidate collection
 
 diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java b/src/main/java/org/leavesx/leavesx/config/LeavesXOptimization.java

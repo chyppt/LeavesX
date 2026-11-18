@@ -1,3 +1,7 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Subject: [PATCH] Allocate large POI visited bitmaps on demand
+
 Subject: [PATCH] Allocate large POI visited bitmaps on demand
 
 diff --git a/src/main/java/org/leavesx/leavesx/performance/PoiVisitedSectionSet.java b/src/main/java/org/leavesx/leavesx/performance/PoiVisitedSectionSet.java

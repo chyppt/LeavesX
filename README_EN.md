@@ -14,6 +14,9 @@ LeavesX maintains separate source branches and builds for each Minecraft version
 | --- | --- |
 | 26.1.2 | `leavesx/26.1.2` |
 | 26.2 | `leavesx/26.2` |
+| 26.3 (experimental) | `leavesx/26.3` |
+
+The 26.3 branch uses Paper's experimental `feature/26.3-holdersets` baseline. Source adaptation and validation are in progress; it is not a stable release and should not be used with production worlds.
 
 Each branch adapts Minecraft source and APIs while keeping LeavesX features and optimizations in sync. Changes, supported versions and known issues are documented in the release notes.
 

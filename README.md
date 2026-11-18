@@ -14,6 +14,9 @@ LeavesX 按 Minecraft 版本维护独立源码分支和构建。支持版本及�
 | --- | --- |
 | 26.1.2 | `leavesx/26.1.2` |
 | 26.2 | `leavesx/26.2` |
+| 26.3（实验性） | `leavesx/26.3` |
+
+26.3 分支使用 Paper 的实验性 `feature/26.3-holdersets` 基线，尚处于源码适配和验证阶段，不作为稳定版本发布。请勿直接用于生产存档。
 
 各分支分别适配 Minecraft 的源码和接口，并同步 LeavesX 的功能与优化。具体新增内容、适用版本和已知问题见对应发布说明。
 
@@ -55,7 +58,7 @@ LeavesX 保留 Paper/Bukkit 插件接口，不要求插件改写为 Folia 插件
 
 ## 构建
 
-两个分支均使用 **JDK 25**。需要能够访问 GitHub 和构建依赖仓库。
+各分支均使用 **JDK 25**。需要能够访问 GitHub 和构建依赖仓库。
 
 Linux / macOS：
 
@@ -74,7 +77,7 @@ Windows PowerShell：
 生成的服务端文件位于：
 
 ```text
-leaves-server/build/libs/leavesx-<Minecraft版本>.jar
+leaves-server/build/libs/LeavesX-<LeavesX版本>-<Minecraft版本>.jar
 ```
 
 仅运行服务端测试可执行 `./gradlew :leaves-server:test`，Windows 使用 `.\gradlew.bat :leaves-server:test`。
