@@ -8,14 +8,15 @@ LeavesX is an independent fork of [Leaves](https://github.com/LeavesMC/Leaves), 
 
 ## Versions
 
-LeavesX maintains separate source branches and builds for each Minecraft version. See [Releases](https://github.com/chyppt/LeavesX/releases) for supported versions and downloads.
+LeavesX maintains a separate source branch for each Minecraft version. Available builds and supported versions are listed in [Releases](https://github.com/chyppt/LeavesX/releases).
 
-| Minecraft | Source branch |
-| --- | --- |
-| 26.1.2 | `leavesx/26.1.2` |
-| 26.2 | `leavesx/26.2` |
+| Minecraft | Source branch | Status |
+| --- | --- | --- |
+| 26.1.2 | `leavesx/26.1.2` | Built |
+| 26.2 | `leavesx/26.2` | Built |
+| 26.3 | `leavesx/26.3` | Adaptation and validation in progress |
 
-Each branch adapts Minecraft source and APIs while keeping LeavesX features and optimizations in sync. Changes, supported versions and known issues are documented in the release notes.
+The 26.3 branch has not completed full patch replay, compilation and regression checks, so no server JAR is currently provided for it. Choose a build matching your Minecraft version; release notes describe each available build and its known issues.
 
 Release files use `LeavesX-<LeavesX-version>-<Minecraft-version>.jar`. Use the file matching your server's Minecraft version.
 
