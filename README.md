@@ -10,13 +10,13 @@ LeavesX 是 [Leaves](https://github.com/LeavesMC/Leaves) 的独立分支，基�
 
 LeavesX 按 Minecraft 版本维护独立源码分支和构建。支持版本及对应文件以 [Releases](https://github.com/chyppt/LeavesX/releases) 为准。
 
-| Minecraft | 源码分支 |
-| --- | --- |
-| 26.1.2 | `leavesx/26.1.2` |
-| 26.2 | `leavesx/26.2` |
-| 26.3（实验性） | `leavesx/26.3` |
+| Minecraft | 源码分支 | 状态 |
+| --- | --- | --- |
+| 26.1.2 | `leavesx/26.1.2` | 已构建 |
+| 26.2 | `leavesx/26.2` | 已构建 |
+| 26.3 | `leavesx/26.3` | 适配与验证中 |
 
-26.3 分支使用 Paper 的实验性 `feature/26.3-holdersets` 基线，尚处于源码适配和验证阶段，不作为稳定版本发布。请勿直接用于生产存档。
+26.3 尚未完成完整补丁回放、编译和回归验证，目前不提供可用于服务器的 JAR。
 
 各分支分别适配 Minecraft 的源码和接口，并同步 LeavesX 的功能与优化。具体新增内容、适用版本和已知问题见对应发布说明。
 

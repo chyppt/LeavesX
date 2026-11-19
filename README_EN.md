@@ -10,13 +10,13 @@ LeavesX is an independent fork of [Leaves](https://github.com/LeavesMC/Leaves), 
 
 LeavesX maintains separate source branches and builds for each Minecraft version. See [Releases](https://github.com/chyppt/LeavesX/releases) for supported versions and downloads.
 
-| Minecraft | Source branch |
-| --- | --- |
-| 26.1.2 | `leavesx/26.1.2` |
-| 26.2 | `leavesx/26.2` |
-| 26.3 (experimental) | `leavesx/26.3` |
+| Minecraft | Source branch | Status |
+| --- | --- | --- |
+| 26.1.2 | `leavesx/26.1.2` | Built |
+| 26.2 | `leavesx/26.2` | Built |
+| 26.3 | `leavesx/26.3` | Adaptation and validation in progress |
 
-The 26.3 branch uses Paper's experimental `feature/26.3-holdersets` baseline. Source adaptation and validation are in progress; it is not a stable release and should not be used with production worlds.
+The 26.3 branch has not completed full patch replay, compilation and regression checks, so no server JAR is currently provided for it.
 
 Each branch adapts Minecraft source and APIs while keeping LeavesX features and optimizations in sync. Changes, supported versions and known issues are documented in the release notes.
 
