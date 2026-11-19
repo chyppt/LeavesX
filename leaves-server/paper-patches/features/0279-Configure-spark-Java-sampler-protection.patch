@@ -1,37 +1,81 @@
+From 7d4814d66ab087679dd850d988ffcfd6782953cc Mon Sep 17 00:00:00 2001
+From: chyppt <pptwxo@163.com>
+Date: Wed, 18 Nov 2026 20:38:09 +0800
 Subject: [PATCH] Configure spark Java sampler protection
 
+---
+ src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java   | 4 ++--
+ .../org/leavesx/leavesx/config/LeavesXConfigBootstrap.java    | 3 +++
+ .../java/org/leavesx/leavesx/config/LeavesXConfigLoader.java  | 3 ++-
+ .../java/org/leavesx/leavesx/config/LeavesXConfigWriter.java  | 2 ++
+ 4 files changed, 9 insertions(+), 3 deletions(-)
+
 diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
+index 4fdb0ff1e..b5415ad41 100644
 --- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
 +++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfig.java
-@@ -303 +303 @@
+@@ -300,12 +300,12 @@ public record LeavesXConfig(
+         boolean sensorListReuse, boolean recipeIndex,
+         boolean jeiRecipeSync, boolean jeiRecipeTransfer, boolean networkBufferOptimizations, boolean tpsBar,
+         boolean updateCheck, boolean updateDownload,
 -        boolean reuseBlockDestructionPackets, boolean virtualDownloadPool
 +        boolean reuseBlockDestructionPackets, boolean virtualDownloadPool, boolean sparkJavaSampler
-@@ -308 +308 @@
+     ) {
+         public static ExtensionSettings defaults() {
+             return new ExtensionSettings(false, true, true, false, false, true, false, true, true, true, true, false, true, false,
+                 true, true, false, false, false, false, true, true, false, false, true, true, true, false,
 -                true, false);
 +                true, false, true);
-diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
---- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
-+++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
-@@ -573 +573,2 @@
--                    readBoolean(node.node("async", "virtual-threads", "download-pool"), "async.virtual-threads.download-pool", false)
-+                    readBoolean(node.node("async", "virtual-threads", "download-pool"), "async.virtual-threads.download-pool", false),
-+                    readBoolean(node.node("diagnostics", "spark", "java-sampler"), "diagnostics.spark.java-sampler", true)
-diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
---- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
-+++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
-@@ -116 +116,2 @@
-         changed |= writeValue(node.node("async", "virtual-threads", "download-pool"), "async.virtual-threads.download-pool", config.extensions().virtualDownloadPool(), missingOnly);
-+        changed |= writeValue(node.node("diagnostics", "spark", "java-sampler"), "diagnostics.spark.java-sampler", config.extensions().sparkJavaSampler(), missingOnly);
-@@ -683 +684,2 @@
-         comments.put("diagnostics.slow-plugin-task-ms", "记录超过多少毫秒的同步插件任务。默认：2。");
-+        comments.put("diagnostics.spark.java-sampler", "内置 spark 使用 Java 采样，规避原生采样器崩溃；禁止需要原生库的 --alloc 分配采样。重启生效。默认：true。");
+         }
+     }
+ 
 diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
+index 734256f38..4c5b79c19 100644
 --- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
 +++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigBootstrap.java
-@@ -151,3 +151,6 @@
+@@ -154,6 +154,9 @@ public final class LeavesXConfigBootstrap {
          if (previous.extensions().virtualDownloadPool() != next.extensions().virtualDownloadPool()) {
              changed.add("async.virtual-threads.download-pool");
          }
 +        if (previous.extensions().sparkJavaSampler() != next.extensions().sparkJavaSampler()) {
 +            changed.add("diagnostics.spark.java-sampler");
 +        }
+         if (previous.extensions().fasterRandom() != next.extensions().fasterRandom()) {
+             changed.add("performance.random-generator.enabled");
+         }
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+index 706d9e4a1..6d497d307 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigLoader.java
+@@ -570,7 +570,8 @@ public final class LeavesXConfigLoader {
+                     readBoolean(node.node("updates", "check"), "updates.check", true),
+                     readBoolean(node.node("updates", "auto-download"), "updates.auto-download", false),
+                     readBoolean(node.node("performance", "network", "reduce-packets", "reuse-block-destruction"), "performance.network.reduce-packets.reuse-block-destruction", true),
+-                    readBoolean(node.node("async", "virtual-threads", "download-pool"), "async.virtual-threads.download-pool", false)
++                    readBoolean(node.node("async", "virtual-threads", "download-pool"), "async.virtual-threads.download-pool", false),
++                    readBoolean(node.node("diagnostics", "spark", "java-sampler"), "diagnostics.spark.java-sampler", true)
+                 ),
+                 new LeavesXConfig.RegionTickingSettings(
+                     readMode(
+diff --git a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+index 904fd6b88..53ffe8307 100644
+--- a/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
++++ b/src/main/java/org/leavesx/leavesx/config/LeavesXConfigWriter.java
+@@ -114,6 +114,7 @@ public final class LeavesXConfigWriter {
+         changed |= writeValue(node.node("performance", "random-generator", "enabled"), "performance.random-generator.enabled", config.extensions().fasterRandom(), missingOnly);
+         changed |= writeValue(node.node("performance", "network", "reduce-packets", "reuse-block-destruction"), "performance.network.reduce-packets.reuse-block-destruction", config.extensions().reuseBlockDestructionPackets(), missingOnly);
+         changed |= writeValue(node.node("async", "virtual-threads", "download-pool"), "async.virtual-threads.download-pool", config.extensions().virtualDownloadPool(), missingOnly);
++        changed |= writeValue(node.node("diagnostics", "spark", "java-sampler"), "diagnostics.spark.java-sampler", config.extensions().sparkJavaSampler(), missingOnly);
+         changed |= writeValue(node.node("async", "compute", "ai-candidates"), "async.compute.ai-candidates", config.extensions().asyncAiCandidates(), missingOnly);
+         changed |= writeValue(node.node("async", "playerdata-save", "compression"), "async.playerdata-save.compression", config.extensions().asyncPlayerCompression(), missingOnly);
+         changed |= writeValue(node.node("async", "compute", "mob-collision-math"), "async.compute.mob-collision-math", config.extensions().parallelMobCollisions(), missingOnly);
+@@ -681,6 +682,7 @@ public final class LeavesXConfigWriter {
+         comments.put("diagnostics.default-result-limit", "实体类型和热点默认显示数量。默认：10。");
+         comments.put("diagnostics.rolling-window-seconds", "性能变化统计最近多少秒。默认：60。");
+         comments.put("diagnostics.slow-plugin-task-ms", "记录超过多少毫秒的同步插件任务。默认：2。");
++        comments.put("diagnostics.spark.java-sampler", "内置 spark 使用 Java 采样，规避原生采样器崩溃；禁止需要原生库的 --alloc 分配采样。重启生效。默认：true。");
+         comments.put("performance.network.optimized-varint", "加快网络整数编码，不改变数据内容。默认：true。");
+         comments.put("performance.network.flush-consolidation", "合并网络 flush，减少系统调用。默认：true。");
+         comments.put("performance.memory.immutable-caches", "缓存不变的碰撞结果。默认：true。");
+-- 
+2.52.0.windows.1
